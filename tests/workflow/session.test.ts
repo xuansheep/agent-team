@@ -48,6 +48,31 @@ describe("WorkflowSession", () => {
     const result = await session.result;
     assert.equal(result.status, "interrupted");
   });
+
+  it("resumes an interactive session after user input is requested", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "needs_user_input", summary: "need detail", questions: [{ id: "q1", text: "Target?", required: true }] }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-resume-runs" });
+    const session = await engine.startInteractive(config(), "flow", { request: "x" });
+
+    for await (const event of session.events) {
+      if (event.type === "node_waiting_user") break;
+    }
+
+    await session.resumeWithUserInput({ answer: "operators" });
+
+    const result = await session.result;
+    assert.equal(result.status, "completed");
+    assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+  });
 });
 
 function config() {

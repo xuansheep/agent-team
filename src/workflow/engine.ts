@@ -92,6 +92,8 @@ export class WorkflowEngine {
     const permissions = new PermissionController();
     const startNodeId = firstNodeId(workflow);
     let interrupted = false;
+    let finished = false;
+    let activeRun: Promise<WorkflowState> | undefined;
     let latestState: WorkflowState = {
       status: "running",
       workflow_id: workflowId,
@@ -99,25 +101,66 @@ export class WorkflowEngine {
       attempts: [],
       handoff: initialHandoff
     };
+    let resolveResult!: (state: WorkflowState) => void;
+    let rejectResult!: (error: unknown) => void;
+    const result = new Promise<WorkflowState>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
 
-    const result = this.continueFrom({
-      config,
-      workflowId,
-      workflow,
-      store,
-      runId: run.runId,
-      startNodeId,
-      initialHandoff,
-      attempts: [],
-      eventSink: (event) => stream.push(event),
-      interaction: {
-        requestPermission: (request) => permissions.request(request)
-      },
-      isInterrupted: () => interrupted,
-      onState: (state) => {
+    const finish = (state: WorkflowState) => {
+      if (finished) return;
+      finished = true;
+      latestState = state;
+      resolveResult(state);
+      stream.end();
+    };
+
+    const fail = async (error: unknown) => {
+      if (finished) return;
+      finished = true;
+      const message = error instanceof Error ? error.message : String(error);
+      await this.appendEvent(store, run.runId, { type: "run_failed", error: message }, (event) => stream.push(event));
+      rejectResult(error);
+      stream.end();
+    };
+
+    const runSegment = async (segment: { startNodeId: string; initialHandoff: unknown; attempts: WorkflowState["attempts"] }) => {
+      if (finished) return latestState;
+      if (activeRun) throw new Error(`Run ${run.runId} is already active`);
+
+      activeRun = this.continueFrom({
+        config,
+        workflowId,
+        workflow,
+        store,
+        runId: run.runId,
+        startNodeId: segment.startNodeId,
+        initialHandoff: segment.initialHandoff,
+        attempts: segment.attempts,
+        eventSink: (event) => stream.push(event),
+        interaction: {
+          requestPermission: (request) => permissions.request(request)
+        },
+        isInterrupted: () => interrupted,
+        onState: (state) => {
+          latestState = state;
+        }
+      });
+
+      try {
+        const state = await activeRun;
         latestState = state;
+        if (state.status !== "waiting_user") finish(state);
+        return state;
+      } finally {
+        activeRun = undefined;
       }
-    }).finally(() => stream.end());
+    };
+
+    void runSegment({ startNodeId, initialHandoff, attempts: [] }).catch((error) => {
+      void fail(error);
+    });
 
     return {
       runId: run.runId,
@@ -125,6 +168,7 @@ export class WorkflowEngine {
       events: stream,
       permissions,
       interrupt: async () => {
+        if (finished || interrupted) return;
         interrupted = true;
         let running: WorkflowState["attempts"][number] | undefined;
         for (let index = latestState.attempts.length - 1; index >= 0; index -= 1) {
@@ -141,9 +185,19 @@ export class WorkflowEngine {
         await this.appendEvent(store, run.runId, { type: "run_interrupted", reason: "user" }, (event) => stream.push(event));
         await store.saveState(run.runId, state);
         latestState = state;
+        if (!activeRun) finish(state);
       },
-      resumeWithUserInput: async () => {
-        throw new Error("Interactive resumeWithUserInput is only valid after waiting_user in this implementation task");
+      resumeWithUserInput: async (input) => {
+        if (finished) throw new Error(`Run ${run.runId} is already finished`);
+        if (activeRun) await activeRun;
+        if (latestState.status !== "waiting_user") throw new Error(`Run ${run.runId} is not waiting for user input`);
+        if (!latestState.current_node_id) throw new Error(`Run ${run.runId} has no current node`);
+
+        await runSegment({
+          startNodeId: latestState.current_node_id,
+          initialHandoff: { previous_handoff: latestState.handoff, user_input: input },
+          attempts: latestState.attempts
+        });
       },
       result
     };
