@@ -1,4 +1,7 @@
 #!/usr/bin/env node
-import { createProgram } from "./program.js";
+import { dispatchCli } from "./dispatch.js";
 
-createProgram().parse(process.argv);
+void dispatchCli().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});
