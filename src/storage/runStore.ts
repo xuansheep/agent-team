@@ -39,6 +39,11 @@ export class RunStore {
     await writeFile(join(this.runDir(runId), "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
   }
 
+  async markInterrupted(runId: string, state: WorkflowState): Promise<void> {
+    await this.appendEvent(runId, { type: "run_interrupted", reason: "user" });
+    await this.saveState(runId, state);
+  }
+
   async loadState(runId: string): Promise<WorkflowState> {
     return JSON.parse(await readFile(join(this.runDir(runId), "state.json"), "utf8")) as WorkflowState;
   }
