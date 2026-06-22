@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-test/
+.runs/
+.tmp/
+.idea/
+.*.tmp
+vitest.config.ts
+vitest.config.mjs

@@ -1,0 +1,29 @@
+{
+  "name": "agent-team",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-team": "dist/cli/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build:test && node scripts/run-tests.mjs",
+    "test:watch": "npm run test",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "build:test": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@commander-js/extra-typings": "^12.1.0",
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.2",
+    "js-yaml": "^4.1.0",
+    "undici": "^6.21.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

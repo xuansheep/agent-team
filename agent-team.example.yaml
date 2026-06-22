@@ -1,0 +1,104 @@
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    default_model: gpt-5.5
+    capabilities:
+      tool_calling: true
+      vision: true
+      streaming: true
+      json_schema_output: true
+
+roles:
+  product:
+    description: Clarifies requirements and prepares implementation handoff.
+    system_prompt: You are the product node. Clarify requirements and produce a concise handoff.
+    requires:
+      tool_calling: false
+      vision: true
+  developer:
+    description: Implements the requested change.
+    system_prompt: You are the development node. Use local tools to complete the implementation.
+    requires:
+      tool_calling: true
+      vision: true
+  tester:
+    description: Reviews the implementation and can reject it with feedback.
+    system_prompt: You are the testing node. Decide whether the delivered work is acceptable.
+    requires:
+      tool_calling: true
+      vision: true
+  user_acceptance:
+    description: Captures user acceptance or rejection.
+    system_prompt: You are the user acceptance node. Summarize the user decision structurally.
+  final_delivery:
+    description: Produces final user-facing delivery summary.
+    system_prompt: You are the final delivery node. Summarize completed work and artifacts.
+
+workflows:
+  delivery:
+    workflow_permissions:
+      deny:
+        - Read(./.env)
+        - Read(./secrets/**)
+        - Bash(rm *)
+      ask: []
+      allow: []
+    nodes:
+      - id: product
+        role: product
+        provider: default
+      - id: dev
+        role: developer
+        provider: default
+        permissions:
+          allow:
+            - Read
+            - Write
+            - Edit
+            - MultiEdit
+            - LS
+            - Glob
+            - Grep
+            - Bash
+      - id: test
+        role: tester
+        provider: default
+        permissions:
+          allow:
+            - Read
+            - LS
+            - Glob
+            - Grep
+            - Bash
+      - id: user_acceptance
+        role: user_acceptance
+        provider: default
+      - id: final_delivery
+        role: final_delivery
+        provider: default
+        permissions:
+          allow:
+            - Read
+            - LS
+            - Glob
+    edges:
+      - from: product
+        to: dev
+        condition: success
+      - from: dev
+        to: test
+        condition: success
+      - from: test
+        to: user_acceptance
+        condition: success
+      - from: test
+        to: dev
+        condition: failure
+      - from: user_acceptance
+        to: final_delivery
+        condition: success
+      - from: user_acceptance
+        to: product
+        condition: failure
