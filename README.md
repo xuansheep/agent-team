@@ -10,6 +10,21 @@ A local CLI harness for configurable agent-team workflows.
 4. Set provider key: `OPENAI_API_KEY=...`
 5. Run: `node dist/cli/main.js run -f agent-team.yaml --input "Build the requested feature"`
 
+## Interactive TUI
+
+Run `agent-team` with no subcommand to open the interactive terminal UI.
+
+The TUI reads `agent-team.yaml` from the current directory, selects workflow `delivery` when present, and lets you submit one workflow request with live node, tool, permission, and result status.
+
+Existing subcommands remain headless for automation:
+
+```bash
+node dist/cli/main.js run -f agent-team.yaml --input "Build the requested feature"
+node dist/cli/main.js status <run_id>
+node dist/cli/main.js inspect <run_id>
+node dist/cli/main.js resume <run_id> -f agent-team.yaml --answer "..."
+```
+
 ## Safety Model
 
 The harness follows Claude Code-style local tool execution and permissions where practical. Workflow-level deny rules are baseline restrictions. Node-level permissions grant role-specific access. MVP node completion is model-declared; downstream nodes and user acceptance can reject completion and trigger feedback loops.
