@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink.js";
 
 export function UserQuestionPrompt({ questions }: { questions: unknown[] }) {
   if (questions.length === 0) return null;

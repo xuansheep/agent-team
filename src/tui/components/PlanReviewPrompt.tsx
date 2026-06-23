@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text, useStdout } from "ink";
+import { Box, Text, useStdout } from "../ink.js";
 import { TuiPlanReviewState } from "../state.js";
 
 export function PlanReviewPrompt({

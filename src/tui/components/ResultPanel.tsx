@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink.js";
 
 export function ResultPanel({ mode, error, runId }: { mode: string; error?: string; runId?: string }) {
   if (!["completed", "failed", "interrupted"].includes(mode)) return null;

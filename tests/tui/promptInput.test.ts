@@ -17,7 +17,7 @@ import {
 } from "../../src/tui/components/PromptInput/usePromptBuffer.js";
 import { createHistory, nextHistory, previousHistory, pushHistory } from "../../src/tui/components/PromptInput/usePromptHistory.js";
 import { resolvePromptKey, resolveRawPromptKey } from "../../src/tui/components/PromptInput/keybindings.js";
-import { promptCursorPosition, schedulePromptCursorMove } from "../../src/tui/components/PromptInput/PromptInputCursor.js";
+import { applyPromptNativeCursor, promptCursorPosition, schedulePromptCursorMove } from "../../src/tui/components/PromptInput/PromptInputCursor.js";
 import { slashCommandSuggestions } from "../../src/tui/components/PromptInput/usePromptSuggestions.js";
 import { parseSlashCommand } from "../../src/tui/commands.js";
 
@@ -252,6 +252,16 @@ describe("PromptInput core logic", () => {
 
     cancel();
     assert.deepEqual(cleared, ["timer-1"]);
+  });
+
+  it("sets and restores a native blinking bar cursor", () => {
+    const writes: string[] = [];
+    const cleanup = applyPromptNativeCursor({ isTTY: true, write: (data: string) => writes.push(data) });
+
+    assert.deepEqual(writes, ["\u001b[?25h\u001b[5 q"]);
+
+    cleanup();
+    assert.deepEqual(writes, ["\u001b[?25h\u001b[5 q", "\u001b[0 q"]);
   });
 
   it("suggests slash commands and workflow targets", () => {

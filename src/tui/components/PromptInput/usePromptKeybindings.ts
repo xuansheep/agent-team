@@ -1,9 +1,8 @@
-import { useLayoutEffect, useRef } from "react";
-import { useStdin } from "ink";
+import { useInput, useStdin } from "../../ink.js";
+import type { Key } from "../../../ink/events/input-event.js";
 import { applySlashCommandSuggestion, SlashCommandSuggestion } from "../../commandCompletion.js";
 import { parseSlashCommand } from "../../commands.js";
 import { ensureRefableStdin } from "../../inkStdin.js";
-import { createTerminalInputParser } from "../../input/parser.js";
 import { TuiInputEvent, TuiInputKey } from "../../input/types.js";
 import {
   backspace,
@@ -34,31 +33,40 @@ export function usePromptKeybindings(input: {
   onHistory: (history: PromptHistory) => void;
   onEvent: (event: PromptInputEvent) => void;
 }) {
-  const { stdin, setRawMode } = useStdin();
+  const { stdin } = useStdin();
   ensureRefableStdin(stdin);
-  const parserRef = useRef(createTerminalInputParser());
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const inputRef = useRef(input);
-  inputRef.current = input;
 
-  useLayoutEffect(() => {
-    const handleData = (value: unknown) => {
-      if (typeof value !== "string" && !Buffer.isBuffer(value)) return;
-      const text = Buffer.isBuffer(value) ? value.toString("utf8") : value;
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-      for (const event of parserRef.current.feed(text)) handleInputEvent(event, inputRef.current);
-      flushTimerRef.current = setTimeout(() => {
-        for (const event of parserRef.current.flush()) handleInputEvent(event, inputRef.current);
-      }, 25);
-    };
-    setRawMode(true);
-    stdin.on?.("data", handleData);
-    return () => {
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-      stdin.off?.("data", handleData);
-      setRawMode(false);
-    };
-  }, [setRawMode, stdin]);
+  useInput((value, key, event) => {
+    if (event.keypress.isPasted) {
+      handleInputEvent({ type: "paste", text: value }, input);
+      return;
+    }
+
+    handleInputEvent({ type: "key", input: value, key: toTuiInputKey(key, value) }, input);
+  });
+}
+
+function toTuiInputKey(key: Key, input: string): TuiInputKey {
+  return {
+    upArrow: key.upArrow,
+    downArrow: key.downArrow,
+    leftArrow: key.leftArrow,
+    rightArrow: key.rightArrow,
+    pageUp: key.pageUp,
+    pageDown: key.pageDown,
+    wheelUp: key.wheelUp,
+    wheelDown: key.wheelDown,
+    home: key.home,
+    end: key.end,
+    return: key.return || input === "\r" || input === "\n",
+    escape: key.escape,
+    ctrl: key.ctrl,
+    meta: key.meta,
+    shift: key.shift,
+    tab: key.tab,
+    backspace: key.backspace,
+    delete: key.delete
+  };
 }
 
 function handleInputEvent(event: TuiInputEvent, input: Parameters<typeof usePromptKeybindings>[0]) {

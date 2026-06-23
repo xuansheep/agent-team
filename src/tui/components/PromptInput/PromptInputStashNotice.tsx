@@ -1,5 +1,5 @@
 import React from "react";
-import { Text } from "ink";
+import { Text } from "../../ink.js";
 
 export function PromptInputStashNotice({ hasStash }: { hasStash: boolean }) {
   if (!hasStash) return null;

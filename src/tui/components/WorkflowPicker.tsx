@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput } from "../ink.js";
 
 export function WorkflowPicker({ workflows, selected, onSelect }: { workflows: string[]; selected?: string; onSelect: (workflow: string) => void }) {
   useInput((input) => {

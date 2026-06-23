@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdin, useStdout } from "ink";
+import { Box, Text, useApp, useInput, useStdin, useStdout } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { WorkflowSession } from "../workflow/session.js";
@@ -187,10 +187,6 @@ export function TuiApp({
   }, [panes, stdin]);
 
   useInput((input, key) => {
-    if (input === "o" && key.ctrl) {
-      setLogDetailMode((current) => !current);
-      return;
-    }
     if (input === "c" && key.ctrl) {
       const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current));
       if (behavior === "exit") {
@@ -257,7 +253,6 @@ export function TuiApp({
       </Box>
       <InteractionArea
         choice={activeChoice}
-        promptTop={terminalRows - 4}
         mode={promptMode}
         workflowId={state.workflowId}
         queued={queued}

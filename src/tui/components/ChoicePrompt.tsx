@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Box, Text, useStdin } from "ink";
+import { Box, Text, useStdin } from "../ink.js";
 import { ensureRefableStdin } from "../inkStdin.js";
 
 export type ChoicePromptOption = {

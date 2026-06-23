@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../../ink.js";
 
 export function PromptInputQueuedCommands({ queued }: { queued: string[] }) {
   if (queued.length === 0) return null;

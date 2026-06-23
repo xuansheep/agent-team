@@ -419,7 +419,6 @@ describe("InteractionArea", () => {
   it("keeps choices and prompt together in the bottom interaction area", () => {
     const output = render(
       <InteractionArea
-        promptTop={20}
         mode="permission"
         workflowId="delivery"
         queued={[]}

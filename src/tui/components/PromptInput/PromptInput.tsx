@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Box, Text, useStdout } from "ink";
+import { useTerminalFocus } from "../../../ink/hooks/use-terminal-focus.js";
+import { Box, Text, useDeclaredCursor, useStdout } from "../../ink.js";
+import { Cursor } from "../../../utils/Cursor.js";
 import { commandArgumentHint, slashCommandSuggestions } from "../../commandCompletion.js";
-import { PromptBuffer, PromptInputEvent, PromptInputMode } from "./types.js";
+import { PromptInputEvent, PromptInputMode } from "./types.js";
 import { createPromptBuffer } from "./usePromptBuffer.js";
 import { createHistory } from "./usePromptHistory.js";
 import { usePromptKeybindings } from "./usePromptKeybindings.js";
@@ -11,7 +13,7 @@ import { PromptInputModeIndicator } from "./PromptInputModeIndicator.js";
 import { PromptInputQueuedCommands } from "./PromptInputQueuedCommands.js";
 import { PromptInputStashNotice } from "./PromptInputStashNotice.js";
 import { PromptInputSuggestions } from "./PromptInputSuggestions.js";
-import { PromptInputCursor } from "./PromptInputCursor.js";
+import { applyPromptNativeCursor } from "./PromptInputCursor.js";
 
 export function PromptInput(props: {
   mode: PromptInputMode;
@@ -21,10 +23,10 @@ export function PromptInput(props: {
   isLoading: boolean;
   stash?: string;
   onEvent: (event: PromptInputEvent) => void;
-  promptTop?: number;
 }) {
   const { stdout } = useStdout();
-  const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
+  const terminalFocus = useTerminalFocus();
+  const terminalColumns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
   const [buffer, setBuffer] = useState(createPromptBuffer());
   const [history, setHistory] = useState(createHistory());
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
@@ -32,7 +34,10 @@ export function PromptInput(props: {
   const rawSuggestions = useMemo(() => slashCommandSuggestions(buffer.text, { workflows: props.workflows }), [buffer.text, props.workflows]);
   const suggestions = dismissedCompletionFor === buffer.text ? [] : rawSuggestions;
   const argumentHint = commandArgumentHint(buffer.text);
-  const visibleSuggestionCount = Math.min(suggestions.length, 6);
+
+  useEffect(() => {
+    return applyPromptNativeCursor(stdout);
+  }, [stdout]);
 
   useEffect(() => {
     if (dismissedCompletionFor !== undefined && dismissedCompletionFor !== buffer.text) setDismissedCompletionFor(undefined);
@@ -66,26 +71,22 @@ export function PromptInput(props: {
   });
 
   const hasStash = Boolean(props.stash);
+  const inputColumns = Math.max(1, terminalColumns - 2 - props.mode.toUpperCase().length - 3);
+  const cursorPosition = Cursor.fromText(buffer.text, inputColumns, buffer.cursor).getPosition();
+  const cursorRef = useDeclaredCursor({
+    line: cursorPosition.line,
+    column: props.mode.toUpperCase().length + 3 + cursorPosition.column,
+    active: terminalFocus
+  });
 
   return (
     <Box flexDirection="column" paddingX={1} flexShrink={0}>
-      <Box>
+      <Box ref={cursorRef}>
         <PromptInputModeIndicator mode={props.mode} />
         <Text> &gt; </Text>
-        <PromptBufferView buffer={buffer} placeholder="Type a request or /help" />
+        <PromptBufferView text={buffer.text} placeholder="Type a request or /help" />
         {argumentHint ? <Text dimColor> {argumentHint}</Text> : null}
       </Box>
-      <PromptInputCursor
-        terminalRows={terminalRows}
-        promptTop={props.promptTop}
-        mode={props.mode}
-        text={buffer.text}
-        cursor={buffer.cursor}
-        suggestions={visibleSuggestionCount}
-        queued={props.queued.length}
-        hasStash={hasStash}
-        history={history.entries.length}
-      />
       <PromptInputSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
       <PromptInputQueuedCommands queued={props.queued} />
       <PromptInputStashNotice hasStash={hasStash} />
@@ -95,10 +96,10 @@ export function PromptInput(props: {
   );
 }
 
-function PromptBufferView({ buffer, placeholder }: { buffer: PromptBuffer; placeholder: string }) {
-  if (!buffer.text) {
+function PromptBufferView({ text, placeholder }: { text: string; placeholder: string }) {
+  if (!text) {
     return <Text dimColor>{placeholder}</Text>;
   }
 
-  return <Text>{buffer.text}</Text>;
+  return <Text>{text}</Text>;
 }

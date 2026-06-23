@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useStdout } from "ink";
+import { useStdout } from "../../ink.js";
 import { PromptInputMode } from "./types.js";
 
 export function PromptInputCursor(props: {
@@ -113,6 +113,16 @@ export function schedulePromptCursorMove(
 }
 
 const cursorShow = "\u001b[?25h";
+const blinkingBarCursor = "\u001b[5 q";
+const defaultCursor = "\u001b[0 q";
+
+export function applyPromptNativeCursor(stdout: CursorStdout): () => void {
+  if (!stdout.isTTY) return () => undefined;
+  stdout.write(`${cursorShow}${blinkingBarCursor}`);
+  return () => {
+    stdout.write(defaultCursor);
+  };
+}
 
 function cursorTo(x: number, y: number): string {
   return `\u001b[${y + 1};${x + 1}H`;

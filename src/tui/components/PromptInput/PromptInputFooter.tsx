@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../../ink.js";
 
 export function PromptInputFooter({ workflowId, isLoading }: { workflowId?: string; isLoading: boolean }) {
   return (

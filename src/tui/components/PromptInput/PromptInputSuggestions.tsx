@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../../ink.js";
 import { SlashCommandSuggestion } from "../../commandCompletion.js";
 
 export function PromptInputSuggestions({ suggestions, selectedIndex }: { suggestions: SlashCommandSuggestion[]; selectedIndex: number }) {
