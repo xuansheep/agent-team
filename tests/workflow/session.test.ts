@@ -49,6 +49,127 @@ describe("WorkflowSession", () => {
     assert.equal(result.status, "interrupted");
   });
 
+
+
+  it("streams permission requests from runtime events so TUI can resolve them", async () => {
+    const provider: ModelProvider = {
+      async generate() {
+        return { tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-permission-stream-runs" });
+    const session = await engine.startInteractive(config(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+
+    let requestId = "";
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "permission_requested") {
+        requestId = event.request_id;
+        break;
+      }
+    }
+
+    assert.equal(session.permissions.hasPending(requestId), true);
+    await session.interrupt();
+    await assert.doesNotReject(session.result);
+  });
+
+
+
+  it("streams plan review requests and resumes directly after approval", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nDo it.", handoff: { instruction: "approved work" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-plan-review-runs" });
+    const session = await engine.startInteractive(planConfig(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "plan_review_requested") {
+        assert.match(event.document, /Do it/);
+        break;
+      }
+    }
+
+    await session.resumePlanReview("continue");
+    const result = await session.result;
+
+    assert.equal(result.status, "completed");
+    assert.deepEqual(result.attempts.map((attempt) => `${attempt.node_id}:${attempt.status}`), ["product:success", "dev:success"]);
+    assert.equal(calls, 2);
+  });
+
+  it("streams a revised plan after the user pauses and submits changes", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nOld plan.", handoff: { instruction: "old" } }) };
+        return { content: JSON.stringify({ status: "success", summary: "revised plan", document: "# Plan\nRevised plan.", handoff: { instruction: "revised" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-plan-revision-runs" });
+    const session = await engine.startInteractive(planConfig(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "plan_review_requested") break;
+    }
+
+    await session.resumePlanReview("stay");
+    await session.revisePlan({ answer: "请把计划拆得更细" });
+
+    const seen: string[] = [];
+    let revised = "";
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      seen.push(event.type);
+      if (event.type === "plan_review_requested") {
+        revised = event.document;
+        break;
+      }
+    }
+
+    assert.equal(calls, 2);
+    assert.equal(seen.includes("user_message"), true);
+    assert.match(revised, /Revised plan/);
+    await session.interrupt();
+    await assert.doesNotReject(session.result);
+  });
+
+  it("streams run_failed detail for provider errors", async () => {
+    const cause = Object.assign(new Error("connect reset"), { code: "ECONNRESET" });
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("Provider network request failed after 3 attempts: fetch failed", { cause });
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-failure-runs" });
+    const session = await engine.startInteractive(config(), "flow", { request: "x" });
+
+    let detail = "";
+    for await (const event of session.events) {
+      if (event.type === "run_failed") {
+        detail = (event as { detail?: string }).detail ?? "";
+        break;
+      }
+    }
+
+    await assert.rejects(session.result, /Provider network request failed/);
+    assert.match(detail, /cause.code: ECONNRESET/);
+    assert.match(detail, /cause.message: connect reset/);
+  });
+
   it("resumes an interactive session after user input is requested", async () => {
     let calls = 0;
     const provider: ModelProvider = {
@@ -62,18 +183,52 @@ describe("WorkflowSession", () => {
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-resume-runs" });
     const session = await engine.startInteractive(config(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
 
-    for await (const event of session.events) {
-      if (event.type === "node_waiting_user") break;
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done || next.value.type === "node_waiting_user") break;
     }
 
     await session.resumeWithUserInput({ answer: "operators" });
 
+    const seen: string[] = [];
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      seen.push(next.value.type);
+      if (next.value.type === "node_completed") break;
+    }
+
     const result = await session.result;
     assert.equal(result.status, "completed");
     assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(seen.includes("user_message"), true);
   });
 });
+
+
+
+async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
+  const result = await Promise.race([
+    iterator.next(),
+    new Promise<IteratorResult<T>>((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for session event")), 250))
+  ]);
+  if (result.done) throw new Error("Session event stream ended unexpectedly");
+  return result.value;
+}
+
+
+function planConfig() {
+  return {
+    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    roles: {
+      product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
+      dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
+    },
+    workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const, mode: "plan" as const }, { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [{ from: "product", to: "dev", condition: "success" as const }] } }
+  };
+}
 
 function config() {
   return {

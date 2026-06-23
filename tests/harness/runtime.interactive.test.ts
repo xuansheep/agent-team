@@ -62,3 +62,95 @@ describe("runNode interactive permissions", () => {
     assert.match(eventsText, /tool_completed/);
   });
 });
+
+
+
+
+  it("sends assistant tool calls before tool outputs on the follow-up model request", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-tool-chain-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    tools.add({
+      name: "LS",
+      description: "fake ls",
+      input_schema: {},
+      async execute() {
+        return { output: "package.json", exit_code: 0 };
+      }
+    });
+
+    const requests: Array<{ messages: unknown[] }> = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push({ messages: request.messages });
+        if (requests.length === 1) {
+          return { tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["LS(.)"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+
+    assert.equal(result.status, "success");
+    const followUp = requests[1]?.messages.slice(-2);
+    assert.deepEqual(followUp, [
+      { role: "assistant", content: "", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] },
+      { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
+    ]);
+  });
+
+
+describe("runNode streaming", () => {
+  it("stores model stream deltas and still returns the final node result", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-stream-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("generate should not be used when stream is available");
+      },
+      async stream(request, onEvent) {
+        assert.ok(request.response_schema);
+        const system = request.messages.find((message) => message.role === "system")?.content;
+        assert.match(String(system), /Return only JSON/);
+        onEvent({ type: "content_delta", text: "{\"status\":\"success\"," });
+        onEvent({ type: "content_delta", text: "\"summary\":\"done\"}" });
+        return { content: "{\"status\":\"success\",\"summary\":\"done\"}" };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "product", role: "product", provider: "default", permission_mode: "default" },
+      systemPrompt: "Product",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+
+    assert.equal(result.status, "success");
+    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.match(eventsText, /model_stream_delta/);
+    assert.match(eventsText, /summary/);
+  });
+});

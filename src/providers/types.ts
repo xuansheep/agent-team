@@ -8,6 +8,7 @@ export type ModelMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string | ModelContentPart[];
   tool_call_id?: string;
+  tool_calls?: ModelToolCall[];
 };
 
 export type ModelToolCall = {
@@ -28,6 +29,12 @@ export type ModelResponse = {
   tool_calls?: ModelToolCall[];
 };
 
+export type ModelStreamEvent = {
+  type: "content_delta";
+  text: string;
+};
+
 export type ModelProvider = {
   generate(request: ModelRequest): Promise<ModelResponse>;
+  stream?(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse>;
 };

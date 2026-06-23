@@ -34,5 +34,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     initialError = message.includes("ENOENT") ? "Missing agent-team.yaml" : message;
   }
 
-  render(<TuiApp cwd={options.cwd} initialError={initialError} config={config} workflows={workflows} workflowId={workflowId} engine={engine} />);
+  render(<TuiApp cwd={options.cwd} initialError={initialError} config={config} workflows={workflows} workflowId={workflowId} engine={engine} />, {
+    exitOnCtrlC: false
+  });
 }

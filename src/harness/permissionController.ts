@@ -35,6 +35,12 @@ export class PermissionController {
     pending.resolve(decision);
   }
 
+  resolveAll(decision: PermissionDecision): void {
+    for (const requestId of [...this.pending.keys()]) {
+      this.resolve(requestId, decision);
+    }
+  }
+
   hasPending(requestId: string): boolean {
     return this.pending.has(requestId);
   }

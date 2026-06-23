@@ -18,6 +18,8 @@ export function previousHistory(history: PromptHistory): { history: PromptHistor
 
 export function nextHistory(history: PromptHistory): { history: PromptHistory; value: string } {
   if (history.entries.length === 0) return { history, value: "" };
-  const index = history.index === undefined ? history.entries.length - 1 : Math.min(history.entries.length - 1, history.index + 1);
+  if (history.index === undefined) return { history, value: "" };
+  const index = history.index + 1;
+  if (index >= history.entries.length) return { history: { ...history, index: undefined }, value: "" };
   return { history: { ...history, index }, value: history.entries[index] ?? "" };
 }

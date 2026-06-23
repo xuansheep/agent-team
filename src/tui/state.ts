@@ -5,6 +5,8 @@ export type TuiMode =
   | "running"
   | "permission"
   | "question"
+  | "waiting_plan_review"
+  | "plan_revision"
   | "confirm_interrupt"
   | "completed"
   | "failed"
@@ -13,7 +15,12 @@ export type TuiMode =
 export type TuiNodeState = {
   nodeId: string;
   attempt: number;
-  status: "running" | "success" | "failure" | "waiting_user" | "interrupted";
+  status: "running" | "success" | "failure" | "waiting_user" | "waiting_plan_review" | "interrupted";
+};
+
+export type TuiWorkflowNodeState = {
+  id: string;
+  role: string;
 };
 
 export type TuiToolState = {
@@ -39,6 +46,27 @@ export type TuiPermissionRequestState = {
   rule?: string;
 };
 
+export type TuiPlanReviewState = {
+  type: "plan";
+  nodeId: string;
+  attempt: number;
+  document: string;
+};
+
+export type TuiModelStreamState = {
+  nodeId: string;
+  attempt: number;
+  text: string;
+};
+
+export type TuiConversationItem = {
+  kind: "user" | "assistant" | "status";
+  text: string;
+  detailText?: string;
+  nodeId?: string;
+  attempt?: number;
+};
+
 export type TuiState = {
   cwd: string;
   mode: TuiMode;
@@ -48,6 +76,9 @@ export type TuiState = {
   nodes: TuiNodeState[];
   tools: TuiToolState[];
   permissionRequests: TuiPermissionRequestState[];
+  pendingReview?: TuiPlanReviewState;
+  modelStreams: TuiModelStreamState[];
+  conversation: TuiConversationItem[];
   questions: unknown[];
   timeline: string[];
   error?: string;

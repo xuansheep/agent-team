@@ -1,21 +1,22 @@
-import React, { useRef, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import React, { useEffect, useRef, useState } from "react";
+import { Box, Text, useApp, useInput, useStdin, useStdout } from "ink";
 import { AgentTeamConfig } from "../config/schema.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { WorkflowSession } from "../workflow/session.js";
-import { initialTuiState, reduceStoredEvent } from "./eventAdapter.js";
+import { initialTuiState, reduceStoredEvent, resetTuiRunState } from "./eventAdapter.js";
+import { ensureRefableStdin } from "./inkStdin.js";
+import { parseSgrMouseEvent, ScrollPane, scrollPaneByMouse } from "./mouse.js";
 import { TuiState } from "./state.js";
-import { Footer } from "./components/Footer.js";
 import { Header } from "./components/Header.js";
-import { NodeStatusList } from "./components/NodeStatusList.js";
-import { PermissionPrompt } from "./components/PermissionPrompt.js";
+import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
+import { PlanReviewPrompt } from "./components/PlanReviewPrompt.js";
 import { PromptInputEvent, PromptInputMode } from "./components/PromptInput/types.js";
-import { PromptInput } from "./components/PromptInput/PromptInput.js";
 import { ResultPanel } from "./components/ResultPanel.js";
-import { RunTimeline } from "./components/RunTimeline.js";
-import { ToolCallList } from "./components/ToolCallList.js";
+import { RunLogPanel } from "./components/RunLogPanel.js";
+import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
 import { UserQuestionPrompt } from "./components/UserQuestionPrompt.js";
-import { WorkflowPicker } from "./components/WorkflowPicker.js";
+
+type ScrollOffsets = { log: number; plan: number };
 
 export function TuiApp({
   cwd,
@@ -23,7 +24,8 @@ export function TuiApp({
   config,
   workflows = [],
   workflowId,
-  engine
+  engine,
+  onExit
 }: {
   cwd: string;
   initialError?: string;
@@ -31,7 +33,14 @@ export function TuiApp({
   workflows?: string[];
   workflowId?: string;
   engine?: WorkflowEngine;
+  onExit?: () => void;
 }) {
+  const { exit } = useApp();
+  const { stdin } = useStdin();
+  const { stdout } = useStdout();
+  ensureRefableStdin(stdin);
+  const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
+  const exitTui = onExit ?? exit;
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(workflowId);
   const [state, setState] = useState<TuiState>(() => ({
     ...initialTuiState({ cwd }),
@@ -39,26 +48,11 @@ export function TuiApp({
     workflowId
   }));
   const [queued, setQueued] = useState<string[]>([]);
+  const [logDetailMode, setLogDetailMode] = useState(false);
+  const [choiceIndex, setChoiceIndex] = useState(0);
+  const [choiceKey, setChoiceKey] = useState("");
+  const [scrollOffsets, setScrollOffsets] = useState<ScrollOffsets>({ log: 0, plan: 0 });
   const sessionRef = useRef<WorkflowSession>();
-
-  useInput((input, key) => {
-    if (!sessionRef.current || input !== "c" || !key.ctrl) return;
-    if (state.mode !== "confirm_interrupt") {
-      setState((current) => ({ ...current, mode: "confirm_interrupt" }));
-      return;
-    }
-    void sessionRef.current.interrupt();
-  });
-
-  if (initialError) {
-    return (
-      <Box flexDirection="column">
-        <Header cwd={cwd} />
-        <Text color="red">{initialError}</Text>
-        <Text>Run agent-team init to create agent-team.yaml</Text>
-      </Box>
-    );
-  }
 
   const selectWorkflow = (workflow: string) => {
     setSelectedWorkflowId(workflow);
@@ -83,7 +77,8 @@ export function TuiApp({
     try {
       const session = await engine.startInteractive(config, selectedWorkflowId, { request: text, images: [] });
       sessionRef.current = session;
-      setState((current) => ({ ...current, runId: session.runId, workflowId: selectedWorkflowId, mode: "running" }));
+      setScrollOffsets({ log: 0, plan: 0 });
+      setState((current) => resetTuiRunState(current, { workflowId: selectedWorkflowId, runId: session.runId }));
       void (async () => {
         for await (const event of session.events) {
           setState((current) => reduceStoredEvent({ ...current, runId: session.runId, workflowId: selectedWorkflowId }, event));
@@ -105,6 +100,10 @@ export function TuiApp({
   };
 
   const handlePromptEvent = (event: PromptInputEvent) => {
+    if (event.type === "toggle_log_detail") {
+      setLogDetailMode((current) => !current);
+      return;
+    }
     if (event.type === "cancel") {
       if (state.mode === "confirm_interrupt") setState((current) => ({ ...current, mode: "running" }));
       return;
@@ -118,49 +117,253 @@ export function TuiApp({
       if (event.name === "run" && event.args[0] && workflows.includes(event.args[0])) selectWorkflow(event.args[0]);
       return;
     }
+    if (state.mode === "plan_revision") {
+      setState((current) => ({ ...current, mode: "running", pendingReview: undefined }));
+      void sessionRef.current?.revisePlan({ answer: event.text }).catch((error) => failUi(error));
+      return;
+    }
     if (state.mode === "question") {
       void sessionRef.current?.resumeWithUserInput({ answer: event.text }).catch((error) => failUi(error));
       return;
     }
+    if (state.mode === "waiting_plan_review" || state.mode === "permission" || state.mode === "confirm_interrupt" || state.mode === "select_workflow") return;
     void startRun(event.text);
   };
 
-  const promptMode: PromptInputMode =
-    state.mode === "running" || state.mode === "permission" || state.mode === "question" || state.mode === "confirm_interrupt"
-      ? state.mode
-      : "input";
-  const isLoading = state.mode === "running" || state.mode === "permission";
+  const currentAttempt = currentNodeAttempt(state);
+  const workflowNodes = selectedWorkflowId ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => ({ id: node.id, role: node.role })) : undefined;
+  const activeChoice = buildActiveChoice({
+    mode: state.mode,
+    workflows,
+    choiceIndex,
+    permission: state.permissionRequests[0],
+    review: state.pendingReview,
+    selectWorkflow,
+    resolvePermission: (requestId, decision) => {
+      try {
+        sessionRef.current?.permissions.resolve(requestId, decision);
+      } catch (error) {
+        failUi(error);
+      }
+    },
+    resolvePlan: (decision) => {
+      void sessionRef.current?.resumePlanReview(decision).catch((error) => failUi(error));
+    },
+    resolveInterrupt: (decision) => {
+      if (decision === "interrupt") void sessionRef.current?.interrupt();
+      else setState((current) => ({ ...current, mode: "running" }));
+    }
+  });
+  const nextChoiceKey = activeChoice ? `${state.mode}:${activeChoice.title}:${activeChoice.options.map((option) => option.value).join("|")}` : "";
 
-  if (!selectedWorkflowId && workflows.length > 0) {
+  useEffect(() => {
+    if (choiceKey === nextChoiceKey) return;
+    setChoiceKey(nextChoiceKey);
+    setChoiceIndex(0);
+  }, [choiceKey, nextChoiceKey]);
+
+  const layout = layoutMetrics({ terminalRows, choice: activeChoice, reviewDocument: state.pendingReview?.document, conversationCount: state.conversation.length });
+  const panes = scrollPanes(layout, state.pendingReview?.document, state.conversation.length);
+
+  useEffect(() => {
+    if (!stdout.isTTY) return;
+    stdout.write("\u001b[?1000h\u001b[?1006h");
+    return () => {
+      stdout.write("\u001b[?1000l\u001b[?1006l");
+    };
+  }, [stdout]);
+
+  useEffect(() => {
+    const handleMouse = (value: unknown) => {
+      if (typeof value !== "string" && !Buffer.isBuffer(value)) return;
+      const event = parseSgrMouseEvent(value);
+      if (!event) return;
+      setScrollOffsets((current) => scrollPaneByMouse(current, panes, event));
+    };
+    stdin.on?.("data", handleMouse);
+    return () => {
+      stdin.off?.("data", handleMouse);
+    };
+  }, [panes, stdin]);
+
+  useInput((input, key) => {
+    if (input === "o" && key.ctrl) {
+      setLogDetailMode((current) => !current);
+      return;
+    }
+    if (input === "c" && key.ctrl) {
+      const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current));
+      if (behavior === "exit") {
+        exitTui();
+        return;
+      }
+      if (behavior === "confirm_interrupt") {
+        setState((current) => ({ ...current, mode: "confirm_interrupt" }));
+        return;
+      }
+      if (behavior === "interrupt") void sessionRef.current?.interrupt();
+      return;
+    }
+    if (!activeChoice) return;
+    if (key.upArrow || input === "\u001b[A") {
+      setChoiceIndex((current) => (current === 0 ? activeChoice.options.length - 1 : current - 1));
+      return;
+    }
+    if (key.downArrow || input === "\u001b[B") {
+      setChoiceIndex((current) => (current + 1) % activeChoice.options.length);
+      return;
+    }
+    if (key.return || input === "\r" || input === "\n") {
+      activeChoice.onSubmit(activeChoice.selectedValue);
+      return;
+    }
+    const shortcut = activeChoice.options.find((option) => option.shortcut?.toLowerCase() === input.toLowerCase());
+    if (shortcut) activeChoice.onSubmit(shortcut.value);
+  });
+
+  if (initialError) {
     return (
-      <Box flexDirection="column">
-        <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
-        <WorkflowPicker workflows={workflows} selected={selectedWorkflowId} onSelect={selectWorkflow} />
-        <Footer mode={state.mode} />
+      <Box flexDirection="column" height={terminalRows}>
+        <Header cwd={cwd} />
+        <Text color="red">{initialError}</Text>
+        <Text>Run agent-team init to create agent-team.yaml</Text>
       </Box>
     );
   }
 
+  const promptMode: PromptInputMode =
+    state.mode === "running" || state.mode === "permission" || state.mode === "question" || state.mode === "waiting_plan_review" || state.mode === "confirm_interrupt"
+      ? state.mode
+      : "input";
+  const isLoading = state.mode === "running" || state.mode === "permission" || state.mode === "waiting_plan_review";
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
-      <NodeStatusList nodes={state.nodes} />
-      <ToolCallList tools={state.tools} />
-      <PermissionPrompt
-        request={state.permissionRequests[0]}
-        onResolve={(requestId, decision) => {
-          try {
-            sessionRef.current?.permissions.resolve(requestId, decision);
-          } catch (error) {
-            failUi(error);
-          }
-        }}
+      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} />
+      <Box flexDirection="column" height={layout.mainHeight} overflowY="hidden">
+        {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
+        <RunLogPanel
+          items={state.conversation}
+          currentNodeId={state.currentNodeId}
+          currentAttempt={currentAttempt}
+          detailMode={logDetailMode}
+          offset={scrollOffsets.log}
+          visibleRows={layout.logRows}
+        />
+        <PlanReviewPrompt review={state.pendingReview} offset={scrollOffsets.plan} visibleRows={layout.planRows} />
+        <UserQuestionPrompt questions={state.questions} />
+        <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
+      </Box>
+      <InteractionArea
+        choice={activeChoice}
+        promptTop={terminalRows - 4}
+        mode={promptMode}
+        workflowId={state.workflowId}
+        queued={queued}
+        workflows={workflows}
+        isLoading={isLoading}
+        onPromptEvent={handlePromptEvent}
       />
-      <UserQuestionPrompt questions={state.questions} />
-      <RunTimeline items={state.timeline} />
-      <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
-      <PromptInput mode={promptMode} workflowId={state.workflowId} queued={queued} workflows={workflows} isLoading={isLoading} onEvent={handlePromptEvent} />
-      <Footer mode={state.mode} />
     </Box>
   );
+}
+
+export function resolveCtrlCBehavior(mode: TuiState["mode"], hasSession: boolean): "exit" | "confirm_interrupt" | "interrupt" {
+  if (!hasSession || !isActiveSessionMode(mode)) return "exit";
+  return mode === "confirm_interrupt" ? "interrupt" : "confirm_interrupt";
+}
+
+function isActiveSessionMode(mode: TuiState["mode"]): boolean {
+  return mode === "running" || mode === "permission" || mode === "question" || mode === "waiting_plan_review" || mode === "plan_revision" || mode === "confirm_interrupt";
+}
+
+function currentNodeAttempt(state: TuiState): number | undefined {
+  if (!state.currentNodeId) return undefined;
+  for (let index = state.nodes.length - 1; index >= 0; index -= 1) {
+    const node = state.nodes[index];
+    if (node.nodeId === state.currentNodeId) return node.attempt;
+  }
+  return undefined;
+}
+
+function buildActiveChoice(input: {
+  mode: TuiState["mode"];
+  workflows: string[];
+  choiceIndex: number;
+  permission?: TuiState["permissionRequests"][number];
+  review?: TuiState["pendingReview"];
+  selectWorkflow: (workflow: string) => void;
+  resolvePermission: (requestId: string, decision: "allow_once" | "deny_once") => void;
+  resolvePlan: (decision: "continue" | "stay") => void;
+  resolveInterrupt: (decision: "interrupt" | "stay") => void;
+}): InteractionChoice | undefined {
+  if (input.mode === "select_workflow" && input.workflows.length) {
+    const options = input.workflows.map((workflow, index) => ({ label: workflow, value: workflow, shortcut: String(index + 1) }));
+    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)]?.value ?? options[0].value;
+    return { title: "Select workflow", options, selectedValue, onSubmit: input.selectWorkflow };
+  }
+  if (input.mode === "permission" && input.permission) {
+    const options = [
+      { label: "Allow once", value: "allow_once", shortcut: "y" },
+      { label: "Deny once", value: "deny_once", shortcut: "n" }
+    ];
+    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
+    return {
+      title: "Permission required",
+      detail: `${input.permission.tool} ${input.permission.specifier}`,
+      options,
+      selectedValue,
+      onSubmit: (value) => input.resolvePermission(input.permission?.requestId ?? "", value === "deny_once" ? "deny_once" : "allow_once")
+    };
+  }
+  if (input.mode === "waiting_plan_review" && input.review) {
+    const options = [
+      { label: "Yes, continue execution by plan", value: "continue", shortcut: "y" },
+      { label: "No, staying in the plan", value: "stay", shortcut: "n" }
+    ];
+    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
+    return { title: "Plan decision", options, selectedValue, onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue") };
+  }
+  if (input.mode === "confirm_interrupt") {
+    const options = [
+      { label: "Interrupt run", value: "interrupt", shortcut: "y" },
+      { label: "Keep running", value: "stay", shortcut: "n" }
+    ];
+    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
+    return { title: "Stop current run?", options, selectedValue, onSubmit: (value) => input.resolveInterrupt(value === "interrupt" ? "interrupt" : "stay") };
+  }
+  return undefined;
+}
+
+function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; reviewDocument?: string; conversationCount: number }): { mainHeight: number; logRows: number; planRows: number } {
+  const headerRows = 3;
+  const flowRows = 4;
+  const promptRows = 4;
+  const choiceRows = input.choice ? input.choice.options.length + 3 + (input.choice.detail ? 1 : 0) : 0;
+  const mainHeight = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
+  const reviewLines = input.reviewDocument?.split(/\r?\n/).length ?? 0;
+  const planRows = reviewLines ? Math.max(3, Math.min(15, Math.floor(mainHeight / 2), reviewLines)) : 0;
+  const planBoxRows = planRows ? planRows + 4 : 0;
+  const logRows = Math.max(1, mainHeight - planBoxRows - 2);
+  return { mainHeight, logRows, planRows };
+}
+
+function scrollPanes(layout: { mainHeight: number; logRows: number; planRows: number }, reviewDocument: string | undefined, conversationCount: number): Array<ScrollPane<keyof ScrollOffsets>> {
+  const headerRows = 3;
+  const flowRows = 4;
+  const mainTop = headerRows + flowRows;
+  const panes: Array<ScrollPane<keyof ScrollOffsets>> = [
+    { id: "log", top: mainTop, bottom: mainTop + layout.logRows, maxOffset: Math.max(0, conversationCount - layout.logRows) }
+  ];
+  if (reviewDocument && layout.planRows) {
+    const planTop = mainTop + layout.logRows + 1;
+    panes.push({
+      id: "plan",
+      top: planTop,
+      bottom: planTop + layout.planRows + 3,
+      maxOffset: Math.max(0, reviewDocument.split(/\r?\n/).length - layout.planRows)
+    });
+  }
+  return panes;
 }

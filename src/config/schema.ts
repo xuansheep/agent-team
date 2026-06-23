@@ -11,6 +11,7 @@ export const providerSchema = z.object({
   base_url: z.string().url(),
   api_key_env: z.string().min(1),
   default_model: z.string().min(1),
+  user_agent: z.string().min(1).optional(),
   capabilities: z.object({
     tool_calling: z.boolean().default(false),
     vision: z.boolean().default(false),
@@ -34,6 +35,7 @@ export const nodeSchema = z.object({
   role: z.string().min(1),
   provider: z.string().default("default"),
   model: z.string().optional(),
+  mode: z.enum(["task", "plan", "complete"]).default("task"),
   permission_mode: z.enum(["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]).default("default"),
   permissions: permissionSetSchema.optional()
 });
@@ -56,7 +58,12 @@ export const configSchema = z.object({
   workflows: z.record(workflowSchema)
 });
 
-export type AgentTeamConfig = z.infer<typeof configSchema>;
-export type WorkflowConfig = z.infer<typeof workflowSchema>;
-export type WorkflowNodeConfig = z.infer<typeof nodeSchema>;
+type ParsedAgentTeamConfig = z.infer<typeof configSchema>;
+type ParsedWorkflowConfig = z.infer<typeof workflowSchema>;
+type ParsedWorkflowNodeConfig = z.infer<typeof nodeSchema>;
+
+export type WorkflowNodeMode = "task" | "plan" | "complete";
+export type WorkflowNodeConfig = Omit<ParsedWorkflowNodeConfig, "mode"> & { mode?: WorkflowNodeMode };
+export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes"> & { nodes: WorkflowNodeConfig[] };
+export type AgentTeamConfig = Omit<ParsedAgentTeamConfig, "workflows"> & { workflows: Record<string, WorkflowConfig> };
 export type PermissionSet = z.infer<typeof permissionSetSchema>;

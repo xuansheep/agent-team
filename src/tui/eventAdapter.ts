@@ -1,5 +1,5 @@
 import { StoredEvent } from "../harness/events.js";
-import { TuiNodeState, TuiState } from "./state.js";
+import { TuiConversationItem, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
 
 export function initialTuiState(input: { cwd: string }): TuiState {
   return {
@@ -8,8 +8,19 @@ export function initialTuiState(input: { cwd: string }): TuiState {
     nodes: [],
     tools: [],
     permissionRequests: [],
+    modelStreams: [],
+    conversation: [],
     questions: [],
     timeline: []
+  };
+}
+
+export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string }): TuiState {
+  return {
+    ...initialTuiState({ cwd: state.cwd }),
+    workflowId: input.workflowId,
+    runId: input.runId,
+    mode: "running"
   };
 }
 
@@ -18,35 +29,104 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
 
   switch (event.type) {
     case "run_started":
-      return { ...next, workflowId: event.workflow_id, mode: "running" };
+      return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) });
+    case "user_message":
+      return appendConversation(next, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text });
     case "node_started":
-      return upsertNode({ ...next, mode: "running", currentNodeId: event.node_id }, event.node_id, event.attempt, "running");
-    case "node_completed":
-      return upsertNode(next, event.node_id, findAttempt(next, event.node_id), event.status);
-    case "node_waiting_user":
-      return upsertNode({ ...next, mode: "question", currentNodeId: event.node_id, questions: event.questions }, event.node_id, findAttempt(next, event.node_id), "waiting_user");
-    case "tool_invoked":
-      return {
+      return appendConversation(
+        upsertNode({ ...next, mode: "running", currentNodeId: event.node_id }, event.node_id, event.attempt, "running"),
+        { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 正在处理...`, detailText: `节点：${event.node_id}\n第 ${event.attempt} 次尝试` }
+      );
+    case "plan_review_requested":
+      return appendConversation(
+        upsertNode({
+          ...next,
+          mode: "waiting_plan_review",
+          currentNodeId: event.node_id,
+          pendingReview: { type: "plan", nodeId: event.node_id, attempt: event.attempt, document: event.document }
+        }, event.node_id, event.attempt, "waiting_plan_review"),
+        { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 已生成计划，等待用户审核`, detailText: event.document }
+      );
+    case "plan_review_resolved":
+      if (event.decision === "stay") {
+        return appendConversation({ ...next, mode: "plan_revision" }, { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: "计划审核保持暂停，可继续输入修改意见", detailText: "用户选择：No, staying in the plan" });
+      }
+      return appendConversation({ ...next, mode: "running", pendingReview: undefined }, {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        text: "计划已通过，继续执行",
+        detailText: "用户选择：Yes, continue execution by plan"
+      });
+    case "complete_summary_available":
+      return appendConversation(next, {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        text: `${event.node_id} 已生成流程总结`,
+        detailText: event.document
+      });
+    case "model_stream_delta":
+      return appendStreamingStatus(appendModelStream(next, event.node_id, event.attempt, event.text), event.node_id, event.attempt);
+    case "node_completed": {
+      const attempt = findAttempt(next, event.node_id);
+      const formatted = nodeCompletedLog(event.node_id, event.status, event.result);
+      return appendConversation(upsertNode(next, event.node_id, attempt, event.status), {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt,
+        text: formatted.text,
+        detailText: formatted.detailText
+      });
+    }
+    case "node_waiting_user": {
+      const attempt = findAttempt(next, event.node_id);
+      return appendConversation(
+        upsertNode({ ...next, mode: "question", currentNodeId: event.node_id, questions: event.questions }, event.node_id, attempt, "waiting_user"),
+        { kind: "status", nodeId: event.node_id, attempt, text: `${event.node_id} 需要用户补充信息`, detailText: questionDetail(event.questions) }
+      );
+    }
+    case "tool_invoked": {
+      const attempt = event.attempt ?? findAttempt(next, event.node_id);
+      const toolCallId = event.tool_call_id ?? `${event.node_id}:${next.tools.length + 1}`;
+      return appendConversation({
         ...next,
         tools: [
           ...next.tools,
           {
             nodeId: event.node_id,
-            attempt: event.attempt ?? findAttempt(next, event.node_id),
-            toolCallId: event.tool_call_id ?? `${event.node_id}:${next.tools.length + 1}`,
+            attempt,
+            toolCallId,
             tool: event.tool,
             status: "running",
             input: event.input,
             expanded: false
           }
         ]
-      };
-    case "tool_completed":
-      return updateTool(next, event.tool_call_id, "completed", event.result);
-    case "tool_failed":
-      return updateTool(next, event.tool_call_id, "failed", undefined, event.error);
+      }, { kind: "status", nodeId: event.node_id, attempt, text: `正在执行 ${event.tool}...`, detailText: toolInputDetail(event.tool, event.input) });
+    }
+    case "tool_completed": {
+      const attempt = event.attempt ?? findAttempt(next, event.node_id);
+      return appendConversation(updateTool(next, event.tool_call_id, "completed", event.result), {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt,
+        text: `${event.tool} 执行完成`,
+        detailText: toolResultDetail(event.result)
+      });
+    }
+    case "tool_failed": {
+      const attempt = event.attempt ?? findAttempt(next, event.node_id);
+      return appendConversation(updateTool(next, event.tool_call_id, "failed", undefined, event.error), {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt,
+        text: `${event.tool} 执行失败：${event.error}`,
+        detailText: `错误：${event.error}`
+      });
+    }
     case "permission_requested":
-      return {
+      return appendConversation({
         ...next,
         mode: "permission",
         permissionRequests: [
@@ -62,17 +142,32 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
             rule: event.rule
           }
         ]
-      };
+      }, { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `需要确认是否允许 ${event.tool}`, detailText: permissionDetail(event.specifier, event.rule) });
     case "permission_resolved":
-      return { ...next, mode: "running", permissionRequests: next.permissionRequests.filter((request) => request.requestId !== event.request_id) };
+      return appendConversation({ ...next, mode: "running", permissionRequests: next.permissionRequests.filter((request) => request.requestId !== event.request_id) }, {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        text: event.decision === "allow_once" ? "已允许本次操作" : "已拒绝本次操作",
+        detailText: `决定：${event.decision}`
+      });
     case "node_interrupted":
-      return upsertNode(next, event.node_id, event.attempt, "interrupted");
+      return appendConversation(upsertNode(next, event.node_id, event.attempt, "interrupted"), {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        text: `${event.node_id} 已中断`,
+        detailText: `节点：${event.node_id}\n第 ${event.attempt} 次尝试`
+      });
     case "run_interrupted":
-      return { ...next, mode: "interrupted" };
+      return appendConversation({ ...next, mode: "interrupted" }, { kind: "status", text: "运行已中断", detailText: "原因：用户中断" });
     case "run_failed":
-      return { ...next, mode: "failed", error: event.error };
+      return appendConversation(
+        { ...next, mode: "failed", error: event.error },
+        { kind: "status", text: `运行失败：${event.error}`, detailText: event.detail ? `错误：${event.error}\n${event.detail}` : `错误：${event.error}` }
+      );
     case "run_completed":
-      return { ...next, mode: "completed" };
+      return appendConversation({ ...next, mode: "completed" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) });
     default:
       return next;
   }
@@ -86,6 +181,30 @@ function upsertNode(state: TuiState, nodeId: string, attempt: number, status: Tu
   const nodes = [...state.nodes];
   nodes[existing] = node;
   return { ...state, nodes };
+}
+
+function appendModelStream(state: TuiState, nodeId: string, attempt: number, text: string): TuiState {
+  const existing = state.modelStreams.findIndex((stream) => stream.nodeId === nodeId && stream.attempt === attempt);
+  const stream: TuiModelStreamState = existing === -1
+    ? { nodeId, attempt, text }
+    : { ...state.modelStreams[existing], text: `${state.modelStreams[existing].text}${text}` };
+  if (existing === -1) return { ...state, modelStreams: [...state.modelStreams, stream] };
+
+  const modelStreams = [...state.modelStreams];
+  modelStreams[existing] = stream;
+  return { ...state, modelStreams };
+}
+
+function appendStreamingStatus(state: TuiState, nodeId: string, attempt: number): TuiState {
+  const text = `${nodeId} 正在生成响应...`;
+  const exists = state.conversation.some((item) => item.kind === "status" && item.nodeId === nodeId && item.attempt === attempt && item.text === text);
+  if (exists) return state;
+  return appendConversation(state, { kind: "status", nodeId, attempt, text, detailText: "模型正在返回内容" });
+}
+
+function appendConversation(state: TuiState, item: TuiConversationItem): TuiState {
+  if (!item.text) return state;
+  return { ...state, conversation: [...state.conversation, item] };
 }
 
 function updateTool(state: TuiState, toolCallId: string | undefined, status: "completed" | "failed", result?: unknown, error?: string): TuiState {
@@ -102,4 +221,122 @@ function findAttempt(state: TuiState, nodeId: string): number {
     if (node.nodeId === nodeId) return node.attempt;
   }
   return 1;
+}
+
+function inputText(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (input && typeof input === "object") {
+    const value = input as Record<string, unknown>;
+    if (typeof value.request === "string") return value.request;
+    if (typeof value.answer === "string") return value.answer;
+  }
+  return readableValue(input);
+}
+
+function nodeCompletedLog(nodeId: string, status: "success" | "failure", result: unknown): { text: string; detailText: string } {
+  const summary = resultSummary(result);
+  const statusText = status === "success" ? "已完成" : "未通过";
+  return {
+    text: summary ? `${nodeId} ${statusText}：${summary}` : `${nodeId} ${statusText}`,
+    detailText: nodeResultDetail(result)
+  };
+}
+
+function resultSummary(result: unknown): string {
+  if (result && typeof result === "object") {
+    const summary = (result as Record<string, unknown>).summary;
+    if (typeof summary === "string") return summary;
+  }
+  return "";
+}
+
+function nodeResultDetail(result: unknown): string {
+  if (!result || typeof result !== "object") return readableValue(result);
+  const value = result as Record<string, unknown>;
+  const lines: string[] = [];
+  if (typeof value.summary === "string") lines.push(`摘要：${value.summary}`);
+  if (typeof value.document === "string") lines.push(`文档：\n${value.document}`);
+  if (Array.isArray(value.deliverables) && value.deliverables.length) lines.push(`产出：${value.deliverables.map(readableValue).join("、")}`);
+  if (Array.isArray(value.questions) && value.questions.length) lines.push(`问题：${value.questions.map(readableValue).join("、")}`);
+  const feedback = value.feedback;
+  if (feedback && typeof feedback === "object") {
+    const record = feedback as Record<string, unknown>;
+    if (Array.isArray(record.defects) && record.defects.length) lines.push(`缺陷：${record.defects.map(readableValue).join("、")}`);
+    if (Array.isArray(record.change_requests) && record.change_requests.length) lines.push(`变更请求：${record.change_requests.map(readableValue).join("、")}`);
+  }
+  const handoff = value.handoff;
+  if (handoff && typeof handoff === "object") {
+    const instruction = (handoff as Record<string, unknown>).instruction;
+    if (typeof instruction === "string") lines.push(`交接：${instruction}`);
+  }
+  return lines.length ? lines.join("\n") : readableRecord(value);
+}
+
+function questionDetail(questions: unknown[]): string {
+  if (!questions.length) return "等待用户补充信息";
+  return questions.map((question) => `问题：${readableValue(question)}`).join("\n");
+}
+
+function toolInputDetail(tool: string, input: unknown): string {
+  if (input && typeof input === "object") {
+    const value = input as Record<string, unknown>;
+    if ((tool === "Bash" || tool === "PowerShell") && typeof value.command === "string") return `命令：${value.command}`;
+    if (typeof value.path === "string") return `目标：${value.path}`;
+    if (typeof value.file_path === "string") return `文件：${value.file_path}`;
+    if (typeof value.pattern === "string") return `模式：${value.pattern}`;
+    if (typeof value.url === "string") return `地址：${value.url}`;
+    return readableRecord(value);
+  }
+  return readableValue(input);
+}
+
+function toolResultDetail(result: unknown): string {
+  if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
+  const value = result as Record<string, unknown>;
+  const lines: string[] = [];
+  if (typeof value.output === "string" && value.output) lines.push(`输出：${truncate(value.output, 500)}`);
+  if (typeof value.error === "string" && value.error) lines.push(`错误：${truncate(value.error, 500)}`);
+  if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
+  if (typeof value.path === "string") lines.push(`路径：${value.path}`);
+  return lines.length ? lines.join("\n") : readableRecord(value);
+}
+
+function permissionDetail(specifier: string, rule: string | undefined): string {
+  return [`目标：${specifier || "未指定"}`, rule ? `规则：${rule}` : undefined].filter(Boolean).join("\n");
+}
+
+function runResultDetail(result: unknown): string {
+  if (!result || typeof result !== "object") return readableValue(result);
+  const value = result as Record<string, unknown>;
+  const lines: string[] = [];
+  if (typeof value.status === "string") lines.push(`状态：${value.status}`);
+  if (typeof value.workflow_id === "string") lines.push(`工作流：${value.workflow_id}`);
+  if (Array.isArray(value.attempts)) lines.push(`节点尝试：${value.attempts.length}`);
+  return lines.length ? lines.join("\n") : readableRecord(value);
+}
+
+function readableRecord(value: Record<string, unknown>): string {
+  const lines = Object.entries(value).map(([key, item]) => `${key}：${readableValue(item)}`);
+  return truncate(lines.join("\n"), 500);
+}
+
+function readableValue(value: unknown): string {
+  if (value === undefined) return "";
+  if (value === null) return "空";
+  if (typeof value === "string") return truncate(value, 500);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(readableValue).join("、");
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const preferred = ["text", "summary", "instruction", "request", "answer", "path", "file_path", "command"];
+    for (const key of preferred) {
+      if (typeof record[key] === "string") return truncate(String(record[key]), 500);
+    }
+    return readableRecord(record);
+  }
+  return String(value);
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}...` : text;
 }
