@@ -2,6 +2,9 @@ import React from "react";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
+import { createRef } from "react";
+import { ScrollBox, Text } from "../../src/tui/ink.js";
+import type { ScrollBoxHandle } from "../../src/tui/ink.js";
 import { PromptInput } from "../../src/tui/components/PromptInput/PromptInput.js";
 import { ModelStreamPanel } from "../../src/tui/components/ModelStreamPanel.js";
 import { NodeStatusList } from "../../src/tui/components/NodeStatusList.js";
@@ -12,7 +15,7 @@ import { ChoicePrompt } from "../../src/tui/components/ChoicePrompt.js";
 import { PermissionPrompt } from "../../src/tui/components/PermissionPrompt.js";
 import { PlanReviewPrompt } from "../../src/tui/components/PlanReviewPrompt.js";
 import { InteractionArea } from "../../src/tui/components/InteractionArea.js";
-import { resolveCtrlCBehavior, TuiApp } from "../../src/tui/TuiApp.js";
+import { jumpMainScrollBy, resolveCtrlCBehavior, scrollMainDown, scrollMainUp, TuiApp } from "../../src/tui/TuiApp.js";
 
 describe("PromptInput component", () => {
   it("renders mode and footer status", () => {
@@ -364,50 +367,101 @@ describe("RunConversationPanel", () => {
 });
 
 describe("RunLogPanel", () => {
-  it("renders compact logs without detailed tool payloads", () => {
+  it("renders compact logs with tui-code style tool rows", () => {
     const output = render(
       <RunLogPanel
         detailMode={false}
         currentNodeId="dev"
         currentAttempt={1}
         items={[
-          { kind: "user", text: "实现功能" },
-          { kind: "status", nodeId: "dev", attempt: 1, text: "正在执行 Bash...", detailText: "命令：npm test" },
-          { kind: "status", nodeId: "dev", attempt: 1, text: "dev 已完成：实现完成", detailText: "摘要：实现完成" }
+          { id: "user-1", kind: "user", text: "实现功能" },
+          {
+            id: "tool-1",
+            kind: "tool",
+            nodeId: "dev",
+            attempt: 1,
+            toolCallId: "tool-1",
+            tool: "Bash",
+            status: "running",
+            text: "Bash",
+            summary: "npm test",
+            detailText: "命令：npm test"
+          },
+          { id: "status-1", kind: "status", nodeId: "dev", attempt: 1, text: "dev 已完成：实现完成", detailText: "摘要：实现完成" }
         ]}
       />
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Logs compact/);
-    assert.match(frame, /Ctrl\+O details/);
-    assert.match(frame, /User/);
+    assert.match(frame, /ctrl\+o to expand/i);
     assert.match(frame, /实现功能/);
-    assert.match(frame, /正在执行 Bash/);
-    assert.doesNotMatch(frame, /npm test/);
+    assert.match(frame, /●\s+Bash\s+\(npm test\)/);
+    assert.match(frame, /dev 已完成：实现完成/);
+    assert.doesNotMatch(frame, /命令：npm test/);
     output.unmount();
     output.cleanup();
   });
 
-  it("renders detailed logs with tool payload details", () => {
+  it("renders detailed logs with message response indentation", () => {
     const output = render(
       <RunLogPanel
         detailMode={true}
         currentNodeId="dev"
         currentAttempt={1}
         items={[
-          { kind: "status", nodeId: "dev", attempt: 1, text: "Bash 执行完成", detailText: "输出：ok" },
-          { kind: "status", nodeId: "test", attempt: 1, text: "hidden other node", detailText: "hidden detail" }
+          {
+            id: "tool-1",
+            kind: "tool",
+            nodeId: "dev",
+            attempt: 1,
+            toolCallId: "tool-1",
+            tool: "Bash",
+            status: "completed",
+            text: "Bash",
+            summary: "npm test",
+            detailText: "输出：ok"
+          },
+          { id: "status-1", kind: "status", nodeId: "test", attempt: 1, text: "hidden other node", detailText: "hidden detail" }
         ]}
       />
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Logs detailed/);
-    assert.match(frame, /Ctrl\+O compact/);
-    assert.match(frame, /Bash 执行完成/);
+    assert.match(frame, /ctrl\+o to collapse/i);
+    assert.match(frame, /●\s+Bash\s+\(npm test\)/);
+    assert.match(frame, /⎿/);
     assert.match(frame, /输出/);
     assert.doesNotMatch(frame, /hidden other node/);
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("renders failed tool rows with error details only when expanded", () => {
+    const output = render(
+      <RunLogPanel
+        detailMode={true}
+        currentNodeId="dev"
+        currentAttempt={1}
+        items={[
+          {
+            id: "tool-1",
+            kind: "tool",
+            nodeId: "dev",
+            attempt: 1,
+            toolCallId: "tool-1",
+            tool: "PowerShell",
+            status: "failed",
+            text: "PowerShell",
+            summary: "node dist/cli/main.js",
+            detailText: "错误：getCurrentEventPriority is not a function"
+          }
+        ]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /●\s+PowerShell\s+\(node dist\/cli\/main\.js\)/);
+    assert.match(frame, /getCurrentEventPriority is not a function/);
     output.unmount();
     output.cleanup();
   });
@@ -497,10 +551,72 @@ describe("TuiApp", () => {
   });
 });
 
+describe("main scroll helpers", () => {
+  it("jumps by half pages from the effective pending scroll position", () => {
+    const handle = createScrollHandle({ top: 8, pending: 2, height: 20, viewport: 4 });
+
+    assert.equal(jumpMainScrollBy(handle, -3), false);
+
+    assert.deepEqual(handle.calls, [["scrollTo", 7]]);
+  });
+
+  it("restores sticky scroll when page jumps reach the bottom", () => {
+    const handle = createScrollHandle({ top: 7, pending: 1, height: 12, viewport: 4 });
+
+    assert.equal(jumpMainScrollBy(handle, 3), true);
+
+    assert.deepEqual(handle.calls, [["scrollTo", 8], ["scrollToBottom"]]);
+  });
+
+  it("clears pending wheel movement when scrolling above the top", () => {
+    const handle = createScrollHandle({ top: 1, pending: -1, height: 12, viewport: 4 });
+
+    scrollMainUp(handle, 3);
+
+    assert.deepEqual(handle.calls, [["scrollTo", 0]]);
+  });
+
+  it("restores sticky scroll when wheeling down reaches the bottom", () => {
+    const handle = createScrollHandle({ top: 6, pending: 1, height: 10, viewport: 3 });
+
+    assert.equal(scrollMainDown(handle, 2), true);
+
+    assert.deepEqual(handle.calls, [["scrollToBottom"]]);
+  });
+
+  it("attaches the ScrollBox imperative handle through React refs", async () => {
+    const ref = createRef<ScrollBoxHandle>();
+    const output = render(
+      <ScrollBox ref={ref} height={3} flexDirection="column">
+        <Text>line</Text>
+      </ScrollBox>
+    );
+
+    await settleInkInput();
+    assert.equal(typeof (ref.current as { scrollBy?: unknown } | null)?.scrollBy, "function");
+    output.unmount();
+    output.cleanup();
+  });
+});
+
 function settleInkInput(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function settleTerminalEscape(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 35));
+}
+
+function createScrollHandle(input: { top: number; pending: number; height: number; viewport: number }) {
+  const calls: Array<["scrollTo", number] | ["scrollBy", number] | ["scrollToBottom"]> = [];
+  return {
+    calls,
+    scrollTo: (value: number) => calls.push(["scrollTo", value]),
+    scrollBy: (value: number) => calls.push(["scrollBy", value]),
+    scrollToBottom: () => calls.push(["scrollToBottom"]),
+    getScrollTop: () => input.top,
+    getPendingDelta: () => input.pending,
+    getScrollHeight: () => input.height,
+    getViewportHeight: () => input.viewport
+  };
 }

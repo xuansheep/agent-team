@@ -30,6 +30,10 @@ describe("TUI event adapter", () => {
     assert.equal(state.currentNodeId, "dev");
     assert.equal(state.nodes[0]?.status, "running");
     assert.equal(state.tools[0]?.status, "completed");
+    assert.equal(state.logMessages.filter((item) => item.kind === "tool").length, 1);
+    const toolLog = state.logMessages.find((item) => item.kind === "tool");
+    assert.equal(toolLog?.status, "completed");
+    assert.equal(toolLog?.summary, "npm test");
   });
 
   it("tracks pending permission requests", () => {
@@ -47,6 +51,9 @@ describe("TUI event adapter", () => {
       seq: 1
     });
     assert.equal(state.permissionRequests.length, 1);
+    const requestedLog = state.logMessages.find((item) => item.kind === "permission");
+    assert.equal(requestedLog?.status, "pending");
+    assert.match(requestedLog?.text ?? "", /需要确认/);
 
     state = reduceStoredEvent(state, {
       type: "permission_resolved",
@@ -59,6 +66,8 @@ describe("TUI event adapter", () => {
       seq: 2
     });
     assert.equal(state.permissionRequests.length, 0);
+    const resolvedLog = state.logMessages.find((item) => item.kind === "permission");
+    assert.equal(resolvedLog?.status, "denied");
   });
 
   it("tracks streaming model output by node attempt", () => {
@@ -81,6 +90,7 @@ describe("TUI event adapter", () => {
     });
 
     assert.deepEqual(state.modelStreams, [{ nodeId: "product", attempt: 1, text: "{\"status\":\"success\"}" }]);
+    assert.match(state.logMessages.at(-1)?.text ?? "", /正在生成响应/);
   });
 
   it("records the initial user request and resumed user answers in conversation", () => {
@@ -102,6 +112,7 @@ describe("TUI event adapter", () => {
     });
 
     assert.deepEqual(state.conversation.filter((item) => item.kind === "user").map((item) => item.text), ["实现 TUI 布局", "验收通过"]);
+    assert.deepEqual(state.logMessages.filter((item) => item.kind === "user").map((item) => item.text), ["实现 TUI 布局", "验收通过"]);
   });
 
   it("shows readable node progress and result summaries without raw JSON", () => {
@@ -130,6 +141,7 @@ describe("TUI event adapter", () => {
     assert.match(state.conversation.at(-1)?.detailText ?? "", /产出：架构概览/);
     assert.match(state.conversation.at(-1)?.detailText ?? "", /交接：交给 dev 继续实现/);
     assert.doesNotMatch(state.conversation.map((item) => `${item.text}\n${item.detailText ?? ""}`).join("\n"), /\{"status"/);
+    assert.doesNotMatch(state.logMessages.map((item) => `${item.text}\n${item.detailText ?? ""}`).join("\n"), /\{"status"/);
   });
 
 
@@ -226,6 +238,7 @@ describe("TUI event adapter", () => {
       permissionRequests: [{ requestId: "perm-1", nodeId: "product", attempt: 1, toolCallId: "tool-1", tool: "Bash", input: {}, specifier: "npm test" }],
       modelStreams: [{ nodeId: "product", attempt: 1, text: "old" }],
       conversation: [{ kind: "status" as const, text: "old log" }],
+      logMessages: [{ id: "old", kind: "status" as const, text: "old log" }],
       questions: [{ id: "q1" }],
       timeline: ["old"],
       error: "old error"
@@ -243,6 +256,7 @@ describe("TUI event adapter", () => {
     assert.deepEqual(reset.permissionRequests, []);
     assert.deepEqual(reset.modelStreams, []);
     assert.deepEqual(reset.conversation, []);
+    assert.deepEqual(reset.logMessages, []);
     assert.deepEqual(reset.questions, []);
     assert.deepEqual(reset.timeline, []);
     assert.equal(reset.error, undefined);
@@ -278,6 +292,12 @@ describe("TUI event adapter", () => {
     assert.equal(state.conversation.at(-1)?.text, "LS 执行完成");
     assert.match(state.conversation.at(-1)?.detailText ?? "", /输出：package.json/);
     assert.doesNotMatch(state.conversation.at(-1)?.detailText ?? "", /\{"output"/);
+    const toolLogs = state.logMessages.filter((item) => item.kind === "tool");
+    assert.equal(toolLogs.length, 1);
+    assert.equal(toolLogs[0]?.status, "completed");
+    assert.equal(toolLogs[0]?.summary, ".");
+    assert.match(toolLogs[0]?.detailText ?? "", /输出：package.json/);
+    assert.doesNotMatch(toolLogs[0]?.detailText ?? "", /\{"output"/);
   });
 
   it("records compact and detailed tool and permission log entries", () => {
@@ -312,5 +332,11 @@ describe("TUI event adapter", () => {
     assert.match(permissionLog?.detailText ?? "", /目标：npm test/);
     assert.doesNotMatch(`${toolLog?.detailText ?? ""}
 ${permissionLog?.detailText ?? ""}`, /\{"command"/);
+    const semanticToolLog = state.logMessages.find((item) => item.kind === "tool");
+    const semanticPermissionLog = state.logMessages.find((item) => item.kind === "permission");
+    assert.equal(semanticToolLog?.summary, "npm test");
+    assert.match(semanticPermissionLog?.text ?? "", /需要确认/);
+    assert.doesNotMatch(`${semanticToolLog?.detailText ?? ""}
+${semanticPermissionLog?.detailText ?? ""}`, /\{"command"/);
   });
 });

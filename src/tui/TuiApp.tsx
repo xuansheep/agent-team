@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdin, useStdout } from "./ink.js";
+import { Box, ScrollBox, Text, useApp, useInput, useStdin, useStdout } from "./ink.js";
+import type { ScrollBoxHandle } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { WorkflowSession } from "../workflow/session.js";
 import { initialTuiState, reduceStoredEvent, resetTuiRunState } from "./eventAdapter.js";
 import { ensureRefableStdin } from "./inkStdin.js";
-import { parseSgrMouseEvent, ScrollPane, scrollPaneByMouse } from "./mouse.js";
 import { TuiState } from "./state.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
@@ -15,8 +15,6 @@ import { ResultPanel } from "./components/ResultPanel.js";
 import { RunLogPanel } from "./components/RunLogPanel.js";
 import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
 import { UserQuestionPrompt } from "./components/UserQuestionPrompt.js";
-
-type ScrollOffsets = { log: number; plan: number };
 
 export function TuiApp({
   cwd,
@@ -51,7 +49,7 @@ export function TuiApp({
   const [logDetailMode, setLogDetailMode] = useState(false);
   const [choiceIndex, setChoiceIndex] = useState(0);
   const [choiceKey, setChoiceKey] = useState("");
-  const [scrollOffsets, setScrollOffsets] = useState<ScrollOffsets>({ log: 0, plan: 0 });
+  const mainScrollRef = useRef<ScrollBoxHandle>(null);
   const sessionRef = useRef<WorkflowSession>();
 
   const selectWorkflow = (workflow: string) => {
@@ -77,7 +75,7 @@ export function TuiApp({
     try {
       const session = await engine.startInteractive(config, selectedWorkflowId, { request: text, images: [] });
       sessionRef.current = session;
-      setScrollOffsets({ log: 0, plan: 0 });
+      mainScrollRef.current?.scrollToBottom();
       setState((current) => resetTuiRunState(current, { workflowId: selectedWorkflowId, runId: session.runId }));
       void (async () => {
         for await (const event of session.events) {
@@ -162,29 +160,7 @@ export function TuiApp({
     setChoiceIndex(0);
   }, [choiceKey, nextChoiceKey]);
 
-  const layout = layoutMetrics({ terminalRows, choice: activeChoice, reviewDocument: state.pendingReview?.document, conversationCount: state.conversation.length });
-  const panes = scrollPanes(layout, state.pendingReview?.document, state.conversation.length);
-
-  useEffect(() => {
-    if (!stdout.isTTY) return;
-    stdout.write("\u001b[?1000h\u001b[?1006h");
-    return () => {
-      stdout.write("\u001b[?1000l\u001b[?1006l");
-    };
-  }, [stdout]);
-
-  useEffect(() => {
-    const handleMouse = (value: unknown) => {
-      if (typeof value !== "string" && !Buffer.isBuffer(value)) return;
-      const event = parseSgrMouseEvent(value);
-      if (!event) return;
-      setScrollOffsets((current) => scrollPaneByMouse(current, panes, event));
-    };
-    stdin.on?.("data", handleMouse);
-    return () => {
-      stdin.off?.("data", handleMouse);
-    };
-  }, [panes, stdin]);
+  const layout = layoutMetrics({ terminalRows, choice: activeChoice });
 
   useInput((input, key) => {
     if (input === "c" && key.ctrl) {
@@ -198,6 +174,23 @@ export function TuiApp({
         return;
       }
       if (behavior === "interrupt") void sessionRef.current?.interrupt();
+      return;
+    }
+    const mainScroll = mainScrollRef.current;
+    if (mainScroll && key.wheelUp) {
+      scrollMainUp(mainScroll, 3);
+      return;
+    }
+    if (mainScroll && key.wheelDown) {
+      scrollMainDown(mainScroll, 3);
+      return;
+    }
+    if (mainScroll && key.pageUp) {
+      jumpMainScrollBy(mainScroll, -Math.max(1, Math.floor(mainScroll.getViewportHeight() / 2)));
+      return;
+    }
+    if (mainScroll && key.pageDown) {
+      jumpMainScrollBy(mainScroll, Math.max(1, Math.floor(mainScroll.getViewportHeight() / 2)));
       return;
     }
     if (!activeChoice) return;
@@ -237,20 +230,18 @@ export function TuiApp({
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
       <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} />
-      <Box flexDirection="column" height={layout.mainHeight} overflowY="hidden">
+      <ScrollBox ref={mainScrollRef} flexDirection="column" height={layout.mainHeight} stickyScroll>
         {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
         <RunLogPanel
-          items={state.conversation}
+          items={state.logMessages}
           currentNodeId={state.currentNodeId}
           currentAttempt={currentAttempt}
           detailMode={logDetailMode}
-          offset={scrollOffsets.log}
-          visibleRows={layout.logRows}
         />
-        <PlanReviewPrompt review={state.pendingReview} offset={scrollOffsets.plan} visibleRows={layout.planRows} />
+        <PlanReviewPrompt review={state.pendingReview} />
         <UserQuestionPrompt questions={state.questions} />
         <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
-      </Box>
+      </ScrollBox>
       <InteractionArea
         choice={activeChoice}
         mode={promptMode}
@@ -331,34 +322,43 @@ function buildActiveChoice(input: {
   return undefined;
 }
 
-function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; reviewDocument?: string; conversationCount: number }): { mainHeight: number; logRows: number; planRows: number } {
+function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice }): { mainHeight: number } {
   const headerRows = 3;
   const flowRows = 4;
   const promptRows = 4;
   const choiceRows = input.choice ? input.choice.options.length + 3 + (input.choice.detail ? 1 : 0) : 0;
   const mainHeight = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
-  const reviewLines = input.reviewDocument?.split(/\r?\n/).length ?? 0;
-  const planRows = reviewLines ? Math.max(3, Math.min(15, Math.floor(mainHeight / 2), reviewLines)) : 0;
-  const planBoxRows = planRows ? planRows + 4 : 0;
-  const logRows = Math.max(1, mainHeight - planBoxRows - 2);
-  return { mainHeight, logRows, planRows };
+  return { mainHeight };
 }
 
-function scrollPanes(layout: { mainHeight: number; logRows: number; planRows: number }, reviewDocument: string | undefined, conversationCount: number): Array<ScrollPane<keyof ScrollOffsets>> {
-  const headerRows = 3;
-  const flowRows = 4;
-  const mainTop = headerRows + flowRows;
-  const panes: Array<ScrollPane<keyof ScrollOffsets>> = [
-    { id: "log", top: mainTop, bottom: mainTop + layout.logRows, maxOffset: Math.max(0, conversationCount - layout.logRows) }
-  ];
-  if (reviewDocument && layout.planRows) {
-    const planTop = mainTop + layout.logRows + 1;
-    panes.push({
-      id: "plan",
-      top: planTop,
-      bottom: planTop + layout.planRows + 3,
-      maxOffset: Math.max(0, reviewDocument.split(/\r?\n/).length - layout.planRows)
-    });
+export function jumpMainScrollBy(scroll: Pick<ScrollBoxHandle, "getScrollHeight" | "getViewportHeight" | "getScrollTop" | "getPendingDelta" | "scrollTo" | "scrollToBottom">, delta: number): boolean {
+  const max = Math.max(0, scroll.getScrollHeight() - scroll.getViewportHeight());
+  const target = scroll.getScrollTop() + scroll.getPendingDelta() + delta;
+  if (target >= max) {
+    scroll.scrollTo(max);
+    scroll.scrollToBottom();
+    return true;
   }
-  return panes;
+  scroll.scrollTo(Math.max(0, target));
+  return false;
+}
+
+export function scrollMainDown(scroll: Pick<ScrollBoxHandle, "getScrollHeight" | "getViewportHeight" | "getScrollTop" | "getPendingDelta" | "scrollBy" | "scrollToBottom">, amount: number): boolean {
+  const max = Math.max(0, scroll.getScrollHeight() - scroll.getViewportHeight());
+  const effectiveTop = scroll.getScrollTop() + scroll.getPendingDelta();
+  if (effectiveTop + amount >= max) {
+    scroll.scrollToBottom();
+    return true;
+  }
+  scroll.scrollBy(amount);
+  return false;
+}
+
+export function scrollMainUp(scroll: Pick<ScrollBoxHandle, "getScrollTop" | "getPendingDelta" | "scrollBy" | "scrollTo">, amount: number): void {
+  const effectiveTop = scroll.getScrollTop() + scroll.getPendingDelta();
+  if (effectiveTop - amount <= 0) {
+    scroll.scrollTo(0);
+    return;
+  }
+  scroll.scrollBy(-amount);
 }

@@ -1,7 +1,7 @@
 import React from "react";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import { render } from "./ink.js";
+import { AlternateScreen, render } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loadConfig.js";
 import { createProvider } from "../providers/registry.js";
@@ -34,8 +34,13 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     initialError = message.includes("ENOENT") ? "Missing agent-team.yaml" : message;
   }
 
-  const instance = await render(<TuiApp cwd={options.cwd} initialError={initialError} config={config} workflows={workflows} workflowId={workflowId} engine={engine} />, {
+  const instance = await render(
+    <AlternateScreen mouseTracking>
+      <TuiApp cwd={options.cwd} initialError={initialError} config={config} workflows={workflows} workflowId={workflowId} engine={engine} />
+    </AlternateScreen>,
+    {
     exitOnCtrlC: false
-  });
+    }
+  );
   await instance.waitUntilExit();
 }

@@ -1,4 +1,5 @@
 import React, {
+  forwardRef,
   type PropsWithChildren,
   type Ref,
   useImperativeHandle,
@@ -71,7 +72,6 @@ export type ScrollBoxProps = Except<
   Styles,
   'textWrap' | 'overflow' | 'overflowX' | 'overflowY'
 > & {
-  ref?: Ref<ScrollBoxHandle>
   /**
    * When true, automatically pins scroll position to the bottom when content
    * grows. Unset manually via scrollTo/scrollBy to break the stickiness.
@@ -91,10 +91,9 @@ export type ScrollBoxProps = Except<
  */
 function ScrollBox({
   children,
-  ref,
   stickyScroll,
   ...style
-}: PropsWithChildren<ScrollBoxProps>): React.ReactNode {
+}: PropsWithChildren<ScrollBoxProps>, ref: Ref<ScrollBoxHandle>): React.ReactNode {
   const domRef = useRef<DOMElement | null>(null)
   // scrollTo/scrollBy bypass React: they mutate scrollTop on the DOM node,
   // mark it dirty, and call the root's throttled scheduleRender directly.
@@ -255,4 +254,4 @@ function ScrollBox({
   )
 }
 
-export default ScrollBox
+export default forwardRef<ScrollBoxHandle, PropsWithChildren<ScrollBoxProps>>(ScrollBox)

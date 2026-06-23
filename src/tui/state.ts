@@ -1,3 +1,5 @@
+import type { TuiLogMessage } from "./logTypes.js";
+
 export type TuiMode =
   | "boot"
   | "select_workflow"
@@ -79,6 +81,7 @@ export type TuiState = {
   pendingReview?: TuiPlanReviewState;
   modelStreams: TuiModelStreamState[];
   conversation: TuiConversationItem[];
+  logMessages: TuiLogMessage[];
   questions: unknown[];
   timeline: string[];
   error?: string;

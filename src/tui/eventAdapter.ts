@@ -1,5 +1,7 @@
 import { StoredEvent } from "../harness/events.js";
+import { TuiLogMessage, TuiToolLogMessage } from "./logTypes.js";
 import { TuiConversationItem, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
+import { getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue, truncate } from "./toolDisplay.js";
 
 export function initialTuiState(input: { cwd: string }): TuiState {
   return {
@@ -10,6 +12,7 @@ export function initialTuiState(input: { cwd: string }): TuiState {
     permissionRequests: [],
     modelStreams: [],
     conversation: [],
+    logMessages: [],
     questions: [],
     timeline: []
   };
@@ -29,13 +32,14 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
 
   switch (event.type) {
     case "run_started":
-      return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) });
+      return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) }, event);
     case "user_message":
-      return appendConversation(next, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text });
+      return appendConversation(next, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text }, event);
     case "node_started":
       return appendConversation(
         upsertNode({ ...next, mode: "running", currentNodeId: event.node_id }, event.node_id, event.attempt, "running"),
-        { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 正在处理...`, detailText: `节点：${event.node_id}\n第 ${event.attempt} 次尝试` }
+        { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 正在处理...`, detailText: `节点：${event.node_id}\n第 ${event.attempt} 次尝试` },
+        event
       );
     case "plan_review_requested":
       return appendConversation(
@@ -45,11 +49,12 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
           currentNodeId: event.node_id,
           pendingReview: { type: "plan", nodeId: event.node_id, attempt: event.attempt, document: event.document }
         }, event.node_id, event.attempt, "waiting_plan_review"),
-        { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 已生成计划，等待用户审核`, detailText: event.document }
+        { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 已生成计划，等待用户审核`, detailText: event.document },
+        event
       );
     case "plan_review_resolved":
       if (event.decision === "stay") {
-        return appendConversation({ ...next, mode: "plan_revision" }, { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: "计划审核保持暂停，可继续输入修改意见", detailText: "用户选择：No, staying in the plan" });
+        return appendConversation({ ...next, mode: "plan_revision" }, { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: "计划审核保持暂停，可继续输入修改意见", detailText: "用户选择：No, staying in the plan" }, event);
       }
       return appendConversation({ ...next, mode: "running", pendingReview: undefined }, {
         kind: "status",
@@ -57,7 +62,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         attempt: event.attempt,
         text: "计划已通过，继续执行",
         detailText: "用户选择：Yes, continue execution by plan"
-      });
+      }, event);
     case "complete_summary_available":
       return appendConversation(next, {
         kind: "status",
@@ -65,9 +70,9 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         attempt: event.attempt,
         text: `${event.node_id} 已生成流程总结`,
         detailText: event.document
-      });
+      }, event);
     case "model_stream_delta":
-      return appendStreamingStatus(appendModelStream(next, event.node_id, event.attempt, event.text), event.node_id, event.attempt);
+      return appendStreamingStatus(appendModelStream(next, event.node_id, event.attempt, event.text), event.node_id, event.attempt, event);
     case "node_completed": {
       const attempt = findAttempt(next, event.node_id);
       const formatted = nodeCompletedLog(event.node_id, event.status, event.result);
@@ -77,19 +82,20 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         attempt,
         text: formatted.text,
         detailText: formatted.detailText
-      });
+      }, event);
     }
     case "node_waiting_user": {
       const attempt = findAttempt(next, event.node_id);
       return appendConversation(
         upsertNode({ ...next, mode: "question", currentNodeId: event.node_id, questions: event.questions }, event.node_id, attempt, "waiting_user"),
-        { kind: "status", nodeId: event.node_id, attempt, text: `${event.node_id} 需要用户补充信息`, detailText: questionDetail(event.questions) }
+        { kind: "status", nodeId: event.node_id, attempt, text: `${event.node_id} 需要用户补充信息`, detailText: questionDetail(event.questions) },
+        event
       );
     }
     case "tool_invoked": {
       const attempt = event.attempt ?? findAttempt(next, event.node_id);
       const toolCallId = event.tool_call_id ?? `${event.node_id}:${next.tools.length + 1}`;
-      return appendConversation({
+      return appendToolLog(appendConversation({
         ...next,
         tools: [
           ...next.tools,
@@ -103,30 +109,30 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
             expanded: false
           }
         ]
-      }, { kind: "status", nodeId: event.node_id, attempt, text: `正在执行 ${event.tool}...`, detailText: toolInputDetail(event.tool, event.input) });
+      }, { kind: "status", nodeId: event.node_id, attempt, text: `正在执行 ${event.tool}...`, detailText: getToolInputDetail(event.tool, event.input) }), event, attempt, toolCallId);
     }
     case "tool_completed": {
       const attempt = event.attempt ?? findAttempt(next, event.node_id);
-      return appendConversation(updateTool(next, event.tool_call_id, "completed", event.result), {
+      return updateToolLog(appendConversation(updateTool(next, event.tool_call_id, "completed", event.result), {
         kind: "status",
         nodeId: event.node_id,
         attempt,
         text: `${event.tool} 执行完成`,
-        detailText: toolResultDetail(event.result)
-      });
+        detailText: getToolResultDetail(event.result)
+      }), event.tool_call_id, "completed", getToolResultDetail(event.result));
     }
     case "tool_failed": {
       const attempt = event.attempt ?? findAttempt(next, event.node_id);
-      return appendConversation(updateTool(next, event.tool_call_id, "failed", undefined, event.error), {
+      return updateToolLog(appendConversation(updateTool(next, event.tool_call_id, "failed", undefined, event.error), {
         kind: "status",
         nodeId: event.node_id,
         attempt,
         text: `${event.tool} 执行失败：${event.error}`,
         detailText: `错误：${event.error}`
-      });
+      }), event.tool_call_id, "failed", `错误：${event.error}`);
     }
     case "permission_requested":
-      return appendConversation({
+      return appendPermissionLog(appendConversation({
         ...next,
         mode: "permission",
         permissionRequests: [
@@ -142,15 +148,15 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
             rule: event.rule
           }
         ]
-      }, { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `需要确认是否允许 ${event.tool}`, detailText: permissionDetail(event.specifier, event.rule) });
+      }, { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `需要确认是否允许 ${event.tool}`, detailText: permissionDetail(event.specifier, event.rule) }), event);
     case "permission_resolved":
-      return appendConversation({ ...next, mode: "running", permissionRequests: next.permissionRequests.filter((request) => request.requestId !== event.request_id) }, {
+      return updatePermissionLog(appendConversation({ ...next, mode: "running", permissionRequests: next.permissionRequests.filter((request) => request.requestId !== event.request_id) }, {
         kind: "status",
         nodeId: event.node_id,
         attempt: event.attempt,
         text: event.decision === "allow_once" ? "已允许本次操作" : "已拒绝本次操作",
         detailText: `决定：${event.decision}`
-      });
+      }), event.request_id, event.decision === "allow_once" ? "allowed" : "denied");
     case "node_interrupted":
       return appendConversation(upsertNode(next, event.node_id, event.attempt, "interrupted"), {
         kind: "status",
@@ -158,16 +164,17 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         attempt: event.attempt,
         text: `${event.node_id} 已中断`,
         detailText: `节点：${event.node_id}\n第 ${event.attempt} 次尝试`
-      });
+      }, event);
     case "run_interrupted":
-      return appendConversation({ ...next, mode: "interrupted" }, { kind: "status", text: "运行已中断", detailText: "原因：用户中断" });
+      return appendConversation({ ...next, mode: "interrupted" }, { kind: "status", text: "运行已中断", detailText: "原因：用户中断" }, event);
     case "run_failed":
       return appendConversation(
         { ...next, mode: "failed", error: event.error },
-        { kind: "status", text: `运行失败：${event.error}`, detailText: event.detail ? `错误：${event.error}\n${event.detail}` : `错误：${event.error}` }
+        { kind: "status", text: `运行失败：${event.error}`, detailText: event.detail ? `错误：${event.error}\n${event.detail}` : `错误：${event.error}` },
+        event
       );
     case "run_completed":
-      return appendConversation({ ...next, mode: "completed" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) });
+      return appendConversation({ ...next, mode: "completed" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) }, event);
     default:
       return next;
   }
@@ -195,16 +202,86 @@ function appendModelStream(state: TuiState, nodeId: string, attempt: number, tex
   return { ...state, modelStreams };
 }
 
-function appendStreamingStatus(state: TuiState, nodeId: string, attempt: number): TuiState {
+function appendStreamingStatus(state: TuiState, nodeId: string, attempt: number, event: StoredEvent): TuiState {
   const text = `${nodeId} 正在生成响应...`;
   const exists = state.conversation.some((item) => item.kind === "status" && item.nodeId === nodeId && item.attempt === attempt && item.text === text);
   if (exists) return state;
-  return appendConversation(state, { kind: "status", nodeId, attempt, text, detailText: "模型正在返回内容" });
+  return appendConversation(state, { kind: "status", nodeId, attempt, text, detailText: "模型正在返回内容" }, event);
 }
 
-function appendConversation(state: TuiState, item: TuiConversationItem): TuiState {
+function appendConversation(state: TuiState, item: TuiConversationItem, event?: StoredEvent): TuiState {
   if (!item.text) return state;
-  return { ...state, conversation: [...state.conversation, item] };
+  const conversation = [...state.conversation, item];
+  if (!event) return { ...state, conversation };
+  return { ...state, conversation, logMessages: [...state.logMessages, conversationToLogMessage(item, event)] };
+}
+
+function conversationToLogMessage(item: TuiConversationItem, event: StoredEvent): TuiLogMessage {
+  return {
+    id: logId(event),
+    kind: item.kind,
+    text: item.text,
+    detailText: item.detailText,
+    nodeId: item.nodeId,
+    attempt: item.attempt
+  };
+}
+
+function appendToolLog(state: TuiState, event: Extract<StoredEvent, { type: "tool_invoked" }>, attempt: number, toolCallId: string): TuiState {
+  const tool: TuiToolLogMessage = {
+    id: logId(event, toolCallId),
+    kind: "tool",
+    nodeId: event.node_id,
+    attempt,
+    toolCallId,
+    tool: event.tool,
+    status: "running",
+    text: getToolDisplayName(event.tool),
+    summary: getToolInputSummary(event.tool, event.input),
+    detailText: getToolInputDetail(event.tool, event.input)
+  };
+  return { ...state, logMessages: [...state.logMessages, tool] };
+}
+
+function updateToolLog(state: TuiState, toolCallId: string | undefined, status: TuiToolLogMessage["status"], detailText: string): TuiState {
+  if (!toolCallId) return state;
+  return {
+    ...state,
+    logMessages: state.logMessages.map((item) => (item.kind === "tool" && item.toolCallId === toolCallId ? { ...item, status, detailText } : item))
+  };
+}
+
+function appendPermissionLog(state: TuiState, event: Extract<StoredEvent, { type: "permission_requested" }>): TuiState {
+  return {
+    ...state,
+    logMessages: [
+      ...state.logMessages,
+      {
+        id: logId(event, event.request_id),
+        kind: "permission",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        requestId: event.request_id,
+        toolCallId: event.tool_call_id,
+        tool: event.tool,
+        status: "pending",
+        text: `需要确认是否允许 ${getToolDisplayName(event.tool)}`,
+        detailText: permissionDetail(event.specifier, event.rule)
+      }
+    ]
+  };
+}
+
+function updatePermissionLog(state: TuiState, requestId: string, status: "allowed" | "denied"): TuiState {
+  const text = status === "allowed" ? "已允许本次操作" : "已拒绝本次操作";
+  return {
+    ...state,
+    logMessages: state.logMessages.map((item) => (item.kind === "permission" && item.requestId === requestId ? { ...item, status, text } : item))
+  };
+}
+
+function logId(event: StoredEvent, suffix: string = event.type): string {
+  return `${event.seq}:${suffix}`;
 }
 
 function updateTool(state: TuiState, toolCallId: string | undefined, status: "completed" | "failed", result?: unknown, error?: string): TuiState {
@@ -277,30 +354,6 @@ function questionDetail(questions: unknown[]): string {
   return questions.map((question) => `问题：${readableValue(question)}`).join("\n");
 }
 
-function toolInputDetail(tool: string, input: unknown): string {
-  if (input && typeof input === "object") {
-    const value = input as Record<string, unknown>;
-    if ((tool === "Bash" || tool === "PowerShell") && typeof value.command === "string") return `命令：${value.command}`;
-    if (typeof value.path === "string") return `目标：${value.path}`;
-    if (typeof value.file_path === "string") return `文件：${value.file_path}`;
-    if (typeof value.pattern === "string") return `模式：${value.pattern}`;
-    if (typeof value.url === "string") return `地址：${value.url}`;
-    return readableRecord(value);
-  }
-  return readableValue(input);
-}
-
-function toolResultDetail(result: unknown): string {
-  if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
-  const value = result as Record<string, unknown>;
-  const lines: string[] = [];
-  if (typeof value.output === "string" && value.output) lines.push(`输出：${truncate(value.output, 500)}`);
-  if (typeof value.error === "string" && value.error) lines.push(`错误：${truncate(value.error, 500)}`);
-  if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
-  if (typeof value.path === "string") lines.push(`路径：${value.path}`);
-  return lines.length ? lines.join("\n") : readableRecord(value);
-}
-
 function permissionDetail(specifier: string, rule: string | undefined): string {
   return [`目标：${specifier || "未指定"}`, rule ? `规则：${rule}` : undefined].filter(Boolean).join("\n");
 }
@@ -313,30 +366,4 @@ function runResultDetail(result: unknown): string {
   if (typeof value.workflow_id === "string") lines.push(`工作流：${value.workflow_id}`);
   if (Array.isArray(value.attempts)) lines.push(`节点尝试：${value.attempts.length}`);
   return lines.length ? lines.join("\n") : readableRecord(value);
-}
-
-function readableRecord(value: Record<string, unknown>): string {
-  const lines = Object.entries(value).map(([key, item]) => `${key}：${readableValue(item)}`);
-  return truncate(lines.join("\n"), 500);
-}
-
-function readableValue(value: unknown): string {
-  if (value === undefined) return "";
-  if (value === null) return "空";
-  if (typeof value === "string") return truncate(value, 500);
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return value.map(readableValue).join("、");
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const preferred = ["text", "summary", "instruction", "request", "answer", "path", "file_path", "command"];
-    for (const key of preferred) {
-      if (typeof record[key] === "string") return truncate(String(record[key]), 500);
-    }
-    return readableRecord(record);
-  }
-  return String(value);
-}
-
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}...` : text;
 }
