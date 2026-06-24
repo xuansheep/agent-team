@@ -1,9 +1,9 @@
 export type SlashCommand = {
-  name: "run" | "resume" | "status" | "help";
+  name: "resume" | "help" | "new";
   args: string[];
 };
 
-const commandNames = new Set(["run", "resume", "status", "help"]);
+const commandNames = new Set(["resume", "help", "new"]);
 
 export function parseSlashCommand(input: string): SlashCommand | undefined {
   const trimmed = input.trim();

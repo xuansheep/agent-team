@@ -4,7 +4,7 @@ import { Command } from "commander";
 
 export function registerInspectCommand(program: Command): void {
   program.command("inspect").argument("<run_id>").description("Show run event log").action(async (runId) => {
-    const events = await readFile(join(".runs", runId, "events.ndjson"), "utf8");
+    const events = await readFile(join(".session", runId, "events.ndjson"), "utf8");
     console.log(events);
   });
 }

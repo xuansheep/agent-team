@@ -1,21 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createProgram } from "../src/cli/program.js";
 import { shouldLaunchTui } from "../src/cli/dispatch.js";
 
 describe("CLI", () => {
-  it("registers expected commands in help", () => {
-    const help = createProgram().helpInformation();
-
-    assert.match(help, /init/);
-    assert.match(help, /run/);
-    assert.match(help, /resume/);
-    assert.match(help, /status/);
-    assert.match(help, /inspect/);
-  });
-
-  it("starts TUI only without subcommands", () => {
+  it("routes former headless commands into TUI", () => {
     assert.equal(shouldLaunchTui(["node", "agent-team"]), true);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "run"]), false);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "init"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "run", "delivery"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "resume", "run-id"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "status", "run-id"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "inspect", "run-id"]), true);
   });
 });

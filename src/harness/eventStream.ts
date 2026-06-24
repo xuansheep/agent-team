@@ -4,12 +4,17 @@ export class EventStream<T> implements AsyncIterable<T> {
   private ended = false;
 
   push(value: T): void {
+    if (this.ended) this.ended = false;
     const waiter = this.waiters.shift();
     if (waiter) {
       waiter({ value, done: false });
       return;
     }
     this.queued.push(value);
+  }
+
+  reopen(): void {
+    this.ended = false;
   }
 
   end(): void {

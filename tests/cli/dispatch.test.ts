@@ -3,23 +3,20 @@ import assert from "node:assert/strict";
 import { shouldLaunchTui, dispatchCli } from "../../src/cli/dispatch.js";
 
 describe("CLI dispatch", () => {
-  it("launches TUI when no subcommand is provided", () => {
+  it("launches TUI for every invocation", () => {
     assert.equal(shouldLaunchTui(["node", "agent-team"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "run"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "status", "run-id"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "inspect", "run-id"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "resume", "run-id"]), true);
+    assert.equal(shouldLaunchTui(["node", "agent-team", "init"]), true);
   });
 
-  it("keeps explicit subcommands headless", () => {
-    assert.equal(shouldLaunchTui(["node", "agent-team", "run"]), false);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "status", "run-id"]), false);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "inspect", "run-id"]), false);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "resume", "run-id"]), false);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "init"]), false);
-  });
-
-  it("calls the launcher only for the no-subcommand path", async () => {
-    let launched = 0;
-    await dispatchCli(["node", "agent-team"], async () => {
-      launched += 1;
+  it("always calls the TUI launcher", async () => {
+    const launched: string[] = [];
+    await dispatchCli(["node", "agent-team", "run", "delivery"], async ({ cwd }) => {
+      launched.push(cwd);
     });
-    assert.equal(launched, 1);
+    assert.deepEqual(launched, [process.cwd()]);
   });
 });

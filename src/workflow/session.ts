@@ -13,5 +13,6 @@ export type WorkflowSession = {
   resumeWithUserInput(input: unknown): Promise<void>;
   resumePlanReview(decision: PlanReviewDecision): Promise<void>;
   revisePlan(input: unknown): Promise<void>;
+  continueWithInput(input: unknown): Promise<void>;
   result: Promise<WorkflowState>;
 };

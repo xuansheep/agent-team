@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useInput, useStdin } from "../../ink.js";
 import type { Key } from "../../../ink/events/input-event.js";
 import { applySlashCommandSuggestion, SlashCommandSuggestion } from "../../commandCompletion.js";
@@ -21,55 +22,79 @@ import {
 import { nextHistory, previousHistory, pushHistory } from "./usePromptHistory.js";
 import { PromptBuffer, PromptHistory, PromptInputEvent, PromptInputMode } from "./types.js";
 
-export function usePromptKeybindings(input: {
+type PromptKeybindingInput = {
   mode: PromptInputMode;
   buffer: PromptBuffer;
   history: PromptHistory;
   isLoading: boolean;
+  isActive?: boolean;
   suggestions: SlashCommandSuggestion[];
   selectedSuggestion: number;
   onSelectedSuggestion: (index: number) => void;
   onBuffer: (buffer: PromptBuffer) => void;
   onHistory: (history: PromptHistory) => void;
   onEvent: (event: PromptInputEvent) => void;
-}) {
+};
+
+export function usePromptKeybindings(input: PromptKeybindingInput) {
   const { stdin } = useStdin();
   ensureRefableStdin(stdin);
+  const latestInputRef = useRef(input);
+  latestInputRef.current = input;
 
   useInput((value, key, event) => {
+    const current = latestInputRef.current;
+    if (current.isActive === false) return;
+
+    const syncedInput: PromptKeybindingInput = {
+      ...current,
+      onBuffer: (buffer) => {
+        latestInputRef.current = { ...latestInputRef.current, buffer };
+        current.onBuffer(buffer);
+      },
+      onHistory: (history) => {
+        latestInputRef.current = { ...latestInputRef.current, history };
+        current.onHistory(history);
+      },
+      onSelectedSuggestion: (selectedSuggestion) => {
+        latestInputRef.current = { ...latestInputRef.current, selectedSuggestion };
+        current.onSelectedSuggestion(selectedSuggestion);
+      }
+    };
+
     if (event.keypress.isPasted) {
-      handleInputEvent({ type: "paste", text: value }, input);
+      handleInputEvent({ type: "paste", text: value }, syncedInput);
       return;
     }
 
-    handleInputEvent({ type: "key", input: value, key: toTuiInputKey(key, value) }, input);
-  });
+    handleInputEvent({ type: "key", input: value, key: toTuiInputKey(key, value) }, syncedInput);
+  }, { isActive: input.isActive !== false });
 }
 
 function toTuiInputKey(key: Key, input: string): TuiInputKey {
   return {
-    upArrow: key.upArrow,
-    downArrow: key.downArrow,
-    leftArrow: key.leftArrow,
-    rightArrow: key.rightArrow,
+    upArrow: key.upArrow || input === "\u001b[A",
+    downArrow: key.downArrow || input === "\u001b[B",
+    leftArrow: key.leftArrow || input === "\u001b[D",
+    rightArrow: key.rightArrow || input === "\u001b[C",
     pageUp: key.pageUp,
     pageDown: key.pageDown,
     wheelUp: key.wheelUp,
     wheelDown: key.wheelDown,
-    home: key.home,
-    end: key.end,
+    home: key.home || input === "\u001b[H" || input === "\u001bOH" || input === "\u001b[1~" || input === "\u001b[7~",
+    end: key.end || input === "\u001b[F" || input === "\u001bOF" || input === "\u001b[4~" || input === "\u001b[8~",
     return: key.return || input === "\r" || input === "\n",
     escape: key.escape,
     ctrl: key.ctrl,
     meta: key.meta,
     shift: key.shift,
     tab: key.tab,
-    backspace: key.backspace,
-    delete: key.delete
+    backspace: key.backspace || input === "\u007f",
+    delete: key.delete || input === "\u001b[3~"
   };
 }
 
-function handleInputEvent(event: TuiInputEvent, input: Parameters<typeof usePromptKeybindings>[0]) {
+function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
   if (event.type === "mouse") return;
   if (event.type === "paste") {
     if (modeAcceptsText(input.mode)) input.onBuffer(insertText(input.buffer, event.text));
@@ -89,6 +114,10 @@ function handleInputEvent(event: TuiInputEvent, input: Parameters<typeof useProm
     }
     if (key.downArrow) {
       input.onSelectedSuggestion(wrapIndex(input.selectedSuggestion + 1, input.suggestions.length));
+      return;
+    }
+    if (key.return && isExactSuggestion(input)) {
+      submit(input);
       return;
     }
     if (key.tab || key.return) {
@@ -112,7 +141,7 @@ function handleInputEvent(event: TuiInputEvent, input: Parameters<typeof useProm
   if (event.input && modeAcceptsText(input.mode)) input.onBuffer(insertText(input.buffer, event.input));
 }
 
-function submit(input: Parameters<typeof usePromptKeybindings>[0]) {
+function submit(input: PromptKeybindingInput) {
   const text = input.buffer.text.trim();
   if (!text || !modeAcceptsSubmit(input.mode)) return;
 
@@ -128,14 +157,19 @@ function submit(input: Parameters<typeof usePromptKeybindings>[0]) {
   }
 }
 
-function applySuggestion(input: Parameters<typeof usePromptKeybindings>[0]) {
+function applySuggestion(input: PromptKeybindingInput) {
   const suggestion = input.suggestions[Math.max(0, input.selectedSuggestion)];
   if (!suggestion) return;
   input.onBuffer(applySlashCommandSuggestion(input.buffer.text, suggestion));
   input.onSelectedSuggestion(0);
 }
 
-function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): (input: Parameters<typeof usePromptKeybindings>[0]) => boolean {
+function isExactSuggestion(input: PromptKeybindingInput): boolean {
+  const suggestion = input.suggestions[Math.max(0, input.selectedSuggestion)];
+  return suggestion?.value.toLowerCase() === input.buffer.text.trim().toLowerCase();
+}
+
+function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): (input: PromptKeybindingInput) => boolean {
   return (input) => {
     if (mode === "permission" || mode === "waiting_plan_review" || mode === "confirm_interrupt") {
       if (key.escape) input.onEvent({ type: "cancel" });

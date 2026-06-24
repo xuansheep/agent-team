@@ -97,8 +97,13 @@ const ALWAYS_FALSE = () => false
 export function useHasSelection(): boolean {
   useContext(StdinContext)
   const ink = instances.get(process.stdout)
-  return useSyncExternalStore(
-    ink ? ink.subscribeToSelectionChange : NO_SUBSCRIBE,
-    ink ? ink.hasTextSelection : ALWAYS_FALSE,
+  const subscribe = useMemo(
+    () => (ink ? (cb: () => void) => ink.subscribeToSelectionChange(cb) : NO_SUBSCRIBE),
+    [ink],
   )
+  const getSnapshot = useMemo(
+    () => (ink ? () => ink.hasTextSelection() : ALWAYS_FALSE),
+    [ink],
+  )
+  return useSyncExternalStore(subscribe, getSnapshot)
 }

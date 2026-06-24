@@ -11,16 +11,15 @@ export type SlashCommandCompletionContext = {
 };
 
 type SlashCommandDefinition = {
-  name: "run" | "resume" | "status" | "help";
+  name: "resume" | "help" | "new";
   description: string;
   argumentHint?: string;
 };
 
 export const slashCommandDefinitions: SlashCommandDefinition[] = [
-  { name: "run", description: "Run a workflow", argumentHint: "<workflow>" },
-  { name: "resume", description: "Resume a run", argumentHint: "<run>" },
-  { name: "status", description: "Show current status" },
-  { name: "help", description: "Show help" }
+  { name: "resume", description: "Resume a session", argumentHint: "<session>" },
+  { name: "help", description: "Show help" },
+  { name: "new", description: "Start a new session" }
 ];
 
 export function slashCommandSuggestions(input: string, context: SlashCommandCompletionContext): SlashCommandSuggestion[] {
@@ -36,8 +35,7 @@ export function slashCommandSuggestions(input: string, context: SlashCommandComp
 
   const commandName = body.slice(0, spaceIndex);
   const argument = body.slice(spaceIndex + 1).toLowerCase();
-  if (commandName === "run") return argumentSuggestions("/run", context.workflows, argument, "workflow");
-  if (commandName === "resume") return argumentSuggestions("/resume", context.runs ?? [], argument, "run");
+  if (commandName === "resume") return argumentSuggestions("/resume", context.runs ?? [], argument, "session");
   return [];
 }
 

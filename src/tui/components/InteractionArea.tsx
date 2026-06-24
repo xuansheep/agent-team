@@ -19,6 +19,7 @@ export function InteractionArea({
   queued,
   workflows,
   isLoading,
+  hasSelection = false,
   onPromptEvent
 }: {
   choice?: InteractionChoice;
@@ -27,6 +28,7 @@ export function InteractionArea({
   queued: string[];
   workflows: string[];
   isLoading: boolean;
+  hasSelection?: boolean;
   onPromptEvent: (event: PromptInputEvent) => void;
 }) {
   return (
@@ -50,6 +52,8 @@ export function InteractionArea({
         queued={queued}
         workflows={workflows}
         isLoading={isLoading}
+        inputBlocked={Boolean(choice)}
+        hasSelection={hasSelection}
         onEvent={onPromptEvent}
       />
     </Box>

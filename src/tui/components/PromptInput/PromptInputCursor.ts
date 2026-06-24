@@ -32,7 +32,7 @@ export function promptCursorPosition(input: {
   hasStash: boolean;
   history: number;
 }): { x: number; y: number } {
-  const promptHeight = 4 + input.suggestions + input.queued + (input.hasStash ? 1 : 0) + (input.history > 0 ? 1 : 0);
+  const promptHeight = 4 + input.suggestions + input.queued + (input.hasStash ? 1 : 0);
   const lineStartY = input.promptTop === undefined ? Math.max(0, input.terminalRows - promptHeight + 1) : input.promptTop;
   const beforeCursor = input.text.slice(0, input.cursor);
   const lines = beforeCursor.split("\n");

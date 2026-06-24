@@ -1,29 +1,28 @@
 # agent-team
 
-A local CLI harness for configurable agent-team workflows.
+A local TUI harness for configurable agent-team workflow sessions.
 
 ## Quick Start
 
 1. Install dependencies: `npm install`
 2. Build: `npm run build`
-3. Create config: `node dist/cli/main.js init`
+3. Create or edit `agent-team.yaml` in the current directory
 4. Set provider key: `OPENAI_API_KEY=...`
-5. Run: `node dist/cli/main.js run -f agent-team.yaml --input "Build the requested feature"`
+5. Open the TUI: `node dist/cli/main.js`
 
 ## Interactive TUI
 
-Run `agent-team` with no subcommand to open the interactive terminal UI.
+Every `agent-team` invocation opens the interactive terminal UI. Former headless subcommands such as `run`, `resume`, `status`, and `inspect` are routed into the TUI instead of executing automation directly.
 
-The TUI reads `agent-team.yaml` from the current directory, selects workflow `delivery` when present, and lets you submit one workflow request with live node, tool, permission, and result status.
+The TUI reads `agent-team.yaml` from the current directory, selects workflow `delivery` when present, and lets you work in a reusable session with live node, tool, permission, log, and result status.
 
-Existing subcommands remain headless for automation:
+Workflow session control in the TUI:
 
-```bash
-node dist/cli/main.js run -f agent-team.yaml --input "Build the requested feature"
-node dist/cli/main.js status <run_id>
-node dist/cli/main.js inspect <run_id>
-node dist/cli/main.js resume <run_id> -f agent-team.yaml --answer "..."
-```
+- The first ordinary prompt in a fresh TUI session starts the selected workflow.
+- When a workflow stops, the TUI enters `paused`; the next ordinary prompt continues the same session instead of requiring a new run.
+- Use `/new` only when you explicitly want to reset the TUI session and start over.
+- Use `/resume [run_id]` to restore a historical session's state, conversation, and logs. Restoring does not automatically continue that workflow; submit a normal prompt after restore to continue.
+- Slash command suggestions appear above the input line. Press `Esc` to dismiss an open suggestion or active choice without selecting it.
 
 ## Safety Model
 
@@ -31,7 +30,7 @@ The harness follows Claude Code-style local tool execution and permissions where
 
 ## 中文说明
 
-`agent-team` 是一个本地 CLI 版 Agent 团队编排 Harness。它通过 `agent-team.yaml` 配置 provider、role、workflow node、权限和流程边，按节点执行模型调用和本地工具调用，并把每次运行记录到 `.runs/{run_id}`。
+`agent-team` 是一个本地 TUI 版 Agent 团队编排 Harness。它通过 `agent-team.yaml` 配置 provider、role、workflow node、权限和流程边，按节点执行模型调用和本地工具调用，并把每次会话记录到 `.session/{run_id}`。
 
 MVP 支持：
 
@@ -39,6 +38,7 @@ MVP 支持：
 - Claude Code 风格 `allow`、`ask`、`deny` 权限规则
 - 本地工具集：`Read`、`Write`、`Edit`、`MultiEdit`、`LS`、`Glob`、`Grep`、`Bash`、`PowerShell`、`TodoWrite`、`AttachImage`、`WebFetch`、`WebSearch`
 - 线性主流程和失败返工边
-- `waiting_user` 暂停与 `resume`
+- `waiting_user` 暂停与 TUI 内继续
+- TUI session 状态控制：首次普通输入启动当前工作流，停止后进入 `paused`，后续普通输入继续同一 session，`/new` 显式重置，`/resume [run_id]` 仅恢复历史状态
 - 图片 artifact 输入和 vision capability 检查
 - `final_delivery` 普通节点式最终交付

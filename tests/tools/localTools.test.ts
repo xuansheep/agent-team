@@ -24,7 +24,7 @@ describe("local tools", () => {
 
   it("writes user deliverables into run artifacts", async () => {
     const cwd = await workspace();
-    const runDir = join(cwd, ".runs", "run-1");
+    const runDir = join(cwd, ".session", "run-1");
     const tools = createLocalToolRegistry();
 
     const result = await tools.get("ArtifactWrite").execute({ name: "report.md", content: "# Report\nDone.", description: "User report" }, { cwd, runDir, nodeId: "dev" });
@@ -39,7 +39,7 @@ describe("local tools", () => {
     const cwd = await workspace();
     const tools = createLocalToolRegistry();
 
-    await assert.rejects(() => tools.get("ArtifactWrite").execute({ name: "../report.md", content: "bad", description: "bad" }, { cwd, runDir: join(cwd, ".runs", "run-1"), nodeId: "dev" }), /artifact name/);
+    await assert.rejects(() => tools.get("ArtifactWrite").execute({ name: "../report.md", content: "bad", description: "bad" }, { cwd, runDir: join(cwd, ".session", "run-1"), nodeId: "dev" }), /artifact name/);
   });
 
   it("registers command tools", () => {

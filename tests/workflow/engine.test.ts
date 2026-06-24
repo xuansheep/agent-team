@@ -218,6 +218,32 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x", images: ["README.md"] }), /requires vision/);
   });
+
+  it("resumes an interrupted headless run from the current node", async () => {
+    const runRoot = ".tmp/headless-interrupted-resume-runs";
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        return { content: JSON.stringify({ status: "success", summary: `call ${calls}`, handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const config = {
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
+    };
+    const run = await engine.run(config, "flow", { request: "x" });
+    const runId = await latestRunId(runRoot);
+
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runRoot, runId, "state.json"), `${JSON.stringify({ ...run, status: "interrupted", current_node_id: "dev" }, null, 2)}\n`, "utf8"));
+    const resumed = await engine.resume(config, "flow", runId, {});
+
+    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+  });
+
 });
 
 
