@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { createRef } from "react";
-import { ScrollBox, Text } from "../../src/tui/ink.js";
+import { Box, ScrollBox, Text } from "../../src/tui/ink.js";
 import type { ScrollBoxHandle } from "../../src/tui/ink.js";
 import { PromptInput } from "../../src/tui/components/PromptInput/PromptInput.js";
 import { ModelStreamPanel } from "../../src/tui/components/ModelStreamPanel.js";
@@ -159,10 +159,10 @@ describe("Workflow node status component", () => {
     output.cleanup();
   });
 
-  it("renders workflow nodes as larger blocks with status below each node", () => {
+  it("renders workflow nodes with model names, English statuses, and an active running border", () => {
     const output = render(
       <WorkflowFlowChart
-        workflowNodes={[{ id: "product", role: "product" }, { id: "dev", role: "developer" }, { id: "test", role: "tester" }]}
+        workflowNodes={[{ id: "product", role: "product", model: "gpt5.5" }, { id: "dev", role: "developer", model: "claude-dev" }, { id: "test", role: "tester" }]}
         nodes={[{ nodeId: "dev", attempt: 1, status: "running" }, { nodeId: "product", attempt: 1, status: "success" }]}
         currentNodeId="dev"
       />
@@ -170,11 +170,16 @@ describe("Workflow node status component", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /product/);
-    assert.match(frame, /已完成 #1/);
+    assert.match(frame, /model: gpt5\.5/);
+    assert.match(frame, /done #1/);
     assert.match(frame, /dev/);
-    assert.match(frame, /运行中 #1/);
+    assert.match(frame, /model: claude-dev/);
+    assert.match(frame, /running #1/);
+    assert.match(frame, /◝/);
+    assert.doesNotMatch(frame, /[◜◞◟]/);
     assert.match(frame, /test/);
-    assert.match(frame, /等待中/);
+    assert.match(frame, /pending/);
+    assert.doesNotMatch(frame, /已完成|运行中|等待中/);
     assert.doesNotMatch(frame, /product #1 success/);
     output.unmount();
     output.cleanup();
@@ -470,6 +475,39 @@ describe("RunLogPanel", () => {
 
 
 describe("InteractionArea", () => {
+  it("separates logs from the prompt and aligns prompt with log content", () => {
+    const output = render(
+      <Box flexDirection="column">
+        <RunLogPanel
+          detailMode={false}
+          currentNodeId="dev"
+          currentAttempt={1}
+          items={[{ id: "user-1", kind: "user", text: "实现功能" }]}
+        />
+        <InteractionArea
+          mode="input"
+          workflowId="delivery"
+          queued={[]}
+          workflows={["delivery"]}
+          isLoading={false}
+          onPromptEvent={() => undefined}
+        />
+      </Box>
+    );
+
+    const lines = (output.lastFrame() ?? "").split("\n");
+    const logHeaderIndex = lines.findIndex((line) => line.includes("Logs compact"));
+    const promptIndex = lines.findIndex((line) => line.includes("Type a request or /help"));
+
+    assert.notEqual(logHeaderIndex, -1);
+    assert.notEqual(promptIndex, -1);
+    assert.equal(lines[promptIndex - 1], "");
+    assert.ok(lines[logHeaderIndex].startsWith("Logs compact"));
+    assert.ok(lines[promptIndex].startsWith("INPUT"));
+    output.unmount();
+    output.cleanup();
+  });
+
   it("keeps choices and prompt together in the bottom interaction area", () => {
     const output = render(
       <InteractionArea
@@ -526,8 +564,13 @@ describe("TuiApp", () => {
 
   it("pins configured workflow nodes above the prompt", () => {
     const config = {
-      providers: {},
-      roles: {},
+      providers: {
+        default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
+      },
+      roles: {
+        product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } },
+        developer: { description: "", system_prompt: "developer", default_model: "gpt5.5", requires: { tool_calling: false, vision: false } }
+      },
       workflows: {
         delivery: {
           nodes: [
@@ -543,7 +586,9 @@ describe("TuiApp", () => {
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /product/);
     assert.match(frame, /dev/);
-    assert.match(frame, /等待中/);
+    assert.match(frame, /pending/);
+    assert.match(frame, /model: gpt-test/);
+    assert.match(frame, /model: gpt5\.5/);
     assert.match(frame, /Logs compact/);
     assert.ok(frame.indexOf("product") < frame.indexOf("Type a request or /help"));
     output.unmount();

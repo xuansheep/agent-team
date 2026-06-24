@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runNode } from "../../src/harness/runtime.js";
 import { RunStore } from "../../src/storage/runStore.js";
-import { ToolRegistry } from "../../src/tools/registry.js";
+import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { ModelProvider } from "../../src/providers/types.js";
 
 describe("runNode interactive permissions", () => {
@@ -60,6 +60,44 @@ describe("runNode interactive permissions", () => {
     assert.match(eventsText, /permission_requested/);
     assert.match(eventsText, /permission_resolved/);
     assert.match(eventsText, /tool_completed/);
+  });
+
+  it("emits artifact events and returns deliverables for artifact tool output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-artifact-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = createLocalToolRegistry();
+    let calls = 0;
+
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return { tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["ArtifactWrite"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+
+    assert.deepEqual(result.deliverables, [{ artifact_id: "dev/report.md", description: "User report" }]);
+    assert.equal(await readFile(join(root, run.runId, "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
+    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.match(eventsText, /artifact_created/);
+    assert.match(eventsText, /dev\/report\.md/);
   });
 });
 

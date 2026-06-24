@@ -129,7 +129,9 @@ export function TuiApp({
   };
 
   const currentAttempt = currentNodeAttempt(state);
-  const workflowNodes = selectedWorkflowId ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => ({ id: node.id, role: node.role })) : undefined;
+  const workflowNodes = selectedWorkflowId
+    ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => ({ id: node.id, role: node.role, model: node.model ?? config.roles[node.role]?.default_model ?? config.providers[node.provider]?.default_model }))
+    : undefined;
   const activeChoice = buildActiveChoice({
     mode: state.mode,
     workflows,
@@ -325,7 +327,7 @@ function buildActiveChoice(input: {
 function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice }): { mainHeight: number } {
   const headerRows = 3;
   const flowRows = 4;
-  const promptRows = 4;
+  const promptRows = 5;
   const choiceRows = input.choice ? input.choice.options.length + 3 + (input.choice.detail ? 1 : 0) : 0;
   const mainHeight = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
   return { mainHeight };

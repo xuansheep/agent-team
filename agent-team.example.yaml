@@ -48,6 +48,12 @@ workflows:
         role: product
         provider: default
         mode: plan
+        permissions:
+          allow:
+            - Read
+            - LS
+            - Glob
+            - Grep
       - id: dev
         role: developer
         provider: default
@@ -61,6 +67,7 @@ workflows:
             - Glob
             - Grep
             - Bash
+            - ArtifactWrite
       - id: test
         role: tester
         provider: default

@@ -71,6 +71,14 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         text: `${event.node_id} 已生成流程总结`,
         detailText: event.document
       }, event);
+    case "artifact_created":
+      return appendConversation(next, {
+        kind: "status",
+        nodeId: event.node_id,
+        text: `${event.node_id} 已保存产出`,
+        detailText: `artifact：${event.artifact_id}
+路径：${event.path}`
+      }, event);
     case "model_stream_delta":
       return appendStreamingStatus(appendModelStream(next, event.node_id, event.attempt, event.text), event.node_id, event.attempt, event);
     case "node_completed": {

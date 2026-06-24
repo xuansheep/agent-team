@@ -23,6 +23,7 @@ export type TuiNodeState = {
 export type TuiWorkflowNodeState = {
   id: string;
   role: string;
+  model?: string;
 };
 
 export type TuiToolState = {

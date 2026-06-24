@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { ModelProvider } from "../../src/providers/types.js";
 
@@ -142,7 +143,8 @@ describe("WorkflowEngine", () => {
         return { content: JSON.stringify({ status: "success", summary: "final done", document: "# Delivery Summary\nEverything is complete.", handoff: { instruction: "done" } }) };
       }
     };
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/final-runs" });
+    const runRoot = ".tmp/final-runs";
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       roles: {
@@ -154,7 +156,42 @@ describe("WorkflowEngine", () => {
 
     assert.equal(result.status, "completed");
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["dev", "final_delivery"]);
-    assert.match(String(result.attempts.at(-1)?.result && (result.attempts.at(-1)?.result as { document?: string }).document), /Delivery Summary/);
+    const finalResult = result.attempts.at(-1)?.result as { document?: string; deliverables?: Array<{ artifact_id: string; description: string }> };
+    assert.match(String(finalResult.document), /Delivery Summary/);
+
+    const runId = await latestRunId(runRoot);
+    const artifactPath = join(runRoot, runId, "artifacts", "final_delivery", "final-summary.md");
+    await assert.rejects(() => readFile(artifactPath, "utf8"), /ENOENT/);
+    assert.equal(finalResult.deliverables?.some((item) => item.artifact_id === "final_delivery/final-summary.md"), false);
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; artifact_id?: string });
+    assert.ok(events.some((event) => event.type === "complete_summary_available"));
+    assert.equal(events.some((event) => event.type === "artifact_created" && event.artifact_id === "final_delivery/final-summary.md"), false);
+  });
+
+
+  it("stores task deliverables in artifacts and carries them in results", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) return { tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
+        return { content: JSON.stringify({ status: "success", summary: "dev done", handoff: { instruction: "summarize" } }) };
+      }
+    };
+    const runRoot = ".tmp/task-artifact-runs";
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default", permissions: { allow: ["ArtifactWrite"], ask: [], deny: [] } }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "completed");
+    const devResult = result.attempts.at(-1)?.result as { deliverables?: Array<{ artifact_id: string; description: string }> };
+    assert.deepEqual(devResult.deliverables, [{ artifact_id: "dev/report.md", description: "User report" }]);
+    const runId = await latestRunId(runRoot);
+    assert.equal(await readFile(join(runRoot, runId, "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
   });
 
   it("rejects complete nodes that do not return a summary document", async () => {

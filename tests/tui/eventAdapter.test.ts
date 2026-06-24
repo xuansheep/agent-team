@@ -212,6 +212,22 @@ describe("TUI event adapter", () => {
     assert.equal(state.pendingReview, undefined);
   });
 
+  it("shows artifact creation events with artifact path", () => {
+    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+    state = reduceStoredEvent(state, {
+      type: "artifact_created",
+      node_id: "final_delivery",
+      artifact_id: "final_delivery/final-summary.md",
+      path: ".tmp/final-runs/run-1/artifacts/final_delivery/final-summary.md",
+      ts: "2026-06-23T00:00:00.000Z",
+      seq: 1
+    });
+
+    assert.match(state.conversation.at(-1)?.text ?? "", /final_delivery 已保存产出/);
+    assert.match(state.conversation.at(-1)?.detailText ?? "", /final_delivery\/final-summary\.md/);
+    assert.match(state.logMessages.at(-1)?.detailText ?? "", /artifacts\/final_delivery\/final-summary\.md/);
+  });
+
   it("records run failure details for detailed logs", () => {
     let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
     state = reduceStoredEvent(state, {

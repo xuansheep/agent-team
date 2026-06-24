@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelProvider } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { ToolResult } from "../tools/types.js";
 import { RunStore } from "../storage/runStore.js";
 import { buildNodeMessages } from "./context.js";
 import { decidePermission } from "./permissions.js";
@@ -32,6 +33,7 @@ export type NodeRuntimeOptions = {
 export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> {
   const messages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff);
   const attempt = options.attempt ?? 1;
+  const artifactDeliverables: NodeResult["deliverables"] = [];
 
   for (;;) {
     const request = { model: options.model, messages, tools: options.tools.list(), response_schema: nodeResultJsonSchema };
@@ -107,8 +109,15 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         await appendRuntimeEvent(options, { type: "tool_invoked", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, input: call.input });
         try {
           const tool = options.tools.get(call.name);
-          const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId) });
+          const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id });
           await appendRuntimeEvent(options, { type: "tool_completed", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, result });
+          const artifact = artifactFromToolResult(result);
+          if (artifact) {
+            await appendRuntimeEvent(options, { type: "artifact_created", node_id: options.node.id, artifact_id: artifact.artifact_id, path: artifact.path });
+            if (!artifactDeliverables.some((item) => item.artifact_id === artifact.artifact_id)) {
+              artifactDeliverables.push({ artifact_id: artifact.artifact_id, description: artifact.description });
+            }
+          }
           messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -120,8 +129,22 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     }
 
     if (!response.content) throw new Error(`Node ${options.node.id} returned no content and no tool calls`);
-    return parseNodeResult(response.content);
+    return mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
   }
+}
+
+function artifactFromToolResult(result: ToolResult): { artifact_id: string; path: string; description: string } | undefined {
+  if (!result.artifact_id || !result.path) return undefined;
+  return { artifact_id: result.artifact_id, path: result.path, description: result.description ?? "" };
+}
+
+function mergeArtifactDeliverables(result: NodeResult, artifacts: NodeResult["deliverables"]): NodeResult {
+  if (!artifacts.length) return result;
+  const deliverables = [...result.deliverables];
+  for (const artifact of artifacts) {
+    if (!deliverables.some((item) => item.artifact_id === artifact.artifact_id)) deliverables.push(artifact);
+  }
+  return { ...result, deliverables };
 }
 
 async function appendRuntimeEvent(options: NodeRuntimeOptions, event: HarnessEvent): Promise<StoredEvent> {

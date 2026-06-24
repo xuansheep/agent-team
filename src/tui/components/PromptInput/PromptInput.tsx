@@ -80,7 +80,7 @@ export function PromptInput(props: {
   });
 
   return (
-    <Box flexDirection="column" paddingX={1} flexShrink={0}>
+    <Box flexDirection="column" flexShrink={0}>
       <Box ref={cursorRef}>
         <PromptInputModeIndicator mode={props.mode} />
         <Text> &gt; </Text>

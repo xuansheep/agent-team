@@ -1,6 +1,7 @@
 export type ToolContext = {
   cwd: string;
   runDir?: string;
+  nodeId?: string;
 };
 
 export type ToolResult = {
@@ -8,6 +9,8 @@ export type ToolResult = {
   error?: string;
   exit_code?: number;
   artifact_id?: string;
+  path?: string;
+  description?: string;
 };
 
 export type Tool = {

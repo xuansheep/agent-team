@@ -10,6 +10,7 @@ import { bashTool } from "./local/bash.js";
 import { powerShellTool } from "./local/powershell.js";
 import { todoWriteTool } from "./local/todoWrite.js";
 import { attachImageTool } from "./local/attachImage.js";
+import { artifactWriteTool } from "./local/artifactWrite.js";
 import { webFetchTool } from "./local/webFetch.js";
 import { webSearchTool } from "./local/webSearch.js";
 
@@ -44,6 +45,7 @@ export function createLocalToolRegistry(): ToolRegistry {
     bashTool,
     powerShellTool,
     todoWriteTool,
+    artifactWriteTool,
     attachImageTool,
     webFetchTool,
     webSearchTool

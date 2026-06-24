@@ -30,7 +30,7 @@ export function InteractionArea({
   onPromptEvent: (event: PromptInputEvent) => void;
 }) {
   return (
-    <Box flexDirection="column" flexShrink={0}>
+    <Box flexDirection="column" marginTop={1} flexShrink={0}>
       {choice ? (
         <Box borderStyle="single" paddingX={1} flexShrink={0}>
           <ChoicePrompt

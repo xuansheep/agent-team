@@ -52,10 +52,15 @@ function nodeModeInstructions(node: WorkflowNodeConfig): string {
     return [
       "This node is the workflow completion checkpoint.",
       "Summarize what the workflow did, key outcomes, verification, and any residual risks for the user.",
-      "Put the complete Markdown summary in document."
+      "Put the complete Markdown summary in document.",
+      "The runtime will show document to the user in the TUI interaction log; do not write summary artifacts."
     ].join("\n");
   }
-  return "This node is a normal task node.";
+  return [
+    "This node is a normal task node.",
+    "Use ArtifactWrite for user-facing deliverable files that should be returned to the user.",
+    "Keep task summaries in summary and leave document empty unless this node is plan or complete."
+  ].join("\n");
 }
 
 function collectImages(handoff: unknown): ImageHandoffItem[] {

@@ -302,7 +302,7 @@ export class WorkflowEngine {
       options.onState?.({ status: "running", workflow_id: options.workflowId, current_node_id: node.id, attempts, handoff });
       await this.appendEvent(options.store, options.runId, { type: "node_started", node_id: node.id, attempt }, options.eventSink);
 
-      const result = await runNode({
+      let result = await runNode({
         node,
         systemPrompt: role.system_prompt,
         model: node.model ?? role.default_model ?? providerConfig.default_model,
