@@ -19,7 +19,7 @@ The TUI reads `agent-team.yaml` from the current directory, selects workflow `de
 Workflow session control in the TUI:
 
 - The first ordinary prompt in a fresh TUI session starts the selected workflow.
-- When a workflow stops, the TUI enters `paused`; the next ordinary prompt continues the same session instead of requiring a new run.
+- When a workflow stops with a saved resume checkpoint, the TUI enters `paused`; the next ordinary prompt continues from that checkpoint node. Completed or non-recoverable failed workflows still start a new turn in the same session.
 - Use `/new` only when you explicitly want to reset the TUI session and start over.
 - Use `/resume [run_id]` to restore a historical session's state, conversation, and logs. Restoring does not automatically continue that workflow; submit a normal prompt after restore to continue.
 - Slash command suggestions appear above the input line. Press `Esc` to dismiss an open suggestion or active choice without selecting it.
@@ -39,6 +39,6 @@ MVP 支持：
 - 本地工具集：`Read`、`Write`、`Edit`、`MultiEdit`、`LS`、`Glob`、`Grep`、`Bash`、`PowerShell`、`TodoWrite`、`AttachImage`、`WebFetch`、`WebSearch`
 - 线性主流程和失败返工边
 - `waiting_user` 暂停与 TUI 内继续
-- TUI session 状态控制：首次普通输入启动当前工作流，停止后进入 `paused`，后续普通输入继续同一 session，`/new` 显式重置，`/resume [run_id]` 仅恢复历史状态
+- TUI session 状态控制：首次普通输入启动当前工作流；存在恢复检查点时，停止后进入 `paused`，后续普通输入从检查点节点继续；已完成或不可恢复失败后则作为同一 session 的新一轮；`/new` 显式重置，`/resume [run_id]` 仅恢复历史状态
 - 图片 artifact 输入和 vision capability 检查
 - `final_delivery` 普通节点式最终交付

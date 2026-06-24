@@ -237,11 +237,43 @@ describe("WorkflowEngine", () => {
     const run = await engine.run(config, "flow", { request: "x" });
     const runId = await latestRunId(runRoot);
 
-    await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runRoot, runId, "state.json"), `${JSON.stringify({ ...run, status: "interrupted", current_node_id: "dev" }, null, 2)}\n`, "utf8"));
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runRoot, runId, "state.json"), `${JSON.stringify({ ...run, status: "interrupted", current_node_id: "dev", resume_checkpoint: { node_id: "dev", handoff: run.handoff } }, null, 2)}\n`, "utf8"));
     const resumed = await engine.resume(config, "flow", runId, {});
 
     assert.equal(resumed.status, "completed");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+  });
+
+  it("resumes a provider-error headless run from the saved checkpoint", async () => {
+    const runRoot = `.tmp/headless-checkpoint-error-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) throw new Error("provider exploded");
+        return { content: JSON.stringify({ status: "success", summary: "recovered", handoff: { instruction: "done" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const config = {
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
+    };
+
+    await assert.rejects(() => engine.run(config, "flow", { request: "x" }), /provider exploded/);
+    const runId = await latestRunId(runRoot);
+    const failedState = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
+
+    assert.equal(failedState.status, "failed");
+    assert.equal(failedState.resume_checkpoint?.node_id, "dev");
+
+    const resumed = await engine.resume(config, "flow", runId, { answer: "try again" });
+
+    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(resumed.resume_checkpoint, undefined);
+    assert.equal(calls, 2);
   });
 
 });

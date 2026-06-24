@@ -14,6 +14,11 @@ export type PendingReview = {
   document: string;
 };
 
+export type ResumeCheckpoint = {
+  node_id: string;
+  handoff: unknown;
+};
+
 export type WorkflowState = {
   status: RunStatus;
   workflow_id: string;
@@ -21,4 +26,5 @@ export type WorkflowState = {
   attempts: NodeAttemptState[];
   handoff?: unknown;
   pending_review?: PendingReview;
+  resume_checkpoint?: ResumeCheckpoint;
 };

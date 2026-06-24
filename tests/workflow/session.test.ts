@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { WorkflowEngine } from "../../src/workflow/engine.js";
-import { ModelProvider } from "../../src/providers/types.js";
+import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { ModelProvider } from "../../src/providers/types.js";
+import { RunStore } from "../../src/storage/runStore.js";
 
 describe("WorkflowSession", () => {
   it("streams events and resolves a completed result", async () => {
@@ -25,7 +26,7 @@ describe("WorkflowSession", () => {
     assert.equal(seen.includes("node_completed"), true);
   });
 
-  it("marks a running session interrupted", async () => {
+  it("marks a running session interrupted", async () => {
     let release!: () => void;
     const provider: ModelProvider = {
       async generate() {
@@ -46,8 +47,59 @@ describe("WorkflowSession", () => {
     release();
 
     const result = await session.result;
-    assert.equal(result.status, "interrupted");
-  });
+    assert.equal(result.status, "interrupted");
+  });
+
+  it("continues an interrupted session from the checkpoint node", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "success", summary: "planned", handoff: { instruction: "build" } }) };
+        }
+        if (calls === 2) {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return { content: JSON.stringify({ status: "success", summary: "ignored after interrupt", handoff: { instruction: "old" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "resumed dev", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = `.tmp/session-checkpoint-interrupt-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const session = await engine.startInteractive(twoNodeConfig(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "node_started" && event.node_id === "dev") break;
+    }
+
+    await session.interrupt();
+    release();
+    assert.equal((await session.result).status, "interrupted");
+
+    await session.continueWithInput({ request: "resume from here", images: [] });
+
+    const store = new RunStore(runRoot);
+    const events = await store.loadEvents(session.runId);
+    const starts = events.filter((event) => event.type === "node_started").map((event) => `${event.node_id}:${event.attempt}`);
+    const userMessages = events.filter((event) => event.type === "user_message");
+    const state = await store.loadState(session.runId);
+
+    assert.deepEqual(starts, ["product:1", "dev:1", "dev:2"]);
+    assert.equal(events.filter((event) => event.type === "run_started").length, 1);
+    assert.equal(userMessages.length, 1);
+    assert.equal(userMessages[0]?.node_id, "dev");
+    assert.equal(state.status, "completed");
+    assert.equal(state.resume_checkpoint, undefined);
+    assert.equal(state.attempts.filter((attempt) => attempt.node_id === "product").length, 1);
+    assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(calls, 3);
+  });
 
 
 
@@ -295,18 +347,29 @@ async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
 }
 
 
-function planConfig() {
-  return {
+function planConfig() {
+  return {
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
     roles: {
       product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
     },
     workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const, mode: "plan" as const }, { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [{ from: "product", to: "dev", condition: "success" as const }] } }
-  };
-}
-
-function config() {
+  };
+}
+
+function twoNodeConfig() {
+  return {
+    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    roles: {
+      product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
+      dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
+    },
+    workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }, { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [{ from: "product", to: "dev", condition: "success" as const }] } }
+  };
+}
+
+function config() {
   return {
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
     roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },

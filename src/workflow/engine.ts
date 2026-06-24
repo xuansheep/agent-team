@@ -247,84 +247,32 @@ export class WorkflowEngine {
 
 
 
-    if (state.status === "interrupted") {
-
-
+    if (state.status === "waiting_user") {
       if (!state.current_node_id) throw new Error(`Run ${runId} has no current node`);
 
-
       return this.continueFrom({
-
-
         config,
-
-
         workflowId,
-
-
         workflow,
-
-
         store,
-
-
         runId,
-
-
         startNodeId: state.current_node_id,
-
-
-        initialHandoff: { previous_handoff: state.handoff, interrupted: true, user_input: userInput },
-
-
+        initialHandoff: { previous_handoff: state.handoff, user_input: userInput },
         attempts: state.attempts
-
-
       });
-
-
     }
 
-
-
-
-
-    if (state.status !== "waiting_user") throw new Error(`Run ${runId} is not waiting for user input`);
-
-
-    if (!state.current_node_id) throw new Error(`Run ${runId} has no current node`);
-
-
-
-
+    if (!state.resume_checkpoint) throw new Error(`Run ${runId} has no resume checkpoint`);
 
     return this.continueFrom({
-
-
       config,
-
-
       workflowId,
-
-
       workflow,
-
-
       store,
-
-
       runId,
-
-
-      startNodeId: state.current_node_id,
-
-
-      initialHandoff: { previous_handoff: state.handoff, user_input: userInput },
-
-
+      startNodeId: state.resume_checkpoint.node_id,
+      initialHandoff: { previous_handoff: state.resume_checkpoint.handoff, resumed: true, user_input: userInput },
       attempts: state.attempts
-
-
     });
 
 
@@ -384,6 +332,9 @@ export class WorkflowEngine {
 
     const fail = async (error: unknown) => {
       const formatted = formatRunError(error);
+      const failedState: WorkflowState = { ...latestState, status: "failed" };
+      latestState = failedState;
+      await store.saveState(runId, failedState);
       await this.appendEvent(store, runId, { type: "run_failed", error: formatted.message, ...(formatted.detail ? { detail: formatted.detail } : {}) }, (event) => stream.push(event));
       if (!resultSettled) {
         resultSettled = true;
@@ -526,6 +477,23 @@ export class WorkflowEngine {
 
         interrupted = false;
         stream.reopen();
+        if (latestState.resume_checkpoint) {
+          const checkpoint = latestState.resume_checkpoint;
+          await this.appendEvent(store, runId, {
+            type: "user_message",
+            text: userMessageText(input),
+            node_id: checkpoint.node_id,
+            attempt: latestState.attempts.filter((attempt) => attempt.node_id === checkpoint.node_id).length + 1
+          }, (event) => stream.push(event));
+          const nextState = await runSegment({
+            startNodeId: checkpoint.node_id,
+            initialHandoff: { previous_handoff: checkpoint.handoff, resumed: true, user_input: input },
+            attempts: latestState.attempts
+          });
+          finishWhenTerminal(nextState);
+          return;
+        }
+
         const initialHandoff = await this.prepareInitialHandoff(input, store.runDir(runId));
         await this.appendEvent(store, runId, { type: "run_started", workflow_id: workflowId, input }, (event) => stream.push(event));
         const nextState = await runSegment({
@@ -581,6 +549,9 @@ export class WorkflowEngine {
 
     const fail = async (error: unknown) => {
       const formatted = formatRunError(error);
+      const failedState: WorkflowState = { ...latestState, status: "failed" };
+      latestState = failedState;
+      await store.saveState(run.runId, failedState);
       await this.appendEvent(store, run.runId, { type: "run_failed", error: formatted.message, ...(formatted.detail ? { detail: formatted.detail } : {}) }, (event) => stream.push(event));
       if (!resultSettled) {
         resultSettled = true;
@@ -723,6 +694,23 @@ export class WorkflowEngine {
 
         interrupted = false;
         stream.reopen();
+        if (latestState.resume_checkpoint) {
+          const checkpoint = latestState.resume_checkpoint;
+          await this.appendEvent(store, run.runId, {
+            type: "user_message",
+            text: userMessageText(input),
+            node_id: checkpoint.node_id,
+            attempt: latestState.attempts.filter((attempt) => attempt.node_id === checkpoint.node_id).length + 1
+          }, (event) => stream.push(event));
+          const state = await runSegment({
+            startNodeId: checkpoint.node_id,
+            initialHandoff: { previous_handoff: checkpoint.handoff, resumed: true, user_input: input },
+            attempts: latestState.attempts
+          });
+          finishWhenTerminal(state);
+          return;
+        }
+
         const initialHandoff = await this.prepareInitialHandoff(input, run.runDir);
         await this.appendEvent(store, run.runId, { type: "run_started", workflow_id: workflowId, input }, (event) => stream.push(event));
         const state = await runSegment({
@@ -763,7 +751,14 @@ export class WorkflowEngine {
       if (options.isInterrupted?.()) {
 
 
-        const state: WorkflowState = { status: "interrupted", workflow_id: options.workflowId, current_node_id: currentId, attempts, handoff };
+        const state: WorkflowState = {
+          status: "interrupted",
+          workflow_id: options.workflowId,
+          current_node_id: currentId,
+          attempts,
+          handoff,
+          resume_checkpoint: { node_id: currentId, handoff }
+        };
 
 
         options.onState?.(state);
@@ -805,7 +800,20 @@ export class WorkflowEngine {
       attempts.push({ node_id: node.id, attempt, status: "running" });
 
 
-      options.onState?.({ status: "running", workflow_id: options.workflowId, current_node_id: node.id, attempts, handoff });
+      const runningState: WorkflowState = {
+        status: "running",
+        workflow_id: options.workflowId,
+        current_node_id: node.id,
+        attempts,
+        handoff,
+        resume_checkpoint: { node_id: node.id, handoff }
+      };
+
+
+      options.onState?.(runningState);
+
+
+      await options.store.saveState(options.runId, runningState);
 
 
       await this.appendEvent(options.store, options.runId, { type: "node_started", node_id: node.id, attempt }, options.eventSink);
@@ -814,49 +822,36 @@ export class WorkflowEngine {
 
 
 
-      let result = await runNode({
-
-
-        node,
-
-
-        systemPrompt: role.system_prompt,
-
-
-        model: node.model ?? role.default_model ?? providerConfig.default_model,
-
-
-        provider: this.options.providerFactory(node.provider),
-
-
-        tools,
-
-
-        permissions: mergePermissions(basePermissions, node.permissions ?? permissionSetSchema.parse(undefined)),
-
-
-        cwd: this.options.cwd,
-
-
-        runId: options.runId,
-
-
-        store: options.store,
-
-
-        handoff,
-
-
-        attempt,
-
-
-        interaction: options.interaction,
-
-
-        eventSink: options.eventSink
-
-
-      });
+      let result: NodeResult;
+      try {
+        result = await runNode({
+          node,
+          systemPrompt: role.system_prompt,
+          model: node.model ?? role.default_model ?? providerConfig.default_model,
+          provider: this.options.providerFactory(node.provider),
+          tools,
+          permissions: mergePermissions(basePermissions, node.permissions ?? permissionSetSchema.parse(undefined)),
+          cwd: this.options.cwd,
+          runId: options.runId,
+          store: options.store,
+          handoff,
+          attempt,
+          interaction: options.interaction,
+          eventSink: options.eventSink
+        });
+      } catch (error) {
+        const state: WorkflowState = {
+          status: "failed",
+          workflow_id: options.workflowId,
+          current_node_id: node.id,
+          attempts,
+          handoff,
+          resume_checkpoint: { node_id: node.id, handoff }
+        };
+        options.onState?.(state);
+        await options.store.saveState(options.runId, state);
+        throw error;
+      }
 
 
 
@@ -865,7 +860,14 @@ export class WorkflowEngine {
       if (options.isInterrupted?.()) {
 
 
-        const state: WorkflowState = { status: "interrupted", workflow_id: options.workflowId, current_node_id: node.id, attempts, handoff };
+        const state: WorkflowState = {
+          status: "interrupted",
+          workflow_id: options.workflowId,
+          current_node_id: node.id,
+          attempts,
+          handoff,
+          resume_checkpoint: { node_id: node.id, handoff }
+        };
 
 
         options.onState?.(state);
@@ -892,7 +894,14 @@ export class WorkflowEngine {
         await this.appendEvent(options.store, options.runId, { type: "node_waiting_user", node_id: node.id, questions: result.questions }, options.eventSink);
 
 
-        const state: WorkflowState = { status: "waiting_user", workflow_id: options.workflowId, current_node_id: node.id, attempts, handoff };
+        const state: WorkflowState = {
+          status: "waiting_user",
+          workflow_id: options.workflowId,
+          current_node_id: node.id,
+          attempts,
+          handoff,
+          resume_checkpoint: { node_id: node.id, handoff }
+        };
 
 
         options.onState?.(state);
@@ -955,7 +964,10 @@ export class WorkflowEngine {
           handoff,
 
 
-          pending_review: { type: "plan", node_id: node.id, attempt, document }
+          pending_review: { type: "plan", node_id: node.id, attempt, document },
+
+
+          resume_checkpoint: { node_id: node.id, handoff }
 
 
         };
@@ -1499,5 +1511,3 @@ function userMessageText(input: unknown): string {
 
 
 }
-
-
