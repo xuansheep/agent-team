@@ -253,7 +253,7 @@ describe("PromptInput core logic", () => {
 
     assert.equal(resolvePromptKey("w", { ctrl: true }), "delete_previous_word");
 
-    assert.equal(resolvePromptKey("c", { ctrl: true }), "clear");
+    assert.equal(resolvePromptKey("c", { ctrl: true }), "none");
 
     assert.equal(resolvePromptKey("o", { ctrl: true }), "toggle_log_detail");
 

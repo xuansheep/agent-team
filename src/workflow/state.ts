@@ -1,9 +1,9 @@
-export type RunStatus = "running" | "waiting_user" | "waiting_plan_review" | "completed" | "failed" | "interrupted";
+export type RunStatus = "running" | "pending" | "completed";
 
 export type NodeAttemptState = {
   node_id: string;
   attempt: number;
-  status: "running" | "success" | "failure" | "waiting_user" | "waiting_plan_review";
+  status: "running" | "success" | "failure" | "waiting_user";
   result?: unknown;
 };
 

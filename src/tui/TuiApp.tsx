@@ -390,6 +390,44 @@ export function TuiApp({
 
   };
 
+  const interruptAndExit = () => {
+    void sessionRef.current?.interrupt().finally(() => exitTui());
+  };
+
+  const handleCtrlC = () => {
+    const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current), hasSelection || selection.hasSelection());
+
+    if (behavior === "copy_selection") {
+      selection.copySelection();
+      return;
+    }
+
+    if (behavior === "exit") {
+      exitTui();
+      return;
+    }
+
+    if (behavior === "confirm_interrupt") {
+      setState((current) => ({ ...current, mode: "confirm_interrupt", modeBeforeConfirmation: current.mode }));
+      return;
+    }
+
+    interruptAndExit();
+  };
+
+  useEffect(() => {
+    const handleData = (value: unknown) => {
+      const text = typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
+      if (!text.includes("\u0003")) return;
+      handleCtrlC();
+    };
+
+    stdin.on?.("data", handleData);
+    return () => {
+      stdin.off?.("data", handleData);
+    };
+  }, [stdin, state.mode, hasSelection, selection]);
+
 
 
 
@@ -1096,7 +1134,7 @@ export function TuiApp({
 
 
 
-      if (decision === "interrupt") void sessionRef.current?.interrupt();
+      if (decision === "interrupt") interruptAndExit();
 
 
 
@@ -1589,107 +1627,9 @@ export function TuiApp({
 
 
     if (input === "c" && key.ctrl) {
-
-
-
-
-
-      const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current), hasSelection || selection.hasSelection());
-
-
-
-
-
-      if (behavior === "copy_selection") {
-
-
-
-
-
-        selection.copySelection();
-
-
-
-
-
-        event.stopImmediatePropagation();
-
-
-
-
-
-        return;
-
-
-
-
-
-      }
-
-
-
-
-
-      if (behavior === "exit") {
-
-
-
-
-
-        exitTui();
-
-
-
-
-
-        return;
-
-
-
-
-
-      }
-
-
-
-
-
-      if (behavior === "confirm_interrupt") {
-
-
-
-
-
-        setState((current) => ({ ...current, mode: "confirm_interrupt", modeBeforeConfirmation: current.mode }));
-
-
-
-
-
-        return;
-
-
-
-
-
-      }
-
-
-
-
-
-      if (behavior === "interrupt") void sessionRef.current?.interrupt();
-
-
-
-
-
+      handleCtrlC();
+      event.stopImmediatePropagation();
       return;
-
-
-
-
-
     }
 
 
@@ -2491,10 +2431,7 @@ function isActiveSessionMode(mode: TuiState["mode"]): boolean {
 function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiState["mode"] {
 
 
-  if (status === "waiting_user") return "question";
-
-
-  if (status === "waiting_plan_review") return "waiting_plan_review";
+  if (status === "pending") return "question";
 
 
   return "paused";

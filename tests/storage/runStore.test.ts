@@ -37,7 +37,7 @@ describe("RunStore", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 5));
     const second = await store.createRun("audit", { request: "second workflow request with a long body" });
-    await store.saveState(second.runId, { status: "waiting_user", workflow_id: "audit", current_node_id: "product", attempts: [] });
+    await store.saveState(second.runId, { status: "pending", workflow_id: "audit", current_node_id: "product", attempts: [] });
 
     await mkdir(join(root, "broken-run"));
     await writeFile(join(root, "broken-run", "state.json"), "not-json", "utf8");
@@ -46,7 +46,7 @@ describe("RunStore", () => {
 
     assert.equal(runs[0]?.runId, second.runId);
     assert.equal(runs[0]?.workflowId, "audit");
-    assert.equal(runs[0]?.status, "waiting_user");
+    assert.equal(runs[0]?.status, "pending");
     assert.equal(runs[0]?.currentNodeId, "product");
     assert.match(runs[0]?.inputPreview ?? "", /second workflow request/);
     assert.deepEqual(runs.map((run) => run.runId), [second.runId, first.runId]);

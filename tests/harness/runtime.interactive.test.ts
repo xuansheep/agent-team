@@ -100,6 +100,58 @@ describe("runNode interactive permissions", () => {
     assert.match(eventsText, /dev\/report\.md/);
   });
 
+  it("accepts SubmitNodeResult tool calls as the final node result", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-submit-result-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let requestedPermission = false;
+
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          tool_calls: [{
+            id: "tool-1",
+            name: "SubmitNodeResult",
+            input: {
+              status: "success",
+              summary: "done",
+              document: "",
+              deliverables: [],
+              feedback: { defects: [], change_requests: [] },
+              questions: [],
+              handoff: { instruction: "next", must_follow: [], known_risks: [], open_questions: [] }
+            }
+          }]
+        };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: [], ask: ["SubmitNodeResult"], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      interaction: {
+        async requestPermission() {
+          requestedPermission = true;
+          return "allow_once";
+        }
+      }
+    });
+
+    assert.equal(result.status, "success");
+    assert.equal(result.handoff.instruction, "next");
+    assert.equal(requestedPermission, false);
+  });
+
   it("passes stable short prompt cache keys in model request context", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-context-"));
     const store = new RunStore(root);

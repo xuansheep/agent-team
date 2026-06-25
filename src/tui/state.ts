@@ -68,7 +68,7 @@ export type TuiNodeState = {
   attempt: number;
 
 
-  status: "running" | "success" | "failure" | "waiting_user" | "waiting_plan_review" | "interrupted";
+  status: "running" | "success" | "failure" | "waiting_user" | "interrupted";
 
 
 };

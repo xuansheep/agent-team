@@ -181,7 +181,7 @@ function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): 
       else if (inputText === "u") input.onBuffer(deleteToStartOfLine(input.buffer));
       else if (inputText === "k") input.onBuffer(deleteToEndOfLine(input.buffer));
       else if (inputText === "w") input.onBuffer(deletePreviousWord(input.buffer));
-      else if (inputText === "c") input.onBuffer(clearBuffer());
+      else if (inputText === "c") return true;
       else return false;
       return true;
     }

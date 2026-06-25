@@ -67,7 +67,6 @@ function statusLabel(node: TuiNodeState | undefined): string {
   if (node.status === "success") return `done #${node.attempt}`;
   if (node.status === "failure") return `failed #${node.attempt}`;
   if (node.status === "waiting_user") return `waiting user #${node.attempt}`;
-  if (node.status === "waiting_plan_review") return `reviewing plan #${node.attempt}`;
   return `interrupted #${node.attempt}`;
 }
 
@@ -76,6 +75,6 @@ function nodeColor(node: TuiNodeState | undefined, active: boolean): "cyan" | "g
   if (!node) return undefined;
   if (node.status === "success") return "green";
   if (node.status === "failure" || node.status === "interrupted") return "red";
-  if (node.status === "waiting_user" || node.status === "waiting_plan_review") return "yellow";
+  if (node.status === "waiting_user") return "yellow";
   return undefined;
 }

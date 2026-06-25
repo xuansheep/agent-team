@@ -184,7 +184,7 @@ describe("WorkflowSession", () => {
 
     const store = new RunStore(".tmp/session-interrupt-runs");
     const state = await store.loadState(session.runId);
-    assert.equal(state.status, "waiting_user");
+    assert.equal(state.status, "pending");
     assert.equal(state.attempts.at(-1)?.status, "waiting_user");
   });
 
@@ -220,7 +220,7 @@ describe("WorkflowSession", () => {
     release();
     await promiseSettlesSoon(session.result);
     const interruptedState = await new RunStore(runRoot).loadState(session.runId);
-    assert.equal(interruptedState.status, "waiting_user");
+    assert.equal(interruptedState.status, "pending");
 
     await session.resumeWithUserInput({ answer: "resume from here" });
 
@@ -267,7 +267,7 @@ describe("WorkflowSession", () => {
     await assert.doesNotReject(resume);
     await promiseSettlesSoon(session.result);
     const interruptedState = await new RunStore(runRoot).loadState(session.runId);
-    assert.equal(interruptedState.status, "waiting_user");
+    assert.equal(interruptedState.status, "pending");
 
     await session.resumeWithUserInput({ answer: "resume dev" });
 
@@ -726,7 +726,7 @@ describe("WorkflowSession", () => {
 
 
 
-    assert.equal(state.status, "waiting_user");
+    assert.equal(state.status, "pending");
     assert.equal(state.current_node_id, "dev");
     assert.equal(state.attempts.at(-1)?.status, "failure");
     assert.equal(events.some((event) => event.type === "node_completed" && event.status === "failure"), true);
@@ -1049,7 +1049,7 @@ describe("WorkflowSession", () => {
     const events = await store.loadEvents(run.runId);
     const state = await store.loadState(run.runId);
 
-    assert.equal(state.status, "waiting_user");
+    assert.equal(state.status, "pending");
     assert.equal(state.resume_checkpoint?.node_id, "dev");
     assert.equal(state.attempts.at(-1)?.status, "waiting_user");
     assert.equal(events.some((event) => event.type === "node_waiting_user"), true);
@@ -1099,7 +1099,7 @@ describe("WorkflowSession", () => {
 
     await promiseSettlesSoon(resumed.result);
     const state = await new RunStore(runRoot).loadState(session.runId);
-    assert.equal(state.status, "waiting_user");
+    assert.equal(state.status, "pending");
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(calls, 1);
     assert.equal(events.includes("node_waiting_user"), true);

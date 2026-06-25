@@ -329,7 +329,6 @@ describe("PromptInput component", () => {
 
   });
 
-
   it("renders an empty shell prompt with placeholder text", () => {
 
 
@@ -5706,6 +5705,46 @@ describe("TuiApp", () => {
 
 
 
+  it("exits after interrupt confirmation when Ctrl+C is pressed again", async () => {
+    let interrupted = 0;
+    let exited = 0;
+    const session = fakeInteractiveSession({
+      runId: "run-interrupt",
+      workflowId: "delivery",
+      events: [],
+      interrupt: () => {
+        interrupted += 1;
+      }
+    });
+
+    const engine = { async startInteractive() { return session; } };
+    const output = render(
+      <TuiApp
+        cwd="D:\\CodeAI\\agent-team"
+        config={tuiConfig()}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={engine as unknown as never}
+        onExit={() => {
+          exited += 1;
+        }}
+      />
+    );
+
+    await sendTuiLine(output, "start work");
+    output.stdin.write("\u0003");
+    await settleInkInput();
+    assert.match(output.lastFrame() ?? "", /Stop current run\?/);
+
+    output.stdin.write("\u0003");
+    await settleInkInput();
+
+    assert.equal(interrupted, 1);
+    assert.equal(exited, 1);
+    output.unmount();
+    output.cleanup();
+  });
+
   it("pins configured workflow nodes above the prompt", () => {
 
 
@@ -6516,6 +6555,8 @@ function fakeInteractiveSession(input: {
 
   resumePlanReview?: (decision: "continue" | "stay") => void;
 
+  interrupt?: () => void | Promise<void>;
+
 
 
 
@@ -6626,7 +6667,7 @@ function fakeInteractiveSession(input: {
 
 
 
-    interrupt: async () => undefined,
+    interrupt: async () => input.interrupt?.(),
 
 
 

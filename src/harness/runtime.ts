@@ -2,11 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelProvider } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
-import { ToolResult } from "../tools/types.js";
+import { Tool, ToolResult } from "../tools/types.js";
 import { RunStore } from "../storage/runStore.js";
 import { buildNodeMessages } from "./context.js";
 import { decidePermission } from "./permissions.js";
-import { NodeResult, nodeResultJsonSchema, parseNodeResult } from "../team/nodeResult.js";
+import { NodeResult, nodeResultJsonSchema, nodeResultSchema, parseNodeResult } from "../team/nodeResult.js";
 import { PermissionDecision, PermissionRequest } from "./permissionController.js";
 import { HarnessEvent, StoredEvent } from "./events.js";
 
@@ -34,12 +34,13 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   const messages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff);
   const attempt = options.attempt ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
+  const requestTools = [...options.tools.list(), submitNodeResultTool];
 
   for (;;) {
     const request = {
       model: options.model,
       messages,
-      tools: options.tools.list(),
+      tools: requestTools,
       response_schema: nodeResultJsonSchema,
       context: {
         runId: options.runId,
@@ -65,6 +66,11 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await streamEventWrites;
 
     if (response.tool_calls?.length) {
+      const submittedResult = response.tool_calls.find((call) => call.name === submitNodeResultTool.name);
+      if (submittedResult) {
+        return mergeArtifactDeliverables(nodeResultSchema.parse(submittedResult.input), artifactDeliverables);
+      }
+
       messages.push({ role: "assistant", content: response.content ?? "", tool_calls: response.tool_calls });
       for (const call of response.tool_calls) {
         const specifier = toolSpecifier(call.name, call.input);
@@ -146,6 +152,15 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     return mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
   }
 }
+
+const submitNodeResultTool: Tool = {
+  name: "SubmitNodeResult",
+  description: "Submit the final NodeResult object for this workflow node. Use this only when the node is complete or needs user input.",
+  input_schema: nodeResultJsonSchema as unknown as Record<string, unknown>,
+  async execute() {
+    return { error: "SubmitNodeResult is handled by the runtime", exit_code: 1 };
+  }
+};
 
 function artifactFromToolResult(result: ToolResult): { artifact_id: string; path: string; description: string } | undefined {
   if (!result.artifact_id || !result.path) return undefined;

@@ -50,7 +50,7 @@ export function resolvePromptKey(input: string, key: PromptKey, mode: "input" | 
     if (input === "u") return "delete_to_start";
     if (input === "k") return "delete_to_end";
     if (input === "w") return "delete_previous_word";
-    if (input === "c") return "clear";
+    if (input === "c") return "none";
     if (input === "o") return "toggle_log_detail";
   }
   if (key.return) return "submit";

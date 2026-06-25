@@ -26,7 +26,7 @@ describe("interactive run events", () => {
       decision: "allow_once"
     });
     await store.markInterrupted(run.runId, {
-      status: "interrupted",
+      status: "pending",
       workflow_id: "flow",
       current_node_id: "dev",
       attempts: [{ node_id: "dev", attempt: 1, status: "running" }],
@@ -39,7 +39,7 @@ describe("interactive run events", () => {
     assert.equal(events.some((event) => event.type === "run_interrupted"), true);
 
     const state = await store.loadState(run.runId);
-    assert.equal(state.status, "interrupted");
+    assert.equal(state.status, "pending");
     assert.equal(state.current_node_id, "dev");
   });
 });

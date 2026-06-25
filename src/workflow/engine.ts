@@ -211,7 +211,7 @@ export class WorkflowEngine {
 
 
 
-    if (state.status === "waiting_plan_review") {
+    if (state.pending_review) {
 
 
       return this.continuePlanReview({
@@ -247,7 +247,7 @@ export class WorkflowEngine {
 
 
 
-    if (state.status === "waiting_user") {
+    if (state.status === "pending") {
       if (!state.current_node_id) throw new Error(`Run ${runId} has no current node`);
 
       return this.continueFrom({
@@ -332,7 +332,7 @@ export class WorkflowEngine {
 
     const fail = async (error: unknown) => {
       const formatted = formatRunError(error);
-      const failedState: WorkflowState = { ...latestState, status: "failed" };
+      const failedState: WorkflowState = { ...latestState, status: "pending" };
       latestState = failedState;
       await store.saveState(runId, failedState);
       await this.appendEvent(store, runId, { type: "run_failed", error: formatted.message, ...(formatted.detail ? { detail: formatted.detail } : {}) }, (event) => stream.push(event));
@@ -345,7 +345,7 @@ export class WorkflowEngine {
 
     const finishWhenTerminal = (nextState: WorkflowState) => {
       latestState = nextState;
-      if (nextState.status !== "waiting_user" && nextState.status !== "waiting_plan_review") finish(nextState);
+      if (nextState.status === "completed") finish(nextState);
     };
 
     const runSegment = async (segment: { startNodeId: string; initialHandoff: unknown; attempts: WorkflowState["attempts"] }) => {
@@ -400,7 +400,7 @@ export class WorkflowEngine {
           void fail(error);
         });
       });
-    } else if (state.status === "completed" || state.status === "failed" || state.status === "interrupted") {
+    } else if (state.status === "completed") {
       queueMicrotask(() => finish(state));
     }
 
@@ -412,7 +412,7 @@ export class WorkflowEngine {
       interrupt: interruptRun,
       resumeWithUserInput: async (input) => {
         if (activeRun) await activeRun;
-        if (latestState.status !== "waiting_user") throw new Error(`Run ${runId} is not waiting for user input`);
+        if (latestState.status !== "pending" || latestState.pending_review) throw new Error(`Run ${runId} is not waiting for user input`);
         if (!latestState.current_node_id) throw new Error(`Run ${runId} has no current node`);
 
         interrupted = false;
@@ -432,7 +432,7 @@ export class WorkflowEngine {
       },
       resumePlanReview: async (decision) => {
         if (activeRun) await activeRun;
-        if (latestState.status !== "waiting_plan_review") throw new Error(`Run ${runId} is not waiting for plan review`);
+        if (latestState.status !== "pending" || !latestState.pending_review) throw new Error(`Run ${runId} is not waiting for plan review`);
         stream.reopen();
         const nextState = await this.continuePlanReview({
           config,
@@ -455,7 +455,7 @@ export class WorkflowEngine {
       },
       revisePlan: async (input) => {
         if (activeRun) await activeRun;
-        if (latestState.status !== "waiting_plan_review") throw new Error(`Run ${runId} is not waiting for plan review`);
+        if (latestState.status !== "pending" || !latestState.pending_review) throw new Error(`Run ${runId} is not waiting for plan review`);
         if (!latestState.current_node_id) throw new Error(`Run ${runId} has no current node`);
 
         stream.reopen();
@@ -474,7 +474,7 @@ export class WorkflowEngine {
       },
       continueWithInput: async (input) => {
         if (activeRun) await activeRun;
-        if (latestState.status === "running" || latestState.status === "waiting_user" || latestState.status === "waiting_plan_review") {
+        if (latestState.status === "running" || latestState.status === "pending") {
           throw new Error(`Run ${runId} is not paused`);
         }
 
@@ -552,7 +552,7 @@ export class WorkflowEngine {
 
     const fail = async (error: unknown) => {
       const formatted = formatRunError(error);
-      const failedState: WorkflowState = { ...latestState, status: "failed" };
+      const failedState: WorkflowState = { ...latestState, status: "pending" };
       latestState = failedState;
       await store.saveState(run.runId, failedState);
       await this.appendEvent(store, run.runId, { type: "run_failed", error: formatted.message, ...(formatted.detail ? { detail: formatted.detail } : {}) }, (event) => stream.push(event));
@@ -565,7 +565,7 @@ export class WorkflowEngine {
 
     const finishWhenTerminal = (state: WorkflowState) => {
       latestState = state;
-      if (state.status !== "waiting_user" && state.status !== "waiting_plan_review") finish(state);
+      if (state.status === "completed") finish(state);
     };
 
     const runSegment = async (segment: { startNodeId: string; initialHandoff: unknown; attempts: WorkflowState["attempts"] }) => {
@@ -624,7 +624,7 @@ export class WorkflowEngine {
       },
       resumeWithUserInput: async (input) => {
         if (activeRun) await activeRun;
-        if (latestState.status !== "waiting_user") throw new Error(`Run ${run.runId} is not waiting for user input`);
+        if (latestState.status !== "pending" || latestState.pending_review) throw new Error(`Run ${run.runId} is not waiting for user input`);
         if (!latestState.current_node_id) throw new Error(`Run ${run.runId} has no current node`);
 
         interrupted = false;
@@ -644,7 +644,7 @@ export class WorkflowEngine {
       },
       resumePlanReview: async (decision) => {
         if (activeRun) await activeRun;
-        if (latestState.status !== "waiting_plan_review") throw new Error(`Run ${run.runId} is not waiting for plan review`);
+        if (latestState.status !== "pending" || !latestState.pending_review) throw new Error(`Run ${run.runId} is not waiting for plan review`);
         stream.reopen();
         const state = await this.continuePlanReview({
           config,
@@ -667,7 +667,7 @@ export class WorkflowEngine {
       },
       revisePlan: async (input) => {
         if (activeRun) await activeRun;
-        if (latestState.status !== "waiting_plan_review") throw new Error(`Run ${run.runId} is not waiting for plan review`);
+        if (latestState.status !== "pending" || !latestState.pending_review) throw new Error(`Run ${run.runId} is not waiting for plan review`);
         if (!latestState.current_node_id) throw new Error(`Run ${run.runId} has no current node`);
 
         stream.reopen();
@@ -686,7 +686,7 @@ export class WorkflowEngine {
       },
       continueWithInput: async (input) => {
         if (activeRun) await activeRun;
-        if (latestState.status === "running" || latestState.status === "waiting_user" || latestState.status === "waiting_plan_review") {
+        if (latestState.status === "running" || latestState.status === "pending") {
           throw new Error(`Run ${run.runId} is not paused`);
         }
 
@@ -844,7 +844,7 @@ export class WorkflowEngine {
 
 
         const state: WorkflowState = {
-          status: "waiting_user",
+          status: "pending",
           workflow_id: options.workflowId,
           current_node_id: node.id,
           attempts,
@@ -889,7 +889,7 @@ export class WorkflowEngine {
         const document = requireDocument(node, result);
 
 
-        attempts[attempts.length - 1] = { node_id: node.id, attempt, status: "waiting_plan_review", result };
+        attempts[attempts.length - 1] = { node_id: node.id, attempt, status: "waiting_user", result };
 
 
         await this.appendEvent(options.store, options.runId, { type: "plan_review_requested", node_id: node.id, attempt, document }, options.eventSink);
@@ -898,7 +898,7 @@ export class WorkflowEngine {
         const state: WorkflowState = {
 
 
-          status: "waiting_plan_review",
+          status: "pending",
 
 
           workflow_id: options.workflowId,
@@ -955,7 +955,23 @@ export class WorkflowEngine {
       if (!next) {
 
 
-        const finalState: WorkflowState = { status: status === "success" ? "completed" : "failed", workflow_id: options.workflowId, attempts, handoff };
+        if (status === "failure") {
+          const questions = result.questions.length ? result.questions : waitingQuestions("节点执行失败且没有可用的失败流转边，请说明下一步处理方式。");
+          const pendingState: WorkflowState = {
+            status: "pending",
+            workflow_id: options.workflowId,
+            current_node_id: node.id,
+            attempts,
+            handoff,
+            resume_checkpoint: { node_id: node.id, handoff }
+          };
+          options.onState?.(pendingState);
+          await this.appendEvent(options.store, options.runId, { type: "node_waiting_user", node_id: node.id, questions }, options.eventSink);
+          await options.store.saveState(options.runId, pendingState);
+          return pendingState;
+        }
+
+        const finalState: WorkflowState = { status: "completed", workflow_id: options.workflowId, attempts, handoff };
 
 
         options.onState?.(finalState);
@@ -973,7 +989,7 @@ export class WorkflowEngine {
           options.runId,
 
 
-          status === "success" ? { type: "run_completed", result: finalState } : { type: "run_failed", error: "Workflow ended with failure" },
+          { type: "run_completed", result: finalState },
 
 
           options.eventSink
@@ -1203,7 +1219,7 @@ export class WorkflowEngine {
     attempts[attempts.length - 1] = { node_id: nodeId, attempt, status: "failure", result };
     await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: nodeId, status: "failure", result }, options.eventSink);
     const state: WorkflowState = {
-      status: "waiting_user",
+      status: "pending",
       workflow_id: options.workflowId,
       current_node_id: nodeId,
       attempts,
@@ -1220,7 +1236,7 @@ export class WorkflowEngine {
     const updatedAttempts = markLatestActiveAttemptWaiting(attempts, nodeId);
     const questions = waitingQuestions(reason);
     const state: WorkflowState = {
-      status: "waiting_user",
+      status: "pending",
       workflow_id: options.workflowId,
       current_node_id: nodeId,
       attempts: updatedAttempts,
@@ -1241,7 +1257,7 @@ export class WorkflowEngine {
     const questions = waitingQuestions(input.reason);
     const state: WorkflowState = {
       ...input.latestState,
-      status: "waiting_user",
+      status: "pending",
       current_node_id: nodeId,
       attempts,
       handoff,
@@ -1378,7 +1394,7 @@ function markLatestActiveAttemptWaiting(attempts: WorkflowState["attempts"], nod
   for (let index = next.length - 1; index >= 0; index -= 1) {
     const attempt = next[index];
     if (attempt.node_id !== nodeId) continue;
-    if (attempt.status === "running" || attempt.status === "waiting_plan_review" || attempt.status === "waiting_user") {
+    if (attempt.status === "running" || attempt.status === "waiting_user") {
       next[index] = { ...attempt, status: "waiting_user" };
       return next;
     }
@@ -1395,7 +1411,7 @@ function findWaitingPlanAttempt(attempts: WorkflowState["attempts"], nodeId: str
     const attempt = attempts[index];
 
 
-    if (attempt.node_id === nodeId && attempt.status === "waiting_plan_review") return index;
+    if (attempt.node_id === nodeId && attempt.status === "waiting_user") return index;
 
 
   }

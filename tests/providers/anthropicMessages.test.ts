@@ -68,7 +68,7 @@ describe("AnthropicMessagesProvider", () => {
     });
     assert.deepEqual(server.requestBody.thinking, { type: "enabled", budget_tokens: 1024 });
     assert.deepEqual(server.requestBody.output_config, {
-      format: { type: "json_schema", name: "node_result", schema: responseSchema, strict: true }
+      format: { type: "json_schema", schema: responseSchema }
     });
   });
 

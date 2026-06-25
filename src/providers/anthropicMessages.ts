@@ -193,9 +193,7 @@ function toAnthropicRequestBody(request: ModelRequest, options: AnthropicMessage
     body.output_config = {
       format: {
         type: "json_schema",
-        name: "node_result",
-        schema: request.response_schema,
-        strict: true
+        schema: request.response_schema
       }
     };
   }

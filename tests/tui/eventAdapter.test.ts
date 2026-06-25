@@ -221,7 +221,7 @@ describe("TUI event adapter", () => {
     assert.equal(state.mode, "waiting_plan_review");
     assert.equal(state.pendingReview?.type, "plan");
     assert.match(state.pendingReview?.document ?? "", /执行步骤/);
-    assert.equal(state.nodes[0]?.status, "waiting_plan_review");
+    assert.equal(state.nodes[0]?.status, "waiting_user");
 
     state = reduceStoredEvent(state, {
       type: "plan_review_resolved",

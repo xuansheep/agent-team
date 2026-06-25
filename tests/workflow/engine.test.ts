@@ -73,7 +73,7 @@ describe("WorkflowEngine", () => {
     };
 
     const waiting = await engine.run(config, "flow", { request: "x" });
-    assert.equal(waiting.status, "waiting_user");
+    assert.equal(waiting.status, "pending");
 
     const runId = await latestRunId(runRoot);
     const resumed = await engine.resume(config, "flow", runId, { answer: "operators" });
@@ -99,9 +99,10 @@ describe("WorkflowEngine", () => {
 
     const waiting = await engine.run(config, "flow", { request: "x" });
 
-    assert.equal(waiting.status, "waiting_plan_review");
+    assert.equal(waiting.status, "pending");
     assert.equal(waiting.current_node_id, "product");
-    assert.equal(waiting.attempts[0]?.status, "waiting_plan_review");
+    assert.equal(waiting.attempts[0]?.status, "waiting_user");
+    assert.equal(waiting.pending_review?.node_id, "product");
     assert.equal(calls, 1);
 
     const runId = await latestRunId(runRoot);
@@ -128,9 +129,10 @@ describe("WorkflowEngine", () => {
     const runId = await latestRunId(runRoot);
     const stillWaiting = await engine.resume(config, "flow", runId, { answer: "No, staying in the plan" });
 
-    assert.equal(waiting.status, "waiting_plan_review");
-    assert.equal(stillWaiting.status, "waiting_plan_review");
+    assert.equal(waiting.status, "pending");
+    assert.equal(stillWaiting.status, "pending");
     assert.equal(stillWaiting.current_node_id, "product");
+    assert.equal(stillWaiting.attempts[0]?.status, "waiting_user");
     assert.equal(calls, 1);
   });
 
@@ -208,14 +210,14 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default", mode: "complete" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(state.status, "waiting_user");
+    assert.equal(state.status, "pending");
     assert.equal(state.attempts.at(-1)?.status, "failure");
     assert.equal(state.current_node_id, "final_delivery");
     assert.equal(state.resume_checkpoint?.node_id, "final_delivery");
 
     const runId = await latestRunId(runRoot);
     const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; attempts: Array<{ status: string }> };
-    assert.equal(persisted.status, "waiting_user");
+    assert.equal(persisted.status, "pending");
     assert.equal(persisted.attempts.at(-1)?.status, "failure");
 
     const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; status?: string });
@@ -252,7 +254,7 @@ describe("WorkflowEngine", () => {
     const run = await engine.run(config, "flow", { request: "x" });
     const runId = await latestRunId(runRoot);
 
-    await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runRoot, runId, "state.json"), `${JSON.stringify({ ...run, status: "interrupted", current_node_id: "dev", resume_checkpoint: { node_id: "dev", handoff: run.handoff } }, null, 2)}\n`, "utf8"));
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runRoot, runId, "state.json"), `${JSON.stringify({ ...run, status: "pending", current_node_id: "dev", resume_checkpoint: { node_id: "dev", handoff: run.handoff } }, null, 2)}\n`, "utf8"));
     const resumed = await engine.resume(config, "flow", runId, {});
 
     assert.equal(resumed.status, "completed");
@@ -277,13 +279,13 @@ describe("WorkflowEngine", () => {
     };
 
     const waiting = await engine.run(config, "flow", { request: "x" });
-    assert.equal(waiting.status, "waiting_user");
+    assert.equal(waiting.status, "pending");
     assert.equal(waiting.attempts.at(-1)?.status, "failure");
 
     const runId = await latestRunId(runRoot);
     const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
 
-    assert.equal(persisted.status, "waiting_user");
+    assert.equal(persisted.status, "pending");
     assert.equal(persisted.resume_checkpoint?.node_id, "dev");
 
     const resumed = await engine.resume(config, "flow", runId, { answer: "try again" });

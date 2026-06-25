@@ -100,7 +100,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
 
           pendingReview: { type: "plan", nodeId: event.node_id, attempt: event.attempt, document: event.document }
 
-        }, event.node_id, event.attempt, "waiting_plan_review"),
+        }, event.node_id, event.attempt, "waiting_user"),
 
         { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 已生成计划，等待用户审核`, detailText: event.document },
 
