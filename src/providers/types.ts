@@ -17,11 +17,22 @@ export type ModelToolCall = {
   input: unknown;
 };
 
+export type ModelRequestContext = {
+  runId: string;
+  nodeId: string;
+  attempt: number;
+  sessionId: string;
+  threadId: string;
+  turnId: string;
+  promptCacheKey: string;
+};
+
 export type ModelRequest = {
   model: string;
   messages: ModelMessage[];
   tools: Tool[];
   response_schema?: unknown;
+  context?: ModelRequestContext;
 };
 
 export type ModelResponse = {

@@ -6,19 +6,63 @@ export const permissionSetSchema = z.object({
   deny: z.array(z.string()).default([])
 }).default({ allow: [], ask: [], deny: [] });
 
-export const providerSchema = z.object({
-  type: z.literal("openai-compatible"),
+export const apiKeyModeSchema = z.enum(["bearer", "x-api-key"]);
+
+const providerCapabilitiesSchema = z.object({
+  tool_calling: z.boolean().default(false),
+  vision: z.boolean().default(false),
+  streaming: z.boolean().default(false),
+  json_schema_output: z.boolean().default(true)
+});
+
+const providerBaseSchema = {
   base_url: z.string().url(),
   api_key_env: z.string().min(1),
   default_model: z.string().min(1),
+  api_key_mode: apiKeyModeSchema.default("bearer"),
   user_agent: z.string().min(1).optional(),
-  capabilities: z.object({
-    tool_calling: z.boolean().default(false),
-    vision: z.boolean().default(false),
-    streaming: z.boolean().default(false),
-    json_schema_output: z.boolean().default(true)
+  capabilities: providerCapabilitiesSchema.default({})
+};
+
+const openAiCompatibleProviderSchema = z.object({
+  type: z.literal("openai-compatible"),
+  ...providerBaseSchema
+});
+
+const responsesProviderSchema = z.object({
+  type: z.literal("responses-api"),
+  ...providerBaseSchema,
+  responses: z.object({
+    prompt_cache: z.boolean().default(true),
+    parallel_tool_calls: z.boolean().default(true),
+    reasoning: z.object({
+      effort: z.enum(["minimal", "low", "medium", "high"]).optional(),
+      summary: z.string().optional()
+    }).optional()
   }).default({})
 });
+
+const anthropicProviderSchema = z.object({
+  type: z.literal("anthropic"),
+  ...providerBaseSchema,
+  api_key_mode: apiKeyModeSchema.default("x-api-key"),
+  anthropic: z.object({
+    version: z.string().min(1).default("2023-06-01"),
+    beta_headers: z.array(z.string().min(1)).default([]),
+    max_tokens: z.number().int().positive().default(8192),
+    prompt_cache: z.boolean().default(true),
+    thinking: z.object({
+      type: z.enum(["disabled", "enabled"]).default("disabled"),
+      budget_tokens: z.number().int().positive().optional()
+    }).default({})
+  }).default({})
+});
+
+export const providerSchema = z.discriminatedUnion("type", [
+  openAiCompatibleProviderSchema,
+  responsesProviderSchema,
+  anthropicProviderSchema
+]);
 
 export const roleSchema = z.object({
   description: z.string().default(""),
@@ -59,11 +103,17 @@ export const configSchema = z.object({
 });
 
 type ParsedAgentTeamConfig = z.infer<typeof configSchema>;
+type ParsedProviderConfig = z.infer<typeof providerSchema>;
 type ParsedWorkflowConfig = z.infer<typeof workflowSchema>;
 type ParsedWorkflowNodeConfig = z.infer<typeof nodeSchema>;
+type ProviderConfig = ParsedProviderConfig extends infer Provider
+  ? Provider extends { api_key_mode: infer Mode }
+    ? Omit<Provider, "api_key_mode"> & { api_key_mode?: Mode }
+    : Provider
+  : never;
 
 export type WorkflowNodeMode = "task" | "plan" | "complete";
 export type WorkflowNodeConfig = Omit<ParsedWorkflowNodeConfig, "mode"> & { mode?: WorkflowNodeMode };
 export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes"> & { nodes: WorkflowNodeConfig[] };
-export type AgentTeamConfig = Omit<ParsedAgentTeamConfig, "workflows"> & { workflows: Record<string, WorkflowConfig> };
+export type AgentTeamConfig = Omit<ParsedAgentTeamConfig, "providers" | "workflows"> & { providers: Record<string, ProviderConfig>; workflows: Record<string, WorkflowConfig> };
 export type PermissionSet = z.infer<typeof permissionSetSchema>;

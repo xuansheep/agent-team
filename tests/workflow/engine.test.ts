@@ -193,21 +193,36 @@ describe("WorkflowEngine", () => {
     const runId = await latestRunId(runRoot);
     assert.equal(await readFile(join(runRoot, runId, "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
   });
-
-  it("rejects complete nodes that do not return a summary document", async () => {
+  it("marks complete nodes without documents as waiting for user input", async () => {
     const provider: ModelProvider = {
       async generate() {
         return { content: JSON.stringify({ status: "success", summary: "missing document", handoff: { instruction: "done" } }) };
       }
     };
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/complete-missing-doc-runs" });
+    const runRoot = ".tmp/complete-missing-doc-runs";
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
-    await assert.rejects(() => engine.run({
+    const state = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       roles: { final_delivery: { description: "", system_prompt: "F", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default", mode: "complete" }], edges: [] } }
-    }, "flow", { request: "x" }), /complete node final_delivery must return document/);
+    }, "flow", { request: "x" });
+
+    assert.equal(state.status, "waiting_user");
+    assert.equal(state.attempts.at(-1)?.status, "failure");
+    assert.equal(state.current_node_id, "final_delivery");
+    assert.equal(state.resume_checkpoint?.node_id, "final_delivery");
+
+    const runId = await latestRunId(runRoot);
+    const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; attempts: Array<{ status: string }> };
+    assert.equal(persisted.status, "waiting_user");
+    assert.equal(persisted.attempts.at(-1)?.status, "failure");
+
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; status?: string });
+    assert.ok(events.some((event) => event.type === "node_completed" && event.status === "failure"));
+    assert.ok(events.some((event) => event.type === "node_waiting_user"));
   });
+
 
   it("rejects image handoff when provider has no vision capability", async () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: ".tmp/image-runs" });
@@ -261,12 +276,15 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
     };
 
-    await assert.rejects(() => engine.run(config, "flow", { request: "x" }), /provider exploded/);
-    const runId = await latestRunId(runRoot);
-    const failedState = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
+    const waiting = await engine.run(config, "flow", { request: "x" });
+    assert.equal(waiting.status, "waiting_user");
+    assert.equal(waiting.attempts.at(-1)?.status, "failure");
 
-    assert.equal(failedState.status, "failed");
-    assert.equal(failedState.resume_checkpoint?.node_id, "dev");
+    const runId = await latestRunId(runRoot);
+    const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
+
+    assert.equal(persisted.status, "waiting_user");
+    assert.equal(persisted.resume_checkpoint?.node_id, "dev");
 
     const resumed = await engine.resume(config, "flow", runId, { answer: "try again" });
 

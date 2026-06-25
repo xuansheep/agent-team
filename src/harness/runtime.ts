@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelProvider } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -36,7 +36,21 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   const artifactDeliverables: NodeResult["deliverables"] = [];
 
   for (;;) {
-    const request = { model: options.model, messages, tools: options.tools.list(), response_schema: nodeResultJsonSchema };
+    const request = {
+      model: options.model,
+      messages,
+      tools: options.tools.list(),
+      response_schema: nodeResultJsonSchema,
+      context: {
+        runId: options.runId,
+        nodeId: options.node.id,
+        attempt,
+        sessionId: options.runId,
+        threadId: `${options.runId}:${options.node.id}`,
+        turnId: `${options.runId}:${options.node.id}:${attempt}`,
+        promptCacheKey: promptCacheKey(options.runId, options.node.id)
+      }
+    };
     let streamEventWrites: Promise<unknown> = Promise.resolve();
     const response = options.provider.stream
       ? await options.provider.stream(request, (event) => {
@@ -151,6 +165,10 @@ async function appendRuntimeEvent(options: NodeRuntimeOptions, event: HarnessEve
   const stored = await options.store.appendEvent(options.runId, event);
   options.eventSink?.(stored);
   return stored;
+}
+
+function promptCacheKey(runId: string, nodeId: string): string {
+  return createHash("sha256").update(`${runId}:${nodeId}`).digest("hex");
 }
 
 function toolSpecifier(tool: string, input: unknown): string {

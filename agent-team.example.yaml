@@ -1,10 +1,31 @@
 providers:
   default:
-    type: openai-compatible
+    type: responses-api
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
+    api_key_mode: bearer
     default_model: gpt-5.5
     user_agent: claude-code/2.1.186
+    responses:
+      prompt_cache: true
+      parallel_tool_calls: true
+    capabilities:
+      tool_calling: true
+      vision: true
+      streaming: true
+      json_schema_output: true
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    api_key_mode: x-api-key
+    default_model: claude-sonnet-4-5
+    anthropic:
+      version: "2023-06-01"
+      beta_headers: [ ]
+      max_tokens: 8192
+      thinking:
+        type: disabled
     capabilities:
       tool_calling: true
       vision: true

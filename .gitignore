@@ -4,6 +4,7 @@ dist-test/
 .session/
 .tmp/
 .idea/
+docs/automatic/
 .*.tmp
 vitest.config.ts
 vitest.config.mjs

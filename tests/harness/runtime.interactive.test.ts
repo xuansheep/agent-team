@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { runNode } from "../../src/harness/runtime.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
-import { ModelProvider } from "../../src/providers/types.js";
+import { ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
 
 describe("runNode interactive permissions", () => {
   it("asks for permission and executes tool after allow_once", async () => {
@@ -99,10 +99,43 @@ describe("runNode interactive permissions", () => {
     assert.match(eventsText, /artifact_created/);
     assert.match(eventsText, /dev\/report\.md/);
   });
-});
 
+  it("passes stable short prompt cache keys in model request context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-context-"));
+    const store = new RunStore(root);
+    const tools = new ToolRegistry();
+    const runId = "2026-06-25T10-53-35-371Z-859a43fb-6df8-4959-b37a-97fee9ac57eb";
+    const contexts: ModelRequestContext[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        assert.ok(request.context);
+        contexts.push(request.context);
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
 
+    const options = {
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    };
 
+    await runNode(options);
+    await runNode(options);
+
+    assert.equal(contexts[0]?.threadId, `${runId}:dev`);
+    assert.equal(contexts[0]?.promptCacheKey.length, 64);
+    assert.match(contexts[0]?.promptCacheKey ?? "", /^[0-9a-f]{64}$/);
+    assert.equal(contexts[0]?.promptCacheKey, contexts[1]?.promptCacheKey);
+  });
 
   it("sends assistant tool calls before tool outputs on the follow-up model request", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-tool-chain-"));
@@ -150,7 +183,7 @@ describe("runNode interactive permissions", () => {
       { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
     ]);
   });
-
+});
 
 describe("runNode streaming", () => {
   it("stores model stream deltas and still returns the final node result", async () => {

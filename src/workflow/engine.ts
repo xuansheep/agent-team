@@ -379,7 +379,28 @@ export class WorkflowEngine {
       }
     };
 
-    if (state.status === "completed" || state.status === "failed" || state.status === "interrupted") {
+    const interruptRun = async () => {
+      if ((resultSettled && !activeRun) || interrupted) return;
+      interrupted = true;
+      permissions.resolveAll("deny_once");
+      const waitingState = await this.pauseStateForUser({
+        store,
+        runId,
+        workflowId,
+        latestState,
+        reason: "用户已暂停当前节点，请输入下一步处理方式。",
+        eventSink: (event) => stream.push(event)
+      });
+      latestState = waitingState;
+    };
+
+    if (state.status === "running") {
+      queueMicrotask(() => {
+        void interruptRun().catch((error) => {
+          void fail(error);
+        });
+      });
+    } else if (state.status === "completed" || state.status === "failed" || state.status === "interrupted") {
       queueMicrotask(() => finish(state));
     }
 
@@ -388,31 +409,13 @@ export class WorkflowEngine {
       state: latestState,
       events: stream,
       permissions,
-      interrupt: async () => {
-        if ((resultSettled && !activeRun) || interrupted) return;
-        interrupted = true;
-        permissions.resolveAll("deny_once");
-        let running: WorkflowState["attempts"][number] | undefined;
-        for (let index = latestState.attempts.length - 1; index >= 0; index -= 1) {
-          const attempt = latestState.attempts[index];
-          if (attempt.status === "running" || attempt.status === "waiting_plan_review" || attempt.status === "waiting_user") {
-            running = attempt;
-            break;
-          }
-        }
-        if (running) {
-          await this.appendEvent(store, runId, { type: "node_interrupted", node_id: running.node_id, attempt: running.attempt }, (event) => stream.push(event));
-        }
-        const interruptedState: WorkflowState = { ...latestState, status: "interrupted" };
-        await this.appendEvent(store, runId, { type: "run_interrupted", reason: "user" }, (event) => stream.push(event));
-        await store.saveState(runId, interruptedState);
-        finish(interruptedState);
-      },
+      interrupt: interruptRun,
       resumeWithUserInput: async (input) => {
         if (activeRun) await activeRun;
         if (latestState.status !== "waiting_user") throw new Error(`Run ${runId} is not waiting for user input`);
         if (!latestState.current_node_id) throw new Error(`Run ${runId} has no current node`);
 
+        interrupted = false;
         stream.reopen();
         await this.appendEvent(store, runId, {
           type: "user_message",
@@ -609,27 +612,22 @@ export class WorkflowEngine {
         if ((resultSettled && !activeRun) || interrupted) return;
         interrupted = true;
         permissions.resolveAll("deny_once");
-        let running: WorkflowState["attempts"][number] | undefined;
-        for (let index = latestState.attempts.length - 1; index >= 0; index -= 1) {
-          const attempt = latestState.attempts[index];
-          if (attempt.status === "running" || attempt.status === "waiting_plan_review" || attempt.status === "waiting_user") {
-            running = attempt;
-            break;
-          }
-        }
-        if (running) {
-          await this.appendEvent(store, run.runId, { type: "node_interrupted", node_id: running.node_id, attempt: running.attempt }, (event) => stream.push(event));
-        }
-        const state: WorkflowState = { ...latestState, status: "interrupted" };
-        await this.appendEvent(store, run.runId, { type: "run_interrupted", reason: "user" }, (event) => stream.push(event));
-        await store.saveState(run.runId, state);
-        finish(state);
+        const state = await this.pauseStateForUser({
+          store,
+          runId: run.runId,
+          workflowId,
+          latestState,
+          reason: "用户已暂停当前节点，请输入下一步处理方式。",
+          eventSink: (event) => stream.push(event)
+        });
+        latestState = state;
       },
       resumeWithUserInput: async (input) => {
         if (activeRun) await activeRun;
         if (latestState.status !== "waiting_user") throw new Error(`Run ${run.runId} is not waiting for user input`);
         if (!latestState.current_node_id) throw new Error(`Run ${run.runId} has no current node`);
 
+        interrupted = false;
         stream.reopen();
         await this.appendEvent(store, run.runId, {
           type: "user_message",
@@ -749,27 +747,7 @@ export class WorkflowEngine {
 
 
       if (options.isInterrupted?.()) {
-
-
-        const state: WorkflowState = {
-          status: "interrupted",
-          workflow_id: options.workflowId,
-          current_node_id: currentId,
-          attempts,
-          handoff,
-          resume_checkpoint: { node_id: currentId, handoff }
-        };
-
-
-        options.onState?.(state);
-
-
-        await options.store.saveState(options.runId, state);
-
-
-        return state;
-
-
+        return this.pauseNodeForUser(options, currentId, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。");
       }
 
 
@@ -840,17 +818,7 @@ export class WorkflowEngine {
           eventSink: options.eventSink
         });
       } catch (error) {
-        const state: WorkflowState = {
-          status: "failed",
-          workflow_id: options.workflowId,
-          current_node_id: node.id,
-          attempts,
-          handoff,
-          resume_checkpoint: { node_id: node.id, handoff }
-        };
-        options.onState?.(state);
-        await options.store.saveState(options.runId, state);
-        throw error;
+        return this.failNodeForUser(options, node.id, attempt, attempts, handoff, error);
       }
 
 
@@ -858,34 +826,15 @@ export class WorkflowEngine {
 
 
       if (options.isInterrupted?.()) {
-
-
-        const state: WorkflowState = {
-          status: "interrupted",
-          workflow_id: options.workflowId,
-          current_node_id: node.id,
-          attempts,
-          handoff,
-          resume_checkpoint: { node_id: node.id, handoff }
-        };
-
-
-        options.onState?.(state);
-
-
-        await options.store.saveState(options.runId, state);
-
-
-        return state;
-
-
+        return this.pauseNodeForUser(options, node.id, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。");
       }
 
 
 
 
 
-      if (result.status === "needs_user_input") {
+      try {
+        if (result.status === "needs_user_input") {
 
 
         attempts[attempts.length - 1] = { node_id: node.id, attempt, status: "waiting_user", result };
@@ -1048,7 +997,22 @@ export class WorkflowEngine {
       handoff = buildHandoff(next, node.id, result, attempts.filter((item) => item.node_id === next).length + 1);
 
 
+      const transitionState: WorkflowState = {
+        status: "running",
+        workflow_id: options.workflowId,
+        current_node_id: next,
+        attempts,
+        handoff,
+        resume_checkpoint: { node_id: next, handoff }
+      };
+      options.onState?.(transitionState);
+      await options.store.saveState(options.runId, transitionState);
+
+
       currentId = next;
+      } catch (error) {
+        return this.failNodeForUser(options, node.id, attempt, attempts, handoff, error);
+      }
 
 
     }
@@ -1174,6 +1138,18 @@ export class WorkflowEngine {
     const handoff = buildHandoff(next, nodeId, result, attempts.filter((item) => item.node_id === next).length + 1);
 
 
+    const transitionState: WorkflowState = {
+      status: "running",
+      workflow_id: options.workflowId,
+      current_node_id: next,
+      attempts,
+      handoff,
+      resume_checkpoint: { node_id: next, handoff }
+    };
+    options.onState?.(transitionState);
+    await options.store.saveState(options.runId, transitionState);
+
+
     return this.continueFrom({
 
 
@@ -1221,6 +1197,60 @@ export class WorkflowEngine {
 
 
 
+
+  private async failNodeForUser(options: ContinueOptions, nodeId: string, attempt: number, attempts: WorkflowState["attempts"], handoff: unknown, error: unknown): Promise<WorkflowState> {
+    const result = errorNodeResult(error);
+    attempts[attempts.length - 1] = { node_id: nodeId, attempt, status: "failure", result };
+    await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: nodeId, status: "failure", result }, options.eventSink);
+    const state: WorkflowState = {
+      status: "waiting_user",
+      workflow_id: options.workflowId,
+      current_node_id: nodeId,
+      attempts,
+      handoff,
+      resume_checkpoint: { node_id: nodeId, handoff }
+    };
+    options.onState?.(state);
+    await this.appendEvent(options.store, options.runId, { type: "node_waiting_user", node_id: nodeId, questions: result.questions }, options.eventSink);
+    await options.store.saveState(options.runId, state);
+    return state;
+  }
+
+  private async pauseNodeForUser(options: ContinueOptions, nodeId: string, attempts: WorkflowState["attempts"], handoff: unknown, reason: string): Promise<WorkflowState> {
+    const updatedAttempts = markLatestActiveAttemptWaiting(attempts, nodeId);
+    const questions = waitingQuestions(reason);
+    const state: WorkflowState = {
+      status: "waiting_user",
+      workflow_id: options.workflowId,
+      current_node_id: nodeId,
+      attempts: updatedAttempts,
+      handoff,
+      resume_checkpoint: { node_id: nodeId, handoff }
+    };
+    options.onState?.(state);
+    await this.appendEvent(options.store, options.runId, { type: "node_waiting_user", node_id: nodeId, questions }, options.eventSink);
+    await options.store.saveState(options.runId, state);
+    return state;
+  }
+
+  private async pauseStateForUser(input: { store: RunStore; runId: string; workflowId: string; latestState: WorkflowState; reason: string; eventSink?: (event: StoredEvent) => void }): Promise<WorkflowState> {
+    const nodeId = input.latestState.current_node_id ?? input.latestState.resume_checkpoint?.node_id;
+    if (!nodeId) return input.latestState;
+    const handoff = input.latestState.resume_checkpoint?.handoff ?? input.latestState.handoff;
+    const attempts = markLatestActiveAttemptWaiting(input.latestState.attempts, nodeId);
+    const questions = waitingQuestions(input.reason);
+    const state: WorkflowState = {
+      ...input.latestState,
+      status: "waiting_user",
+      current_node_id: nodeId,
+      attempts,
+      handoff,
+      resume_checkpoint: { node_id: nodeId, handoff }
+    };
+    await this.appendEvent(input.store, input.runId, { type: "node_waiting_user", node_id: nodeId, questions }, input.eventSink);
+    await input.store.saveState(input.runId, state);
+    return state;
+  }
 
   private async appendEvent(store: RunStore, runId: string, event: HarnessEvent, sink?: (event: StoredEvent) => void): Promise<StoredEvent> {
 
@@ -1317,6 +1347,44 @@ export class WorkflowEngine {
 
 
 
+
+function errorNodeResult(error: unknown): NodeResult {
+  const formatted = formatRunError(error);
+  const detail = formatted.detail ? `${formatted.message}
+${formatted.detail}` : formatted.message;
+  return {
+    status: "failure",
+    summary: formatted.message,
+    document: "",
+    deliverables: [],
+    feedback: { defects: [detail], change_requests: [] },
+    questions: waitingQuestions(`节点无法继续执行：${formatted.message}
+请说明下一步处理方式，或输入重试要求。`),
+    handoff: {
+      instruction: "等待用户处理节点失败后继续执行。",
+      must_follow: [],
+      known_risks: [detail],
+      open_questions: []
+    }
+  };
+}
+
+function waitingQuestions(text: string): NodeResult["questions"] {
+  return [{ id: "next_step", text, required: true }];
+}
+
+function markLatestActiveAttemptWaiting(attempts: WorkflowState["attempts"], nodeId: string): WorkflowState["attempts"] {
+  const next = [...attempts];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const attempt = next[index];
+    if (attempt.node_id !== nodeId) continue;
+    if (attempt.status === "running" || attempt.status === "waiting_plan_review" || attempt.status === "waiting_user") {
+      next[index] = { ...attempt, status: "waiting_user" };
+      return next;
+    }
+  }
+  return next;
+}
 
 function findWaitingPlanAttempt(attempts: WorkflowState["attempts"], nodeId: string): number {
 

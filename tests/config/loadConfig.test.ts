@@ -40,10 +40,124 @@ workflows:
     const config = await loadConfig(file);
 
     assert.equal(config.providers.default.type, "openai-compatible");
+    assert.equal(config.providers.default.api_key_mode, "bearer");
     assert.equal(config.workflows.delivery.nodes[0].id, "product");
     assert.equal(config.workflows.delivery.nodes[0].mode, "task");
   });
 
+  it("loads Responses API provider defaults", async () => {
+    const file = await tempFile("agent-team.yaml", `
+providers:
+  default:
+    type: responses-api
+    base_url: https://api.openai.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: gpt-test
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`);
+
+    const config = await loadConfig(file);
+    const provider = config.providers.default;
+
+    assert.equal(provider.type, "responses-api");
+    assert.equal(provider.api_key_mode, "bearer");
+    assert.equal(provider.responses.prompt_cache, true);
+    assert.equal(provider.responses.parallel_tool_calls, true);
+  });
+
+  it("loads Anthropic provider defaults", async () => {
+    const file = await tempFile("agent-team.yaml", `
+providers:
+  default:
+    type: anthropic
+    base_url: https://api.anthropic.test
+    api_key_env: TEST_API_KEY
+    default_model: claude-test
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`);
+
+    const config = await loadConfig(file);
+    const provider = config.providers.default;
+
+    assert.equal(provider.type, "anthropic");
+    assert.equal(provider.api_key_mode, "x-api-key");
+    assert.equal(provider.anthropic.version, "2023-06-01");
+    assert.equal(provider.anthropic.max_tokens, 8192);
+    assert.equal(provider.anthropic.prompt_cache, true);
+  });
+
+  it("allows disabling Anthropic prompt cache", async () => {
+    const file = await tempFile("agent-team.yaml", `
+providers:
+  default:
+    type: anthropic
+    base_url: https://api.anthropic.test
+    api_key_env: TEST_API_KEY
+    default_model: claude-test
+    anthropic:
+      prompt_cache: false
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`);
+
+    const config = await loadConfig(file);
+    const provider = config.providers.default;
+
+    assert.equal(provider.type, "anthropic");
+    assert.equal(provider.anthropic.prompt_cache, false);
+  });
+
+  it("allows API key mode overrides", async () => {
+    const file = await tempFile("agent-team.yaml", `
+providers:
+  default:
+    type: anthropic
+    base_url: https://api.anthropic.test
+    api_key_env: TEST_API_KEY
+    api_key_mode: bearer
+    default_model: claude-test
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`);
+
+    const config = await loadConfig(file);
+
+    assert.equal(config.providers.default.api_key_mode, "bearer");
+  });
 
   it("loads plan and complete node modes", async () => {
     const file = await tempFile("agent-team.yaml", `
@@ -91,8 +205,6 @@ workflows:
     assert.equal(workflow.nodes.find((node) => node.id === "final_delivery")?.mode, "complete");
     assert.equal(workflow.edges.some((edge) => edge.from === "user_acceptance" || edge.to === "user_acceptance"), false);
   });
-
-
 
   it("loads provider user_agent override", async () => {
     const file = await tempFile("agent-team.yaml", `

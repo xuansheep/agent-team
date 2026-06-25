@@ -182,6 +182,30 @@ describe("TUI event adapter", () => {
     assert.match(state.pendingReview?.document ?? "", /新计划/);
   });
 
+  it("keeps a failed node marked failed when waiting for user input", () => {
+    let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
+    state = reduceStoredEvent(state, { type: "node_started", node_id: "dev", attempt: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });
+    state = reduceStoredEvent(state, {
+      type: "node_completed",
+      node_id: "dev",
+      status: "failure",
+      result: { status: "failure", summary: "Provider request failed 400", feedback: { defects: ["bad request"], change_requests: [] } },
+      ts: "2026-06-23T00:00:01.000Z",
+      seq: 2
+    });
+    state = reduceStoredEvent(state, {
+      type: "node_waiting_user",
+      node_id: "dev",
+      questions: [{ id: "next_step", text: "如何继续？", required: true }],
+      ts: "2026-06-23T00:00:02.000Z",
+      seq: 3
+    });
+
+    assert.equal(state.mode, "question");
+    assert.equal(state.nodes[0]?.status, "failure");
+    assert.deepEqual(state.questions, [{ id: "next_step", text: "如何继续？", required: true }]);
+  });
+
   it("tracks plan review documents and clears them after approval", () => {
     let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
     state = reduceStoredEvent(state, { type: "node_started", node_id: "product", attempt: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });
