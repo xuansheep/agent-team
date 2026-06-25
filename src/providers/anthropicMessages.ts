@@ -23,6 +23,7 @@ const cacheControl = { type: "ephemeral" } as const;
 type AnthropicContentBlock = {
   type?: string;
   text?: string;
+  thinking?: string;
   id?: string;
   name?: string;
   input?: unknown;
@@ -43,12 +44,14 @@ type AnthropicStreamChunk = {
   delta?: {
     type?: string;
     text?: string;
+    thinking?: string;
     partial_json?: string;
   };
 };
 
 type StreamingBlock =
   | { kind: "text" }
+  | { kind: "thinking" }
   | { kind: "tool_use"; id: string; name: string; input?: unknown; inputJson: string; hasInputDelta: boolean };
 
 export class AnthropicMessagesProvider implements ModelProvider {
@@ -87,6 +90,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     if (!response.body) throw new Error("Provider stream response had no body");
 
     const content: string[] = [];
+    const thinking: string[] = [];
     const toolCalls: ModelToolCall[] = [];
     const blocks = new Map<number, StreamingBlock>();
 
@@ -103,6 +107,12 @@ export class AnthropicMessagesProvider implements ModelProvider {
             inputJson: "",
             hasInputDelta: false
           });
+        } else if (chunk.content_block.type === "thinking") {
+          blocks.set(index, { kind: "thinking" });
+          if (chunk.content_block.thinking) {
+            thinking.push(chunk.content_block.thinking);
+            onEvent({ type: "thinking_delta", text: chunk.content_block.thinking });
+          }
         } else {
           blocks.set(index, { kind: "text" });
           if (chunk.content_block.text) {
@@ -116,6 +126,10 @@ export class AnthropicMessagesProvider implements ModelProvider {
         if (chunk.delta.type === "text_delta" && chunk.delta.text) {
           content.push(chunk.delta.text);
           onEvent({ type: "content_delta", text: chunk.delta.text });
+        }
+        if (chunk.delta.type === "thinking_delta" && chunk.delta.thinking) {
+          thinking.push(chunk.delta.thinking);
+          onEvent({ type: "thinking_delta", text: chunk.delta.thinking });
         }
         if (chunk.delta.type === "input_json_delta" && block?.kind === "tool_use") {
           block.inputJson += chunk.delta.partial_json ?? "";
@@ -137,6 +151,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
 
     return {
       content: content.length ? content.join("") : undefined,
+      thinking: thinking.length ? thinking.join("") : undefined,
       tool_calls: toolCalls.length ? toolCalls : undefined
     };
   }
@@ -272,10 +287,12 @@ function toAnthropicContentPart(part: ModelContentPart): AnthropicContentBlock {
 
 function fromAnthropicBody(body: AnthropicBody): ModelResponse {
   const content: string[] = [];
+  const thinking: string[] = [];
   const toolCalls: ModelToolCall[] = [];
 
   for (const block of body.content ?? []) {
     if (block.type === "text" && block.text) content.push(block.text);
+    if (block.type === "thinking" && block.thinking) thinking.push(block.thinking);
     if (block.type === "tool_use") {
       toolCalls.push({ id: block.id ?? "toolu-0", name: block.name ?? "", input: block.input ?? {} });
     }
@@ -283,6 +300,7 @@ function fromAnthropicBody(body: AnthropicBody): ModelResponse {
 
   return {
     content: content.length ? content.join("") : undefined,
+    thinking: thinking.length ? thinking.join("") : undefined,
     tool_calls: toolCalls.length ? toolCalls : undefined
   };
 }

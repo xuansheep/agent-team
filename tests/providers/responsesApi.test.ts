@@ -71,6 +71,21 @@ describe("ResponsesApiProvider", () => {
     });
   });
 
+  it("maps reasoning summary output into normalized thinking text", async () => {
+    const server = await startJsonServer({
+      output: [
+        { type: "reasoning", summary: [{ type: "summary_text", text: "Checked the plan." }] },
+        { type: "message", content: [{ type: "output_text", text: "{\"status\":\"success\"}" }] }
+      ]
+    });
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.equal(result.thinking, "Checked the plan.");
+    assert.equal(result.content, "{\"status\":\"success\"}");
+  });
+
   it("keeps long trace ids out of prompt_cache_key", async () => {
     const longThreadId = "2026-06-25T10-53-35-371Z-859a43fb-6df8-4959-b37a-97fee9ac57eb:developer";
     const promptCacheKey = "b".repeat(64);
@@ -138,6 +153,28 @@ describe("ResponsesApiProvider", () => {
     assert.equal(result?.content, "{\"status\":\"success\"}");
     assert.deepEqual(result?.tool_calls, [{ id: "call-1", name: "Bash", input: { command: "npm test" } }]);
     assert.equal(server.requestBody.stream, true);
+  });
+
+  it("streams reasoning summary deltas as normalized thinking events", async () => {
+    const server = await startSseServer([
+      { type: "response.reasoning_summary_text.delta", delta: "Checked " },
+      { type: "response.reasoning_summary_text.delta", delta: "constraints." },
+      { type: "response.output_text.delta", delta: "{\"status\":\"success\"}" },
+      "[DONE]"
+    ]);
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
+    const thinking: string[] = [];
+
+    const result = await provider.stream?.(
+      { model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] },
+      (event) => {
+        if (event.type === "thinking_delta") thinking.push(event.text);
+      }
+    );
+
+    assert.deepEqual(thinking, ["Checked ", "constraints."]);
+    assert.equal(result?.thinking, "Checked constraints.");
+    assert.equal(result?.content, "{\"status\":\"success\"}");
   });
 });
 

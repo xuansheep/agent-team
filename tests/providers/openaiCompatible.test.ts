@@ -88,6 +88,16 @@ describe("OpenAiCompatibleProvider structured output", () => {
     });
   });
 
+  it("maps OpenAI-compatible reasoning_content into normalized thinking text", async () => {
+    const server = await startJsonServer({ choices: [{ message: { reasoning_content: "Checked constraints.", content: "{\"status\":\"success\"}" } }] });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.equal(result.thinking, "Checked constraints.");
+    assert.equal(result.content, "{\"status\":\"success\"}");
+  });
+
   it("retries transient network failures for non-streaming requests", async () => {
     const server = await startFlakyJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
@@ -159,6 +169,27 @@ describe("OpenAiCompatibleProvider streaming", () => {
       type: "json_schema",
       json_schema: { name: "node_result", strict: true, schema: responseSchema }
     });
+  });
+
+  it("streams reasoning_content deltas as normalized thinking events", async () => {
+    const server = await startSseServer([
+      { choices: [{ delta: { reasoning_content: "Checked " } }] },
+      { choices: [{ delta: { reasoning_content: "constraints.", content: "{\"status\":\"success\"}" } }] },
+      "[DONE]"
+    ]);
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
+    const thinking: string[] = [];
+
+    const result = await provider.stream?.(
+      { model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] },
+      (event) => {
+        if (event.type === "thinking_delta") thinking.push(event.text);
+      }
+    );
+
+    assert.deepEqual(thinking, ["Checked ", "constraints."]);
+    assert.equal(result?.thinking, "Checked constraints.");
+    assert.equal(result?.content, "{\"status\":\"success\"}");
   });
 
   it("aggregates streamed tool call argument fragments", async () => {

@@ -232,6 +232,37 @@ workflows:
     assert.equal(config.providers.default.user_agent, "custom-agent/1.0");
   });
 
+  it("loads a global prompt file relative to the config file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-team-global-prompt-"));
+    const promptFile = join(dir, "GLOBAL.md");
+    const configFile = join(dir, "agent-team.yaml");
+    await writeFile(promptFile, "Global safety rules.\nApply to every node.", "utf8");
+    await writeFile(configFile, `
+global_prompt_file: GLOBAL.md
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: gpt-test
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`, "utf8");
+
+    const config = await loadConfig(configFile);
+
+    assert.equal(config.global_prompt_file, "GLOBAL.md");
+    assert.equal(config.global_prompt, "Global safety rules.\nApply to every node.");
+  });
+
   it("rejects nodes that reference missing roles", async () => {
     const file = await tempFile("agent-team.yaml", `
 providers:

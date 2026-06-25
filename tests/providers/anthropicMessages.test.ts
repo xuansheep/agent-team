@@ -127,6 +127,16 @@ describe("AnthropicMessagesProvider", () => {
     assert.deepEqual(result.tool_calls, [{ id: "toolu-2", name: "Bash", input: { command: "pwd" } }]);
   });
 
+  it("maps Anthropic thinking blocks into normalized thinking text", async () => {
+    const server = await startJsonServer({ content: [{ type: "thinking", thinking: "Checked constraints." }, { type: "text", text: "{\"status\":\"success\"}" }] });
+    const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
+
+    const result = await provider.generate({ model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.equal(result.thinking, "Checked constraints.");
+    assert.equal(result.content, "{\"status\":\"success\"}");
+  });
+
   it("keeps multiple tool results in one immediate user message", async () => {
     const server = await startJsonServer({ content: [{ type: "text", text: "ok" }] });
     const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
@@ -183,6 +193,32 @@ describe("AnthropicMessagesProvider", () => {
     assert.deepEqual(result?.tool_calls, [{ id: "toolu-1", name: "Bash", input: { command: "npm test" } }]);
     assert.equal(server.requestBody.stream, true);
     assert.deepEqual(server.requestBody.messages, [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }]);
+  });
+
+  it("streams thinking deltas as normalized thinking events", async () => {
+    const server = await startSseServer([
+      { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Checked " } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "constraints." } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "{\"status\":\"success\"}" } },
+      { type: "content_block_stop", index: 1 },
+      "[DONE]"
+    ]);
+    const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024, streaming: true });
+    const thinking: string[] = [];
+
+    const result = await provider.stream?.(
+      { model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [] },
+      (event) => {
+        if (event.type === "thinking_delta") thinking.push(event.text);
+      }
+    );
+
+    assert.deepEqual(thinking, ["Checked ", "constraints."]);
+    assert.equal(result?.thinking, "Checked constraints.");
+    assert.equal(result?.content, "{\"status\":\"success\"}");
   });
 });
 

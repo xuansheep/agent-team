@@ -276,4 +276,40 @@ describe("runNode streaming", () => {
     assert.match(eventsText, /model_stream_delta/);
     assert.match(eventsText, /summary/);
   });
+
+  it("stores model thinking deltas separately from response deltas", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-thinking-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("generate should not be used when stream is available");
+      },
+      async stream(_request, onEvent) {
+        onEvent({ type: "thinking_delta", text: "Checked constraints." });
+        onEvent({ type: "content_delta", text: "{\"status\":\"success\"}" });
+        return { thinking: "Checked constraints.", content: "{\"status\":\"success\"}" };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "product", role: "product", provider: "default", permission_mode: "default" },
+      systemPrompt: "Product",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+
+    assert.equal(result.status, "success");
+    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.match(eventsText, /model_thinking_delta/);
+    assert.match(eventsText, /model_stream_delta/);
+  });
 });

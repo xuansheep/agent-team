@@ -31,6 +31,7 @@ type OpenAiStreamChunk = {
   choices?: Array<{
     delta?: {
       content?: string;
+      reasoning_content?: string;
       tool_calls?: OpenAiToolCallDelta[];
     };
   }>;
@@ -92,11 +93,12 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     }
 
     const body = await response.json() as {
-      choices?: Array<{ message?: { content?: string; tool_calls?: OpenAiToolCall[] } }>;
+      choices?: Array<{ message?: { content?: string; reasoning_content?: string; tool_calls?: OpenAiToolCall[] } }>;
     };
     const message = body.choices?.[0]?.message ?? {};
     return {
       content: message.content ?? undefined,
+      thinking: message.reasoning_content ?? undefined,
       tool_calls: message.tool_calls?.map((call) => ({
         id: call.id,
         name: call.function.name,
@@ -119,6 +121,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     if (!response.body) throw new Error("Provider stream response had no body");
 
     const content: string[] = [];
+    const thinking: string[] = [];
     const toolCalls = new Map<number, StreamingToolCall>();
 
     await consumeSseBlocks(response.body, (data) => {
@@ -129,6 +132,10 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         if (delta.content) {
           content.push(delta.content);
           onEvent({ type: "content_delta", text: delta.content });
+        }
+        if (delta.reasoning_content) {
+          thinking.push(delta.reasoning_content);
+          onEvent({ type: "thinking_delta", text: delta.reasoning_content });
         }
         for (const callDelta of delta.tool_calls ?? []) {
           const current = toolCalls.get(callDelta.index) ?? { name: "", arguments: "" };
@@ -141,7 +148,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       return false;
     });
 
-    return toStreamResponse(content, toolCalls);
+    return toStreamResponse(content, thinking, toolCalls);
   }
 
   private endpoint(): string {
@@ -180,7 +187,7 @@ function toRequestBody(request: ModelRequest, options: OpenAiCompatibleOptions):
   return body;
 }
 
-function toStreamResponse(content: string[], streamingToolCalls: Map<number, StreamingToolCall>): ModelResponse {
+function toStreamResponse(content: string[], thinking: string[], streamingToolCalls: Map<number, StreamingToolCall>): ModelResponse {
   const tool_calls: ModelToolCall[] = [...streamingToolCalls.entries()]
     .sort(([left], [right]) => left - right)
     .map(([index, call]) => ({
@@ -191,6 +198,7 @@ function toStreamResponse(content: string[], streamingToolCalls: Map<number, Str
 
   return {
     content: content.length ? content.join("") : undefined,
+    thinking: thinking.length ? thinking.join("") : undefined,
     tool_calls: tool_calls.length ? tool_calls : undefined
   };
 }

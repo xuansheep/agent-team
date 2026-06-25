@@ -162,6 +162,10 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
 
       }, event);
 
+    case "model_thinking_delta":
+
+      return appendThinkingStatus(next, event.node_id, event.attempt, event.text, event);
+
     case "model_stream_delta":
 
       return appendStreamingStatus(appendModelStream(next, event.node_id, event.attempt, event.text), event.node_id, event.attempt, event);
@@ -436,6 +440,30 @@ function appendStreamingStatus(state: TuiState, nodeId: string, attempt: number,
   if (exists) return state;
 
   return appendConversation(state, { kind: "status", nodeId, attempt, text, detailText: "模型正在返回内容" }, event);
+
+}
+
+
+
+function appendThinkingStatus(state: TuiState, nodeId: string, attempt: number, textDelta: string, event: StoredEvent): TuiState {
+
+  const text = `${nodeId} 正在思考...`;
+
+  const last = [...state.logMessages].reverse().find((item) => item.kind === "status" && item.nodeId === nodeId && item.attempt === attempt && item.text === text);
+
+  if (last) {
+
+    return {
+
+      ...state,
+
+      logMessages: state.logMessages.map((item) => item.id === last.id ? { ...item, detailText: `${item.detailText ?? ""}${textDelta}` } : item)
+
+    };
+
+  }
+
+  return appendConversation(state, { kind: "status", nodeId, attempt, text, detailText: textDelta }, event);
 
 }
 

@@ -804,7 +804,7 @@ export class WorkflowEngine {
       try {
         result = await runNode({
           node,
-          systemPrompt: role.system_prompt,
+          systemPrompt: effectiveSystemPrompt(options.config.global_prompt, role.system_prompt),
           model: node.model ?? role.default_model ?? providerConfig.default_model,
           provider: this.options.providerFactory(node.provider),
           tools,
@@ -1358,6 +1358,11 @@ export class WorkflowEngine {
   }
 
 
+}
+
+function effectiveSystemPrompt(globalPrompt: string | undefined, rolePrompt: string): string {
+  const global = globalPrompt?.trim();
+  return global ? `${global}\n\n${rolePrompt}` : rolePrompt;
 }
 
 

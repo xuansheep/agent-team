@@ -56,7 +56,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     const response = options.provider.stream
       ? await options.provider.stream(request, (event) => {
         streamEventWrites = streamEventWrites.then(() => appendRuntimeEvent(options, {
-          type: "model_stream_delta",
+          type: event.type === "thinking_delta" ? "model_thinking_delta" : "model_stream_delta",
           node_id: options.node.id,
           attempt,
           text: event.text

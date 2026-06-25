@@ -3414,6 +3414,66 @@ describe("RunLogPanel", () => {
 
 
 
+  it("renders thinking logs compactly and expands details on demand", () => {
+
+    const compact = render(
+
+      <RunLogPanel
+
+        detailMode={false}
+
+        currentNodeId="product"
+
+        currentAttempt={1}
+
+        items={[{ id: "thinking-1", kind: "status", nodeId: "product", attempt: 1, text: "product 正在思考...", detailText: "Checked constraints." }]}
+
+      />
+
+    );
+
+    const compactFrame = compact.lastFrame() ?? "";
+
+    assert.match(compactFrame, /product 正在思考/);
+
+    assert.doesNotMatch(compactFrame, /Checked constraints/);
+
+    compact.unmount();
+
+    compact.cleanup();
+
+
+
+    const detailed = render(
+
+      <RunLogPanel
+
+        detailMode={true}
+
+        currentNodeId="product"
+
+        currentAttempt={1}
+
+        items={[{ id: "thinking-1", kind: "status", nodeId: "product", attempt: 1, text: "product 正在思考...", detailText: "Checked constraints." }]}
+
+      />
+
+    );
+
+    const detailedFrame = detailed.lastFrame() ?? "";
+
+    assert.match(detailedFrame, /product 正在思考/);
+
+    assert.match(detailedFrame, /⎿\s+Checked constraints/);
+
+    detailed.unmount();
+
+    detailed.cleanup();
+
+  });
+
+
+
   it("renders detailed logs with message response indentation", () => {
 
 
@@ -5744,6 +5804,8 @@ describe("TuiApp", () => {
     output.unmount();
     output.cleanup();
   });
+
+
 
   it("pins configured workflow nodes above the prompt", () => {
 

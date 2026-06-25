@@ -97,6 +97,8 @@ export const workflowSchema = z.object({
 });
 
 export const configSchema = z.object({
+  global_prompt_file: z.string().min(1).optional(),
+  global_prompt: z.string().optional(),
   providers: z.record(providerSchema),
   roles: z.record(roleSchema),
   workflows: z.record(workflowSchema)

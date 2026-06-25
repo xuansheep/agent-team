@@ -1,3 +1,5 @@
+global_prompt_file: agent-team.global.md
+
 providers:
   default:
     type: responses-api

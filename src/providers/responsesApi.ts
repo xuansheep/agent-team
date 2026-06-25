@@ -23,6 +23,7 @@ type ResponsesOutputItem = {
   name?: string;
   arguments?: string;
   content?: Array<{ type?: string; text?: string }>;
+  summary?: Array<{ type?: string; text?: string }>;
 };
 
 type ResponsesBody = {
@@ -72,6 +73,7 @@ export class ResponsesApiProvider implements ModelProvider {
     if (!response.body) throw new Error("Provider stream response had no body");
 
     const content: string[] = [];
+    const thinking: string[] = [];
     const toolCalls: ModelToolCall[] = [];
 
     await consumeSseBlocks(response.body, (data) => {
@@ -79,6 +81,10 @@ export class ResponsesApiProvider implements ModelProvider {
       if (chunk.type === "response.output_text.delta" && chunk.delta) {
         content.push(chunk.delta);
         onEvent({ type: "content_delta", text: chunk.delta });
+      }
+      if (chunk.type?.includes("reasoning") && chunk.type.includes("delta") && chunk.delta) {
+        thinking.push(chunk.delta);
+        onEvent({ type: "thinking_delta", text: chunk.delta });
       }
       if (chunk.type === "response.output_item.done" && chunk.item?.type === "function_call") {
         toolCalls.push(toModelToolCall(chunk.item));
@@ -88,6 +94,7 @@ export class ResponsesApiProvider implements ModelProvider {
 
     return {
       content: content.length ? content.join("") : undefined,
+      thinking: thinking.length ? thinking.join("") : undefined,
       tool_calls: toolCalls.length ? toolCalls : undefined
     };
   }
@@ -202,10 +209,16 @@ function toResponsesMessageContent(role: "user" | "assistant", content: string |
 function fromResponsesBody(body: ResponsesBody): ModelResponse {
   const toolCalls: ModelToolCall[] = [];
   const outputText: string[] = [];
+  const thinking: string[] = [];
 
   if (body.output_text) outputText.push(body.output_text);
   for (const item of body.output ?? []) {
     if (item.type === "function_call") toolCalls.push(toModelToolCall(item));
+    if (item.type === "reasoning") {
+      for (const part of item.summary ?? item.content ?? []) {
+        if (part.text) thinking.push(part.text);
+      }
+    }
     if (!body.output_text && item.type === "message") {
       for (const part of item.content ?? []) {
         if ((part.type === "output_text" || part.type === "text") && part.text) outputText.push(part.text);
@@ -215,6 +228,7 @@ function fromResponsesBody(body: ResponsesBody): ModelResponse {
 
   return {
     content: outputText.length ? outputText.join("") : undefined,
+    thinking: thinking.length ? thinking.join("") : undefined,
     tool_calls: toolCalls.length ? toolCalls : undefined
   };
 }

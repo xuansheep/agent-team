@@ -25,6 +25,31 @@ describe("WorkflowEngine", () => {
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b"]);
   });
 
+  it("prepends the configured global prompt to every node system prompt", async () => {
+    const systemPrompts: string[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        const system = request.messages.find((message) => message.role === "system")?.content;
+        systemPrompts.push(String(system));
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/global-prompt-runs" });
+
+    const result = await engine.run({
+      global_prompt_file: "GLOBAL.md",
+      global_prompt: "Global safety rules.",
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { a: { description: "", system_prompt: "Role A", requires: { tool_calling: false, vision: false } }, b: { description: "", system_prompt: "Role B", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "completed");
+    assert.equal(systemPrompts.length, 2);
+    assert.match(systemPrompts[0] ?? "", /^Global safety rules\.\n\nRole A/);
+    assert.match(systemPrompts[1] ?? "", /^Global safety rules\.\n\nRole B/);
+  });
+
   it("returns to an upstream node on failure edge", async () => {
     let calls = 0;
     class FeedbackProvider implements ModelProvider {

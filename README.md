@@ -10,6 +10,14 @@ A local TUI harness for configurable agent-team workflow sessions.
 4. Set provider key: `OPENAI_API_KEY=...`
 5. Open the TUI: `node dist/cli/main.js`
 
+## Global Prompt File
+
+Set `global_prompt_file` in `agent-team.yaml` to load shared instructions from a file. The path is resolved relative to the config file, and the loaded text is prepended to every role `system_prompt`.
+
+```yaml
+global_prompt_file: agent-team.global.md
+```
+
 ## Interactive TUI
 
 Every `agent-team` invocation opens the interactive terminal UI. Former headless subcommands such as `run`, `resume`, `status`, and `inspect` are routed into the TUI instead of executing automation directly.

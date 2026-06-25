@@ -93,6 +93,22 @@ describe("TUI event adapter", () => {
     assert.match(state.logMessages.at(-1)?.text ?? "", /正在生成响应/);
   });
 
+  it("tracks streaming thinking separately from response output", () => {
+    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+    state = reduceStoredEvent(state, {
+      type: "model_thinking_delta",
+      node_id: "product",
+      attempt: 1,
+      text: "Checked constraints.",
+      ts: "2026-06-23T00:00:00.000Z",
+      seq: 1
+    } as any);
+
+    assert.deepEqual(state.modelStreams, []);
+    assert.match(state.logMessages.at(-1)?.text ?? "", /product 正在思考/);
+    assert.match(state.logMessages.at(-1)?.detailText ?? "", /Checked constraints/);
+  });
+
   it("records the initial user request and resumed user answers in conversation", () => {
     let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
     state = reduceStoredEvent(state, {

@@ -37,13 +37,13 @@ export type ModelRequest = {
 
 export type ModelResponse = {
   content?: string;
+  thinking?: string;
   tool_calls?: ModelToolCall[];
 };
 
-export type ModelStreamEvent = {
-  type: "content_delta";
-  text: string;
-};
+export type ModelStreamEvent =
+  | { type: "content_delta"; text: string }
+  | { type: "thinking_delta"; text: string };
 
 export type ModelProvider = {
   generate(request: ModelRequest): Promise<ModelResponse>;
