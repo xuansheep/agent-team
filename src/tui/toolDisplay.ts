@@ -37,11 +37,20 @@ export function getToolResultDetail(result: unknown): string {
   if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
   const value = result as Record<string, unknown>;
   const lines: string[] = [];
-  if (typeof value.output === "string" && value.output) lines.push(`输出：${truncate(value.output, 500)}`);
+  if (typeof value.output === "string") lines.push(`输出：${value.output ? summarizeToolOutput(value.output) : "(no output)"}`);
   if (typeof value.error === "string" && value.error) lines.push(`错误：${truncate(value.error, 500)}`);
   if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
   if (typeof value.path === "string") lines.push(`路径：${value.path}`);
   return lines.length ? lines.join("\n") : readableRecord(value);
+}
+
+function summarizeToolOutput(output: string): string {
+  const lines = output.split(/\r?\n/);
+  if (output.endsWith("\n") && lines.at(-1) === "") lines.pop();
+  if (lines.length <= 5) return truncate(output, 500);
+
+  const omitted = lines.length - 4;
+  return [...lines.slice(0, 2), `… +${omitted} lines (ctrl + t to view transcript)`, ...lines.slice(-2)].join("\n");
 }
 
 export function readableRecord(value: Record<string, unknown>): string {
@@ -66,6 +75,25 @@ export function readableValue(value: unknown): string {
   return String(value);
 }
 
+const TRANSCRIPT_HINT = "ctrl + t to view transcript";
+
+export function truncateToolDetail(text: string, max: number): string {
+  if (text.length <= max) return text;
+  if (!text.includes(TRANSCRIPT_HINT)) return truncate(text, max);
+
+  const lines = text.split(/\r?\n/);
+  const hintIndex = lines.findIndex((line) => line.includes(TRANSCRIPT_HINT));
+  if (hintIndex === -1) return truncate(text, max);
+
+  const preserved = lines.slice(hintIndex).join("\n");
+  if (preserved.length >= max) return truncate(preserved, max);
+
+  const prefixBudget = Math.max(0, max - preserved.length - 1);
+  const prefix = truncate(lines.slice(0, hintIndex).join("\n"), prefixBudget);
+  return prefix ? `${prefix}\n${preserved}` : preserved;
+}
+
 export function truncate(text: string, max: number): string {
+  if (max <= 0) return "";
   return text.length > max ? `${text.slice(0, max)}...` : text;
 }

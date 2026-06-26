@@ -75,6 +75,8 @@ export function PromptInput(props: {
 
   onEvent: (event: PromptInputEvent) => void;
 
+  onTextChange?: (text: string) => void;
+
 
 }) {
 
@@ -108,6 +110,17 @@ export function PromptInput(props: {
 
   const argumentHint = commandArgumentHint(buffer.text);
 
+
+
+
+
+  useEffect(() => {
+
+
+    props.onTextChange?.(buffer.text);
+
+
+  }, [buffer.text, props.onTextChange]);
 
 
 

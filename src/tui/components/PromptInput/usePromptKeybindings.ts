@@ -171,7 +171,7 @@ function isExactSuggestion(input: PromptKeybindingInput): boolean {
 
 function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): (input: PromptKeybindingInput) => boolean {
   return (input) => {
-    if (mode === "permission" || mode === "waiting_plan_review" || mode === "confirm_interrupt") {
+    if (mode === "permission" || mode === "confirm_interrupt") {
       if (key.escape) input.onEvent({ type: "cancel" });
       return true;
     }
@@ -209,11 +209,11 @@ function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): 
 }
 
 function modeAcceptsText(mode: PromptInputMode): boolean {
-  return mode === "input" || mode === "running" || mode === "question";
+  return mode === "input" || mode === "running" || mode === "question" || mode === "waiting_plan_review";
 }
 
 function modeAcceptsSubmit(mode: PromptInputMode): boolean {
-  return mode === "input" || mode === "running" || mode === "question";
+  return mode === "input" || mode === "running" || mode === "question" || mode === "waiting_plan_review";
 }
 
 function wrapIndex(index: number, length: number): number {

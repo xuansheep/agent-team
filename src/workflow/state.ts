@@ -1,3 +1,5 @@
+import { ModelMessage } from "../providers/types.js";
+
 export type RunStatus = "running" | "pending" | "completed";
 
 export type NodeAttemptState = {
@@ -17,6 +19,8 @@ export type PendingReview = {
 export type ResumeCheckpoint = {
   node_id: string;
   handoff: unknown;
+  attempt?: number;
+  dialogue_messages?: ModelMessage[];
 };
 
 export type WorkflowState = {

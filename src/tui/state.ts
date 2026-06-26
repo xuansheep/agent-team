@@ -215,10 +215,19 @@ export type TuiConversationItem = {
   detailText?: string;
 
 
+  detailVisible?: boolean;
+
+
   nodeId?: string;
 
 
   attempt?: number;
+
+
+  source?: "model_stream";
+
+
+  streamEnd?: number;
 
 
 };

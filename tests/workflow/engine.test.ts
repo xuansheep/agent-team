@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
-import { ModelProvider } from "../../src/providers/types.js";
+import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 
 class FakeProvider implements ModelProvider {
   async generate() {
@@ -28,7 +28,7 @@ describe("WorkflowEngine", () => {
   it("prepends the configured global prompt to every node system prompt", async () => {
     const systemPrompts: string[] = [];
     const provider: ModelProvider = {
-      async generate(request) {
+      async generate(request: ModelRequest) {
         const system = request.messages.find((message) => message.role === "system")?.content;
         systemPrompts.push(String(system));
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
@@ -79,8 +79,10 @@ describe("WorkflowEngine", () => {
 
   it("resumes a waiting node with user input", async () => {
     let calls = 0;
+    const requests: unknown[] = [];
     class WaitingProvider implements ModelProvider {
-      async generate() {
+      async generate(request: ModelRequest) {
+        requests.push(request);
         calls += 1;
         if (calls === 1) {
           return { content: JSON.stringify({ status: "needs_user_input", summary: "need detail", questions: [{ id: "q1", text: "What is the target user?", required: true }] }) };
@@ -104,7 +106,10 @@ describe("WorkflowEngine", () => {
     const resumed = await engine.resume(config, "flow", runId, { answer: "operators" });
 
     assert.equal(resumed.status, "completed");
-    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "product").length, 2);
+    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "product").length, 1);
+    const resumedMessages = JSON.stringify((requests[1] as { messages?: unknown[] }).messages);
+    assert.match(resumedMessages, /need detail/);
+    assert.match(resumedMessages, /operators/);
   });
 
   it("pauses after a plan node and resumes directly to the next node after approval", async () => {
@@ -159,6 +164,42 @@ describe("WorkflowEngine", () => {
     assert.equal(stillWaiting.current_node_id, "product");
     assert.equal(stillWaiting.attempts[0]?.status, "waiting_user");
     assert.equal(calls, 1);
+  });
+
+  it("treats custom headless input during pending plan review as model context", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nOld plan.", handoff: { instruction: "old" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "revised plan", document: "# Plan\nRevised plan.", handoff: { instruction: "revised" } }) };
+      }
+    };
+    const runRoot = `.tmp/headless-plan-review-input-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const config = planReviewConfig();
+
+    const waiting = await engine.run(config, "flow", { request: "x" });
+    assert.equal(waiting.status, "pending");
+
+    const runId = await latestRunId(runRoot);
+    const revised = await engine.resume(config, "flow", runId, { answer: "请把计划拆得更细" });
+
+    const resumedUserMessages = requests[1]?.messages
+      .filter((message) => message.role === "user")
+      .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))
+      .join("\n") ?? "";
+
+    assert.equal(calls, 2);
+    assert.equal(revised.status, "pending");
+    assert.equal(revised.pending_review?.node_id, "product");
+    assert.match(revised.pending_review?.document ?? "", /Revised plan/);
+    assert.match(resumedUserMessages, /pending_review/);
+    assert.match(resumedUserMessages, /请把计划拆得更细/);
   });
 
   it("completes only after a complete node returns a summary document", async () => {
@@ -234,7 +275,7 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        if (calls === 1) return { tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
+        if (calls === 1) return { content: "我先写入报告产物。", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
         return { content: JSON.stringify({ status: "success", summary: "dev done", handoff: { instruction: "summarize" } }) };
       }
     };
@@ -349,6 +390,97 @@ describe("WorkflowEngine", () => {
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
   });
 
+  it("resumes a failed node with model-returned failure status and rework succeeds", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "failure", summary: "rejected: not enough detail", feedback: { defects: ["missing context"], change_requests: [] }, handoff: { instruction: "fix it" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = `.tmp/failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const config = {
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
+    };
+
+    const waiting = await engine.run(config, "flow", { request: "x" });
+    assert.equal(waiting.status, "pending");
+    assert.equal(waiting.attempts.at(-1)?.status, "failure");
+    assert.equal(waiting.current_node_id, "dev");
+
+    const runId = await latestRunId(runRoot);
+    const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
+    assert.equal(persisted.status, "pending");
+    assert.equal(persisted.resume_checkpoint?.node_id, "dev");
+
+    const resumed = await engine.resume(config, "flow", runId, { answer: "adding more context for rework" });
+
+    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
+    assert.equal(resumed.resume_checkpoint, undefined);
+    assert.equal(calls, 2);
+
+    const resumedUserMessages = requests[1]?.messages.filter((m) => m.role === "user");
+    const resumedText = resumedUserMessages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join(" ");
+    assert.match(resumedText, /adding more context for rework/);
+  });
+
+  it("resumes a failed node after plan approval with user rework", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nBuild feature X.", handoff: { instruction: "implement" } }) };
+        }
+        if (calls === 2) {
+          return { content: JSON.stringify({ status: "failure", summary: "implementation rejected", feedback: { defects: ["missing tests"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = `.tmp/plan-failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const config = {
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
+        dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const, mode: "plan" as const }, { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [{ from: "product", to: "dev", condition: "success" as const }] } }
+    };
+
+    const planWaiting = await engine.run(config, "flow", { request: "x" });
+    assert.equal(planWaiting.status, "pending");
+    assert.equal(planWaiting.pending_review?.node_id, "product");
+
+    const runId = await latestRunId(runRoot);
+    const approved = await engine.resume(config, "flow", runId, { answer: "Yes, continue execution by plan" });
+    assert.equal(approved.status, "pending");
+    assert.equal(approved.attempts.at(-1)?.status, "failure");
+    assert.equal(calls, 2);
+
+    const resumed = await engine.resume(config, "flow", runId, { answer: "add unit tests and retry" });
+
+    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
+    assert.equal(calls, 3);
+
+    const devMessages = requests[2]?.messages.filter((m) => m.role === "user");
+    const devText = devMessages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join(" ");
+    assert.match(devText, /add unit tests and retry/);
+  });
+
   it("resumes a provider-error headless run from the saved checkpoint", async () => {
     const runRoot = `.tmp/headless-checkpoint-error-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let calls = 0;
@@ -379,7 +511,7 @@ describe("WorkflowEngine", () => {
     const resumed = await engine.resume(config, "flow", runId, { answer: "try again" });
 
     assert.equal(resumed.status, "completed");
-    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(resumed.resume_checkpoint, undefined);
     assert.equal(calls, 2);
   });

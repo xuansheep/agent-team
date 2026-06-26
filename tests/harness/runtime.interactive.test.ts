@@ -7,7 +7,6 @@ import { runNode } from "../../src/harness/runtime.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
-
 describe("runNode interactive permissions", () => {
   it("asks for permission and executes tool after allow_once", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-"));
@@ -22,7 +21,6 @@ describe("runNode interactive permissions", () => {
         return { output: "ok", exit_code: 0 };
       }
     });
-
     let calls = 0;
     const provider: ModelProvider = {
       async generate() {
@@ -33,7 +31,6 @@ describe("runNode interactive permissions", () => {
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
-
     const result = await runNode({
       node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
       systemPrompt: "Dev",
@@ -54,31 +51,27 @@ describe("runNode interactive permissions", () => {
         }
       }
     });
-
     assert.equal(result.status, "success");
     const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
     assert.match(eventsText, /permission_requested/);
     assert.match(eventsText, /permission_resolved/);
     assert.match(eventsText, /tool_completed/);
   });
-
   it("emits artifact events and returns deliverables for artifact tool output", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-artifact-"));
     const store = new RunStore(root);
     const run = await store.createRun("flow", { request: "x" });
     const tools = createLocalToolRegistry();
     let calls = 0;
-
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
         if (calls === 1) {
-          return { tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
+          return { content: "我先写入报告产物。", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
         }
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
-
     const result = await runNode({
       node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
       systemPrompt: "Dev",
@@ -92,21 +85,18 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-
     assert.deepEqual(result.deliverables, [{ artifact_id: "dev/report.md", description: "User report" }]);
     assert.equal(await readFile(join(root, run.runId, "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
     const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
     assert.match(eventsText, /artifact_created/);
     assert.match(eventsText, /dev\/report\.md/);
   });
-
   it("accepts SubmitNodeResult tool calls as the final node result", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-submit-result-"));
     const store = new RunStore(root);
     const run = await store.createRun("flow", { request: "x" });
     const tools = new ToolRegistry();
     let requestedPermission = false;
-
     const provider: ModelProvider = {
       async generate() {
         return {
@@ -126,7 +116,6 @@ describe("runNode interactive permissions", () => {
         };
       }
     };
-
     const result = await runNode({
       node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
       systemPrompt: "Dev",
@@ -146,17 +135,16 @@ describe("runNode interactive permissions", () => {
         }
       }
     });
-
     assert.equal(result.status, "success");
     assert.equal(result.handoff.instruction, "next");
     assert.equal(requestedPermission, false);
   });
-
   it("passes stable short prompt cache keys in model request context", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-context-"));
     const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
     const tools = new ToolRegistry();
-    const runId = "2026-06-25T10-53-35-371Z-859a43fb-6df8-4959-b37a-97fee9ac57eb";
+    const runId = run.runId;
     const contexts: ModelRequestContext[] = [];
     const provider: ModelProvider = {
       async generate(request) {
@@ -165,7 +153,6 @@ describe("runNode interactive permissions", () => {
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
-
     const options = {
       node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const },
       systemPrompt: "Dev",
@@ -179,16 +166,13 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     };
-
     await runNode(options);
     await runNode(options);
-
     assert.equal(contexts[0]?.threadId, `${runId}:dev`);
     assert.equal(contexts[0]?.promptCacheKey.length, 64);
     assert.match(contexts[0]?.promptCacheKey ?? "", /^[0-9a-f]{64}$/);
     assert.equal(contexts[0]?.promptCacheKey, contexts[1]?.promptCacheKey);
   });
-
   it("sends assistant tool calls before tool outputs on the follow-up model request", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-tool-chain-"));
     const store = new RunStore(root);
@@ -202,7 +186,6 @@ describe("runNode interactive permissions", () => {
         return { output: "package.json", exit_code: 0 };
       }
     });
-
     const requests: Array<{ messages: unknown[] }> = [];
     const provider: ModelProvider = {
       async generate(request) {
@@ -213,7 +196,6 @@ describe("runNode interactive permissions", () => {
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
-
     const result = await runNode({
       node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
       systemPrompt: "Dev",
@@ -227,15 +209,121 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-
     assert.equal(result.status, "success");
     const followUp = requests[1]?.messages.slice(-2);
     assert.deepEqual(followUp, [
       { role: "assistant", content: "我先列出目录确认文件。", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] },
       { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
     ]);
+    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.match(eventsText, /model_stream_delta/);
+    assert.match(eventsText, /我先列出目录确认文件。/);
   });
-
+  it("repairs empty assistant content before tool-call turns so TUI gets a real preamble", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-empty-tool-preamble-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let executions = 0;
+    tools.add({
+      name: "LS",
+      description: "fake ls",
+      input_schema: {},
+      async execute() {
+        executions += 1;
+        return { output: "package.json", exit_code: 0 };
+      }
+    });
+    const requests: Array<{ messages: unknown[] }> = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push({ messages: request.messages });
+        if (requests.length === 1) {
+          return { tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
+        }
+        if (requests.length === 2) {
+          return { content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["LS(.)"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+    assert.equal(result.status, "success");
+    assert.equal(executions, 1);
+    assert.match(JSON.stringify(requests[1]?.messages), /tool-call turn did not include a user-visible natural-language preamble/);
+    const followUp = requests[2]?.messages.slice(-2);
+    assert.deepEqual(followUp, [
+      { role: "assistant", content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] },
+      { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
+    ]);
+    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.match(eventsText, /我先列出目录确认项目结构。/);
+  });
+  it("repairs raw NodeResult text before tool-call turns so TUI gets a real preamble", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-strip-tool-json-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let executions = 0;
+    tools.add({
+      name: "LS",
+      description: "fake ls",
+      input_schema: {},
+      async execute() {
+        executions += 1;
+        return { output: "package.json", exit_code: 0 };
+      }
+    });
+    const requests: Array<{ messages: unknown[]; system?: unknown }> = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push({ messages: request.messages, system: request.messages.find((message) => message.role === "system")?.content });
+        if (requests.length === 1) {
+          return { content: `{"deliverables":[],"document":"","status`, tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
+        }
+        if (requests.length === 2) {
+          return { content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["LS(.)"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+    assert.equal(result.status, "success");
+    assert.equal(executions, 1);
+    assert.match(JSON.stringify(requests[1]?.messages), /tool-call turn did not include a user-visible natural-language preamble/);
+    const followUp = requests[2]?.messages.slice(-2);
+    assert.deepEqual(followUp, [
+      { role: "assistant", content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] },
+      { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
+    ]);
+    assert.doesNotMatch(JSON.stringify(followUp), /deliverables|document|status/);
+    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.match(eventsText, /我先列出目录确认项目结构。/);
+  });
   it("asks the model to repair an invalid final NodeResult once without increasing node attempt", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-repair-result-"));
     const store = new RunStore(root);
@@ -244,7 +332,6 @@ describe("runNode interactive permissions", () => {
     const requests: Array<{ messages: unknown[]; attempt?: number }> = [];
     let calls = 0;
     const invalid = JSON.stringify({ status: "needs_user_input", summary: "need input", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] } });
-
     const provider: ModelProvider = {
       async generate(request) {
         calls += 1;
@@ -253,7 +340,6 @@ describe("runNode interactive permissions", () => {
         return { content: JSON.stringify({ status: "success", summary: "repaired", handoff: { instruction: "next" } }) };
       }
     };
-
     const result = await runNode({
       node: { id: "product", role: "product", provider: "default", permission_mode: "default" },
       systemPrompt: "Product",
@@ -267,7 +353,6 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-
     assert.equal(result.status, "success");
     assert.equal(result.summary, "repaired");
     assert.equal(calls, 2);
@@ -275,7 +360,6 @@ describe("runNode interactive permissions", () => {
     assert.match(JSON.stringify(requests[1]?.messages), /Return exactly one valid NodeResult JSON object/);
   });
 });
-
 describe("runNode streaming", () => {
   it("stores model stream deltas and still returns the final node result", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-stream-"));
@@ -287,16 +371,24 @@ describe("runNode streaming", () => {
         throw new Error("generate should not be used when stream is available");
       },
       async stream(request, onEvent) {
-        assert.ok(request.response_schema);
+        assert.equal(request.response_schema, undefined);
+        assert.ok(request.tools.some((tool) => tool.name === "SubmitNodeResult"));
         const system = request.messages.find((message) => message.role === "system")?.content;
+        assert.match(String(system), /Preamble messages/);
+        assert.match(String(system), /Before making tool calls, send a brief preamble/);
+        assert.match(String(system), /I\'ve explored the repo; now checking the API route definitions/);
         assert.match(String(system), /Before calling tools/);
+        assert.match(String(system), /Build on prior context/);
+        assert.match(String(system), /Logically group related actions/);
+        assert.match(String(system), /When SubmitNodeResult is available/);
+        assert.match(String(system), /assistant content field must contain the preamble/);
+        assert.match(String(system), /Do not put NodeResult JSON in assistant content/);
         assert.match(String(system), /final NodeResult/);
         onEvent({ type: "content_delta", text: "{\"status\":\"success\"," });
         onEvent({ type: "content_delta", text: "\"summary\":\"done\"}" });
         return { content: "{\"status\":\"success\",\"summary\":\"done\"}" };
       }
     };
-
     const result = await runNode({
       node: { id: "product", role: "product", provider: "default", permission_mode: "default" },
       systemPrompt: "Product",
@@ -310,13 +402,11 @@ describe("runNode streaming", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-
     assert.equal(result.status, "success");
     const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
     assert.match(eventsText, /model_stream_delta/);
     assert.match(eventsText, /summary/);
   });
-
   it("stores model thinking deltas separately from response deltas", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-thinking-"));
     const store = new RunStore(root);
@@ -332,7 +422,6 @@ describe("runNode streaming", () => {
         return { thinking: "Checked constraints.", content: "{\"status\":\"success\"}" };
       }
     };
-
     const result = await runNode({
       node: { id: "product", role: "product", provider: "default", permission_mode: "default" },
       systemPrompt: "Product",
@@ -346,7 +435,6 @@ describe("runNode streaming", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-
     assert.equal(result.status, "success");
     const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
     assert.match(eventsText, /model_thinking_delta/);

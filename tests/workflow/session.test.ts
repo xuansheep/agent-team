@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 
 
 import { WorkflowEngine } from "../../src/workflow/engine.js";
-import { ModelProvider } from "../../src/providers/types.js";
+import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { RunStore } from "../../src/storage/runStore.js";
 
 
@@ -230,14 +230,15 @@ describe("WorkflowSession", () => {
     const userMessages = events.filter((event) => event.type === "user_message");
     const state = await store.loadState(session.runId);
 
-    assert.deepEqual(starts, ["product:1", "dev:1", "dev:2"]);
+    assert.deepEqual(starts, ["product:1", "dev:1"]);
     assert.equal(events.filter((event) => event.type === "run_started").length, 1);
     assert.equal(userMessages.length, 1);
     assert.equal(userMessages[0]?.node_id, "dev");
+    assert.equal(userMessages[0]?.attempt, 1);
     assert.equal(state.status, "completed");
     assert.equal(state.resume_checkpoint, undefined);
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "product").length, 1);
-    assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(calls, 3);
   });
 
@@ -279,7 +280,8 @@ describe("WorkflowSession", () => {
 
     assert.equal(starts[0], "product:1");
     assert.equal(starts.at(-1), "dev:1");
-    assert.equal(userMessages[0]?.node_id, "dev");
+    assert.equal(userMessages.find((event) => event.text === "Yes, continue execution by plan")?.node_id, "product");
+    assert.equal(userMessages.find((event) => event.text === "resume dev")?.node_id, "dev");
     assert.equal(state.status, "completed");
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "product").length, 1);
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
@@ -484,6 +486,13 @@ describe("WorkflowSession", () => {
 
     await session.resumePlanReview("continue");
 
+    const storedEvents = await new RunStore(".tmp/session-plan-review-runs").loadEvents(session.runId);
+    const userMessageIndex = storedEvents.findIndex((event) => event.type === "user_message" && event.text === "Yes, continue execution by plan");
+    const resolvedIndex = storedEvents.findIndex((event) => event.type === "plan_review_resolved" && event.decision === "continue");
+    assert.notEqual(userMessageIndex, -1);
+    assert.notEqual(resolvedIndex, -1);
+    assert.ok(userMessageIndex < resolvedIndex);
+
 
 
     const result = await session.result;
@@ -670,6 +679,57 @@ describe("WorkflowSession", () => {
 
 
 
+  it("treats custom input during pending plan review as model context", async () => {
+
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+
+        if (calls === 1) return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nOld plan.", handoff: { instruction: "old" } }) };
+
+        return { content: JSON.stringify({ status: "success", summary: "revised plan", document: "# Plan\nRevised plan.", handoff: { instruction: "revised" } }) };
+      }
+    };
+
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-plan-review-input-runs" });
+    const session = await engine.startInteractive(planConfig(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "plan_review_requested") break;
+    }
+
+    await session.resumeWithUserInput({ answer: "请把计划拆得更细" });
+
+    let revised = "";
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "plan_review_requested") {
+        revised = event.document;
+        break;
+      }
+    }
+
+    const userContent = requests[1]?.messages
+      .filter((message) => message.role === "user")
+      .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))
+      .join("\n") ?? "";
+
+    assert.equal(calls, 2);
+    assert.match(userContent, /pending_review/);
+    assert.match(userContent, /请把计划拆得更细/);
+    assert.match(revised, /Revised plan/);
+
+    await session.interrupt();
+    await promiseSettlesSoon(session.result);
+  });
+
+
   it("marks provider errors as a failed node waiting for user input", async () => {
 
 
@@ -749,6 +809,7 @@ describe("WorkflowSession", () => {
 
 
     let calls = 0;
+    const requests: unknown[] = [];
 
 
 
@@ -756,7 +817,8 @@ describe("WorkflowSession", () => {
 
 
 
-      async generate() {
+      async generate(request) {
+        requests.push(request);
 
 
 
@@ -872,7 +934,11 @@ describe("WorkflowSession", () => {
 
 
 
-    assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
+    assert.equal(seen.includes("node_started"), false);
+    const resumedMessages = JSON.stringify((requests[1] as { messages?: unknown[] }).messages);
+    assert.match(resumedMessages, /need detail/);
+    assert.match(resumedMessages, /operators/);
 
 
 
@@ -1055,6 +1121,99 @@ describe("WorkflowSession", () => {
     assert.equal(events.some((event) => event.type === "node_waiting_user"), true);
     assert.equal(events.some((event) => event.type === "run_interrupted"), false);
     assert.equal(calls, 0);
+  });
+
+  it("resumes an interactive session after a node returns failure and user provides rework input", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "failure", summary: "rejected: missing details", feedback: { defects: ["incomplete"], change_requests: [] }, handoff: { instruction: "rework" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = `.tmp/session-failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const session = await engine.startInteractive(config(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "node_waiting_user") break;
+    }
+
+    await promiseSettlesSoon(session.result);
+    const store = new RunStore(runRoot);
+    let state = await store.loadState(session.runId);
+    assert.equal(state.status, "pending");
+    assert.equal(state.attempts.at(-1)?.status, "failure");
+
+    await session.resumeWithUserInput({ answer: "adding required context for rework" });
+
+    const result = await session.result;
+    assert.equal(result.status, "completed");
+    assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
+    assert.equal(calls, 2);
+
+    const reworkMessages = requests[1]?.messages.filter((m) => m.role === "user");
+    const reworkText = reworkMessages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join(" ");
+    assert.match(reworkText, /adding required context for rework/);
+  });
+
+  it("resumes an interactive session after plan approval then downstream failure with user rework", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nBuild feature.", handoff: { instruction: "implement" } }) };
+        }
+        if (calls === 2) {
+          return { content: JSON.stringify({ status: "failure", summary: "implementation rejected", feedback: { defects: ["missing edge cases"], change_requests: [] }, handoff: { instruction: "rework" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = `.tmp/session-plan-failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const session = await engine.startInteractive(planConfig(), "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "plan_review_requested") break;
+    }
+
+    await session.resumePlanReview("continue");
+
+    for (;;) {
+      const event = await nextEventWithTimeout(iterator);
+      if (event.type === "node_waiting_user") break;
+    }
+
+    await promiseSettlesSoon(session.result);
+    const store = new RunStore(runRoot);
+    let state = await store.loadState(session.runId);
+    assert.equal(state.status, "pending");
+    assert.equal(state.attempts.at(-1)?.status, "failure");
+    assert.equal(calls, 2);
+
+    await session.resumeWithUserInput({ answer: "handle edge cases and retry" });
+
+    const result = await session.result;
+    assert.equal(result.status, "completed");
+    assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
+    assert.equal(calls, 3);
+
+    const reworkMessages = requests[2]?.messages.filter((m) => m.role === "user");
+    const reworkText = reworkMessages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join(" ");
+    assert.match(reworkText, /handle edge cases and retry/);
   });
 
   it("replays a manually paused run as waiting for user input without invoking the provider", async () => {

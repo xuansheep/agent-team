@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { nodeResultJsonSchema, parseNodeResult } from "../../src/team/nodeResult.js";
+import { nodeResultJsonSchema, nodeResultOutputInstructions, parseNodeResult, visibleAssistantTextBeforeNodeResult } from "../../src/team/nodeResult.js";
 
 describe("nodeResultJsonSchema", () => {
   it("requires every top-level property for strict structured output", () => {
@@ -65,6 +65,19 @@ describe("nodeResultJsonSchema", () => {
       })),
       /needs_user_input results must include at least one concrete question/i
     );
+  });
+
+  it("instructs models to write Codex-style user-visible preambles before tools", () => {
+    assert.match(nodeResultOutputInstructions, /same language as the user/i);
+    assert.match(nodeResultOutputInstructions, /Do not begin writing NodeResult keys before tool calls/i);
+  });
+
+  it("hides structured JSON fragments from visible assistant preambles", () => {
+    assert.equal(visibleAssistantTextBeforeNodeResult('{"deliver'), "");
+    assert.equal(visibleAssistantTextBeforeNodeResult('{"foo":"bar"'), "");
+    assert.equal(visibleAssistantTextBeforeNodeResult('[{"id":"next_step"'), "");
+    assert.equal(visibleAssistantTextBeforeNodeResult('```json\n{"status":"success"'), "");
+    assert.equal(visibleAssistantTextBeforeNodeResult('我先检查项目结构。\n{"status":"success"}'), "我先检查项目结构。");
   });
 
   it("rejects responses that contain multiple NodeResult objects", () => {

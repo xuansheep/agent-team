@@ -1,16 +1,24 @@
 import React from "react";
 import { Box, Text } from "../ink.js";
+import { visibleAssistantTextBeforeNodeResult } from "../../team/nodeResult.js";
 import { TuiModelStreamState } from "../state.js";
 
 export function ModelStreamPanel({ streams }: { streams: TuiModelStreamState[] }) {
-  if (!streams.length) return null;
+  const visible = streams
+    .map((stream) => ({ ...stream, text: visibleAssistantTextBeforeNodeResult(stream.text).trim() }))
+    .filter((stream) => stream.text.length > 0)
+    .slice(-3);
+
+  if (!visible.length) return null;
 
   return (
     <Box flexDirection="column">
-      {streams.slice(-3).map((stream) => (
-        <Box key={`${stream.nodeId}:${stream.attempt}`} flexDirection="column">
-          <Text dimColor>{stream.nodeId} #{stream.attempt} streaming</Text>
-          <Text>{stream.text.slice(-1000)}</Text>
+      {visible.map((stream) => (
+        <Box key={`${stream.nodeId}:${stream.attempt}`} flexDirection="row" marginTop={1}>
+          <Box minWidth={2}>
+            <Text color="green">●</Text>
+          </Box>
+          <Text wrap="wrap">{stream.text.slice(-1000)}</Text>
         </Box>
       ))}
     </Box>

@@ -9,6 +9,7 @@ type BaseLogMessage = {
   id: string;
   text: string;
   detailText?: string;
+  detailVisible?: boolean;
   parentLogId?: string;
   nodeId?: string;
   attempt?: number;
@@ -20,6 +21,8 @@ export type TuiUserLogMessage = BaseLogMessage & {
 
 export type TuiAssistantLogMessage = BaseLogMessage & {
   kind: "assistant";
+  source?: "model_stream";
+  streamEnd?: number;
 };
 
 export type TuiStatusLogMessage = BaseLogMessage & {

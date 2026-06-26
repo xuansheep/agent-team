@@ -20,7 +20,8 @@ export function InteractionArea({
   workflows,
   isLoading,
   hasSelection = false,
-  onPromptEvent
+  onPromptEvent,
+  onPromptTextChange
 }: {
   choice?: InteractionChoice;
   mode: PromptInputMode;
@@ -30,6 +31,7 @@ export function InteractionArea({
   isLoading: boolean;
   hasSelection?: boolean;
   onPromptEvent: (event: PromptInputEvent) => void;
+  onPromptTextChange?: (text: string) => void;
 }) {
   return (
     <Box flexDirection="column" marginTop={1} flexShrink={0}>
@@ -52,9 +54,10 @@ export function InteractionArea({
         queued={queued}
         workflows={workflows}
         isLoading={isLoading}
-        inputBlocked={Boolean(choice)}
+        inputBlocked={Boolean(choice) && mode !== "waiting_plan_review"}
         hasSelection={hasSelection}
         onEvent={onPromptEvent}
+        onTextChange={onPromptTextChange}
       />
     </Box>
   );

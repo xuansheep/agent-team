@@ -1,15 +1,13 @@
 import React from "react";
 import { Box, Text } from "../ink.js";
 
-export function ResultPanel({ mode, error, runId }: { mode: string; error?: string; runId?: string }) {
-  const hasResultStatus = ["paused", "completed", "failed", "interrupted"].includes(mode);
-  if (!hasResultStatus && !error) return null;
-  const label = mode === "paused" ? "paused" : mode;
+export function ResultPanel({ mode, error }: { mode: string; error?: string; runId?: string }) {
+  if (["paused", "completed", "failed", "interrupted"].includes(mode)) return null;
+  if (!error) return null;
+
   return (
     <Box flexDirection="column">
-      {hasResultStatus ? <Text>{label}</Text> : null}
-      {error ? <Text color="red">{error}</Text> : null}
-      {runId ? <Text dimColor>session {runId}</Text> : null}
+      <Text color="red">{error}</Text>
     </Box>
   );
 }

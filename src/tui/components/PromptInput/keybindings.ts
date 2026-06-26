@@ -37,7 +37,7 @@ const deleteSequences = new Set(["\u001b[3~", "\u001b[3$", "\u001b[3^"]);
 
 export function resolvePromptKey(input: string, key: PromptKey, mode: "input" | "running" | "permission" | "question" | "waiting_plan_review" | "confirm_interrupt" = "input"): PromptKeyAction {
   if (isMouseReportingSequence(input)) return "ignore";
-  if (mode === "permission" || mode === "waiting_plan_review") {
+  if (mode === "permission") {
     if (key.ctrl && input === "o") return "toggle_log_detail";
     if (key.escape) return "cancel";
     return "none";
