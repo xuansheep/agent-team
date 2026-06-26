@@ -11,7 +11,7 @@ export function RunConversationPanel({
   currentNodeId?: string;
   currentAttempt?: number;
 }) {
-  const visible = items.filter((item) => isVisible(item, currentNodeId, currentAttempt)).slice(-12);
+  const visible = items.slice(-12);
   if (!visible.length) return null;
 
   return (

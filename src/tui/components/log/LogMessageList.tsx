@@ -18,7 +18,7 @@ export function LogMessageList({
   offset?: number;
   visibleRows?: number;
 }) {
-  const filtered = items.filter((item) => isVisible(item, currentNodeId, currentAttempt));
+  const filtered = currentNodeId ? items.filter((item) => isVisible(item, currentNodeId, currentAttempt)) : items;
   const maxOffset = visibleRows === undefined ? 0 : Math.max(0, filtered.length - visibleRows);
   const start = visibleRows === undefined ? 0 : Math.min(offset, maxOffset);
   const visible = visibleRows === undefined ? filtered : filtered.slice(start, start + visibleRows);

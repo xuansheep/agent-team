@@ -235,6 +235,45 @@ describe("runNode interactive permissions", () => {
       { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
     ]);
   });
+
+  it("asks the model to repair an invalid final NodeResult once without increasing node attempt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-repair-result-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    const requests: Array<{ messages: unknown[]; attempt?: number }> = [];
+    let calls = 0;
+    const invalid = JSON.stringify({ status: "needs_user_input", summary: "need input", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] } });
+
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push({ messages: request.messages, attempt: request.context?.attempt });
+        if (calls === 1) return { content: invalid };
+        return { content: JSON.stringify({ status: "success", summary: "repaired", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "product", role: "product", provider: "default", permission_mode: "default" },
+      systemPrompt: "Product",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+
+    assert.equal(result.status, "success");
+    assert.equal(result.summary, "repaired");
+    assert.equal(calls, 2);
+    assert.deepEqual(requests.map((request) => request.attempt), [1, 1]);
+    assert.match(JSON.stringify(requests[1]?.messages), /Return exactly one valid NodeResult JSON object/);
+  });
 });
 
 describe("runNode streaming", () => {

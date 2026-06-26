@@ -35,6 +35,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   const attempt = options.attempt ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
   const requestTools = [...options.tools.list(), submitNodeResultTool];
+  let resultRepairAttempts = 0;
 
   for (;;) {
     const request = {
@@ -129,7 +130,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         await appendRuntimeEvent(options, { type: "tool_invoked", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, input: call.input });
         try {
           const tool = options.tools.get(call.name);
-          const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id });
+          const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt });
           await appendRuntimeEvent(options, { type: "tool_completed", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, result });
           const artifact = artifactFromToolResult(result);
           if (artifact) {
@@ -149,7 +150,15 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     }
 
     if (!response.content) throw new Error(`Node ${options.node.id} returned no content and no tool calls`);
-    return mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
+    try {
+      return mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
+    } catch (error) {
+      if (resultRepairAttempts >= 1) throw new Error(`Invalid NodeResult after repair attempt: ${errorMessage(error)}`, { cause: error });
+      resultRepairAttempts += 1;
+      messages.push({ role: "assistant", content: response.content });
+      messages.push({ role: "user", content: nodeResultRepairPrompt(error) });
+      continue;
+    }
   }
 }
 
@@ -167,6 +176,16 @@ function artifactFromToolResult(result: ToolResult): { artifact_id: string; path
   return { artifact_id: result.artifact_id, path: result.path, description: result.description ?? "" };
 }
 
+function nodeResultRepairPrompt(error: unknown): string {
+  return [
+    "The previous response was not a valid final NodeResult.",
+    `Validation error: ${errorMessage(error)}`,
+    "Return exactly one valid NodeResult JSON object and nothing else.",
+    "Do not include multiple JSON objects, Markdown fences, explanations, or revisions.",
+    "Use needs_user_input only when user input is required, and include at least one concrete question in questions."
+  ].join("\n");
+}
+
 function mergeArtifactDeliverables(result: NodeResult, artifacts: NodeResult["deliverables"]): NodeResult {
   if (!artifacts.length) return result;
   const deliverables = [...result.deliverables];
@@ -180,6 +199,10 @@ async function appendRuntimeEvent(options: NodeRuntimeOptions, event: HarnessEve
   const stored = await options.store.appendEvent(options.runId, event);
   options.eventSink?.(stored);
   return stored;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function promptCacheKey(runId: string, nodeId: string): string {

@@ -116,15 +116,15 @@ describe("OpenAiCompatibleProvider structured output", () => {
       () => provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] }),
       (error) => {
         assert.equal(error instanceof Error, true);
-        assert.match((error as Error).message, /Provider network request failed after 3 attempts/);
+        assert.match((error as Error).message, /Provider network request failed after 5 attempts/);
         const detail = (error as { detail?: string }).detail ?? "";
         assert.match(detail, /endpoint: .*\/chat\/completions/);
-        assert.match(detail, /attempts: 3/);
+        assert.match(detail, /attempts: 5/);
         assert.match(detail, /cause\./);
         return true;
       }
     );
-    assert.equal(server.attempts, 3);
+    assert.equal(server.attempts, 5);
   });
 
   it("does not retry provider HTTP errors", async () => {

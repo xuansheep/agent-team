@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { HarnessEvent, StoredEvent } from "../harness/events.js";
@@ -16,6 +16,8 @@ export type RunSummary = {
 
 export class RunStore {
   private readonly writeQueues = new Map<string, Promise<unknown>>();
+  /** Tracks the next event sequence number per runId to avoid re-reading the file on every append. */
+  private readonly nextSeq = new Map<string, number>();
 
   constructor(private readonly rootDir = ".session") {}
 
@@ -24,6 +26,7 @@ export class RunStore {
     const runDir = this.runDir(runId);
     await mkdir(join(runDir, "artifacts"), { recursive: true });
     await writeFile(join(runDir, "events.ndjson"), "", "utf8");
+    this.nextSeq.set(runId, 1);
     await this.appendEvent(runId, { type: "run_started", workflow_id: workflowId, input });
     return { runId, runDir };
   }
@@ -35,10 +38,11 @@ export class RunStore {
   async appendEvent(runId: string, event: HarnessEvent): Promise<StoredEvent> {
     return this.enqueueRunWrite(runId, async () => {
       const eventsPath = join(this.runDir(runId), "events.ndjson");
-      const existing = await readFile(eventsPath, "utf8").catch(() => "");
-      const seq = existing.trim() ? existing.trim().split("\n").length + 1 : 1;
+      const seq = await this.resolveNextSeq(runId, eventsPath);
       const stored: StoredEvent = { ...event, ts: new Date().toISOString(), seq };
-      await writeFile(eventsPath, `${existing}${JSON.stringify(stored)}\n`, "utf8");
+      this.nextSeq.set(runId, seq + 1);
+      const line = `${JSON.stringify(stored)}\n`;
+      await appendFile(eventsPath, line, "utf8");
       return stored;
     });
   }
@@ -109,6 +113,31 @@ export class RunStore {
     return runs
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.runId.localeCompare(a.runId))
       .slice(0, limit);
+  }
+
+  /**
+   * Resolves the next sequence number for a run.
+   * Uses the in-memory cache if available; otherwise reads the last line
+   * of the events.ndjson file to compute the next seq.
+   */
+  private async resolveNextSeq(runId: string, eventsPath: string): Promise<number> {
+    const cached = this.nextSeq.get(runId);
+    if (cached !== undefined) return cached;
+
+    try {
+      const text = await readFile(eventsPath, "utf8");
+      const trimmed = text.trim();
+      if (!trimmed) {
+        this.nextSeq.set(runId, 1);
+        return 1;
+      }
+      const lines = trimmed.split("\n");
+      this.nextSeq.set(runId, lines.length + 1);
+      return lines.length + 1;
+    } catch {
+      this.nextSeq.set(runId, 1);
+      return 1;
+    }
   }
 
   private enqueueRunWrite<T>(runId: string, task: () => Promise<T>): Promise<T> {

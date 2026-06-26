@@ -60,7 +60,9 @@ export const nodeResultOutputInstructions = [
   "Return only JSON that matches the NodeResult schema.",
   "You may also call SubmitNodeResult with the final NodeResult object when tools are available.",
   "Do not include Markdown fences, explanations, or natural-language text outside the JSON object.",
-  "Use status success for completed work, failure for rejected work, and needs_user_input only when user input is required.",
+  "Use status success for completed work, failure for rejected work, and needs_user_input only when user input is required and questions contains at least one concrete question.",
+  "Return exactly one NodeResult JSON object. Do not return multiple JSON objects or revisions in one response.",
+  "If repository inspection is needed, call tools instead of asking the user for permission to inspect.",
   "When the node is a plan or complete node, put the full user-facing Markdown document in the document field.",
   "For task nodes that do not need a user-facing document, set document to an empty string."
 ].join("\n");
@@ -96,7 +98,15 @@ export const nodeResultSchema = z.object({
   feedback: feedbackSchema.default({}),
   questions: z.array(questionSchema).default([]),
   handoff: handoffSchema.default({})
-}).strict();
+}).strict().superRefine((result, ctx) => {
+  if (result.status !== "needs_user_input") return;
+  if (result.questions.some((question) => question.text.trim())) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["questions"],
+    message: "needs_user_input results must include at least one concrete question"
+  });
+});
 
 export type NodeResult = z.infer<typeof nodeResultSchema>;
 
@@ -104,17 +114,21 @@ export function parseNodeResult(text: string): NodeResult {
   const candidates = uniqueCandidates([text.trim(), ...extractJsonCandidates(text)]);
   let parseError: unknown;
   let schemaError: unknown;
+  const parsedCandidates: unknown[] = [];
 
   for (const candidate of candidates) {
     if (!candidate) continue;
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(candidate);
+      parsedCandidates.push(JSON.parse(candidate));
     } catch (error) {
       parseError = error;
-      continue;
     }
+  }
 
+  const nodeResultLikeCount = parsedCandidates.filter(looksLikeNodeResult).length;
+  if (nodeResultLikeCount > 1) throw new Error("Response contained multiple NodeResult objects; return exactly one final NodeResult JSON object.");
+
+  for (const parsed of parsedCandidates) {
     try {
       return nodeResultSchema.parse(parsed);
     } catch (error) {
@@ -139,14 +153,29 @@ function extractJsonCandidates(text: string): string[] {
     if (!match) break;
     candidates.push(match[1] ?? "");
   }
-  const object = extractFirstJsonObject(text);
-  if (object) candidates.push(object);
+  candidates.push(...extractJsonObjects(text));
   return candidates;
 }
 
-function extractFirstJsonObject(text: string): string | undefined {
-  const start = text.indexOf("{");
-  if (start < 0) return undefined;
+function extractJsonObjects(text: string): string[] {
+  const objects: string[] = [];
+  let searchIndex = 0;
+  for (;;) {
+    const start = text.indexOf("{", searchIndex);
+    if (start < 0) break;
+    const extracted = extractJsonObjectAt(text, start);
+    if (!extracted) {
+      searchIndex = start + 1;
+      continue;
+    }
+    objects.push(extracted.object);
+    searchIndex = extracted.end;
+  }
+  return objects;
+}
+
+function extractJsonObjectAt(text: string, start: number): { object: string; end: number } | undefined {
+  if (text[start] !== "{") return undefined;
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -170,10 +199,16 @@ function extractFirstJsonObject(text: string): string | undefined {
     if (char === "{") depth += 1;
     if (char === "}") {
       depth -= 1;
-      if (depth === 0) return text.slice(start, index + 1);
+      if (depth === 0) return { object: text.slice(start, index + 1), end: index + 1 };
     }
   }
   return undefined;
+}
+
+function looksLikeNodeResult(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const status = (value as { status?: unknown }).status;
+  return status === "success" || status === "failure" || status === "needs_user_input";
 }
 
 function excerpt(text: string): string {

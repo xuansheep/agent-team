@@ -51,4 +51,26 @@ describe("nodeResultJsonSchema", () => {
       /artifacts|handoff_to|deliverables|handoff/
     );
   });
+
+  it("rejects needs_user_input without a concrete question", () => {
+    assert.throws(
+      () => parseNodeResult(JSON.stringify({
+        status: "needs_user_input",
+        summary: "need input",
+        document: "",
+        deliverables: [],
+        feedback: { defects: [], change_requests: [] },
+        questions: [],
+        handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] }
+      })),
+      /needs_user_input results must include at least one concrete question/i
+    );
+  });
+
+  it("rejects responses that contain multiple NodeResult objects", () => {
+    const first = JSON.stringify({ status: "failure", summary: "first", document: "", deliverables: [], feedback: { defects: ["bad"], change_requests: [] }, questions: [], handoff: { instruction: "retry", must_follow: [], known_risks: [], open_questions: [] } });
+    const second = JSON.stringify({ status: "success", summary: "second", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "done", must_follow: [], known_risks: [], open_questions: [] } });
+
+    assert.throws(() => parseNodeResult(`${first}${second}`), /multiple NodeResult/i);
+  });
 });

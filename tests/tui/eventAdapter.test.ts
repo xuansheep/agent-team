@@ -156,8 +156,12 @@ describe("TUI event adapter", () => {
     ]);
     assert.match(state.conversation.at(-1)?.detailText ?? "", /产出：架构概览/);
     assert.match(state.conversation.at(-1)?.detailText ?? "", /交接：交给 dev 继续实现/);
-    assert.doesNotMatch(state.conversation.map((item) => `${item.text}\n${item.detailText ?? ""}`).join("\n"), /\{"status"/);
-    assert.doesNotMatch(state.logMessages.map((item) => `${item.text}\n${item.detailText ?? ""}`).join("\n"), /\{"status"/);
+    // Model stream content is now intentionally shown in the streaming status detailText
+    const streamLog = state.logMessages.find((item) => item.text.includes("正在生成响应"));
+    assert.match(streamLog?.detailText ?? "", /模型输出：/);
+    // Non-stream log messages should not contain raw JSON
+    const nonStreamLogs = state.logMessages.filter((item) => !item.text.includes("正在生成响应") && !item.text.includes("正在思考"));
+    assert.doesNotMatch(nonStreamLogs.map((item) => `${item.text}\n${item.detailText ?? ""}`).join("\n"), /\{"status"/);
   });
 
 
@@ -220,6 +224,21 @@ describe("TUI event adapter", () => {
     assert.equal(state.mode, "question");
     assert.equal(state.nodes[0]?.status, "failure");
     assert.deepEqual(state.questions, [{ id: "next_step", text: "如何继续？", required: true }]);
+    assert.match(state.logMessages.at(-1)?.text ?? "", /dev 需要用户补充信息：如何继续？/);
+    assert.match(state.conversation.at(-1)?.detailText ?? "", /问题：如何继续？/);
+    assert.doesNotMatch(state.conversation.at(-1)?.detailText ?? "", /\{.*next_step/);
+    assert.doesNotMatch(state.logMessages.at(-1)?.detailText ?? "", /\{.*next_step/);
+
+    state = reduceStoredEvent(state, {
+      type: "user_message",
+      text: "请重试",
+      node_id: "dev",
+      attempt: 1,
+      ts: "2026-06-23T00:00:03.000Z",
+      seq: 4
+    });
+
+    assert.deepEqual(state.questions, []);
   });
 
   it("tracks plan review documents and clears them after approval", () => {
@@ -250,6 +269,21 @@ describe("TUI event adapter", () => {
 
     assert.equal(state.mode, "running");
     assert.equal(state.pendingReview, undefined);
+  });
+
+  it("logs workflow transitions as visible timeline entries", () => {
+    let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
+    state = reduceStoredEvent(state, {
+      type: "transition",
+      from: "product",
+      to: "dev",
+      reason: "success",
+      ts: "2026-06-23T00:00:00.000Z",
+      seq: 1
+    });
+
+    assert.match(state.conversation.at(-1)?.text ?? "", /流程流转：product -> dev（success）/);
+    assert.match(state.logMessages.at(-1)?.text ?? "", /流程流转：product -> dev（success）/);
   });
 
   it("shows artifact creation events with artifact path", () => {
@@ -344,16 +378,20 @@ describe("TUI event adapter", () => {
     });
 
     assert.equal(state.tools[0]?.status, "completed");
-    assert.equal(state.conversation.at(-2)?.text, "正在执行 LS...");
-    assert.equal(state.conversation.at(-1)?.text, "LS 执行完成");
-    assert.match(state.conversation.at(-1)?.detailText ?? "", /输出：package.json/);
-    assert.doesNotMatch(state.conversation.at(-1)?.detailText ?? "", /\{"output"/);
+    // Tool status logs are now only in logMessages (kind: "tool"), not in conversation
+    // After completion, the tool log status is updated to "completed"
+    const toolLog = state.logMessages.find((item) => item.kind === "tool");
+    assert.equal(toolLog?.text, "List");
+    assert.equal((toolLog as any)?.summary, ".");
+    assert.equal((toolLog as any)?.status, "completed");
+    assert.match((toolLog as any)?.detailText ?? "", /输出：package.json/);
+    assert.doesNotMatch((toolLog as any)?.detailText ?? "", /\{"output"/);
     const toolLogs = state.logMessages.filter((item) => item.kind === "tool");
     assert.equal(toolLogs.length, 1);
-    assert.equal(toolLogs[0]?.status, "completed");
-    assert.equal(toolLogs[0]?.summary, ".");
-    assert.match(toolLogs[0]?.detailText ?? "", /输出：package.json/);
-    assert.doesNotMatch(toolLogs[0]?.detailText ?? "", /\{"output"/);
+    assert.equal((toolLogs[0] as any)?.status, "completed");
+    assert.equal((toolLogs[0] as any)?.summary, ".");
+    assert.match((toolLogs[0] as any)?.detailText ?? "", /输出：package.json/);
+    assert.doesNotMatch((toolLogs[0] as any)?.detailText ?? "", /\{"output"/);
   });
 
   it("records compact and detailed tool and permission log entries", () => {
@@ -382,15 +420,13 @@ describe("TUI event adapter", () => {
       seq: 3
     });
 
-    const toolLog = state.conversation.find((item) => item.text.includes("正在执行 Bash"));
-    const permissionLog = state.conversation.find((item) => item.text.includes("需要确认是否允许 Bash"));
-    assert.match(toolLog?.detailText ?? "", /命令：npm test/);
-    assert.match(permissionLog?.detailText ?? "", /目标：npm test/);
-    assert.doesNotMatch(`${toolLog?.detailText ?? ""}
-${permissionLog?.detailText ?? ""}`, /\{"command"/);
+    // Tool status logs are now only in logMessages (kind: "tool"), not in conversation
     const semanticToolLog = state.logMessages.find((item) => item.kind === "tool");
+    assert.match(semanticToolLog?.detailText ?? "", /命令：npm test/);
+    assert.equal((semanticToolLog as any)?.summary, "npm test");
+    const permissionLog = state.conversation.find((item) => item.text.includes("需要确认是否允许 Bash"));
+    assert.match(permissionLog?.detailText ?? "", /目标：npm test/);
     const semanticPermissionLog = state.logMessages.find((item) => item.kind === "permission");
-    assert.equal(semanticToolLog?.summary, "npm test");
     assert.match(semanticPermissionLog?.text ?? "", /需要确认/);
     assert.doesNotMatch(`${semanticToolLog?.detailText ?? ""}
 ${semanticPermissionLog?.detailText ?? ""}`, /\{"command"/);

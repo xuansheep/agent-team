@@ -5,7 +5,7 @@ export type ProviderNetworkError = Error & { detail?: string };
 
 export const defaultProviderUserAgent = "claude-code/2.1.186";
 
-const providerNetworkAttempts = 3;
+const providerNetworkAttempts = 5;
 
 export function buildApiKeyHeaders(apiKey: string, mode: ApiKeyMode): Record<string, string> {
   return mode === "x-api-key"

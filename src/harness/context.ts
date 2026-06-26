@@ -53,13 +53,13 @@ function nodeModeInstructions(node: WorkflowNodeConfig): string {
       "This node is the workflow completion checkpoint.",
       "Summarize what the workflow did, key outcomes, verification, and any residual risks for the user.",
       "Put the complete Markdown summary in document.",
-      "The runtime will show document to the user in the TUI interaction log; do not write summary artifacts."
+      "The runtime will store the summary as this node's final deliverable artifact if no deliverable file exists."
     ].join("\n");
   }
   return [
     "This node is a normal task node.",
     "Use ArtifactWrite for user-facing deliverable files that should be returned to the user.",
-    "Keep task summaries in summary and leave document empty unless this node is plan or complete."
+    "If this task has no user-facing deliverable file, make summary clear and leave document empty; the runtime will create a Markdown explanation artifact."
   ].join("\n");
 }
 

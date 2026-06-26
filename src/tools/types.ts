@@ -2,6 +2,7 @@ export type ToolContext = {
   cwd: string;
   runDir?: string;
   nodeId?: string;
+  attempt?: number;
 };
 
 export type ToolResult = {

@@ -90,7 +90,9 @@ workflows:
             - Glob
             - Grep
             - Bash
+            - PowerShell
             - ArtifactWrite
+            - TodoWrite
       - id: test
         role: tester
         provider: default

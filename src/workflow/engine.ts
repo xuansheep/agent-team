@@ -1,3 +1,6 @@
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+
 import { AgentTeamConfig, permissionSetSchema, WorkflowConfig, WorkflowNodeConfig } from "../config/schema.js";
 
 
@@ -834,6 +837,12 @@ export class WorkflowEngine {
 
 
       try {
+        if ((node.mode === "complete" || node.mode === "plan") && result.status === "success") {
+          requireDocument(node, result);
+        }
+
+        result = await this.ensureNodeDeliverable(options, node.id, attempt, result);
+
         if (result.status === "needs_user_input") {
 
 
@@ -1100,7 +1109,7 @@ export class WorkflowEngine {
     const attempt = attempts[attemptIndex];
 
 
-    const result = attempt.result as NodeResult | undefined;
+    let result = attempt.result as NodeResult | undefined;
 
 
     if (!result) throw new Error(`Plan node ${nodeId} has no result to approve`);
@@ -1109,7 +1118,10 @@ export class WorkflowEngine {
 
 
 
-    attempts[attemptIndex] = { ...attempt, status: "success" };
+    result = await this.ensureNodeDeliverable(options, nodeId, attempt.attempt, result);
+
+
+    attempts[attemptIndex] = { ...attempt, status: "success", result };
 
 
     await this.appendEvent(options.store, options.runId, { type: "plan_review_resolved", node_id: nodeId, attempt: attempt.attempt, decision: "continue" }, options.eventSink);
@@ -1215,7 +1227,7 @@ export class WorkflowEngine {
 
 
   private async failNodeForUser(options: ContinueOptions, nodeId: string, attempt: number, attempts: WorkflowState["attempts"], handoff: unknown, error: unknown): Promise<WorkflowState> {
-    const result = errorNodeResult(error);
+    const result = await this.ensureNodeDeliverable(options, nodeId, attempt, errorNodeResult(error));
     attempts[attempts.length - 1] = { node_id: nodeId, attempt, status: "failure", result };
     await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: nodeId, status: "failure", result }, options.eventSink);
     const state: WorkflowState = {
@@ -1266,6 +1278,20 @@ export class WorkflowEngine {
     await this.appendEvent(input.store, input.runId, { type: "node_waiting_user", node_id: nodeId, questions }, input.eventSink);
     await input.store.saveState(input.runId, state);
     return state;
+  }
+
+  private async ensureNodeDeliverable(options: ContinueOptions | PlanReviewOptions, nodeId: string, attempt: number, result: NodeResult): Promise<NodeResult> {
+    const runDir = options.store.runDir(options.runId);
+    const deliverables: NodeResult["deliverables"] = [];
+    for (const deliverable of result.deliverables) {
+      if (await artifactExists(runDir, nodeId, deliverable.artifact_id)) deliverables.push(deliverable);
+    }
+    if (deliverables.length) return deliverables.length === result.deliverables.length ? result : { ...result, deliverables };
+
+    const name = `node-output-${attempt}.md`;
+    const ref = await new ArtifactStore(runDir).writeText(nodeId, name, nodeDeliverableMarkdown(nodeId, attempt, result));
+    await this.appendEvent(options.store, options.runId, { type: "artifact_created", node_id: nodeId, artifact_id: ref.artifactId, path: ref.path }, options.eventSink);
+    return { ...result, deliverables: [{ artifact_id: ref.artifactId, description: "节点交付物说明" }] };
   }
 
   private async appendEvent(store: RunStore, runId: string, event: HarnessEvent, sink?: (event: StoredEvent) => void): Promise<StoredEvent> {
@@ -1359,6 +1385,31 @@ export class WorkflowEngine {
 
 
 }
+
+async function artifactExists(runDir: string, nodeId: string, artifactId: string): Promise<boolean> {
+  const parts = artifactId.split(/[\/]/);
+  if (parts[0] !== nodeId || parts.length < 2 || parts.some((part) => !part || part === "..")) return false;
+  try {
+    await access(join(runDir, "artifacts", ...parts));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function nodeDeliverableMarkdown(nodeId: string, attempt: number, result: NodeResult): string {
+  const lines = [`# ${nodeId} attempt ${attempt} output`, "", `- 状态：${result.status}`, `- 摘要：${result.summary || "无"}`];
+  if (result.document.trim()) lines.push("", "## 文档", "", result.document.trim());
+  if (result.questions.length) lines.push("", "## 问题", "", ...result.questions.map((question) => `- ${question.text}`));
+  if (result.feedback.defects.length || result.feedback.change_requests.length) {
+    lines.push("", "## 反馈");
+    for (const defect of result.feedback.defects) lines.push(`- 缺陷：${defect}`);
+    for (const request of result.feedback.change_requests) lines.push(`- 变更请求：${request}`);
+  }
+  if (result.handoff.instruction) lines.push("", "## 交接", "", result.handoff.instruction);
+  return `${lines.join("\n")}\n`;
+}
+
 
 function effectiveSystemPrompt(globalPrompt: string | undefined, rolePrompt: string): string {
   const global = globalPrompt?.trim();

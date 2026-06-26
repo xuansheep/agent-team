@@ -1,7263 +1,7348 @@
-import React from "react";
-
-
-
-
-
-
-
-import { describe, it } from "node:test";
-
-
-
-
-
-
-
-import assert from "node:assert/strict";
-
-
-
-
-
-
-
-import { render } from "ink-testing-library";
-
-
-
-
-
-
-
-import { createRef } from "react";
-
-
-
-
-
-
-
-import { Box, ScrollBox, Text, useHasSelection } from "../../src/tui/ink.js";
-
-
-
-
-
-
-
-import type { ScrollBoxHandle } from "../../src/tui/ink.js";
-
-
-
-
-
-
-
-import instances from "../../src/ink/instances.js";
-
-
-
-import { PromptInput } from "../../src/tui/components/PromptInput/PromptInput.js";
-
-
-
-
-
-
-
-import { ModelStreamPanel } from "../../src/tui/components/ModelStreamPanel.js";
-
-
-
-
-
-
-
-import { NodeStatusList } from "../../src/tui/components/NodeStatusList.js";
-
-
-
-
-
-
-
-import { RunConversationPanel } from "../../src/tui/components/RunConversationPanel.js";
-
-
-
-
-
-
-
-import { RunLogPanel } from "../../src/tui/components/RunLogPanel.js";
-
-
-
-
-
-
-
-import { WorkflowFlowChart } from "../../src/tui/components/WorkflowFlowChart.js";
-
-
-
-
-
-
-
-import { ChoicePrompt } from "../../src/tui/components/ChoicePrompt.js";
-
-
-
-
-
-
-
-import { PermissionPrompt } from "../../src/tui/components/PermissionPrompt.js";
-
-
-
-
-
-
-
-import { PlanReviewPrompt } from "../../src/tui/components/PlanReviewPrompt.js";
-
-
-
-
-
-
-
-import { InteractionArea } from "../../src/tui/components/InteractionArea.js";
-
-
-
-
-
-
-
-import { jumpMainScrollBy, resolveActiveChoiceCancel, resolveCtrlCBehavior, scrollMainDown, scrollMainUp, TuiApp } from "../../src/tui/TuiApp.js";
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("PromptInput component", () => {
-
-
-
-
-
-
-
-  it("renders mode and footer status", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <PromptInput
-
-
-
-
-
-
-
-        mode="input"
-
-
-
-
-
-
-
-        workflowId="delivery"
-
-
-
-
-
-
-
-        queued={[]}
-
-
-
-
-
-
-
-        workflows={["delivery"]}
-
-
-
-
-
-
-
-        isLoading={false}
-
-
-
-
-
-
-
-        onEvent={() => undefined}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /INPUT/);
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /delivery/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("renders copy shortcut in the footer when text is selected", () => {
-
-    const output = render(
-
-      <PromptInput
-        mode="input"
-        workflowId="delivery"
-        queued={[]}
-        workflows={["delivery"]}
-        isLoading={false}
-        hasSelection
-        onEvent={() => undefined}
-      />
-    );
-
-    const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Ctrl\+C copy/);
-    assert.doesNotMatch(frame, /Ctrl\+C stop/);
-    output.unmount();
-    output.cleanup();
-
-  });
-
-  it("renders an empty shell prompt with placeholder text", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <PromptInput
-
-
-
-
-
-
-
-        mode="input"
-
-
-
-
-
-
-
-        workflowId="delivery"
-
-
-
-
-
-
-
-        queued={[]}
-
-
-
-
-
-
-
-        workflows={["delivery"]}
-
-
-
-
-
-
-
-        isLoading={false}
-
-
-
-
-
-
-
-        onEvent={() => undefined}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, />/);
-
-
-
-
-
-
-
-    assert.match(frame, /Type a request or \/help/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("does not render a history counter after submitting input", async () => {
-    const output = render(
-      <PromptInput
-        mode="input"
-        workflowId="delivery"
-        queued={[]}
-        workflows={["delivery"]}
-        isLoading={false}
-        onEvent={() => undefined}
-      />
-    );
-
-    await sendTuiLine(output, "remember me");
-
-    assert.doesNotMatch(output.lastFrame() ?? "", /history \d+/);
-    output.unmount();
-    output.cleanup();
-  });
-
-
-
-  it("renders selectable slash command completions above the input and applies them with Tab", async () => {
-
-
-
-
-    const output = render(
-
-
-
-
-      <PromptInput
-
-
-
-
-        mode="input"
-
-
-
-
-        workflowId="delivery"
-
-
-
-
-        queued={[]}
-
-
-
-
-        workflows={["delivery", "audit"]}
-
-
-
-
-        isLoading={false}
-
-
-
-
-        onEvent={() => undefined}
-
-
-
-
-      />
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-    output.stdin.write("/r");
-
-
-
-
-    await settleInkInput();
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-    const lines = frame.split("\n");
-
-
-
-
-    const suggestionIndex = lines.findIndex((line) => line.includes("Resume a session"));
-
-
-
-
-    const inputIndex = lines.findIndex((line) => line.includes("INPUT > /r"));
-
-
-
-
-
-
-
-
-
-    assert.notEqual(suggestionIndex, -1);
-
-
-
-
-    assert.notEqual(inputIndex, -1);
-
-
-
-
-    assert.ok(suggestionIndex < inputIndex);
-
-
-
-
-
-
-
-
-
-    output.stdin.write("\t");
-
-
-
-
-    await settleInkInput();
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /\/resume /);
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /<session>/);
-
-
-
-
-    output.unmount();
-
-
-
-
-    output.cleanup();
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-  it("closes slash command completions with Escape", async () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <PromptInput
-
-
-
-
-
-
-
-        mode="input"
-
-
-
-
-
-
-
-        workflowId="delivery"
-
-
-
-
-
-
-
-        queued={[]}
-
-
-
-
-
-
-
-        workflows={["delivery"]}
-
-
-
-
-
-
-
-        isLoading={false}
-
-
-
-
-
-
-
-        onEvent={() => undefined}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    output.stdin.write("/r");
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /Resume a session/);
-
-
-
-
-
-
-
-    output.stdin.write("\u001b");
-
-
-
-
-
-
-
-    await settleTerminalEscape();
-
-
-
-
-
-
-
-    assert.doesNotMatch(output.lastFrame() ?? "", /Resume a session/);
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /\/r/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("keeps mouse reporting out of the prompt buffer", async () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <PromptInput
-
-
-
-
-
-
-
-        mode="input"
-
-
-
-
-
-
-
-        workflowId="delivery"
-
-
-
-
-
-
-
-        queued={[]}
-
-
-
-
-
-
-
-        workflows={["delivery"]}
-
-
-
-
-
-
-
-        isLoading={false}
-
-
-
-
-
-
-
-        onEvent={() => undefined}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    output.stdin.write("\u001b[<64;12;5M");
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /64;12;5/);
-
-
-
-
-
-
-
-    assert.match(frame, /Type a request or \/help/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("renders recent streaming model output", () => {
-
-
-
-
-
-
-
-    const output = render(<ModelStreamPanel streams={[{ nodeId: "product", attempt: 1, text: "生成中的 JSON 内容" }]} />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /product #1 streaming/);
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /生成中的 JSON 内容/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("resolves Ctrl+C to exit outside active workflow sessions", () => {
-
-
-
-
-
-
-
-    assert.equal(resolveCtrlCBehavior("input", false), "exit");
-
-
-
-
-
-
-
-    assert.equal(resolveCtrlCBehavior("completed", true), "exit");
-
-
-
-
-
-
-
-    assert.equal(resolveCtrlCBehavior("running", true), "confirm_interrupt");
-
-
-
-
-
-
-
-    assert.equal(resolveCtrlCBehavior("confirm_interrupt", true), "interrupt");
-
-    assert.equal(resolveCtrlCBehavior("input", false, true), "copy_selection");
-
-    assert.equal(resolveCtrlCBehavior("running", true, true), "copy_selection");
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("resolves Escape for active choices with safe cancellation defaults", () => {
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "permission", permissionRequests: [{ requestId: "perm-1" }] }), { type: "deny_permission", requestId: "perm-1", key: "permission:perm-1" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "waiting_plan_review", pendingReview: { nodeId: "product", attempt: 1 } }), { type: "stay_plan", key: "plan:product:1" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_interrupt", modeBeforeConfirmation: "running" }), { type: "restore_mode", mode: "running", key: "confirm_interrupt" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_new", modeBeforeConfirmation: "permission" }), { type: "restore_mode", mode: "permission", key: "confirm_new" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_resume", modeBeforeConfirmation: "running", pendingResumeRunId: "run-1" }), { type: "restore_mode", mode: "running", clearPendingResumeRunId: true, key: "confirm_resume:run-1" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "resume_picker" }), { type: "restore_mode", mode: "input", clearResumePicker: true, key: "resume_picker" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "select_workflow" }), { type: "exit", key: "select_workflow" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "select_workflow", workflowId: "delivery" }), { type: "restore_mode", mode: "input", key: "select_workflow" });
-
-
-
-
-
-
-
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "input" }), { type: "none" });
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("selection hooks", () => {
-
-  it("subscribes to Ink selection changes with bound instance methods", async () => {
-    const previous = instances.get(process.stdout);
-    const fakeInk = {
-      selected: false,
-      listeners: new Set<() => void>(),
-      hasTextSelection(this: { selected: boolean }) {
-        return this.selected;
-      },
-      subscribeToSelectionChange(this: { listeners: Set<() => void> }, cb: () => void) {
-        this.listeners.add(cb);
-        return () => this.listeners.delete(cb);
-      }
-    };
-
-    function SelectionProbe() {
-      return <Text>{useHasSelection() ? "selected" : "empty"}</Text>;
-    }
-
-    instances.set(process.stdout, fakeInk as never);
-    const output = render(<SelectionProbe />);
-    try {
-      assert.match(output.lastFrame() ?? "", /empty/);
-
-      fakeInk.selected = true;
-      for (const listener of fakeInk.listeners) listener();
-      await settleInkInput();
-
-      assert.match(output.lastFrame() ?? "", /selected/);
-    } finally {
-      output.unmount();
-      output.cleanup();
-      if (previous) instances.set(process.stdout, previous);
-      else instances.delete(process.stdout);
-    }
-  });
-
-});
-
-
-describe("Workflow node status component", () => {
-
-
-
-
-
-
-
-  it("renders every configured workflow node with pending state before it runs", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <NodeStatusList
-
-
-
-
-
-
-
-        workflowNodes={[{ id: "product", role: "product" }, { id: "dev", role: "developer" }, { id: "test", role: "tester" }]}
-
-
-
-
-
-
-
-        nodes={[{ nodeId: "product", attempt: 1, status: "running" }]}
-
-
-
-
-
-
-
-        currentNodeId="product"
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /product #1 running/);
-
-
-
-
-
-
-
-    assert.match(frame, /dev pending/);
-
-
-
-
-
-
-
-    assert.match(frame, /test pending/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("renders workflow nodes with model names, English statuses, and an active running border", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <WorkflowFlowChart
-
-
-
-
-
-
-
-        workflowNodes={[{ id: "product", role: "product", model: "gpt5.5" }, { id: "dev", role: "developer", model: "claude-dev" }, { id: "test", role: "tester" }]}
-
-
-
-
-
-
-
-        nodes={[{ nodeId: "dev", attempt: 1, status: "running" }, { nodeId: "product", attempt: 1, status: "success" }]}
-
-
-
-
-
-
-
-        currentNodeId="dev"
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /product/);
-
-
-
-
-
-
-
-    assert.match(frame, /model: gpt5\.5/);
-
-
-
-
-
-
-
-    assert.match(frame, /done #1/);
-
-
-
-
-
-
-
-    assert.match(frame, /dev/);
-
-
-
-
-
-
-
-    assert.match(frame, /model: claude-dev/);
-
-
-
-
-
-
-
-    assert.match(frame, /running #1/);
-
-
-
-
-
-
-
-    assert.match(frame, /◝/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /[◜◞◟]/);
-
-
-
-
-
-
-
-    assert.match(frame, /test/);
-
-
-
-
-
-
-
-    assert.match(frame, /pending/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /已完成|运行中|等待中/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /product #1 success/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("ChoicePrompt", () => {
-
-
-
-
-
-
-
-  it("defaults to the configured option and submits it with Enter", async () => {
-
-
-
-
-
-
-
-    const submitted: string[] = [];
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <ChoicePrompt
-
-
-
-
-
-
-
-        title="Permission required"
-
-
-
-
-
-
-
-        detail="LS ."
-
-
-
-
-
-
-
-        defaultValue="allow_once"
-
-
-
-
-
-
-
-        options={[
-
-
-
-
-
-
-
-          { label: "Allow once", value: "allow_once", shortcut: "y" },
-
-
-
-
-
-
-
-          { label: "Deny once", value: "deny_once", shortcut: "n" }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-        onSubmit={(value) => submitted.push(value)}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /> Allow once/);
-
-
-
-
-
-
-
-    output.stdin.write("\r");
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    assert.deepEqual(submitted, ["allow_once"]);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("moves selection with arrow keys and submits with Enter", async () => {
-
-
-
-
-
-
-
-    const submitted: string[] = [];
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <ChoicePrompt
-
-
-
-
-
-
-
-        title="Permission required"
-
-
-
-
-
-
-
-        detail="LS ."
-
-
-
-
-
-
-
-        defaultValue="allow_once"
-
-
-
-
-
-
-
-        options={[
-
-
-
-
-
-
-
-          { label: "Allow once", value: "allow_once", shortcut: "y" },
-
-
-
-
-
-
-
-          { label: "Deny once", value: "deny_once", shortcut: "n" }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-        onSubmit={(value) => submitted.push(value)}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    output.stdin.write("\u001b[B");
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /> Deny once/);
-
-
-
-
-
-
-
-    output.stdin.write("\r");
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    assert.deepEqual(submitted, ["deny_once"]);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("submits matching shortcut keys", async () => {
-
-
-
-
-
-
-
-    const submitted: string[] = [];
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <ChoicePrompt
-
-
-
-
-
-
-
-        title="Permission required"
-
-
-
-
-
-
-
-        defaultValue="allow_once"
-
-
-
-
-
-
-
-        options={[
-
-
-
-
-
-
-
-          { label: "Allow once", value: "allow_once", shortcut: "y" },
-
-
-
-
-
-
-
-          { label: "Deny once", value: "deny_once", shortcut: "n" }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-        onSubmit={(value) => submitted.push(value)}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    output.stdin.write("n");
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    assert.deepEqual(submitted, ["deny_once"]);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("renders controlled selection without owning keyboard focus", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <ChoicePrompt
-
-
-
-
-
-
-
-        title="Permission required"
-
-
-
-
-
-
-
-        defaultValue="allow_once"
-
-
-
-
-
-
-
-        selectedValue="deny_once"
-
-
-
-
-
-
-
-        options={[
-
-
-
-
-
-
-
-          { label: "Allow once", value: "allow_once", shortcut: "y" },
-
-
-
-
-
-
-
-          { label: "Deny once", value: "deny_once", shortcut: "n" }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-        interactive={false}
-
-
-
-
-
-
-
-        onSubmit={() => undefined}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /> Deny once/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("PlanReviewPrompt", () => {
-
-
-
-
-
-
-
-  it("renders up to 15 visible plan lines", () => {
-
-
-
-
-
-
-
-    const document = Array.from({ length: 18 }, (_, index) => `line-${String(index + 1).padStart(2, "0")}`).join("\n");
-
-
-
-
-
-
-
-    const output = render(<PlanReviewPrompt review={{ type: "plan", nodeId: "product", attempt: 1, document }} visibleRows={15} />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /line-15/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /line-16/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("renders a scrollable plan review window without inline decisions", () => {
-
-
-
-
-
-
-
-    const document = Array.from({ length: 18 }, (_, index) => `line-${String(index + 1).padStart(2, "0")}`).join("\n");
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <PlanReviewPrompt
-
-
-
-
-
-
-
-        review={{ type: "plan", nodeId: "product", attempt: 1, document }}
-
-
-
-
-
-
-
-        offset={1}
-
-
-
-
-
-
-
-        visibleRows={6}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /Plan Review/);
-
-
-
-
-
-
-
-    assert.match(frame, /line-02/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /Yes, continue execution by plan/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /> No, staying in the plan/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("PermissionPrompt", () => {
-
-
-
-
-
-
-
-  it("uses the reusable choice prompt and defaults to allow once", async () => {
-
-
-
-
-
-
-
-    const submitted: Array<[string, "allow_once" | "deny_once"]> = [];
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <PermissionPrompt
-
-
-
-
-
-
-
-        request={{
-
-
-
-
-
-
-
-          requestId: "perm-1",
-
-
-
-
-
-
-
-          nodeId: "product",
-
-
-
-
-
-
-
-          attempt: 1,
-
-
-
-
-
-
-
-          toolCallId: "tool-1",
-
-
-
-
-
-
-
-          tool: "LS",
-
-
-
-
-
-
-
-          input: { path: "." },
-
-
-
-
-
-
-
-          specifier: "."
-
-
-
-
-
-
-
-        }}
-
-
-
-
-
-
-
-        onResolve={(requestId, decision) => submitted.push([requestId, decision])}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /Permission required/);
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /LS ./);
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /> Allow once/);
-
-
-
-
-
-
-
-    output.stdin.write("\r");
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    assert.deepEqual(submitted, [["perm-1", "allow_once"]]);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("RunConversationPanel", () => {
-
-
-
-
-
-
-
-  it("renders user messages, current node output, and current node status", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <RunConversationPanel
-
-
-
-
-
-
-
-        currentNodeId="product"
-
-
-
-
-
-
-
-        currentAttempt={1}
-
-
-
-
-
-
-
-        items={[
-
-
-
-
-
-
-
-          { kind: "user", text: "请实现 TUI" },
-
-
-
-
-
-
-
-          { kind: "assistant", nodeId: "product", attempt: 1, text: "{\"status\":\"success\"}" },
-
-
-
-
-
-
-
-          { kind: "status", nodeId: "product", attempt: 1, text: "product #1 running" },
-
-
-
-
-
-
-
-          { kind: "assistant", nodeId: "dev", attempt: 1, text: "dev output should be hidden" }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /user/);
-
-
-
-
-
-
-
-    assert.match(frame, /请实现 TUI/);
-
-
-
-
-
-
-
-    assert.match(frame, /product #1 running/);
-
-
-
-
-
-
-
-    assert.match(frame, /\{\"status\":\"success\"\}/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /dev output should be hidden/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("RunLogPanel", () => {
-
-
-
-
-
-
-
-  it("renders compact logs with tui-code style tool rows", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <RunLogPanel
-
-
-
-
-
-
-
-        detailMode={false}
-
-
-
-
-
-
-
-        currentNodeId="dev"
-
-
-
-
-
-
-
-        currentAttempt={1}
-
-
-
-
-
-
-
-        items={[
-
-
-
-
-
-
-
-          { id: "user-1", kind: "user", text: "实现功能" },
-
-
-
-
-
-
-
-          {
-
-
-
-
-
-
-
-            id: "tool-1",
-
-
-
-
-
-
-
-            kind: "tool",
-
-
-
-
-
-
-
-            nodeId: "dev",
-
-
-
-
-
-
-
-            attempt: 1,
-
-
-
-
-
-
-
-            toolCallId: "tool-1",
-
-
-
-
-
-
-
-            tool: "Bash",
-
-
-
-
-
-
-
-            status: "running",
-
-
-
-
-
-
-
-            text: "Bash",
-
-
-
-
-
-
-
-            summary: "npm test",
-
-
-
-
-
-
-
-            detailText: "命令：npm test"
-
-
-
-
-
-
-
-          },
-
-
-
-
-
-
-
-          { id: "status-1", kind: "status", nodeId: "dev", attempt: 1, text: "dev 已完成：实现完成", detailText: "摘要：实现完成" }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /ctrl\+o to expand/i);
-
-
-
-
-
-
-
-    assert.match(frame, /实现功能/);
-
-
-
-
-
-
-
-    assert.match(frame, /●\s+Bash\s+\(npm test\)/);
-
-
-
-
-
-
-
-    assert.match(frame, /dev 已完成：实现完成/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /命令：npm test/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("renders thinking logs compactly and expands details on demand", () => {
-
-    const compact = render(
-
-      <RunLogPanel
-
-        detailMode={false}
-
-        currentNodeId="product"
-
-        currentAttempt={1}
-
-        items={[{ id: "thinking-1", kind: "status", nodeId: "product", attempt: 1, text: "product 正在思考...", detailText: "Checked constraints." }]}
-
-      />
-
-    );
-
-    const compactFrame = compact.lastFrame() ?? "";
-
-    assert.match(compactFrame, /product 正在思考/);
-
-    assert.doesNotMatch(compactFrame, /Checked constraints/);
-
-    compact.unmount();
-
-    compact.cleanup();
-
-
-
-    const detailed = render(
-
-      <RunLogPanel
-
-        detailMode={true}
-
-        currentNodeId="product"
-
-        currentAttempt={1}
-
-        items={[{ id: "thinking-1", kind: "status", nodeId: "product", attempt: 1, text: "product 正在思考...", detailText: "Checked constraints." }]}
-
-      />
-
-    );
-
-    const detailedFrame = detailed.lastFrame() ?? "";
-
-    assert.match(detailedFrame, /product 正在思考/);
-
-    assert.match(detailedFrame, /⎿\s+Checked constraints/);
-
-    detailed.unmount();
-
-    detailed.cleanup();
-
-  });
-
-
-
-  it("renders detailed logs with message response indentation", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <RunLogPanel
-
-
-
-
-
-
-
-        detailMode={true}
-
-
-
-
-
-
-
-        currentNodeId="dev"
-
-
-
-
-
-
-
-        currentAttempt={1}
-
-
-
-
-
-
-
-        items={[
-
-
-
-
-
-
-
-          {
-
-
-
-
-
-
-
-            id: "tool-1",
-
-
-
-
-
-
-
-            kind: "tool",
-
-
-
-
-
-
-
-            nodeId: "dev",
-
-
-
-
-
-
-
-            attempt: 1,
-
-
-
-
-
-
-
-            toolCallId: "tool-1",
-
-
-
-
-
-
-
-            tool: "Bash",
-
-
-
-
-
-
-
-            status: "completed",
-
-
-
-
-
-
-
-            text: "Bash",
-
-
-
-
-
-
-
-            summary: "npm test",
-
-
-
-
-
-
-
-            detailText: "输出：ok"
-
-
-
-
-
-
-
-          },
-
-
-
-
-
-
-
-          { id: "status-1", kind: "status", nodeId: "test", attempt: 1, text: "hidden other node", detailText: "hidden detail" }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /ctrl\+o to collapse/i);
-
-
-
-
-
-
-
-    assert.match(frame, /●\s+Bash\s+\(npm test\)/);
-
-
-
-
-
-
-
-    assert.match(frame, /⎿/);
-
-
-
-
-
-
-
-    assert.match(frame, /输出/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /hidden other node/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("renders failed tool rows with error details only when expanded", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <RunLogPanel
-
-
-
-
-
-
-
-        detailMode={true}
-
-
-
-
-
-
-
-        currentNodeId="dev"
-
-
-
-
-
-
-
-        currentAttempt={1}
-
-
-
-
-
-
-
-        items={[
-
-
-
-
-
-
-
-          {
-
-
-
-
-
-
-
-            id: "tool-1",
-
-
-
-
-
-
-
-            kind: "tool",
-
-
-
-
-
-
-
-            nodeId: "dev",
-
-
-
-
-
-
-
-            attempt: 1,
-
-
-
-
-
-
-
-            toolCallId: "tool-1",
-
-
-
-
-
-
-
-            tool: "PowerShell",
-
-
-
-
-
-
-
-            status: "failed",
-
-
-
-
-
-
-
-            text: "PowerShell",
-
-
-
-
-
-
-
-            summary: "node dist/cli/main.js",
-
-
-
-
-
-
-
-            detailText: "错误：getCurrentEventPriority is not a function"
-
-
-
-
-
-
-
-          }
-
-
-
-
-
-
-
-        ]}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /●\s+PowerShell\s+\(node dist\/cli\/main\.js\)/);
-
-
-
-
-
-
-
-    assert.match(frame, /getCurrentEventPriority is not a function/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("InteractionArea", () => {
-
-
-
-
-
-
-
-  it("separates logs from the prompt and aligns prompt with log content", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <Box flexDirection="column">
-
-
-
-
-
-
-
-        <RunLogPanel
-
-
-
-
-
-
-
-          detailMode={false}
-
-
-
-
-
-
-
-          currentNodeId="dev"
-
-
-
-
-
-
-
-          currentAttempt={1}
-
-
-
-
-
-
-
-          items={[{ id: "user-1", kind: "user", text: "实现功能" }]}
-
-
-
-
-
-
-
-        />
-
-
-
-
-
-
-
-        <InteractionArea
-
-
-
-
-
-
-
-          mode="input"
-
-
-
-
-
-
-
-          workflowId="delivery"
-
-
-
-
-
-
-
-          queued={[]}
-
-
-
-
-
-
-
-          workflows={["delivery"]}
-
-
-
-
-
-
-
-          isLoading={false}
-
-
-
-
-
-
-
-          onPromptEvent={() => undefined}
-
-
-
-
-
-
-
-        />
-
-
-
-
-
-
-
-      </Box>
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const lines = (output.lastFrame() ?? "").split("\n");
-
-
-
-
-
-
-
-    const logHeaderIndex = lines.findIndex((line) => line.includes("Logs compact"));
-
-
-
-
-
-
-
-    const promptIndex = lines.findIndex((line) => line.includes("Type a request or /help"));
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.notEqual(logHeaderIndex, -1);
-
-
-
-
-
-
-
-    assert.notEqual(promptIndex, -1);
-
-
-
-
-
-
-
-    assert.equal(lines[promptIndex - 1], "");
-
-
-
-
-
-
-
-    assert.ok(lines[logHeaderIndex].startsWith("Logs compact"));
-
-
-
-
-
-
-
-    assert.ok(lines[promptIndex].startsWith("INPUT"));
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("keeps choices and prompt together in the bottom interaction area", () => {
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <InteractionArea
-
-
-
-
-
-
-
-        mode="permission"
-
-
-
-
-
-
-
-        workflowId="delivery"
-
-
-
-
-
-
-
-        queued={[]}
-
-
-
-
-
-
-
-        workflows={["delivery"]}
-
-
-
-
-
-
-
-        isLoading={true}
-
-
-
-
-
-
-
-        onPromptEvent={() => undefined}
-
-
-
-
-
-
-
-        choice={{
-
-
-
-
-
-
-
-          title: "Permission required",
-
-
-
-
-
-
-
-          detail: "LS .",
-
-
-
-
-
-
-
-          selectedValue: "allow_once",
-
-
-
-
-
-
-
-          options: [
-
-
-
-
-
-
-
-            { label: "Allow once", value: "allow_once", shortcut: "y" },
-
-
-
-
-
-
-
-            { label: "Deny once", value: "deny_once", shortcut: "n" }
-
-
-
-
-
-
-
-          ],
-
-
-
-
-
-
-
-          onSubmit: () => undefined
-
-
-
-
-
-
-
-        }}
-
-
-
-
-
-
-
-      />
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /Permission required/);
-
-
-
-
-
-
-
-    assert.match(frame, /> Allow once/);
-
-
-
-
-
-
-
-    assert.match(frame, /PERMISSION/);
-
-
-
-
-
-
-
-    assert.match(frame, /Type a request or \/help/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("TuiApp", () => {
-
-
-
-
-
-
-
-  it("renders missing config guidance", () => {
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" initialError="Missing agent-team.yaml" />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /Missing agent-team.yaml/);
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /agent-team init/);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("keeps the prompt as the bottom interaction area in the running layout", () => {
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" workflows={["delivery"]} workflowId="delivery" />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /agent-team/);
-
-
-
-
-
-
-
-    assert.match(frame, />/);
-
-
-
-
-
-
-
-    assert.doesNotMatch(frame, /mode input \| Ctrl\+C stop/);
-
-
-
-
-
-
-
-    assert.ok(frame.indexOf("Type a request or /help") > frame.indexOf("workflow delivery"));
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("continues the same session from ordinary input after the workflow pauses", async () => {
-
-
-
-
-    let starts = 0;
-
-
-
-
-    const continued: unknown[] = [];
-
-
-
-
-    const session = fakeCompletedSession("run-1", "delivery", "first request", async (input) => {
-
-
-
-
-      continued.push(input);
-
-
-
-
-    });
-
-
-
-
-    const engine = {
-
-
-
-
-      async startInteractive() {
-
-
-
-
-        starts += 1;
-
-
-
-
-        return session;
-
-
-
-
-      }
-
-
-
-
-    };
-
-
-
-
-    const output = render(<TuiApp cwd="D:\CodeAI\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-
-
-    await sendTuiLine(output, "first request");
-
-
-
-
-    await sendTuiLine(output, "second request");
-
-
-
-
-
-
-
-
-
-    assert.equal(starts, 1);
-
-
-
-
-    assert.deepEqual(continued, [{ request: "second request", images: [] }]);
-
-
-
-
-    output.unmount();
-
-
-
-
-    output.cleanup();
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-  it("starts a new workflow only after /new resets the TUI session", async () => {
-
-
-
-
-
-
-
-    let starts = 0;
-
-
-
-
-
-
-
-    const engine = {
-
-
-
-
-
-
-
-      async startInteractive() {
-
-
-
-
-
-
-
-        starts += 1;
-
-
-
-
-
-
-
-        return fakeCompletedSession(`run-${starts}`, "delivery", `request-${starts}`);
-
-
-
-
-
-
-
-      }
-
-
-
-
-
-
-
-    };
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await sendTuiLine(output, "first request");
-
-
-
-
-
-
-
-    await sendTuiLine(output, "/new");
-
-
-
-
-
-
-
-    await sendTuiLine(output, "second request");
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.equal(starts, 2);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("resumes a historical workflow run from /resume", async () => {
-
-
-
-
-
-
-
-    const resumed: string[] = [];
-
-
-
-
-
-
-
-    const engine = {
-
-
-
-
-
-
-
-      async resumeInteractive(_config: unknown, runId: string) {
-
-
-
-
-
-
-
-        resumed.push(runId);
-
-
-
-
-
-
-
-        return fakeCompletedSession(runId, "delivery", "historical request");
-
-
-
-
-
-
-
-      },
-
-
-
-
-
-
-
-      async startInteractive() {
-
-
-
-
-
-
-
-        throw new Error("/resume should not start a new workflow");
-
-
-
-
-
-
-
-      }
-
-
-
-
-
-
-
-    };
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await sendTuiLine(output, "/resume run-123");
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(resumed, ["run-123"]);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-  it("returns to ordinary input after /resume finds no sessions", async () => {
-    let starts = 0;
-    const engine = {
-      async listRuns() {
-        return [];
-      },
-      async startInteractive() {
-        starts += 1;
-        return fakeCompletedSession("run-empty-resume", "delivery", "fresh request");
-      }
-    };
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-    await settleInkInput();
-
-    await sendTuiLine(output, "/resume");
-    assert.match(output.lastFrame() ?? "", /No sessions found/);
-
-    await sendTuiLine(output, "fresh request");
-
-    assert.equal(starts, 1);
-    output.unmount();
-    output.cleanup();
-  });
-
-
-
-
-
-
-
-  it("closes the resume picker immediately after selecting a session", async () => {
-    const resumed: string[] = [];
-    const engine = {
-      async listRuns() {
-        return [{ runId: "run-picked", workflowId: "delivery", status: "completed", updatedAt: "2026-06-24T00:00:00.000Z", inputPreview: "historical request" }];
-      },
-      async resumeInteractive(_config: unknown, runId: string) {
-        resumed.push(runId);
-        return new Promise(() => undefined);
-      }
-    };
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-    await settleInkInput();
-
-    await sendTuiLine(output, "/resume");
-    assert.match(output.lastFrame() ?? "", /Resume workflow run/);
-
-    output.stdin.write("\r");
-    await settleInkInput();
-
-    assert.deepEqual(resumed, ["run-picked"]);
-    assert.doesNotMatch(output.lastFrame() ?? "", /Resume workflow run/);
-    output.unmount();
-    output.cleanup();
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("keeps resume picker navigation out of the prompt history", async () => {
-    const resumed: string[] = [];
-    const engine = {
-      async startInteractive() {
-        return fakeCompletedSession("run-first", "delivery", "first request");
-      },
-      async listRuns() {
-        return [
-          { runId: "run-alpha", workflowId: "delivery", status: "completed", updatedAt: "2026-06-24T00:00:00.000Z", inputPreview: "alpha" },
-          { runId: "run-beta", workflowId: "delivery", status: "completed", updatedAt: "2026-06-24T00:00:01.000Z", inputPreview: "beta" }
-        ];
-      },
-      async resumeInteractive(_config: unknown, runId: string) {
-        resumed.push(runId);
-        return fakeCompletedSession(runId, "delivery", "historical request");
-      }
-    };
-
-    const output = render(<TuiApp cwd="D:\CodeAI\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-    await settleInkInput();
-
-    await sendTuiLine(output, "first request");
-    await sendTuiLine(output, "/resume");
-    assert.match(output.lastFrame() ?? "", /> delivery completed alpha/);
-
-    output.stdin.write("\u001b[A");
-    await settleInkInput();
-    assert.match(output.lastFrame() ?? "", /> delivery completed beta/);
-    assert.doesNotMatch(output.lastFrame() ?? "", /INPUT > \/resume/);
-    assert.doesNotMatch(output.lastFrame() ?? "", /INPUT > first request/);
-
-    output.stdin.write("\r");
-    await settleInkInput();
-
-    assert.deepEqual(resumed, ["run-beta"]);
-    assert.doesNotMatch(output.lastFrame() ?? "", /Resume workflow run/);
-    output.unmount();
-    output.cleanup();
-  });
-
-
-
-  it("denies the active permission choice once when Escape is pressed", async () => {
-
-
-
-
-
-
-
-    const resolved: Array<[string, "allow_once" | "deny_once"]> = [];
-
-
-
-
-
-
-
-    const session = fakeInteractiveSession({
-
-
-
-
-
-
-
-      runId: "run-permission",
-
-
-
-
-
-
-
-      workflowId: "delivery",
-
-
-
-
-
-
-
-      events: [{
-
-
-
-
-
-
-
-        type: "permission_requested",
-
-
-
-
-
-
-
-        request_id: "perm-1",
-
-
-
-
-
-
-
-        node_id: "dev",
-
-
-
-
-
-
-
-        attempt: 1,
-
-
-
-
-
-
-
-        tool_call_id: "tool-1",
-
-
-
-
-
-
-
-        tool: "PowerShell",
-
-
-
-
-
-
-
-        input: { command: "npm test" },
-
-
-
-
-
-
-
-        specifier: "npm test",
-
-
-
-
-
-
-
-        ts: "2026-06-24T00:00:00.000Z",
-
-
-
-
-
-
-
-        seq: 1
-
-
-
-
-
-
-
-      }],
-
-
-
-
-
-
-
-      permissions: { resolve: (requestId: string, decision: "allow_once" | "deny_once") => resolved.push([requestId, decision]) }
-
-
-
-
-
-
-
-    });
-
-
-
-
-
-
-
-    const engine = { async startInteractive() { return session; } };
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await sendTuiLine(output, "needs permission");
-
-
-
-
-
-
-
-    output.stdin.write("\u001b");
-
-
-
-
-
-
-
-    await settleTerminalEscape();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(resolved, [["perm-1", "deny_once"]]);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("keeps plan review paused when Escape is pressed on the plan choice", async () => {
-
-
-
-
-
-
-
-    const decisions: string[] = [];
-
-
-
-
-
-
-
-    const session = fakeInteractiveSession({
-
-
-
-
-
-
-
-      runId: "run-plan",
-
-
-
-
-
-
-
-      workflowId: "delivery",
-
-
-
-
-
-
-
-      events: [{
-
-
-
-
-
-
-
-        type: "plan_review_requested",
-
-
-
-
-
-
-
-        node_id: "dev",
-
-
-
-
-
-
-
-        attempt: 1,
-
-
-
-
-
-
-
-        document: "<proposed_plan>\nplan\n</proposed_plan>",
-
-
-
-
-
-
-
-        ts: "2026-06-24T00:00:00.000Z",
-
-
-
-
-
-
-
-        seq: 1
-
-
-
-
-
-
-
-      }],
-
-
-
-
-
-
-
-      resumePlanReview: (decision: "continue" | "stay") => decisions.push(decision)
-
-
-
-
-
-
-
-    });
-
-
-
-
-
-
-
-    const engine = { async startInteractive() { return session; } };
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await sendTuiLine(output, "review plan");
-
-
-
-
-
-
-
-    output.stdin.write("\u001b");
-
-
-
-
-
-
-
-    await settleTerminalEscape();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(decisions, ["stay"]);
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("exits after interrupt confirmation when Ctrl+C is pressed again", async () => {
-    let interrupted = 0;
-    let exited = 0;
-    const session = fakeInteractiveSession({
-      runId: "run-interrupt",
-      workflowId: "delivery",
-      events: [],
-      interrupt: () => {
-        interrupted += 1;
-      }
-    });
-
-    const engine = { async startInteractive() { return session; } };
-    const output = render(
-      <TuiApp
-        cwd="D:\\CodeAI\\agent-team"
-        config={tuiConfig()}
-        workflows={["delivery"]}
-        workflowId="delivery"
-        engine={engine as unknown as never}
-        onExit={() => {
-          exited += 1;
-        }}
-      />
-    );
-
-    await sendTuiLine(output, "start work");
-    output.stdin.write("\u0003");
-    await settleInkInput();
-    assert.match(output.lastFrame() ?? "", /Stop current run\?/);
-
-    output.stdin.write("\u0003");
-    await settleInkInput();
-
-    assert.equal(interrupted, 1);
-    assert.equal(exited, 1);
-    output.unmount();
-    output.cleanup();
-  });
-
-
-
-  it("pins configured workflow nodes above the prompt", () => {
-
-
-
-
-
-
-
-    const config = {
-
-
-
-
-
-
-
-      providers: {
-
-
-
-
-
-
-
-        default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
-
-
-
-
-
-
-
-      },
-
-
-
-
-
-
-
-      roles: {
-
-
-
-
-
-
-
-        product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } },
-
-
-
-
-
-
-
-        developer: { description: "", system_prompt: "developer", default_model: "gpt5.5", requires: { tool_calling: false, vision: false } }
-
-
-
-
-
-
-
-      },
-
-
-
-
-
-
-
-      workflows: {
-
-
-
-
-
-
-
-        delivery: {
-
-
-
-
-
-
-
-          nodes: [
-
-
-
-
-
-
-
-            { id: "product", role: "product", provider: "default", permission_mode: "default" as const },
-
-
-
-
-
-
-
-            { id: "dev", role: "developer", provider: "default", permission_mode: "default" as const }
-
-
-
-
-
-
-
-          ],
-
-
-
-
-
-
-
-          edges: []
-
-
-
-
-
-
-
-        }
-
-
-
-
-
-
-
-      }
-
-
-
-
-
-
-
-    };
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={config} workflows={["delivery"]} workflowId="delivery" />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const frame = output.lastFrame() ?? "";
-
-
-
-
-
-
-
-    assert.match(frame, /product/);
-
-
-
-
-
-
-
-    assert.match(frame, /dev/);
-
-
-
-
-
-
-
-    assert.match(frame, /pending/);
-
-
-
-
-
-
-
-    assert.match(frame, /model: gpt-test/);
-
-
-
-
-
-
-
-    assert.match(frame, /model: gpt5\.5/);
-
-
-
-
-
-
-
-    assert.match(frame, /Logs compact/);
-
-
-
-
-
-
-
-    assert.ok(frame.indexOf("product") < frame.indexOf("Type a request or /help"));
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-describe("main scroll helpers", () => {
-
-
-
-
-
-
-
-  it("jumps by half pages from the effective pending scroll position", () => {
-
-
-
-
-
-
-
-    const handle = createScrollHandle({ top: 8, pending: 2, height: 20, viewport: 4 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.equal(jumpMainScrollBy(handle, -3), false);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(handle.calls, [["scrollTo", 7]]);
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("restores sticky scroll when page jumps reach the bottom", () => {
-
-
-
-
-
-
-
-    const handle = createScrollHandle({ top: 7, pending: 1, height: 12, viewport: 4 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.equal(jumpMainScrollBy(handle, 3), true);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(handle.calls, [["scrollTo", 8], ["scrollToBottom"]]);
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("clears pending wheel movement when scrolling above the top", () => {
-
-
-
-
-
-
-
-    const handle = createScrollHandle({ top: 1, pending: -1, height: 12, viewport: 4 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    scrollMainUp(handle, 3);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(handle.calls, [["scrollTo", 0]]);
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("restores sticky scroll when wheeling down reaches the bottom", () => {
-
-
-
-
-
-
-
-    const handle = createScrollHandle({ top: 6, pending: 1, height: 10, viewport: 3 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.equal(scrollMainDown(handle, 2), true);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(handle.calls, [["scrollToBottom"]]);
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("attaches the ScrollBox imperative handle through React refs", async () => {
-
-
-
-
-
-
-
-    const ref = createRef<ScrollBoxHandle>();
-
-
-
-
-
-
-
-    const output = render(
-
-
-
-
-
-
-
-      <ScrollBox ref={ref} height={3} flexDirection="column">
-
-
-
-
-
-
-
-        <Text>line</Text>
-
-
-
-
-
-
-
-      </ScrollBox>
-
-
-
-
-
-
-
-    );
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await settleInkInput();
-
-
-
-
-
-
-
-    assert.equal(typeof (ref.current as { scrollBy?: unknown } | null)?.scrollBy, "function");
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function tuiConfig() {
-
-
-
-
-
-
-
-  return {
-
-
-
-
-
-
-
-    providers: {
-
-
-
-
-
-
-
-      default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
-
-
-
-
-
-
-
-    },
-
-
-
-
-
-
-
-    roles: {
-
-
-
-
-
-
-
-      dev: { description: "", system_prompt: "dev", requires: { tool_calling: false, vision: false } }
-
-
-
-
-
-
-
-    },
-
-
-
-
-
-
-
-    workflows: {
-
-
-
-
-
-
-
-      delivery: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] }
-
-
-
-
-
-
-
-    }
-
-
-
-
-
-
-
-  };
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function fakeInteractiveSession(input: {
-
-
-
-
-
-
-
-  runId: string;
-
-
-
-
-
-
-
-  workflowId: string;
-
-
-
-
-
-
-
-  events: unknown[];
-
-
-
-
-
-
-
-  permissions?: { resolve(requestId: string, decision: "allow_once" | "deny_once"): void };
-
-
-
-
-
-
-
-  resumePlanReview?: (decision: "continue" | "stay") => void;
-
-  interrupt?: () => void | Promise<void>;
-
-
-
-
-
-
-
-}) {
-
-
-
-
-
-
-
-  const state = { status: "running" as const, workflow_id: input.workflowId, attempts: [], handoff: undefined };
-
-
-
-
-
-
-
-  return {
-
-
-
-
-
-
-
-    runId: input.runId,
-
-
-
-
-
-
-
-    state,
-
-
-
-
-
-
-
-    events: (async function* () {
-
-
-
-
-
-
-
-      for (const event of input.events) yield event;
-
-
-
-
-
-
-
-    })(),
-
-
-
-
-
-
-
-    permissions: {
-
-
-
-
-
-
-
-      resolve: input.permissions?.resolve ?? (() => undefined),
-
-
-
-
-
-
-
-      resolveAll: () => undefined,
-
-
-
-
-
-
-
-      hasPending: () => false
-
-
-
-
-
-
-
-    },
-
-
-
-
-
-
-
-    interrupt: async () => input.interrupt?.(),
-
-
-
-
-
-
-
-    resumeWithUserInput: async () => undefined,
-
-
-
-
-
-
-
-    resumePlanReview: async (decision: "continue" | "stay") => input.resumePlanReview?.(decision),
-
-
-
-
-
-
-
-    revisePlan: async () => undefined,
-
-
-
-
-
-
-
-    result: new Promise(() => undefined)
-
-
-
-
-
-
-
-  };
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function fakeCompletedSession(runId: string, workflowId: string, request: string, continueWithInput?: (input: unknown) => void | Promise<void>) {
-
-
-
-
-
-
-
-  const state = { status: "completed" as const, workflow_id: workflowId, attempts: [], handoff: undefined };
-
-
-
-
-
-
-
-  const events = [
-
-
-
-
-
-
-
-    { type: "run_started", workflow_id: workflowId, input: { request }, ts: "2026-06-24T00:00:00.000Z", seq: 1 },
-
-
-
-
-
-
-
-    { type: "run_completed", result: state, ts: "2026-06-24T00:00:01.000Z", seq: 2 }
-
-
-
-
-
-
-
-  ];
-
-
-
-
-
-
-
-  return {
-
-
-
-
-
-
-
-    runId,
-
-
-
-
-
-
-
-    state,
-
-
-
-
-
-
-
-    events: (async function* () {
-
-
-
-
-
-
-
-      for (const event of events) yield event;
-
-
-
-
-
-
-
-    })(),
-
-
-
-
-
-
-
-    permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
-
-
-
-
-
-
-
-    interrupt: async () => undefined,
-
-
-
-
-
-
-
-    resumeWithUserInput: async () => undefined,
-
-
-
-
-
-
-
-    resumePlanReview: async () => undefined,
-
-
-
-
-
-
-
-    revisePlan: async () => undefined,
-
-
-
-
-
-
-
-    continueWithInput: async (input: unknown) => continueWithInput?.(input),
-
-
-
-    result: Promise.resolve(state)
-
-
-
-
-
-
-
-  };
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-async function sendTuiLine(output: { stdin: { write(value: string): void } }, text: string): Promise<void> {
-
-
-
-
-
-
-
-  output.stdin.write(text);
-
-
-
-
-
-
-
-  await settleTuiWork();
-
-
-
-
-
-
-
-  output.stdin.write("\r");
-
-
-
-
-
-
-
-  await settleTuiWork();
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function settleTuiWork(): Promise<void> {
-
-
-
-
-
-
-
-  return new Promise((resolve) => setTimeout(resolve, 20));
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function settleInkInput(): Promise<void> {
-
-
-
-
-
-
-
-  return new Promise((resolve) => setTimeout(resolve, 0));
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function settleTerminalEscape(): Promise<void> {
-
-
-
-
-
-
-
-  return new Promise((resolve) => setTimeout(resolve, 35));
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function createScrollHandle(input: { top: number; pending: number; height: number; viewport: number }) {
-
-
-
-
-
-
-
-  const calls: Array<["scrollTo", number] | ["scrollBy", number] | ["scrollToBottom"]> = [];
-
-
-
-
-
-
-
-  return {
-
-
-
-
-
-
-
-    calls,
-
-
-
-
-
-
-
-    scrollTo: (value: number) => calls.push(["scrollTo", value]),
-
-
-
-
-
-
-
-    scrollBy: (value: number) => calls.push(["scrollBy", value]),
-
-
-
-
-
-
-
-    scrollToBottom: () => calls.push(["scrollToBottom"]),
-
-
-
-
-
-
-
-    getScrollTop: () => input.top,
-
-
-
-
-
-
-
-    getPendingDelta: () => input.pending,
-
-
-
-
-
-
-
-    getScrollHeight: () => input.height,
-
-
-
-
-
-
-
-    getViewportHeight: () => input.viewport
-
-
-
-
-
-
-
-  };
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-
-
-async function waitForTuiFrame(output: { lastFrame(): string | undefined }, pattern: RegExp): Promise<void> {
-
-
-
-  for (let index = 0; index < 10; index += 1) {
-
-
-
-    if (pattern.test(output.lastFrame() ?? "")) return;
-
-
-
-    await settleTuiWork();
-
-
-
-  }
-
-
-
-  assert.fail(`Timed out waiting for ${pattern}`);
-
-
-
-}
-
-
-
-
-async function waitForCondition(condition: () => boolean): Promise<void> {
-  for (let index = 0; index < 10; index += 1) {
-    if (condition()) return;
-    await settleTuiWork();
-  }
-  assert.fail("Timed out waiting for condition");
-}
+import React from "react";
+
+
+
+
+
+
+
+import { describe, it } from "node:test";
+
+
+
+
+
+
+
+import assert from "node:assert/strict";
+
+
+
+
+
+
+
+import { render } from "ink-testing-library";
+
+
+
+
+
+
+
+import { createRef } from "react";
+
+
+
+
+
+
+
+import { Box, ScrollBox, Text, useHasSelection } from "../../src/tui/ink.js";
+
+
+
+
+
+
+
+import type { ScrollBoxHandle } from "../../src/tui/ink.js";
+
+
+
+
+
+
+
+import instances from "../../src/ink/instances.js";
+
+
+
+import { PromptInput } from "../../src/tui/components/PromptInput/PromptInput.js";
+
+
+
+
+
+
+
+import { ModelStreamPanel } from "../../src/tui/components/ModelStreamPanel.js";
+
+
+
+
+
+
+
+import { NodeStatusList } from "../../src/tui/components/NodeStatusList.js";
+
+
+
+
+
+
+
+import { RunConversationPanel } from "../../src/tui/components/RunConversationPanel.js";
+
+
+
+
+
+
+
+import { RunLogPanel } from "../../src/tui/components/RunLogPanel.js";
+
+
+
+
+
+
+
+import { WorkflowFlowChart } from "../../src/tui/components/WorkflowFlowChart.js";
+
+
+
+
+
+
+
+import { ChoicePrompt } from "../../src/tui/components/ChoicePrompt.js";
+
+
+
+
+
+
+
+import { PermissionPrompt } from "../../src/tui/components/PermissionPrompt.js";
+
+import { UserQuestionPrompt } from "../../src/tui/components/UserQuestionPrompt.js";
+
+
+
+
+
+
+
+import { PlanReviewPrompt } from "../../src/tui/components/PlanReviewPrompt.js";
+
+
+
+
+
+
+
+import { InteractionArea } from "../../src/tui/components/InteractionArea.js";
+
+
+
+
+
+
+
+import { jumpMainScrollBy, resolveActiveChoiceCancel, resolveCtrlCBehavior, scrollMainDown, scrollMainUp, TuiApp } from "../../src/tui/TuiApp.js";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("PromptInput component", () => {
+
+
+
+
+
+
+
+  it("renders mode and footer status", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <PromptInput
+
+
+
+
+
+
+
+        mode="input"
+
+
+
+
+
+
+
+        workflowId="delivery"
+
+
+
+
+
+
+
+        queued={[]}
+
+
+
+
+
+
+
+        workflows={["delivery"]}
+
+
+
+
+
+
+
+        isLoading={false}
+
+
+
+
+
+
+
+        onEvent={() => undefined}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /INPUT/);
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /delivery/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("renders copy shortcut in the footer when text is selected", () => {
+
+    const output = render(
+
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        hasSelection
+        onEvent={() => undefined}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Ctrl\+C copy/);
+    assert.doesNotMatch(frame, /Ctrl\+C stop/);
+    output.unmount();
+    output.cleanup();
+
+  });
+
+  it("renders an empty shell prompt with placeholder text", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <PromptInput
+
+
+
+
+
+
+
+        mode="input"
+
+
+
+
+
+
+
+        workflowId="delivery"
+
+
+
+
+
+
+
+        queued={[]}
+
+
+
+
+
+
+
+        workflows={["delivery"]}
+
+
+
+
+
+
+
+        isLoading={false}
+
+
+
+
+
+
+
+        onEvent={() => undefined}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, />/);
+
+
+
+
+
+
+
+    assert.match(frame, /Type a request or \/help/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("does not render a history counter after submitting input", async () => {
+    const output = render(
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onEvent={() => undefined}
+      />
+    );
+
+    await sendTuiLine(output, "remember me");
+
+    assert.doesNotMatch(output.lastFrame() ?? "", /history \d+/);
+    output.unmount();
+    output.cleanup();
+  });
+
+
+
+  it("renders selectable slash command completions above the input and applies them with Tab", async () => {
+
+
+
+
+    const output = render(
+
+
+
+
+      <PromptInput
+
+
+
+
+        mode="input"
+
+
+
+
+        workflowId="delivery"
+
+
+
+
+        queued={[]}
+
+
+
+
+        workflows={["delivery", "audit"]}
+
+
+
+
+        isLoading={false}
+
+
+
+
+        onEvent={() => undefined}
+
+
+
+
+      />
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+    output.stdin.write("/r");
+
+
+
+
+    await settleInkInput();
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+    const lines = frame.split("\n");
+
+
+
+
+    const suggestionIndex = lines.findIndex((line) => line.includes("Resume a session"));
+
+
+
+
+    const inputIndex = lines.findIndex((line) => line.includes("INPUT > /r"));
+
+
+
+
+
+
+
+
+
+    assert.notEqual(suggestionIndex, -1);
+
+
+
+
+    assert.notEqual(inputIndex, -1);
+
+
+
+
+    assert.ok(suggestionIndex < inputIndex);
+
+
+
+
+
+
+
+
+
+    output.stdin.write("\t");
+
+
+
+
+    await settleInkInput();
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /\/resume /);
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /<session>/);
+
+
+
+
+    output.unmount();
+
+
+
+
+    output.cleanup();
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+  it("closes slash command completions with Escape", async () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <PromptInput
+
+
+
+
+
+
+
+        mode="input"
+
+
+
+
+
+
+
+        workflowId="delivery"
+
+
+
+
+
+
+
+        queued={[]}
+
+
+
+
+
+
+
+        workflows={["delivery"]}
+
+
+
+
+
+
+
+        isLoading={false}
+
+
+
+
+
+
+
+        onEvent={() => undefined}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    output.stdin.write("/r");
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /Resume a session/);
+
+
+
+
+
+
+
+    output.stdin.write("\u001b");
+
+
+
+
+
+
+
+    await settleTerminalEscape();
+
+
+
+
+
+
+
+    assert.doesNotMatch(output.lastFrame() ?? "", /Resume a session/);
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /\/r/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("keeps mouse reporting out of the prompt buffer", async () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <PromptInput
+
+
+
+
+
+
+
+        mode="input"
+
+
+
+
+
+
+
+        workflowId="delivery"
+
+
+
+
+
+
+
+        queued={[]}
+
+
+
+
+
+
+
+        workflows={["delivery"]}
+
+
+
+
+
+
+
+        isLoading={false}
+
+
+
+
+
+
+
+        onEvent={() => undefined}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    output.stdin.write("\u001b[<64;12;5M");
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /64;12;5/);
+
+
+
+
+
+
+
+    assert.match(frame, /Type a request or \/help/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("renders recent streaming model output", () => {
+
+
+
+
+
+
+
+    const output = render(<ModelStreamPanel streams={[{ nodeId: "product", attempt: 1, text: "生成中的 JSON 内容" }]} />);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /product #1 streaming/);
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /生成中的 JSON 内容/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("resolves Ctrl+C to exit outside active workflow sessions", () => {
+
+
+
+
+
+
+
+    assert.equal(resolveCtrlCBehavior("input", false), "exit");
+
+
+
+
+
+
+
+    assert.equal(resolveCtrlCBehavior("completed", true), "exit");
+
+
+
+
+
+
+
+    assert.equal(resolveCtrlCBehavior("running", true), "confirm_interrupt");
+
+
+
+
+
+
+
+    assert.equal(resolveCtrlCBehavior("confirm_interrupt", true), "interrupt");
+
+    assert.equal(resolveCtrlCBehavior("input", false, true), "copy_selection");
+
+    assert.equal(resolveCtrlCBehavior("running", true, true), "copy_selection");
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("resolves Escape for active choices with safe cancellation defaults", () => {
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "permission", permissionRequests: [{ requestId: "perm-1" }] }), { type: "deny_permission", requestId: "perm-1", key: "permission:perm-1" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "waiting_plan_review", pendingReview: { nodeId: "product", attempt: 1 } }), { type: "stay_plan", key: "plan:product:1" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_interrupt", modeBeforeConfirmation: "running" }), { type: "restore_mode", mode: "running", key: "confirm_interrupt" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_new", modeBeforeConfirmation: "permission" }), { type: "restore_mode", mode: "permission", key: "confirm_new" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_resume", modeBeforeConfirmation: "running", pendingResumeRunId: "run-1" }), { type: "restore_mode", mode: "running", clearPendingResumeRunId: true, key: "confirm_resume:run-1" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "resume_picker" }), { type: "restore_mode", mode: "input", clearResumePicker: true, key: "resume_picker" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "select_workflow" }), { type: "exit", key: "select_workflow" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "select_workflow", workflowId: "delivery" }), { type: "restore_mode", mode: "input", key: "select_workflow" });
+
+
+
+
+
+
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "input" }), { type: "none" });
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("selection hooks", () => {
+
+  it("subscribes to Ink selection changes with bound instance methods", async () => {
+    const previous = instances.get(process.stdout);
+    const fakeInk = {
+      selected: false,
+      listeners: new Set<() => void>(),
+      hasTextSelection(this: { selected: boolean }) {
+        return this.selected;
+      },
+      subscribeToSelectionChange(this: { listeners: Set<() => void> }, cb: () => void) {
+        this.listeners.add(cb);
+        return () => this.listeners.delete(cb);
+      }
+    };
+
+    function SelectionProbe() {
+      return <Text>{useHasSelection() ? "selected" : "empty"}</Text>;
+    }
+
+    instances.set(process.stdout, fakeInk as never);
+    const output = render(<SelectionProbe />);
+    try {
+      assert.match(output.lastFrame() ?? "", /empty/);
+
+      fakeInk.selected = true;
+      for (const listener of fakeInk.listeners) listener();
+      await settleInkInput();
+
+      assert.match(output.lastFrame() ?? "", /selected/);
+    } finally {
+      output.unmount();
+      output.cleanup();
+      if (previous) instances.set(process.stdout, previous);
+      else instances.delete(process.stdout);
+    }
+  });
+
+});
+
+
+describe("Workflow node status component", () => {
+
+
+
+
+
+
+
+  it("renders every configured workflow node with pending state before it runs", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <NodeStatusList
+
+
+
+
+
+
+
+        workflowNodes={[{ id: "product", role: "product" }, { id: "dev", role: "developer" }, { id: "test", role: "tester" }]}
+
+
+
+
+
+
+
+        nodes={[{ nodeId: "product", attempt: 1, status: "running" }]}
+
+
+
+
+
+
+
+        currentNodeId="product"
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /product #1 running/);
+
+
+
+
+
+
+
+    assert.match(frame, /dev pending/);
+
+
+
+
+
+
+
+    assert.match(frame, /test pending/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("renders workflow nodes with model names, English statuses, and an active running border", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <WorkflowFlowChart
+
+
+
+
+
+
+
+        workflowNodes={[{ id: "product", role: "product", model: "gpt5.5" }, { id: "dev", role: "developer", model: "claude-dev" }, { id: "test", role: "tester" }]}
+
+
+
+
+
+
+
+        nodes={[{ nodeId: "dev", attempt: 1, status: "running" }, { nodeId: "product", attempt: 1, status: "success" }]}
+
+
+
+
+
+
+
+        currentNodeId="dev"
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /product/);
+
+
+
+
+
+
+
+    assert.match(frame, /model: gpt5\.5/);
+
+
+
+
+
+
+
+    assert.match(frame, /done #1/);
+
+
+
+
+
+
+
+    assert.match(frame, /dev/);
+
+
+
+
+
+
+
+    assert.match(frame, /model: claude-dev/);
+
+
+
+
+
+
+
+    assert.match(frame, /running #1/);
+
+
+
+
+
+
+
+    assert.match(frame, /◝/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /[◜◞◟]/);
+
+
+
+
+
+
+
+    assert.match(frame, /test/);
+
+
+
+
+
+
+
+    assert.match(frame, /pending/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /已完成|运行中|等待中/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /product #1 success/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("ChoicePrompt", () => {
+
+
+
+
+
+
+
+  it("defaults to the configured option and submits it with Enter", async () => {
+
+
+
+
+
+
+
+    const submitted: string[] = [];
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <ChoicePrompt
+
+
+
+
+
+
+
+        title="Permission required"
+
+
+
+
+
+
+
+        detail="LS ."
+
+
+
+
+
+
+
+        defaultValue="allow_once"
+
+
+
+
+
+
+
+        options={[
+
+
+
+
+
+
+
+          { label: "Allow once", value: "allow_once", shortcut: "y" },
+
+
+
+
+
+
+
+          { label: "Deny once", value: "deny_once", shortcut: "n" }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+        onSubmit={(value) => submitted.push(value)}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /> Allow once/);
+
+
+
+
+
+
+
+    output.stdin.write("\r");
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    assert.deepEqual(submitted, ["allow_once"]);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("moves selection with arrow keys and submits with Enter", async () => {
+
+
+
+
+
+
+
+    const submitted: string[] = [];
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <ChoicePrompt
+
+
+
+
+
+
+
+        title="Permission required"
+
+
+
+
+
+
+
+        detail="LS ."
+
+
+
+
+
+
+
+        defaultValue="allow_once"
+
+
+
+
+
+
+
+        options={[
+
+
+
+
+
+
+
+          { label: "Allow once", value: "allow_once", shortcut: "y" },
+
+
+
+
+
+
+
+          { label: "Deny once", value: "deny_once", shortcut: "n" }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+        onSubmit={(value) => submitted.push(value)}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    output.stdin.write("\u001b[B");
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /> Deny once/);
+
+
+
+
+
+
+
+    output.stdin.write("\r");
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    assert.deepEqual(submitted, ["deny_once"]);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("submits matching shortcut keys", async () => {
+
+
+
+
+
+
+
+    const submitted: string[] = [];
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <ChoicePrompt
+
+
+
+
+
+
+
+        title="Permission required"
+
+
+
+
+
+
+
+        defaultValue="allow_once"
+
+
+
+
+
+
+
+        options={[
+
+
+
+
+
+
+
+          { label: "Allow once", value: "allow_once", shortcut: "y" },
+
+
+
+
+
+
+
+          { label: "Deny once", value: "deny_once", shortcut: "n" }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+        onSubmit={(value) => submitted.push(value)}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    output.stdin.write("n");
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    assert.deepEqual(submitted, ["deny_once"]);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("renders controlled selection without owning keyboard focus", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <ChoicePrompt
+
+
+
+
+
+
+
+        title="Permission required"
+
+
+
+
+
+
+
+        defaultValue="allow_once"
+
+
+
+
+
+
+
+        selectedValue="deny_once"
+
+
+
+
+
+
+
+        options={[
+
+
+
+
+
+
+
+          { label: "Allow once", value: "allow_once", shortcut: "y" },
+
+
+
+
+
+
+
+          { label: "Deny once", value: "deny_once", shortcut: "n" }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+        interactive={false}
+
+
+
+
+
+
+
+        onSubmit={() => undefined}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /> Deny once/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("PlanReviewPrompt", () => {
+
+
+
+
+
+
+
+  it("renders up to 15 visible plan lines", () => {
+
+
+
+
+
+
+
+    const document = Array.from({ length: 18 }, (_, index) => `line-${String(index + 1).padStart(2, "0")}`).join("\n");
+
+
+
+
+
+
+
+    const output = render(<PlanReviewPrompt review={{ type: "plan", nodeId: "product", attempt: 1, document }} visibleRows={15} />);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /line-15/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /line-16/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("renders a scrollable plan review window without inline decisions", () => {
+
+
+
+
+
+
+
+    const document = Array.from({ length: 18 }, (_, index) => `line-${String(index + 1).padStart(2, "0")}`).join("\n");
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <PlanReviewPrompt
+
+
+
+
+
+
+
+        review={{ type: "plan", nodeId: "product", attempt: 1, document }}
+
+
+
+
+
+
+
+        offset={1}
+
+
+
+
+
+
+
+        visibleRows={6}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /Plan Review/);
+
+
+
+
+
+
+
+    assert.match(frame, /line-02/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /Yes, continue execution by plan/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /> No, staying in the plan/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("UserQuestionPrompt", () => {
+  it("renders question text without raw JSON", () => {
+    const output = render(<UserQuestionPrompt questions={[{ id: "next_step", text: "用户已暂停当前节点，请输入下一步处理方式。", required: true }]} />);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /用户已暂停当前节点，请输入下一步处理方式。/);
+    assert.doesNotMatch(frame, /\[\{/);
+    assert.doesNotMatch(frame, /"id"/);
+    assert.doesNotMatch(frame, /"required"/);
+    output.unmount();
+    output.cleanup();
+  });
+});
+
+describe("PermissionPrompt", () => {
+
+
+
+
+
+
+
+  it("uses the reusable choice prompt and defaults to allow once", async () => {
+
+
+
+
+
+
+
+    const submitted: Array<[string, "allow_once" | "deny_once"]> = [];
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <PermissionPrompt
+
+
+
+
+
+
+
+        request={{
+
+
+
+
+
+
+
+          requestId: "perm-1",
+
+
+
+
+
+
+
+          nodeId: "product",
+
+
+
+
+
+
+
+          attempt: 1,
+
+
+
+
+
+
+
+          toolCallId: "tool-1",
+
+
+
+
+
+
+
+          tool: "LS",
+
+
+
+
+
+
+
+          input: { path: "." },
+
+
+
+
+
+
+
+          specifier: "."
+
+
+
+
+
+
+
+        }}
+
+
+
+
+
+
+
+        onResolve={(requestId, decision) => submitted.push([requestId, decision])}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /Permission required/);
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /LS ./);
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /> Allow once/);
+
+
+
+
+
+
+
+    output.stdin.write("\r");
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    assert.deepEqual(submitted, [["perm-1", "allow_once"]]);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("RunConversationPanel", () => {
+
+
+
+
+
+
+
+  it("renders user messages and workflow output continuously", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <RunConversationPanel
+
+
+
+
+
+
+
+        currentNodeId="product"
+
+
+
+
+
+
+
+        currentAttempt={1}
+
+
+
+
+
+
+
+        items={[
+
+
+
+
+
+
+
+          { kind: "user", text: "请实现 TUI" },
+
+
+
+
+
+
+
+          { kind: "assistant", nodeId: "product", attempt: 1, text: "{\"status\":\"success\"}" },
+
+
+
+
+
+
+
+          { kind: "status", nodeId: "product", attempt: 1, text: "product #1 running" },
+
+
+
+
+
+
+
+          { kind: "assistant", nodeId: "dev", attempt: 1, text: "dev output should remain visible" }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /user/);
+
+
+
+
+
+
+
+    assert.match(frame, /请实现 TUI/);
+
+
+
+
+
+
+
+    assert.match(frame, /product #1 running/);
+
+
+
+
+
+
+
+    assert.match(frame, /\{\"status\":\"success\"\}/);
+
+
+
+
+
+
+
+    assert.match(frame, /dev output should remain visible/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("RunLogPanel", () => {
+  it("filters logs by current node when currentNodeId is set", () => {
+    const output = render(
+      <RunLogPanel
+        detailMode={false}
+        currentNodeId="dev"
+        currentAttempt={1}
+        items={[
+          { id: "product-1", kind: "status", nodeId: "product", attempt: 1, text: "product 已完成" },
+          { id: "transition-1", kind: "status", text: "流程流转：product -> dev（success）" },
+          { id: "dev-1", kind: "status", nodeId: "dev", attempt: 1, text: "dev 正在处理..." }
+        ]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    // Previous node log (product) is filtered out when currentNodeId is dev
+    assert.doesNotMatch(frame, /product 已完成/);
+    // Transition log (no nodeId) is always visible
+    assert.match(frame, /流程流转：product -> dev（success）/);
+    // Current node log is visible
+    assert.match(frame, /dev 正在处理/);
+    output.unmount();
+    output.cleanup();
+  });
+
+
+
+
+
+
+
+
+
+  it("renders compact logs with tui-code style tool rows", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <RunLogPanel
+
+
+
+
+
+
+
+        detailMode={false}
+
+
+
+
+
+
+
+        currentNodeId="dev"
+
+
+
+
+
+
+
+        currentAttempt={1}
+
+
+
+
+
+
+
+        items={[
+
+
+
+
+
+
+
+          { id: "user-1", kind: "user", text: "实现功能" },
+
+
+
+
+
+
+
+          {
+
+
+
+
+
+
+
+            id: "tool-1",
+
+
+
+
+
+
+
+            kind: "tool",
+
+
+
+
+
+
+
+            nodeId: "dev",
+
+
+
+
+
+
+
+            attempt: 1,
+
+
+
+
+
+
+
+            toolCallId: "tool-1",
+
+
+
+
+
+
+
+            tool: "Bash",
+
+
+
+
+
+
+
+            status: "running",
+
+
+
+
+
+
+
+            text: "Bash",
+
+
+
+
+
+
+
+            summary: "npm test",
+
+
+
+
+
+
+
+            detailText: "命令：npm test"
+
+
+
+
+
+
+
+          },
+
+
+
+
+
+
+
+          { id: "status-1", kind: "status", nodeId: "dev", attempt: 1, text: "dev 已完成：实现完成", detailText: "摘要：实现完成" }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /ctrl\+o to expand/i);
+
+
+
+
+
+
+
+    assert.match(frame, /实现功能/);
+
+
+
+
+
+
+
+    assert.match(frame, /●\s+Bash\s+\(npm test\)/);
+
+
+
+
+
+
+
+    assert.match(frame, /dev 已完成：实现完成/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /命令：npm test/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("renders thinking logs compactly and expands details on demand", () => {
+
+    const compact = render(
+
+      <RunLogPanel
+
+        detailMode={false}
+
+        currentNodeId="product"
+
+        currentAttempt={1}
+
+        items={[{ id: "thinking-1", kind: "status", nodeId: "product", attempt: 1, text: "product 正在思考...", detailText: "Checked constraints." }]}
+
+      />
+
+    );
+
+    const compactFrame = compact.lastFrame() ?? "";
+
+    assert.match(compactFrame, /product 正在思考/);
+
+    assert.doesNotMatch(compactFrame, /Checked constraints/);
+
+    compact.unmount();
+
+    compact.cleanup();
+
+
+
+    const detailed = render(
+
+      <RunLogPanel
+
+        detailMode={true}
+
+        currentNodeId="product"
+
+        currentAttempt={1}
+
+        items={[{ id: "thinking-1", kind: "status", nodeId: "product", attempt: 1, text: "product 正在思考...", detailText: "Checked constraints." }]}
+
+      />
+
+    );
+
+    const detailedFrame = detailed.lastFrame() ?? "";
+
+    assert.match(detailedFrame, /product 正在思考/);
+
+    assert.match(detailedFrame, /⎿\s+Checked constraints/);
+
+    detailed.unmount();
+
+    detailed.cleanup();
+
+  });
+
+
+
+  it("renders detailed logs with message response indentation", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <RunLogPanel
+
+
+
+
+
+
+
+        detailMode={true}
+
+
+
+
+
+
+
+        currentNodeId="dev"
+
+
+
+
+
+
+
+        currentAttempt={1}
+
+
+
+
+
+
+
+        items={[
+
+
+
+
+
+
+
+          {
+
+
+
+
+
+
+
+            id: "tool-1",
+
+
+
+
+
+
+
+            kind: "tool",
+
+
+
+
+
+
+
+            nodeId: "dev",
+
+
+
+
+
+
+
+            attempt: 1,
+
+
+
+
+
+
+
+            toolCallId: "tool-1",
+
+
+
+
+
+
+
+            tool: "Bash",
+
+
+
+
+
+
+
+            status: "completed",
+
+
+
+
+
+
+
+            text: "Bash",
+
+
+
+
+
+
+
+            summary: "npm test",
+
+
+
+
+
+
+
+            detailText: "输出：ok"
+
+
+
+
+
+
+
+          },
+
+
+
+
+
+
+
+          { id: "status-1", kind: "status", nodeId: "dev", attempt: 1, text: "dev completed", detailText: "hidden detail" }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /ctrl\+o to collapse/i);
+
+
+
+
+
+
+
+    assert.match(frame, /●\s+Bash\s+\(npm test\)/);
+
+
+
+
+
+
+
+    assert.match(frame, /⎿/);
+
+
+
+
+
+
+
+    assert.match(frame, /输出/);
+
+
+
+
+
+
+
+    // The status log with matching nodeId should be visible
+    assert.match(frame, /dev completed/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("renders failed tool rows with error details only when expanded", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <RunLogPanel
+
+
+
+
+
+
+
+        detailMode={true}
+
+
+
+
+
+
+
+        currentNodeId="dev"
+
+
+
+
+
+
+
+        currentAttempt={1}
+
+
+
+
+
+
+
+        items={[
+
+
+
+
+
+
+
+          {
+
+
+
+
+
+
+
+            id: "tool-1",
+
+
+
+
+
+
+
+            kind: "tool",
+
+
+
+
+
+
+
+            nodeId: "dev",
+
+
+
+
+
+
+
+            attempt: 1,
+
+
+
+
+
+
+
+            toolCallId: "tool-1",
+
+
+
+
+
+
+
+            tool: "PowerShell",
+
+
+
+
+
+
+
+            status: "failed",
+
+
+
+
+
+
+
+            text: "PowerShell",
+
+
+
+
+
+
+
+            summary: "node dist/cli/main.js",
+
+
+
+
+
+
+
+            detailText: "错误：getCurrentEventPriority is not a function"
+
+
+
+
+
+
+
+          }
+
+
+
+
+
+
+
+        ]}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /●\s+PowerShell\s+\(node dist\/cli\/main\.js\)/);
+
+
+
+
+
+
+
+    assert.match(frame, /getCurrentEventPriority is not a function/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("InteractionArea", () => {
+
+
+
+
+
+
+
+  it("separates logs from the prompt and aligns prompt with log content", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <Box flexDirection="column">
+
+
+
+
+
+
+
+        <RunLogPanel
+
+
+
+
+
+
+
+          detailMode={false}
+
+
+
+
+
+
+
+          currentNodeId="dev"
+
+
+
+
+
+
+
+          currentAttempt={1}
+
+
+
+
+
+
+
+          items={[{ id: "user-1", kind: "user", text: "实现功能" }]}
+
+
+
+
+
+
+
+        />
+
+
+
+
+
+
+
+        <InteractionArea
+
+
+
+
+
+
+
+          mode="input"
+
+
+
+
+
+
+
+          workflowId="delivery"
+
+
+
+
+
+
+
+          queued={[]}
+
+
+
+
+
+
+
+          workflows={["delivery"]}
+
+
+
+
+
+
+
+          isLoading={false}
+
+
+
+
+
+
+
+          onPromptEvent={() => undefined}
+
+
+
+
+
+
+
+        />
+
+
+
+
+
+
+
+      </Box>
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const lines = (output.lastFrame() ?? "").split("\n");
+
+
+
+
+
+
+
+    const logHeaderIndex = lines.findIndex((line) => line.includes("Logs compact"));
+
+
+
+
+
+
+
+    const promptIndex = lines.findIndex((line) => line.includes("Type a request or /help"));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.notEqual(logHeaderIndex, -1);
+
+
+
+
+
+
+
+    assert.notEqual(promptIndex, -1);
+
+
+
+
+
+
+
+    assert.equal(lines[promptIndex - 1], "");
+
+
+
+
+
+
+
+    assert.ok(lines[logHeaderIndex].startsWith("Logs compact"));
+
+
+
+
+
+
+
+    assert.ok(lines[promptIndex].startsWith("INPUT"));
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("keeps choices and prompt together in the bottom interaction area", () => {
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <InteractionArea
+
+
+
+
+
+
+
+        mode="permission"
+
+
+
+
+
+
+
+        workflowId="delivery"
+
+
+
+
+
+
+
+        queued={[]}
+
+
+
+
+
+
+
+        workflows={["delivery"]}
+
+
+
+
+
+
+
+        isLoading={true}
+
+
+
+
+
+
+
+        onPromptEvent={() => undefined}
+
+
+
+
+
+
+
+        choice={{
+
+
+
+
+
+
+
+          title: "Permission required",
+
+
+
+
+
+
+
+          detail: "LS .",
+
+
+
+
+
+
+
+          selectedValue: "allow_once",
+
+
+
+
+
+
+
+          options: [
+
+
+
+
+
+
+
+            { label: "Allow once", value: "allow_once", shortcut: "y" },
+
+
+
+
+
+
+
+            { label: "Deny once", value: "deny_once", shortcut: "n" }
+
+
+
+
+
+
+
+          ],
+
+
+
+
+
+
+
+          onSubmit: () => undefined
+
+
+
+
+
+
+
+        }}
+
+
+
+
+
+
+
+      />
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /Permission required/);
+
+
+
+
+
+
+
+    assert.match(frame, /> Allow once/);
+
+
+
+
+
+
+
+    assert.match(frame, /PERMISSION/);
+
+
+
+
+
+
+
+    assert.match(frame, /Type a request or \/help/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("TuiApp", () => {
+
+
+
+
+
+
+
+  it("renders missing config guidance", () => {
+
+
+
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" initialError="Missing agent-team.yaml" />);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /Missing agent-team.yaml/);
+
+
+
+
+
+
+
+    assert.match(output.lastFrame() ?? "", /agent-team init/);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("keeps the prompt as the bottom interaction area in the running layout", () => {
+
+
+
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" workflows={["delivery"]} workflowId="delivery" />);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /agent-team/);
+
+
+
+
+
+
+
+    assert.match(frame, />/);
+
+
+
+
+
+
+
+    assert.doesNotMatch(frame, /mode input \| Ctrl\+C stop/);
+
+
+
+
+
+
+
+    assert.ok(frame.indexOf("Type a request or /help") > frame.indexOf("workflow delivery"));
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("shows user input requests only as regular log entries", async () => {
+    const session = fakeInteractiveSession({
+      runId: "run-question-log",
+      workflowId: "delivery",
+      events: [
+        { type: "node_started", node_id: "product", attempt: 1, ts: "2026-06-24T00:00:00.000Z", seq: 1 },
+        {
+          type: "node_waiting_user",
+          node_id: "product",
+          questions: [{ id: "next_step", text: "节点无法继续执行：Node product returned no content and no tool calls", required: true }],
+          ts: "2026-06-24T00:00:01.000Z",
+          seq: 2
+        },
+        {
+          type: "tool_invoked",
+          node_id: "product",
+          attempt: 1,
+          tool_call_id: "tool-1",
+          tool: "Bash",
+          input: { command: "npm test" },
+          ts: "2026-06-24T00:00:02.000Z",
+          seq: 3
+        }
+      ]
+    });
+    const engine = { async startInteractive() { return session; } };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+    await sendTuiLine(output, "start work");
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /product 需要用户补充信息：节点无法继续执行：Node product returned no content and no tool calls/);
+    assert.doesNotMatch(frame, /User input required/);
+    assert.ok(frame.indexOf("节点无法继续执行") < frame.indexOf("Bash"));
+
+    output.unmount();
+    output.cleanup();
+  });
+
+
+
+  it("continues the same session from ordinary input after the workflow pauses", async () => {
+
+
+
+
+    let starts = 0;
+
+
+
+
+    const continued: unknown[] = [];
+
+
+
+
+    const session = fakeCompletedSession("run-1", "delivery", "first request", async (input) => {
+
+
+
+
+      continued.push(input);
+
+
+
+
+    });
+
+
+
+
+    const engine = {
+
+
+
+
+      async startInteractive() {
+
+
+
+
+        starts += 1;
+
+
+
+
+        return session;
+
+
+
+
+      }
+
+
+
+
+    };
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+
+
+    await sendTuiLine(output, "first request");
+
+
+
+
+    await sendTuiLine(output, "second request");
+
+
+
+
+
+
+
+
+
+    assert.equal(starts, 1);
+
+
+
+
+    assert.deepEqual(continued, [{ request: "second request", images: [] }]);
+
+
+
+
+    output.unmount();
+
+
+
+
+    output.cleanup();
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+  it("starts a new workflow only after /new resets the TUI session", async () => {
+
+
+
+
+
+
+
+    let starts = 0;
+
+
+
+
+
+
+
+    const engine = {
+
+
+
+
+
+
+
+      async startInteractive() {
+
+
+
+
+
+
+
+        starts += 1;
+
+
+
+
+
+
+
+        return fakeCompletedSession(`run-${starts}`, "delivery", `request-${starts}`);
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    };
+
+
+
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    await sendTuiLine(output, "first request");
+
+
+
+
+
+
+
+    await sendTuiLine(output, "/new");
+
+
+
+
+
+
+
+    await sendTuiLine(output, "second request");
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.equal(starts, 2);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("resumes a historical workflow run from /resume", async () => {
+
+
+
+
+
+
+
+    const resumed: string[] = [];
+
+
+
+
+
+
+
+    const engine = {
+
+
+
+
+
+
+
+      async resumeInteractive(_config: unknown, runId: string) {
+
+
+
+
+
+
+
+        resumed.push(runId);
+
+
+
+
+
+
+
+        return fakeCompletedSession(runId, "delivery", "historical request");
+
+
+
+
+
+
+
+      },
+
+
+
+
+
+
+
+      async startInteractive() {
+
+
+
+
+
+
+
+        throw new Error("/resume should not start a new workflow");
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    };
+
+
+
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    await sendTuiLine(output, "/resume run-123");
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.deepEqual(resumed, ["run-123"]);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+  it("returns to ordinary input after /resume finds no sessions", async () => {
+    let starts = 0;
+    const engine = {
+      async listRuns() {
+        return [];
+      },
+      async startInteractive() {
+        starts += 1;
+        return fakeCompletedSession("run-empty-resume", "delivery", "fresh request");
+      }
+    };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    await settleInkInput();
+
+    await sendTuiLine(output, "/resume");
+    assert.match(output.lastFrame() ?? "", /No sessions found/);
+
+    await sendTuiLine(output, "fresh request");
+
+    assert.equal(starts, 1);
+    output.unmount();
+    output.cleanup();
+  });
+
+
+
+
+
+
+
+  it("closes the resume picker immediately after selecting a session", async () => {
+    const resumed: string[] = [];
+    const engine = {
+      async listRuns() {
+        return [{ runId: "run-picked", workflowId: "delivery", status: "completed", updatedAt: "2026-06-24T00:00:00.000Z", inputPreview: "historical request" }];
+      },
+      async resumeInteractive(_config: unknown, runId: string) {
+        resumed.push(runId);
+        return new Promise(() => undefined);
+      }
+    };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    await settleInkInput();
+
+    await sendTuiLine(output, "/resume");
+    assert.match(output.lastFrame() ?? "", /Resume workflow run/);
+
+    output.stdin.write("\r");
+    await settleInkInput();
+
+    assert.deepEqual(resumed, ["run-picked"]);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Resume workflow run/);
+    output.unmount();
+    output.cleanup();
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("keeps resume picker navigation out of the prompt history", async () => {
+    const resumed: string[] = [];
+    const engine = {
+      async startInteractive() {
+        return fakeCompletedSession("run-first", "delivery", "first request");
+      },
+      async listRuns() {
+        return [
+          { runId: "run-alpha", workflowId: "delivery", status: "completed", updatedAt: "2026-06-24T00:00:00.000Z", inputPreview: "alpha" },
+          { runId: "run-beta", workflowId: "delivery", status: "completed", updatedAt: "2026-06-24T00:00:01.000Z", inputPreview: "beta" }
+        ];
+      },
+      async resumeInteractive(_config: unknown, runId: string) {
+        resumed.push(runId);
+        return fakeCompletedSession(runId, "delivery", "historical request");
+      }
+    };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    await settleInkInput();
+
+    await sendTuiLine(output, "first request");
+    await sendTuiLine(output, "/resume");
+    assert.match(output.lastFrame() ?? "", /> delivery completed alpha/);
+
+    output.stdin.write("\u001b[A");
+    await settleInkInput();
+    assert.match(output.lastFrame() ?? "", /> delivery completed beta/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /INPUT > \/resume/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /INPUT > first request/);
+
+    output.stdin.write("\r");
+    await settleInkInput();
+
+    assert.deepEqual(resumed, ["run-beta"]);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Resume workflow run/);
+    output.unmount();
+    output.cleanup();
+  });
+
+
+
+  it("denies the active permission choice once when Escape is pressed", async () => {
+
+
+
+
+
+
+
+    const resolved: Array<[string, "allow_once" | "deny_once"]> = [];
+
+
+
+
+
+
+
+    const session = fakeInteractiveSession({
+
+
+
+
+
+
+
+      runId: "run-permission",
+
+
+
+
+
+
+
+      workflowId: "delivery",
+
+
+
+
+
+
+
+      events: [{
+
+
+
+
+
+
+
+        type: "permission_requested",
+
+
+
+
+
+
+
+        request_id: "perm-1",
+
+
+
+
+
+
+
+        node_id: "dev",
+
+
+
+
+
+
+
+        attempt: 1,
+
+
+
+
+
+
+
+        tool_call_id: "tool-1",
+
+
+
+
+
+
+
+        tool: "PowerShell",
+
+
+
+
+
+
+
+        input: { command: "npm test" },
+
+
+
+
+
+
+
+        specifier: "npm test",
+
+
+
+
+
+
+
+        ts: "2026-06-24T00:00:00.000Z",
+
+
+
+
+
+
+
+        seq: 1
+
+
+
+
+
+
+
+      }],
+
+
+
+
+
+
+
+      permissions: { resolve: (requestId: string, decision: "allow_once" | "deny_once") => resolved.push([requestId, decision]) }
+
+
+
+
+
+
+
+    });
+
+
+
+
+
+
+
+    const engine = { async startInteractive() { return session; } };
+
+
+
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    await sendTuiLine(output, "needs permission");
+
+
+
+
+
+
+
+    output.stdin.write("\u001b");
+
+
+
+
+
+
+
+    await settleTerminalEscape();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.deepEqual(resolved, [["perm-1", "deny_once"]]);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("keeps plan review paused when Escape is pressed on the plan choice", async () => {
+
+
+
+
+
+
+
+    const decisions: string[] = [];
+
+
+
+
+
+
+
+    const session = fakeInteractiveSession({
+
+
+
+
+
+
+
+      runId: "run-plan",
+
+
+
+
+
+
+
+      workflowId: "delivery",
+
+
+
+
+
+
+
+      events: [{
+
+
+
+
+
+
+
+        type: "plan_review_requested",
+
+
+
+
+
+
+
+        node_id: "dev",
+
+
+
+
+
+
+
+        attempt: 1,
+
+
+
+
+
+
+
+        document: "<proposed_plan>\nplan\n</proposed_plan>",
+
+
+
+
+
+
+
+        ts: "2026-06-24T00:00:00.000Z",
+
+
+
+
+
+
+
+        seq: 1
+
+
+
+
+
+
+
+      }],
+
+
+
+
+
+
+
+      resumePlanReview: (decision: "continue" | "stay") => decisions.push(decision)
+
+
+
+
+
+
+
+    });
+
+
+
+
+
+
+
+    const engine = { async startInteractive() { return session; } };
+
+
+
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    await sendTuiLine(output, "review plan");
+
+
+
+
+
+
+
+    output.stdin.write("\u001b");
+
+
+
+
+
+
+
+    await settleTerminalEscape();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.deepEqual(decisions, ["stay"]);
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("exits after interrupt confirmation when Ctrl+C is pressed again", async () => {
+    let interrupted = 0;
+    let exited = 0;
+    const session = fakeInteractiveSession({
+      runId: "run-interrupt",
+      workflowId: "delivery",
+      events: [],
+      interrupt: () => {
+        interrupted += 1;
+      }
+    });
+
+    const engine = { async startInteractive() { return session; } };
+    const output = render(
+      <TuiApp
+        cwd="D:\\CodeAI\\agent-team"
+        config={tuiConfig()}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={engine as unknown as never}
+        onExit={() => {
+          exited += 1;
+        }}
+      />
+    );
+
+    await sendTuiLine(output, "start work");
+    output.stdin.write("\u0003");
+    await settleInkInput();
+    assert.match(output.lastFrame() ?? "", /Stop current run\?/);
+
+    output.stdin.write("\u0003");
+    await settleInkInput();
+
+    assert.equal(interrupted, 1);
+    assert.equal(exited, 1);
+    output.unmount();
+    output.cleanup();
+  });
+
+
+
+  it("pins configured workflow nodes above the prompt", () => {
+
+
+
+
+
+
+
+    const config = {
+
+
+
+
+
+
+
+      providers: {
+
+
+
+
+
+
+
+        default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
+
+
+
+
+
+
+
+      },
+
+
+
+
+
+
+
+      roles: {
+
+
+
+
+
+
+
+        product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } },
+
+
+
+
+
+
+
+        developer: { description: "", system_prompt: "developer", default_model: "gpt5.5", requires: { tool_calling: false, vision: false } }
+
+
+
+
+
+
+
+      },
+
+
+
+
+
+
+
+      workflows: {
+
+
+
+
+
+
+
+        delivery: {
+
+
+
+
+
+
+
+          nodes: [
+
+
+
+
+
+
+
+            { id: "product", role: "product", provider: "default", permission_mode: "default" as const },
+
+
+
+
+
+
+
+            { id: "dev", role: "developer", provider: "default", permission_mode: "default" as const }
+
+
+
+
+
+
+
+          ],
+
+
+
+
+
+
+
+          edges: []
+
+
+
+
+
+
+
+        }
+
+
+
+
+
+
+
+      }
+
+
+
+
+
+
+
+    };
+
+
+
+
+
+
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={config} workflows={["delivery"]} workflowId="delivery" />);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+
+
+
+
+
+
+    assert.match(frame, /product/);
+
+
+
+
+
+
+
+    assert.match(frame, /dev/);
+
+
+
+
+
+
+
+    assert.match(frame, /pending/);
+
+
+
+
+
+
+
+    assert.match(frame, /model: gpt-test/);
+
+
+
+
+
+
+
+    assert.match(frame, /model: gpt5\.5/);
+
+
+
+
+
+
+
+    assert.match(frame, /Logs compact/);
+
+
+
+
+
+
+
+    assert.ok(frame.indexOf("product") < frame.indexOf("Type a request or /help"));
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+describe("main scroll helpers", () => {
+
+
+
+
+
+
+
+  it("jumps by half pages from the effective pending scroll position", () => {
+
+
+
+
+
+
+
+    const handle = createScrollHandle({ top: 8, pending: 2, height: 20, viewport: 4 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.equal(jumpMainScrollBy(handle, -3), false);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.deepEqual(handle.calls, [["scrollTo", 7]]);
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("restores sticky scroll when page jumps reach the bottom", () => {
+
+
+
+
+
+
+
+    const handle = createScrollHandle({ top: 7, pending: 1, height: 12, viewport: 4 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.equal(jumpMainScrollBy(handle, 3), true);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.deepEqual(handle.calls, [["scrollTo", 8], ["scrollToBottom"]]);
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("clears pending wheel movement when scrolling above the top", () => {
+
+
+
+
+
+
+
+    const handle = createScrollHandle({ top: 1, pending: -1, height: 12, viewport: 4 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    scrollMainUp(handle, 3);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.deepEqual(handle.calls, [["scrollTo", 0]]);
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("restores sticky scroll when wheeling down reaches the bottom", () => {
+
+
+
+
+
+
+
+    const handle = createScrollHandle({ top: 6, pending: 1, height: 10, viewport: 3 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.equal(scrollMainDown(handle, 2), true);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    assert.deepEqual(handle.calls, [["scrollToBottom"]]);
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  it("attaches the ScrollBox imperative handle through React refs", async () => {
+
+
+
+
+
+
+
+    const ref = createRef<ScrollBoxHandle>();
+
+
+
+
+
+
+
+    const output = render(
+
+
+
+
+
+
+
+      <ScrollBox ref={ref} height={3} flexDirection="column">
+
+
+
+
+
+
+
+        <Text>line</Text>
+
+
+
+
+
+
+
+      </ScrollBox>
+
+
+
+
+
+
+
+    );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    await settleInkInput();
+
+
+
+
+
+
+
+    assert.equal(typeof (ref.current as { scrollBy?: unknown } | null)?.scrollBy, "function");
+
+
+
+
+
+
+
+    output.unmount();
+
+
+
+
+
+
+
+    output.cleanup();
+
+
+
+
+
+
+
+  });
+
+
+
+
+
+
+
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function tuiConfig() {
+
+
+
+
+
+
+
+  return {
+
+
+
+
+
+
+
+    providers: {
+
+
+
+
+
+
+
+      default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
+
+
+
+
+
+
+
+    },
+
+
+
+
+
+
+
+    roles: {
+
+
+
+
+
+
+
+      dev: { description: "", system_prompt: "dev", requires: { tool_calling: false, vision: false } }
+
+
+
+
+
+
+
+    },
+
+
+
+
+
+
+
+    workflows: {
+
+
+
+
+
+
+
+      delivery: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] }
+
+
+
+
+
+
+
+    }
+
+
+
+
+
+
+
+  };
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function fakeInteractiveSession(input: {
+
+
+
+
+
+
+
+  runId: string;
+
+
+
+
+
+
+
+  workflowId: string;
+
+
+
+
+
+
+
+  events: unknown[];
+
+
+
+
+
+
+
+  permissions?: { resolve(requestId: string, decision: "allow_once" | "deny_once"): void };
+
+
+
+
+
+
+
+  resumePlanReview?: (decision: "continue" | "stay") => void;
+
+  interrupt?: () => void | Promise<void>;
+
+
+
+
+
+
+
+}) {
+
+
+
+
+
+
+
+  const state = { status: "running" as const, workflow_id: input.workflowId, attempts: [], handoff: undefined };
+
+
+
+
+
+
+
+  return {
+
+
+
+
+
+
+
+    runId: input.runId,
+
+
+
+
+
+
+
+    state,
+
+
+
+
+
+
+
+    events: (async function* () {
+
+
+
+
+
+
+
+      for (const event of input.events) yield event;
+
+
+
+
+
+
+
+    })(),
+
+
+
+
+
+
+
+    permissions: {
+
+
+
+
+
+
+
+      resolve: input.permissions?.resolve ?? (() => undefined),
+
+
+
+
+
+
+
+      resolveAll: () => undefined,
+
+
+
+
+
+
+
+      hasPending: () => false
+
+
+
+
+
+
+
+    },
+
+
+
+
+
+
+
+    interrupt: async () => input.interrupt?.(),
+
+
+
+
+
+
+
+    resumeWithUserInput: async () => undefined,
+
+
+
+
+
+
+
+    resumePlanReview: async (decision: "continue" | "stay") => input.resumePlanReview?.(decision),
+
+
+
+
+
+
+
+    revisePlan: async () => undefined,
+
+
+
+
+
+
+
+    result: new Promise(() => undefined)
+
+
+
+
+
+
+
+  };
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function fakeCompletedSession(runId: string, workflowId: string, request: string, continueWithInput?: (input: unknown) => void | Promise<void>) {
+
+
+
+
+
+
+
+  const state = { status: "completed" as const, workflow_id: workflowId, attempts: [], handoff: undefined };
+
+
+
+
+
+
+
+  const events = [
+
+
+
+
+
+
+
+    { type: "run_started", workflow_id: workflowId, input: { request }, ts: "2026-06-24T00:00:00.000Z", seq: 1 },
+
+
+
+
+
+
+
+    { type: "run_completed", result: state, ts: "2026-06-24T00:00:01.000Z", seq: 2 }
+
+
+
+
+
+
+
+  ];
+
+
+
+
+
+
+
+  return {
+
+
+
+
+
+
+
+    runId,
+
+
+
+
+
+
+
+    state,
+
+
+
+
+
+
+
+    events: (async function* () {
+
+
+
+
+
+
+
+      for (const event of events) yield event;
+
+
+
+
+
+
+
+    })(),
+
+
+
+
+
+
+
+    permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
+
+
+
+
+
+
+
+    interrupt: async () => undefined,
+
+
+
+
+
+
+
+    resumeWithUserInput: async () => undefined,
+
+
+
+
+
+
+
+    resumePlanReview: async () => undefined,
+
+
+
+
+
+
+
+    revisePlan: async () => undefined,
+
+
+
+
+
+
+
+    continueWithInput: async (input: unknown) => continueWithInput?.(input),
+
+
+
+    result: Promise.resolve(state)
+
+
+
+
+
+
+
+  };
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+async function sendTuiLine(output: { stdin: { write(value: string): void } }, text: string): Promise<void> {
+
+
+
+
+
+
+
+  output.stdin.write(text);
+
+
+
+
+
+
+
+  await settleTuiWork();
+
+
+
+
+
+
+
+  output.stdin.write("\r");
+
+
+
+
+
+
+
+  await settleTuiWork();
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function settleTuiWork(): Promise<void> {
+
+
+
+
+
+
+
+  return new Promise((resolve) => setTimeout(resolve, 20));
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function settleInkInput(): Promise<void> {
+
+
+
+
+
+
+
+  return new Promise((resolve) => setTimeout(resolve, 0));
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function settleTerminalEscape(): Promise<void> {
+
+
+
+
+
+
+
+  return new Promise((resolve) => setTimeout(resolve, 35));
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function createScrollHandle(input: { top: number; pending: number; height: number; viewport: number }) {
+
+
+
+
+
+
+
+  const calls: Array<["scrollTo", number] | ["scrollBy", number] | ["scrollToBottom"]> = [];
+
+
+
+
+
+
+
+  return {
+
+
+
+
+
+
+
+    calls,
+
+
+
+
+
+
+
+    scrollTo: (value: number) => calls.push(["scrollTo", value]),
+
+
+
+
+
+
+
+    scrollBy: (value: number) => calls.push(["scrollBy", value]),
+
+
+
+
+
+
+
+    scrollToBottom: () => calls.push(["scrollToBottom"]),
+
+
+
+
+
+
+
+    getScrollTop: () => input.top,
+
+
+
+
+
+
+
+    getPendingDelta: () => input.pending,
+
+
+
+
+
+
+
+    getScrollHeight: () => input.height,
+
+
+
+
+
+
+
+    getViewportHeight: () => input.viewport
+
+
+
+
+
+
+
+  };
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+async function waitForTuiFrame(output: { lastFrame(): string | undefined }, pattern: RegExp): Promise<void> {
+
+
+
+  for (let index = 0; index < 10; index += 1) {
+
+
+
+    if (pattern.test(output.lastFrame() ?? "")) return;
+
+
+
+    await settleTuiWork();
+
+
+
+  }
+
+
+
+  assert.fail(`Timed out waiting for ${pattern}`);
+
+
+
+}
+
+
+
+
+async function waitForCondition(condition: () => boolean): Promise<void> {
+  for (let index = 0; index < 10; index += 1) {
+    if (condition()) return;
+    await settleTuiWork();
+  }
+  assert.fail("Timed out waiting for condition");
+}
