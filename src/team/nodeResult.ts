@@ -57,13 +57,14 @@ export const nodeResultJsonSchema = {
 } as const;
 
 export const nodeResultOutputInstructions = [
-  "Return only JSON that matches the NodeResult schema.",
-  "You may also call SubmitNodeResult with the final NodeResult object when tools are available.",
-  "Do not include Markdown fences, explanations, or natural-language text outside the JSON object.",
+  "Before calling tools, send a brief user-visible preamble explaining the immediate next action.",
+  "Keep preambles to one concise sentence and group related tool calls under one preamble.",
+  "The final NodeResult must be only JSON that matches the NodeResult schema, or a SubmitNodeResult tool call when tools are available.",
+  "Do not include Markdown fences, explanations, or natural-language text around the final NodeResult JSON object.",
   "Use status success for completed work, failure for rejected work, and needs_user_input only when user input is required and questions contains at least one concrete question.",
-  "Return exactly one NodeResult JSON object. Do not return multiple JSON objects or revisions in one response.",
+  "Return exactly one final NodeResult JSON object. Do not return multiple JSON objects or revisions in one response.",
   "If repository inspection is needed, call tools instead of asking the user for permission to inspect.",
-  "When the node is a plan or complete node, put the full user-facing Markdown document in the document field.",
+  "When the node is a plan or complete node, put the full user-facing Markdown document in document.",
   "For task nodes that do not need a user-facing document, set document to an empty string."
 ].join("\n");
 

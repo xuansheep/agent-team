@@ -70,8 +70,8 @@ describe("TUI event adapter", () => {
     assert.equal(resolvedLog?.status, "denied");
   });
 
-  it("tracks streaming model output by node attempt", () => {
-    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+  it("keeps internal NodeResult streams out of visible assistant logs", () => {
+    let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
     state = reduceStoredEvent(state, {
       type: "model_stream_delta",
       node_id: "product",
@@ -90,7 +90,34 @@ describe("TUI event adapter", () => {
     });
 
     assert.deepEqual(state.modelStreams, [{ nodeId: "product", attempt: 1, text: "{\"status\":\"success\"}" }]);
-    assert.match(state.logMessages.at(-1)?.text ?? "", /正在生成响应/);
+    assert.equal(state.logMessages.some((item) => item.kind === "assistant"), false);
+    assert.equal(state.logMessages.some((item) => item.text.includes("正在生成响应")), false);
+  });
+
+  it("renders natural language model stream deltas as one assistant preamble", () => {
+    let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
+    state = reduceStoredEvent(state, {
+      type: "model_stream_delta",
+      node_id: "product",
+      attempt: 1,
+      text: "我先检查工作流事件，",
+      ts: "2026-06-23T00:00:00.000Z",
+      seq: 1
+    });
+    state = reduceStoredEvent(state, {
+      type: "model_stream_delta",
+      node_id: "product",
+      attempt: 1,
+      text: "再确认 TUI 渲染入口。",
+      ts: "2026-06-23T00:00:01.000Z",
+      seq: 2
+    });
+
+    const assistantLogs = state.logMessages.filter((item) => item.kind === "assistant");
+    assert.equal(assistantLogs.length, 1);
+    assert.equal(assistantLogs[0]?.text, "我先检查工作流事件，再确认 TUI 渲染入口。");
+    assert.equal(state.conversation.filter((item) => item.kind === "assistant").length, 1);
+    assert.equal(state.logMessages.some((item) => item.text.includes("正在生成响应")), false);
   });
 
   it("tracks streaming thinking separately from response output", () => {
@@ -150,23 +177,17 @@ describe("TUI event adapter", () => {
     });
 
     assert.deepEqual(state.conversation.map((item) => ({ kind: item.kind, nodeId: item.nodeId, attempt: item.attempt, text: item.text })), [
-      { kind: "status", nodeId: "product", attempt: 1, text: "product 正在处理..." },
-      { kind: "status", nodeId: "product", attempt: 1, text: "product 正在生成响应..." },
       { kind: "status", nodeId: "product", attempt: 1, text: "product 已完成：已梳理项目架构" }
     ]);
     assert.match(state.conversation.at(-1)?.detailText ?? "", /产出：架构概览/);
     assert.match(state.conversation.at(-1)?.detailText ?? "", /交接：交给 dev 继续实现/);
-    // Model stream content is now intentionally shown in the streaming status detailText
-    const streamLog = state.logMessages.find((item) => item.text.includes("正在生成响应"));
-    assert.match(streamLog?.detailText ?? "", /模型输出：/);
-    // Non-stream log messages should not contain raw JSON
-    const nonStreamLogs = state.logMessages.filter((item) => !item.text.includes("正在生成响应") && !item.text.includes("正在思考"));
-    assert.doesNotMatch(nonStreamLogs.map((item) => `${item.text}\n${item.detailText ?? ""}`).join("\n"), /\{"status"/);
-  });
+    assert.equal(state.logMessages.some((item) => item.text.includes("正在生成响应")), false);
+    assert.doesNotMatch(state.logMessages.map((item) => `${item.text}\n${item.detailText ?? ""}`).join("\n"), /\{"status"/);
+    });
 
 
   it("keeps the plan document visible and switches to revision input after pausing", () => {
-    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+    let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
     state = reduceStoredEvent(state, { type: "node_started", node_id: "product", attempt: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });
     state = reduceStoredEvent(state, {
       type: "plan_review_requested",
@@ -352,6 +373,51 @@ describe("TUI event adapter", () => {
     assert.equal(reset.error, undefined);
   });
 
+
+  it("attaches tool logs under assistant preambles and creates fallback preambles", () => {
+    let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
+    state = reduceStoredEvent(state, { type: "node_started", node_id: "dev", attempt: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });
+    assert.equal(state.logMessages.some((item) => item.text.includes("正在处理")), false);
+
+    state = reduceStoredEvent(state, {
+      type: "model_stream_delta",
+      node_id: "dev",
+      attempt: 1,
+      text: "我先运行测试确认现状。",
+      ts: "2026-06-23T00:00:01.000Z",
+      seq: 2
+    });
+    state = reduceStoredEvent(state, {
+      type: "tool_invoked",
+      node_id: "dev",
+      attempt: 1,
+      tool_call_id: "tool-1",
+      tool: "Bash",
+      input: { command: "npm test" },
+      ts: "2026-06-23T00:00:02.000Z",
+      seq: 3
+    });
+
+    const assistantLog = state.logMessages.find((item) => item.kind === "assistant");
+    const toolLog = state.logMessages.find((item) => item.kind === "tool" && item.toolCallId === "tool-1");
+    assert.equal(assistantLog?.text, "我先运行测试确认现状。");
+    assert.equal(toolLog?.parentLogId, assistantLog?.id);
+
+    state = reduceStoredEvent(state, {
+      type: "tool_invoked",
+      node_id: "test",
+      attempt: 1,
+      tool_call_id: "tool-2",
+      tool: "Bash",
+      input: { command: "npm run lint" },
+      ts: "2026-06-23T00:00:03.000Z",
+      seq: 4
+    });
+    const fallback = state.logMessages.find((item) => item.kind === "assistant" && item.nodeId === "test");
+    const fallbackTool = state.logMessages.find((item) => item.kind === "tool" && item.toolCallId === "tool-2");
+    assert.equal(fallback?.text, "准备使用 Bash。");
+    assert.equal(fallbackTool?.parentLogId, fallback?.id);
+  });
 
   it("shows parsed tool completion details without raw JSON", () => {
     let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });

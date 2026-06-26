@@ -9,6 +9,7 @@ type BaseLogMessage = {
   id: string;
   text: string;
   detailText?: string;
+  parentLogId?: string;
   nodeId?: string;
   attempt?: number;
 };

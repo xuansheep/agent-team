@@ -28,7 +28,7 @@ describe("runNode interactive permissions", () => {
       async generate() {
         calls += 1;
         if (calls === 1) {
-          return { tool_calls: [{ id: "tool-1", name: "Bash", input: { command: "npm test" } }] };
+          return { content: "我先运行测试确认当前状态。", tool_calls: [{ id: "tool-1", name: "Bash", input: { command: "npm test" } }] };
         }
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
@@ -208,7 +208,7 @@ describe("runNode interactive permissions", () => {
       async generate(request) {
         requests.push({ messages: request.messages });
         if (requests.length === 1) {
-          return { tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
+          return { content: "我先列出目录确认文件。", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
         }
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
@@ -231,7 +231,7 @@ describe("runNode interactive permissions", () => {
     assert.equal(result.status, "success");
     const followUp = requests[1]?.messages.slice(-2);
     assert.deepEqual(followUp, [
-      { role: "assistant", content: "", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] },
+      { role: "assistant", content: "我先列出目录确认文件。", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] },
       { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
     ]);
   });
@@ -289,7 +289,8 @@ describe("runNode streaming", () => {
       async stream(request, onEvent) {
         assert.ok(request.response_schema);
         const system = request.messages.find((message) => message.role === "system")?.content;
-        assert.match(String(system), /Return only JSON/);
+        assert.match(String(system), /Before calling tools/);
+        assert.match(String(system), /final NodeResult/);
         onEvent({ type: "content_delta", text: "{\"status\":\"success\"," });
         onEvent({ type: "content_delta", text: "\"summary\":\"done\"}" });
         return { content: "{\"status\":\"success\",\"summary\":\"done\"}" };

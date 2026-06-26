@@ -3789,6 +3789,25 @@ describe("RunLogPanel", () => {
 
 
 
+  it("renders tool rows as assistant message responses when parented", () => {
+    const output = render(
+      <RunLogPanel
+        detailMode={false}
+        currentNodeId="product"
+        currentAttempt={1}
+        items={[
+          { id: "assistant-1", kind: "assistant", nodeId: "product", attempt: 1, text: "我先运行测试。" },
+          { id: "tool-1", kind: "tool", nodeId: "product", attempt: 1, parentLogId: "assistant-1", toolCallId: "tool-1", tool: "Bash", status: "running", text: "Bash", summary: "npm test" }
+        ]}
+      />
+    );
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /我先运行测试/);
+    assert.match(frame, /⎿\s+Bash \(npm test\)/);
+    output.unmount();
+    output.cleanup();
+  });
+
   it("renders failed tool rows with error details only when expanded", () => {
 
 

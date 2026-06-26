@@ -29,10 +29,10 @@ function UserLogMessage({ item }: { item: TuiLogMessage & { kind: "user" } }) {
 }
 
 function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "tool" }; detailMode: boolean }) {
-  return (
-    <Box flexDirection="column" marginTop={1}>
+  const content = (
+    <Box flexDirection="column" marginTop={item.parentLogId ? 0 : 1}>
       <Box flexDirection="row" flexWrap="nowrap">
-        <ToolUseLoader status={item.status} />
+        {item.parentLogId ? null : <ToolUseLoader status={item.status} />}
         <Text bold>{item.text}</Text>
         {item.summary ? <Text wrap="truncate-end"> ({truncate(item.summary, 240)})</Text> : null}
       </Box>
@@ -43,6 +43,8 @@ function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "t
       ) : null}
     </Box>
   );
+
+  return item.parentLogId ? <MessageResponse>{content}</MessageResponse> : content;
 }
 
 function PermissionLogMessage({ item, detailMode }: { item: TuiPermissionLogMessage; detailMode: boolean }) {
