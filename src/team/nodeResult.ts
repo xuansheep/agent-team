@@ -35,7 +35,23 @@ export const nodeResultJsonSchema = {
         properties: {
           id: { type: "string" },
           text: { type: "string" },
-          required: { type: "boolean" }
+          required: { type: "boolean" },
+          placeholder: { type: "string" },
+          allow_freeform: { type: "boolean" },
+          options: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                label: { type: "string" },
+                value: { type: "string" },
+                description: { type: "string" },
+                disabled: { type: "boolean" }
+              },
+              required: ["label", "value"]
+            }
+          }
         },
         required: ["id", "text", "required"]
       }
@@ -78,6 +94,7 @@ export const nodeResultOutputInstructions = [
   "The final NodeResult must be only JSON that matches the NodeResult schema, or a SubmitNodeResult tool call when tools are available.",
   "Do not include Markdown fences, explanations, or natural-language text around the final NodeResult JSON object.",
   "Use status success for completed work, failure for rejected work, and needs_user_input only when user input is required and questions contains at least one concrete question.",
+  "When a question has clear mutually-exclusive answers, include them in questions[].options with label and value. Set allow_freeform to false only when the user must choose one of those options.",
   "Return exactly one final NodeResult JSON object. Do not return multiple JSON objects or revisions in one response.",
   "If repository inspection is needed, call tools instead of asking the user for permission to inspect.",
   "When the node is a plan or complete node, put the full user-facing Markdown document in document.",
@@ -94,7 +111,15 @@ const feedbackSchema = z.object({
 const questionSchema = z.object({
   id: z.string(),
   text: z.string(),
-  required: z.boolean().default(true)
+  required: z.boolean().default(true),
+  placeholder: z.string().optional(),
+  allow_freeform: z.boolean().optional(),
+  options: z.array(z.object({
+    label: z.string(),
+    value: z.string(),
+    description: z.string().optional(),
+    disabled: z.boolean().optional()
+  }).strict()).optional()
 }).strict();
 const handoffSchema = z.object({
   instruction: z.string().default(""),

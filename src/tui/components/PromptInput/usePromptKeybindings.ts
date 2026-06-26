@@ -102,11 +102,6 @@ function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
   }
 
   const { key } = event;
-  if (key.ctrl && event.input === "o") {
-    input.onEvent({ type: "toggle_log_detail" });
-    return;
-  }
-
   if (input.suggestions.length > 0) {
     if (key.upArrow) {
       input.onSelectedSuggestion(wrapIndex(input.selectedSuggestion - 1, input.suggestions.length));

@@ -255,7 +255,7 @@ describe("PromptInput core logic", () => {
 
     assert.equal(resolvePromptKey("c", { ctrl: true }), "none");
 
-    assert.equal(resolvePromptKey("o", { ctrl: true }), "toggle_log_detail");
+    assert.equal(resolvePromptKey("o", { ctrl: true }), "none");
 
   });
 
@@ -273,7 +273,7 @@ describe("PromptInput core logic", () => {
 
     assert.equal(resolvePromptKey("", { downArrow: true }, "permission"), "none");
 
-    assert.equal(resolvePromptKey("o", { ctrl: true }, "permission"), "toggle_log_detail");
+    assert.equal(resolvePromptKey("o", { ctrl: true }, "permission"), "none");
 
     assert.equal(resolvePromptKey("", { escape: true }, "permission"), "cancel");
 

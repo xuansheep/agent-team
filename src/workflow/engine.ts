@@ -2290,7 +2290,7 @@ function requireDocument(node: WorkflowNodeConfig, result: NodeResult): string {
 
 function planReviewUserText(decision: PlanReviewDecision): string {
 
-    return decision === "continue" ? "Yes, continue execution by plan" : "No, staying in the plan";
+    return decision === "continue" ? "Yes, approve and continue" : "No, keep planning";
 
 }
 
@@ -2298,11 +2298,11 @@ function exactPlanReviewDecisionFromInput(input: unknown): PlanReviewDecision | 
 
     const text = userMessageText(input).trim();
 
-    if (text === planReviewUserText("continue"))
+    if (text === planReviewUserText("continue") || text === "Yes, continue execution by plan")
 
         return "continue";
 
-    if (text === planReviewUserText("stay"))
+    if (text === planReviewUserText("stay") || text === "No, staying in the plan")
 
         return "stay";
 

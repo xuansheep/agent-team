@@ -280,7 +280,7 @@ describe("WorkflowSession", () => {
 
     assert.equal(starts[0], "product:1");
     assert.equal(starts.at(-1), "dev:1");
-    assert.equal(userMessages.find((event) => event.text === "Yes, continue execution by plan")?.node_id, "product");
+    assert.equal(userMessages.find((event) => event.text === "Yes, approve and continue")?.node_id, "product");
     assert.equal(userMessages.find((event) => event.text === "resume dev")?.node_id, "dev");
     assert.equal(state.status, "completed");
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "product").length, 1);
@@ -487,7 +487,7 @@ describe("WorkflowSession", () => {
     await session.resumePlanReview("continue");
 
     const storedEvents = await new RunStore(".tmp/session-plan-review-runs").loadEvents(session.runId);
-    const userMessageIndex = storedEvents.findIndex((event) => event.type === "user_message" && event.text === "Yes, continue execution by plan");
+    const userMessageIndex = storedEvents.findIndex((event) => event.type === "user_message" && event.text === "Yes, approve and continue");
     const resolvedIndex = storedEvents.findIndex((event) => event.type === "plan_review_resolved" && event.decision === "continue");
     assert.notEqual(userMessageIndex, -1);
     assert.notEqual(resolvedIndex, -1);

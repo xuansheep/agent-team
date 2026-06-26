@@ -1,6 +1,6 @@
 import { visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { StoredEvent } from "../harness/events.js";
-import { TuiLogMessage, TuiToolLogMessage } from "./logTypes.js";
+import { TuiLogMessage, TuiPlanLogMessage, TuiToolLogMessage } from "./logTypes.js";
 import { TuiConversationItem, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
 import { getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue, truncate } from "./toolDisplay.js";
 export function initialTuiState(input: { cwd: string }): TuiState {
@@ -36,26 +36,22 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
     case "node_started":
       return upsertNode({ ...next, mode: "running", currentNodeId: event.node_id, questions: [] }, event.node_id, event.attempt, "running");
     case "plan_review_requested":
-      return appendConversation(
-        upsertNode({
-          ...next,
-          mode: "waiting_plan_review",
-          currentNodeId: event.node_id,
-          pendingReview: { type: "plan", nodeId: event.node_id, attempt: event.attempt, document: event.document }
-        }, event.node_id, event.attempt, "waiting_user"),
-        { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: `${event.node_id} 已生成计划，等待用户审核`, detailText: event.document, detailVisible: true },
-        event
-      );
+      return appendPlanLog(upsertNode({
+        ...next,
+        mode: "waiting_plan_review",
+        currentNodeId: event.node_id,
+        pendingReview: { type: "plan", nodeId: event.node_id, attempt: event.attempt, document: event.document, planFilePath: event.plan_file_path }
+      }, event.node_id, event.attempt, "waiting_user"), event);
     case "plan_review_resolved":
       if (event.decision === "stay") {
-        return appendConversation({ ...next, mode: "plan_revision" }, { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: "计划审核保持暂停，可继续输入修改意见", detailText: "用户选择：No, staying in the plan" }, event);
+        return appendConversation(updatePlanLogStatus({ ...next, mode: "plan_revision" }, event.node_id, event.attempt, "rejected"), { kind: "status", nodeId: event.node_id, attempt: event.attempt, text: "计划审核保持暂停，可继续输入修改意见", detailText: "用户选择：No, keep planning" }, event);
       }
-      return appendConversation({ ...next, mode: "running", pendingReview: undefined }, {
+      return appendConversation(updatePlanLogStatus({ ...next, mode: "running", pendingReview: undefined }, event.node_id, event.attempt, "approved"), {
         kind: "status",
         nodeId: event.node_id,
         attempt: event.attempt,
         text: "计划已通过，继续执行",
-        detailText: "用户选择：Yes, continue execution by plan"
+        detailText: "用户选择：Yes, approve and continue"
       }, event);
     case "complete_summary_available":
       return appendConversation(next, {
@@ -251,6 +247,35 @@ function appendConversation(state: TuiState, item: TuiConversationItem, event?: 
   const conversation = [...state.conversation, item];
   if (!event) return { ...state, conversation };
   return { ...state, conversation, logMessages: [...state.logMessages, conversationToLogMessage(item, event)] };
+}
+function appendPlanLog(state: TuiState, event: Extract<StoredEvent, { type: "plan_review_requested" }>): TuiState {
+  const item: TuiConversationItem = {
+    kind: "status",
+    nodeId: event.node_id,
+    attempt: event.attempt,
+    text: `${event.node_id} 已生成计划，等待用户审核`,
+    detailText: event.document,
+    detailVisible: true
+  };
+  const plan: TuiPlanLogMessage = {
+    id: logId(event, "plan"),
+    kind: "plan",
+    nodeId: event.node_id,
+    attempt: event.attempt,
+    status: "pending",
+    text: "Plan Review",
+    document: event.document,
+    detailText: event.document,
+    detailVisible: true,
+    path: event.plan_file_path
+  };
+  return { ...state, conversation: [...state.conversation, item], logMessages: [...state.logMessages, plan] };
+}
+function updatePlanLogStatus(state: TuiState, nodeId: string, attempt: number, status: TuiPlanLogMessage["status"]): TuiState {
+  return {
+    ...state,
+    logMessages: state.logMessages.map((item) => (item.kind === "plan" && item.nodeId === nodeId && item.attempt === attempt ? { ...item, status } : item))
+  };
 }
 function conversationToLogMessage(item: TuiConversationItem, event: StoredEvent): TuiLogMessage {
   return {

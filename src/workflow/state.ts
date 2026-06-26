@@ -14,6 +14,7 @@ export type PendingReview = {
   node_id: string;
   attempt: number;
   document: string;
+  plan_file_path?: string;
 };
 
 export type ResumeCheckpoint = {

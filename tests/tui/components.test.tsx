@@ -78,7 +78,7 @@ import { createRef } from "react";
 
 
 
-import { Box, ScrollBox, Text, useHasSelection } from "../../src/tui/ink.js";
+import { Box, ScrollBox, Text, useHasSelection, useStdin } from "../../src/tui/ink.js";
 
 
 
@@ -111,6 +111,7 @@ import type { ScrollBoxHandle } from "../../src/tui/ink.js";
 
 
 import instances from "../../src/ink/instances.js";
+import { ensureRefableStdin } from "../../src/tui/inkStdin.js";
 
 
 
@@ -215,6 +216,7 @@ import { WorkflowFlowChart } from "../../src/tui/components/WorkflowFlowChart.js
 
 
 import { ChoicePrompt } from "../../src/tui/components/ChoicePrompt.js";
+import { Select } from "../../src/tui/components/CustomSelect/index.js";
 
 
 
@@ -4530,7 +4532,7 @@ describe("ChoicePrompt", () => {
 
 
 
-  it("renders controlled selection without owning keyboard focus", () => {
+it("renders controlled selection without owning keyboard focus", () => {
 
 
 
@@ -5329,6 +5331,66 @@ describe("PlanReviewPrompt", () => {
 
 
 
+
+});
+
+function RefableStdinSelectProbe(props: Parameters<typeof Select<string>>[0]) {
+  const { stdin } = useStdin();
+  ensureRefableStdin(stdin);
+  return <Select<string> {...props} />;
+}
+
+it("navigates CustomSelect with tui-code shortcut semantics", async () => {
+
+  const submitted: string[] = [];
+
+  const output = render(
+
+    <RefableStdinSelectProbe
+
+      options={[
+
+        { label: "One", value: "one" },
+
+        { label: "Two", value: "two" },
+
+        { label: "Three", value: "three" }
+
+      ]}
+
+      defaultValue="one"
+
+      onChange={(value) => submitted.push(value)}
+
+    />
+
+  );
+
+  await settleInkInput();
+
+  output.stdin.write("j");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /> 2\. Two/);
+
+  output.stdin.write("\u000e");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /> 3\. Three/);
+
+  output.stdin.write("k");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /> 2\. Two/);
+
+  output.stdin.write("\u0010");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /> 1\. One/);
+
+  output.stdin.write("2");
+  await settleInkInput();
+
+  assert.deepEqual(submitted, ["two"]);
+
+  output.unmount();
+  output.cleanup();
 
 });
 
@@ -7618,7 +7680,7 @@ describe("RunLogPanel", () => {
 
     assert.match(frame, /⎿\s+Ran npm test/);
 
-    assert.match(frame, /输出：ok/);
+    assert.doesNotMatch(frame, /输出：ok/);
 
     assert.doesNotMatch(frame, /⎿\s+Bash \(npm test\)/);
 
@@ -7656,7 +7718,7 @@ describe("RunLogPanel", () => {
 
     assert.match(frame, /错误：exit 1/);
 
-    assert.match(frame, /输出：failed tests/);
+    assert.doesNotMatch(frame, /输出：failed tests/);
 
     output.unmount();
 
@@ -8686,7 +8748,7 @@ describe("InteractionArea", () => {
 
 
 
-    assert.match(frame, /> Allow once/);
+    assert.match(frame, /> 1\. Allow once/);
 
 
 
@@ -9338,6 +9400,51 @@ describe("TuiApp", () => {
 
     output.unmount();
 
+    output.cleanup();
+
+  });
+
+  it("toggles transcript mode with Ctrl+O and exits it with Escape", async () => {
+
+    const session = fakeInteractiveSession({
+
+      runId: "run-transcript-toggle",
+
+      workflowId: "delivery",
+
+      events: [
+
+        { type: "node_started", node_id: "product", attempt: 1, ts: "2026-06-24T00:00:00.000Z", seq: 1 },
+
+        { type: "tool_invoked", node_id: "product", attempt: 1, tool_call_id: "tool-1", tool: "Bash", input: { command: "npm test" }, ts: "2026-06-24T00:00:01.000Z", seq: 2 },
+
+        { type: "tool_completed", node_id: "product", attempt: 1, tool_call_id: "tool-1", tool: "Bash", result: { output: "ok", exit_code: 0 }, ts: "2026-06-24T00:00:02.000Z", seq: 3 }
+
+      ]
+
+    });
+
+    const engine = { async startInteractive() { return session; } };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+    await sendTuiLine(output, "run tests");
+
+    assert.match(output.lastFrame() ?? "", /Ran npm test/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /输出：ok/);
+
+    output.stdin.write("\u000f");
+    await settleInkInput();
+
+    assert.match(output.lastFrame() ?? "", /输出：ok/);
+
+    output.stdin.write("\u001b");
+    await settleTerminalEscape();
+
+    assert.match(output.lastFrame() ?? "", /Ran npm test/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /输出：ok/);
+
+    output.unmount();
     output.cleanup();
 
   });
@@ -10432,7 +10539,7 @@ describe("TuiApp", () => {
 
     await sendTuiLine(output, "/resume");
 
-    assert.match(output.lastFrame() ?? "", /> delivery completed alpha/);
+    assert.match(output.lastFrame() ?? "", /> 1\. delivery completed alpha/);
 
 
 
@@ -10440,7 +10547,7 @@ describe("TuiApp", () => {
 
     await settleInkInput();
 
-    assert.match(output.lastFrame() ?? "", /> delivery completed beta/);
+    assert.match(output.lastFrame() ?? "", /> 2\. delivery completed beta/);
 
     assert.doesNotMatch(output.lastFrame() ?? "", /INPUT > \/resume/);
 
@@ -11414,7 +11521,7 @@ describe("TuiApp", () => {
 
 
 
-  it("offers Claude implementation as a plan review continue option", async () => {
+  it("offers approval and revision options for plan review", async () => {
     const session = fakeInteractiveSession({
       runId: "run-plan-claude-option",
       workflowId: "delivery",
@@ -11432,10 +11539,12 @@ describe("TuiApp", () => {
     const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
 
     await sendTuiLine(output, "review plan");
-    await waitForTuiFrame(output, /Plan decision/);
+    await waitForTuiFrame(output, /Plan approval request/);
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Yes, implement the plan by Claude/);
+    assert.match(frame, /Yes, approve and continue/);
+    assert.match(frame, /No, keep planning/);
+    assert.doesNotMatch(frame, /Yes, implement the plan by Claude/);
 
     output.unmount();
     output.cleanup();
@@ -11470,7 +11579,7 @@ describe("TuiApp", () => {
 
       }],
 
-      resumeWithUserInput: (input: unknown) => { inputs.push(input); },
+      revisePlan: (input: unknown) => { inputs.push(input); },
 
       resumePlanReview: (decision: "continue" | "stay") => decisions.push(decision)
 
@@ -11486,11 +11595,16 @@ describe("TuiApp", () => {
 
     await sendTuiLine(output, "review plan");
 
-    await sendTuiLine(output, "请把计划拆得更细");
+    output.stdin.write("j");
+    await settleTuiWork();
+    output.stdin.write("ust refine the plan");
+    await settleTuiWork();
+    output.stdin.write("\r");
+    await settleTuiWork();
 
 
 
-    assert.deepEqual(inputs, [{ answer: "请把计划拆得更细" }]);
+    assert.deepEqual(inputs, [{ answer: "just refine the plan" }]);
 
     assert.deepEqual(decisions, []);
 
@@ -11500,12 +11614,75 @@ describe("TuiApp", () => {
 
     assert.match(frame, /plan/);
 
-    assert.doesNotMatch(frame, /Plan decision/);
+    assert.doesNotMatch(frame, /Plan approval request/);
 
 
 
     output.unmount();
 
+    output.cleanup();
+
+  });
+
+  it("exits transcript mode with Escape without denying the active permission", async () => {
+
+    const resolved: Array<[string, "allow_once" | "deny_once"]> = [];
+
+    const session = fakeInteractiveSession({
+
+      runId: "run-permission-transcript-escape",
+
+      workflowId: "delivery",
+
+      events: [{
+
+        type: "permission_requested",
+
+        request_id: "perm-1",
+
+        node_id: "dev",
+
+        attempt: 1,
+
+        tool_call_id: "tool-1",
+
+        tool: "Bash",
+
+        input: { command: "npm test" },
+
+        specifier: "npm test",
+
+        ts: "2026-06-24T00:00:00.000Z",
+
+        seq: 1
+
+      }],
+
+      permissions: { resolve: (requestId, decision) => resolved.push([requestId, decision]) }
+
+    });
+
+    const engine = { async startInteractive() { return session; } };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+    await sendTuiLine(output, "needs permission");
+
+    output.stdin.write("\u000f");
+    await settleInkInput();
+
+    output.stdin.write("\u001b");
+    await settleTerminalEscape();
+
+    assert.deepEqual(resolved, []);
+    assert.match(output.lastFrame() ?? "", /Permission required/);
+
+    output.stdin.write("\u001b");
+    await settleTerminalEscape();
+
+    assert.deepEqual(resolved, [["perm-1", "deny_once"]]);
+
+    output.unmount();
     output.cleanup();
 
   });
@@ -13220,6 +13397,8 @@ function fakeInteractiveSession(input: {
 
   resumeWithUserInput?: (input: unknown) => void | Promise<void>;
 
+  revisePlan?: (input: unknown) => void | Promise<void>;
+
 
 
   interrupt?: () => void | Promise<void>;
@@ -13494,7 +13673,7 @@ function fakeInteractiveSession(input: {
 
 
 
-    revisePlan: async () => undefined,
+    revisePlan: async (revisionInput: unknown) => input.revisePlan?.(revisionInput),
 
 
 

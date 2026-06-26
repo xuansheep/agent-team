@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "../../ink.js";
-import type { TuiLogMessage, TuiPermissionLogMessage } from "../../logTypes.js";
+import type { TuiLogMessage, TuiPermissionLogMessage, TuiPlanLogMessage } from "../../logTypes.js";
 import { truncate, truncateToolDetail } from "../../toolDisplay.js";
 import { MessageResponse } from "./MessageResponse.js";
 import { ToolUseLoader } from "./ToolUseLoader.js";
@@ -12,6 +12,8 @@ export function LogMessageRow({ item, detailMode }: { item: TuiLogMessage; detai
       return <ToolLogMessage item={item} detailMode={detailMode} />;
     case "permission":
       return <PermissionLogMessage item={item} detailMode={detailMode} />;
+    case "plan":
+      return <PlanLogMessage item={item} detailMode={detailMode} />;
     case "assistant":
       return <DotLogMessage color="green" text={item.text} detailText={item.detailText} detailVisible={item.detailVisible} detailMode={detailMode} />;
     case "status":
@@ -27,7 +29,8 @@ function UserLogMessage({ item }: { item: TuiLogMessage & { kind: "user" } }) {
 }
 function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "tool" }; detailMode: boolean }) {
   const title = toolLogTitle(item);
-  const showDetail = Boolean(item.detailText && (detailMode || item.status === "completed" || item.status === "failed"));
+  const detailText = detailMode ? item.detailText : compactToolDetail(item);
+  const showDetail = Boolean(detailText);
   const content = (
     <Box flexDirection="column" marginTop={item.parentLogId ? 0 : 1}>
       <Box flexDirection="row" flexWrap="nowrap">
@@ -37,12 +40,19 @@ function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "t
       </Box>
       {showDetail ? (
         <MessageResponse>
-          <Text dimColor wrap="wrap">{truncateToolDetail(item.detailText ?? "", detailMode ? 1200 : 400)}</Text>
+          <Text dimColor wrap="wrap">{truncateToolDetail(detailText ?? "", detailMode ? 6000 : 400)}</Text>
         </MessageResponse>
       ) : null}
     </Box>
   );
   return item.parentLogId ? <MessageResponse>{content}</MessageResponse> : content;
+}
+function compactToolDetail(item: TuiLogMessage & { kind: "tool" }): string | undefined {
+  if (!item.detailText) return undefined;
+  const lines = item.detailText.split(/\r?\n/).filter(Boolean);
+  const hint = lines.find((line) => line.includes("ctrl + o to view transcript"));
+  const error = item.status === "failed" ? lines.find((line) => line.startsWith("错误：")) : undefined;
+  return [error, hint].filter(Boolean).join("\n") || undefined;
 }
 function toolLogTitle(item: TuiLogMessage & { kind: "tool" }): { text: string; summary?: string } {
   const verb = item.status === "running" ? "Running" : "Ran";
@@ -53,6 +63,50 @@ function toolLogTitle(item: TuiLogMessage & { kind: "tool" }): { text: string; s
 function PermissionLogMessage({ item, detailMode }: { item: TuiPermissionLogMessage; detailMode: boolean }) {
   const color = item.status === "allowed" ? "green" : item.status === "denied" ? "red" : "yellow";
   return <DotLogMessage color={color} text={item.text} detailText={item.detailText} detailVisible={item.detailVisible} detailMode={detailMode} />;
+}
+function PlanLogMessage({ item, detailMode }: { item: TuiPlanLogMessage; detailMode: boolean }) {
+  const color = item.status === "approved" ? "green" : item.status === "rejected" ? "red" : "yellow";
+  const statusText = item.status === "approved" ? "approved" : item.status === "rejected" ? "needs revision" : "pending approval";
+  const document = detailMode ? item.document : truncate(item.document, 2400);
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" flexWrap="nowrap">
+        <Box minWidth={2}>
+          <Text color={color}>●</Text>
+        </Box>
+        <Text bold>Plan Review</Text>
+        <Text dimColor> ({statusText})</Text>
+      </Box>
+      {item.path ? (
+        <Box paddingLeft={2}>
+          <Text dimColor wrap="truncate-end">{item.path}</Text>
+        </Box>
+      ) : null}
+      <MessageResponse>
+        <SimpleMarkdown text={document} />
+      </MessageResponse>
+    </Box>
+  );
+}
+function SimpleMarkdown({ text }: { text: string }) {
+  const lines = text.split(/\r?\n/);
+  let inCode = false;
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, index) => {
+        if (/^```/.test(line.trim())) {
+          inCode = !inCode;
+          return <Text key={index} dimColor>{line}</Text>;
+        }
+        if (inCode) return <Text key={index} color="ansi256(250)" wrap="wrap">{line || " "}</Text>;
+        const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (heading) return <Text key={index} bold wrap="wrap">{heading[0]}</Text>;
+        const listItem = /^(\s*)([-*]|\d+\.)\s+(.*)$/.exec(line);
+        if (listItem) return <Text key={index} wrap="wrap">{line}</Text>;
+        return <Text key={index} wrap="wrap">{line || " "}</Text>;
+      })}
+    </Box>
+  );
 }
 function DotLogMessage({
   color,

@@ -2,6 +2,7 @@ export type TuiLogMessage =
   | TuiUserLogMessage
   | TuiAssistantLogMessage
   | TuiStatusLogMessage
+  | TuiPlanLogMessage
   | TuiToolLogMessage
   | TuiPermissionLogMessage;
 
@@ -27,6 +28,15 @@ export type TuiAssistantLogMessage = BaseLogMessage & {
 
 export type TuiStatusLogMessage = BaseLogMessage & {
   kind: "status";
+};
+
+export type TuiPlanLogMessage = BaseLogMessage & {
+  kind: "plan";
+  nodeId: string;
+  attempt: number;
+  status: "pending" | "approved" | "rejected";
+  document: string;
+  path?: string;
 };
 
 export type TuiToolLogMessage = BaseLogMessage & {

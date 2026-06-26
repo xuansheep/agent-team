@@ -10,7 +10,7 @@ describe("toolDisplay", () => {
 
     assert.match(detail, /输出：line-1/);
     assert.match(detail, /line-2/);
-    assert.match(detail, /… \+6 lines \(ctrl \+ t to view transcript\)/);
+    assert.match(detail, /… \+6 lines \(ctrl \+ o to view transcript\)/);
     assert.match(detail, /line-9/);
     assert.match(detail, /line-10/);
     assert.doesNotMatch(detail, /line-3/);

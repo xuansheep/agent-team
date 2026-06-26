@@ -15,5 +15,4 @@ export type PromptInputEvent =
   | { type: "submit"; text: string }
   | { type: "cancel" }
   | { type: "command"; name: string; args: string[] }
-  | { type: "queue"; text: string }
-  | { type: "toggle_log_detail" };
+  | { type: "queue"; text: string };

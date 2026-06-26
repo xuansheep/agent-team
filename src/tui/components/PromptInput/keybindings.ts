@@ -14,7 +14,6 @@ export type PromptKeyAction =
   | "clear"
   | "history_previous"
   | "history_next"
-  | "toggle_log_detail"
   | "ignore"
   | "none";
 
@@ -38,7 +37,6 @@ const deleteSequences = new Set(["\u001b[3~", "\u001b[3$", "\u001b[3^"]);
 export function resolvePromptKey(input: string, key: PromptKey, mode: "input" | "running" | "permission" | "question" | "waiting_plan_review" | "confirm_interrupt" = "input"): PromptKeyAction {
   if (isMouseReportingSequence(input)) return "ignore";
   if (mode === "permission") {
-    if (key.ctrl && input === "o") return "toggle_log_detail";
     if (key.escape) return "cancel";
     return "none";
   }
@@ -51,7 +49,6 @@ export function resolvePromptKey(input: string, key: PromptKey, mode: "input" | 
     if (input === "k") return "delete_to_end";
     if (input === "w") return "delete_previous_word";
     if (input === "c") return "none";
-    if (input === "o") return "toggle_log_detail";
   }
   if (key.return) return "submit";
   if (key.escape) return "cancel";

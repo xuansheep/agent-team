@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { RunLogPanel } from "../../src/tui/components/RunLogPanel.js";
 
-const transcriptHint = "ctrl + t to view transcript";
+const transcriptHint = "ctrl + o to view transcript";
 
 describe("RunLogPanel compact tool output", () => {
   it("keeps the transcript hint visible for long completed tool output", () => {
@@ -40,14 +40,14 @@ describe("RunLogPanel compact tool output", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Ran npm test/);
-    assert.match(frame, /ctrl \+ t to view transcript/);
-    assert.match(frame, /tail-line-2/);
+    assert.match(frame, /ctrl \+ o to view transcript/);
+    assert.doesNotMatch(frame, /tail-line-2/);
     output.unmount();
     output.cleanup();
   });
 
-  it("renders assistant preamble with completed non-shell tools as Codex-style transcript entries", () => {
-    const output = render(
+  it("folds completed non-shell tool output in compact mode", () => {
+    const compact = render(
       <RunLogPanel
         detailMode={false}
         currentNodeId="product"
@@ -71,12 +71,41 @@ describe("RunLogPanel compact tool output", () => {
       />
     );
 
-    const frame = output.lastFrame() ?? "";
+    const frame = compact.lastFrame() ?? "";
     assert.match(frame, /● 我先检查项目结构，再确认关键配置。/);
     assert.match(frame, /⎿\s+Ran List \./);
-    assert.match(frame, /输出：package\.json/);
+    assert.doesNotMatch(frame, /输出：package\.json/);
     assert.doesNotMatch(frame, /List \(\.\)/);
-    output.unmount();
-    output.cleanup();
+    compact.unmount();
+    compact.cleanup();
+  });
+
+  it("shows completed tool output in transcript mode", () => {
+    const transcript = render(
+      <RunLogPanel
+        detailMode
+        currentNodeId="product"
+        currentAttempt={1}
+        items={[{
+          id: "tool-1",
+          kind: "tool",
+          nodeId: "product",
+          attempt: 1,
+          toolCallId: "tool-1",
+          tool: "LS",
+          status: "completed",
+          text: "List",
+          summary: ".",
+          detailText: "输出：package.json\nsrc\n退出码：0"
+        }]}
+      />
+    );
+
+    const frame = transcript.lastFrame() ?? "";
+    assert.match(frame, /Ran List \./);
+    assert.match(frame, /输出：package\.json/);
+    assert.match(frame, /退出码：0/);
+    transcript.unmount();
+    transcript.cleanup();
   });
 });

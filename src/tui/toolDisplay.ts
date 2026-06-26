@@ -50,7 +50,7 @@ function summarizeToolOutput(output: string): string {
   if (lines.length <= 5) return truncate(output, 500);
 
   const omitted = lines.length - 4;
-  return [...lines.slice(0, 2), `… +${omitted} lines (ctrl + t to view transcript)`, ...lines.slice(-2)].join("\n");
+  return [...lines.slice(0, 2), `… +${omitted} lines (ctrl + o to view transcript)`, ...lines.slice(-2)].join("\n");
 }
 
 export function readableRecord(value: Record<string, unknown>): string {
@@ -75,7 +75,7 @@ export function readableValue(value: unknown): string {
   return String(value);
 }
 
-const TRANSCRIPT_HINT = "ctrl + t to view transcript";
+const TRANSCRIPT_HINT = "ctrl + o to view transcript";
 
 export function truncateToolDetail(text: string, max: number): string {
   if (text.length <= max) return text;

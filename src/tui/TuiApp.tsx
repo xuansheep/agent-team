@@ -46,8 +46,7 @@ export function TuiApp({
   }));
   const [queued, setQueued] = useState<string[]>([]);
   const [promptText, setPromptText] = useState("");
-  const [logDetailMode, setLogDetailMode] = useState(false);
-  const [choiceIndex, setChoiceIndex] = useState(0);
+  const [transcriptMode, setTranscriptMode] = useState(false);
   const [choiceKey, setChoiceKey] = useState("");
   const mainScrollRef = useRef<ScrollBoxHandle>(null);
   const sessionRef = useRef<WorkflowSession>();
@@ -188,10 +187,6 @@ export function TuiApp({
     }
   };
   const handlePromptEvent = (event: PromptInputEvent) => {
-    if (event.type === "toggle_log_detail") {
-      setLogDetailMode((current) => !current);
-      return;
-    }
     if (event.type === "cancel") {
       cancelActiveChoice();
       return;
@@ -216,7 +211,7 @@ export function TuiApp({
     }
     if (state.mode === "plan_revision") {
       setState((current) => ({ ...current, mode: "running", pendingReview: undefined, questions: [], error: undefined }));
-      void sessionRef.current?.resumeWithUserInput({ answer: event.text }).catch((error) => failUi(error));
+      void sessionRef.current?.revisePlan({ answer: event.text }).catch((error) => failUi(error));
       return;
     }
     if (state.mode === "question") {
@@ -226,7 +221,7 @@ export function TuiApp({
     }
     if (state.mode === "waiting_plan_review") {
       setState((current) => ({ ...current, mode: "plan_revision", questions: [], error: undefined }));
-      void sessionRef.current?.resumeWithUserInput({ answer: event.text }).catch((error) => failUi(error));
+      void sessionRef.current?.revisePlan({ answer: event.text }).catch((error) => failUi(error));
       return;
     }
     if (state.mode === "permission" || state.mode === "confirm_interrupt" || state.mode === "confirm_new" || state.mode === "confirm_resume" || state.mode === "resume_picker" || state.mode === "select_workflow") return;
@@ -247,9 +242,9 @@ export function TuiApp({
   const activeChoice = buildActiveChoice({
     mode: state.mode,
     workflows,
-    choiceIndex,
     permission: state.permissionRequests[0],
     review: state.pendingReview,
+    questions: state.questions,
     selectWorkflow,
     resolvePermission: (requestId, decision) => {
       try {
@@ -260,6 +255,10 @@ export function TuiApp({
     },
     resolvePlan: (decision) => {
       void sessionRef.current?.resumePlanReview(decision).catch((error) => failUi(error));
+    },
+    resolveQuestion: (answer) => {
+      setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
+      void sessionRef.current?.resumeWithUserInput(answer).catch((error) => failUi(error));
     },
     resolveInterrupt: (decision) => {
       if (decision === "interrupt") interruptAndExit();
@@ -324,17 +323,26 @@ export function TuiApp({
   useEffect(() => {
     if (choiceKey === nextChoiceKey) return;
     setChoiceKey(nextChoiceKey);
-    setChoiceIndex(0);
     canceledChoiceKeyRef.current = undefined;
   }, [choiceKey, nextChoiceKey]);
   const layout = layoutMetrics({ terminalRows, choice: activeChoice });
   useInput((input, key, event) => {
-    if (key.escape && cancelActiveChoice()) {
+    if ((input === "o" && key.ctrl) || input === "\u000f") {
+      setTranscriptMode((current) => !current);
       event.stopImmediatePropagation();
       return;
     }
-    if (activeChoice && input === "o" && key.ctrl) {
-      setLogDetailMode((current) => !current);
+    if (transcriptMode && key.escape) {
+      setTranscriptMode(false);
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (transcriptMode && input === "c" && key.ctrl) {
+      setTranscriptMode(false);
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (key.escape && cancelActiveChoice()) {
       event.stopImmediatePropagation();
       return;
     }
@@ -352,6 +360,7 @@ export function TuiApp({
       scrollMainDown(mainScroll, 3);
       return;
     }
+    if (activeChoice && (key.pageUp || key.pageDown || key.upArrow || key.downArrow || key.return)) return;
     if (mainScroll && key.pageUp) {
       jumpMainScrollBy(mainScroll, -Math.max(1, Math.floor(mainScroll.getViewportHeight() / 2)));
       return;
@@ -360,31 +369,6 @@ export function TuiApp({
       jumpMainScrollBy(mainScroll, Math.max(1, Math.floor(mainScroll.getViewportHeight() / 2)));
       return;
     }
-    if (!activeChoice) return;
-    const isPlanReviewTextInput = state.mode === "waiting_plan_review" && promptText.trim().length > 0;
-    if (isPlanReviewTextInput) return;
-    if (key.upArrow || input === "\u001b[A") {
-      setChoiceIndex((current) => (current === 0 ? activeChoice.options.length - 1 : current - 1));
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (key.downArrow || input === "\u001b[B") {
-      setChoiceIndex((current) => (current + 1) % activeChoice.options.length);
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (key.return || input === "\r" || input === "\n") {
-      activeChoice.onSubmit(activeChoice.selectedValue);
-      event.stopImmediatePropagation();
-      return;
-    }
-    const shortcut = state.mode === "waiting_plan_review" ? undefined : activeChoice.options.find((option) => option.shortcut?.toLowerCase() === input.toLowerCase());
-    if (shortcut) {
-      activeChoice.onSubmit(shortcut.value);
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (state.mode !== "waiting_plan_review") event.stopImmediatePropagation();
   });
   if (initialError) {
     return (
@@ -412,7 +396,7 @@ export function TuiApp({
           items={state.logMessages}
           currentNodeId={state.currentNodeId}
           currentAttempt={currentAttempt}
-          detailMode={logDetailMode}
+          detailMode={transcriptMode}
         />
         <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
       </ScrollBox>
@@ -424,6 +408,8 @@ export function TuiApp({
         workflows={workflows}
         isLoading={isLoading}
         hasSelection={hasSelection}
+        promptText={promptText}
+        inputDisabled={transcriptMode}
         onPromptEvent={handlePromptEvent}
         onPromptTextChange={setPromptText}
       />
@@ -485,21 +471,22 @@ function currentNodeAttempt(state: TuiState): number | undefined {
 function buildActiveChoice(input: {
   mode: TuiState["mode"];
   workflows: string[];
-  choiceIndex: number;
   permission?: TuiState["permissionRequests"][number];
   review?: TuiState["pendingReview"];
+  questions: TuiState["questions"];
   resumeRuns: TuiState["resumeRuns"];
   selectWorkflow: (workflow: string) => void;
   resolvePermission: (requestId: string, decision: "allow_once" | "deny_once") => void;
   resolvePlan: (decision: "continue" | "stay") => void;
+  resolveQuestion: (answer: unknown) => void;
   resolveInterrupt: (decision: "interrupt" | "stay") => void;
   resolveResume: (runId: string) => void;
   resolveNew: (decision: "new" | "stay") => void;
   resolvePendingResume: (decision: "resume" | "stay") => void;
 }): InteractionChoice | undefined {
   if (input.mode === "select_workflow" && input.workflows.length) {
-    const options = input.workflows.map((workflow, index) => ({ label: workflow, value: workflow, shortcut: String(index + 1) }));
-    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)]?.value ?? options[0].value;
+    const options = input.workflows.map((workflow) => ({ label: workflow, value: workflow }));
+    const selectedValue = options[0]?.value ?? "";
     return { title: "Select workflow", options, selectedValue, onSubmit: input.selectWorkflow };
   }
   if (input.mode === "resume_picker" && input.resumeRuns.length) {
@@ -507,31 +494,31 @@ function buildActiveChoice(input: {
       label: `${run.workflowId} ${run.status} ${run.inputPreview || run.runId}`,
       value: run.runId
     }));
-    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)]?.value ?? options[0].value;
-    return { title: "Resume workflow run", options, selectedValue, onSubmit: input.resolveResume };
+    const selectedValue = options[0]?.value ?? "";
+    return { title: "Resume workflow run", options, selectedValue, visibleOptionCount: 10, onSubmit: input.resolveResume };
   }
   if (input.mode === "confirm_new") {
     const options = [
-      { label: "Start new workflow", value: "new", shortcut: "y" },
-      { label: "Keep current workflow", value: "stay", shortcut: "n" }
+      { label: "Start new workflow", value: "new" },
+      { label: "Keep current workflow", value: "stay" }
     ];
-    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
+    const selectedValue = options[0].value;
     return { title: "Start a new workflow?", options, selectedValue, onSubmit: (value) => input.resolveNew(value === "new" ? "new" : "stay") };
   }
   if (input.mode === "confirm_resume") {
     const options = [
-      { label: "Resume selected workflow", value: "resume", shortcut: "y" },
-      { label: "Keep current workflow", value: "stay", shortcut: "n" }
+      { label: "Resume selected workflow", value: "resume" },
+      { label: "Keep current workflow", value: "stay" }
     ];
-    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
+    const selectedValue = options[0].value;
     return { title: "Resume another workflow?", options, selectedValue, onSubmit: (value) => input.resolvePendingResume(value === "resume" ? "resume" : "stay") };
   }
   if (input.mode === "permission" && input.permission) {
     const options = [
-      { label: "Allow once", value: "allow_once", shortcut: "y" },
-      { label: "Deny once", value: "deny_once", shortcut: "n" }
+      { label: "Allow once", value: "allow_once" },
+      { label: "Deny once", value: "deny_once" }
     ];
-    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
+    const selectedValue = options[0].value;
     return {
       title: "Permission required",
       detail: `${input.permission.tool} ${input.permission.specifier}`,
@@ -540,24 +527,90 @@ function buildActiveChoice(input: {
       onSubmit: (value) => input.resolvePermission(input.permission?.requestId ?? "", value === "deny_once" ? "deny_once" : "allow_once")
     };
   }
+  if (input.mode === "question") {
+    const questionChoice = buildQuestionChoice(input.questions, input.resolveQuestion);
+    if (questionChoice) return questionChoice;
+  }
   if (input.mode === "waiting_plan_review" && input.review) {
     const options = [
-      { label: "Yes, continue execution by plan", value: "continue", shortcut: "y" },
-      { label: "Yes, implement the plan by Claude", value: "continue_by_claude", shortcut: "c" },
-      { label: "No, staying in the plan", value: "stay", shortcut: "n" }
+      { label: "Yes, approve and continue", value: "continue" },
+      { label: "No, keep planning", value: "stay", type: "input" as const, placeholder: "Tell the agent what to change", showLabelWithValue: true, allowEmptySubmitToCancel: true, onChange: () => undefined }
     ];
-    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
-    return { title: "Plan decision", options, selectedValue, onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue") };
+    return { title: "Plan approval request", options, selectedValue: "continue", allowPromptInput: true, onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue") };
   }
   if (input.mode === "confirm_interrupt") {
     const options = [
-      { label: "Interrupt run", value: "interrupt", shortcut: "y" },
-      { label: "Keep running", value: "stay", shortcut: "n" }
+      { label: "Interrupt run", value: "interrupt" },
+      { label: "Keep running", value: "stay" }
     ];
-    const selectedValue = options[Math.min(input.choiceIndex, options.length - 1)].value;
+    const selectedValue = options[0].value;
     return { title: "Stop current run?", options, selectedValue, onSubmit: (value) => input.resolveInterrupt(value === "interrupt" ? "interrupt" : "stay") };
   }
   return undefined;
+}
+
+function buildQuestionChoice(questions: unknown[], resolveQuestion: (answer: unknown) => void): InteractionChoice | undefined {
+  const question = questions.find((item) => questionOptions(item).length > 0);
+  if (!question) return undefined;
+  const id = questionId(question);
+  const options = questionOptions(question).map((option) => ({
+    label: option.label,
+    value: option.value,
+    description: option.description,
+    disabled: option.disabled
+  }));
+  return {
+    title: questionText(question),
+    options,
+    selectedValue: options[0]?.value ?? "",
+    allowPromptInput: questionAllowsFreeform(question),
+    onSubmit: (value) => {
+      const selected = questionOptions(question).find((option) => option.value === value);
+      resolveQuestion({ answer: selected?.label ?? value, question_id: id, option_value: value });
+    }
+  };
+}
+
+type QuestionOption = {
+  label: string;
+  value: string;
+  description?: string;
+  disabled?: boolean;
+};
+
+function questionOptions(question: unknown): QuestionOption[] {
+  if (!question || typeof question !== "object") return [];
+  const options = (question as { options?: unknown }).options;
+  if (!Array.isArray(options)) return [];
+  return options.flatMap((option, index) => {
+    if (!option || typeof option !== "object") return [];
+    const value = option as Record<string, unknown>;
+    const label = typeof value.label === "string" && value.label.trim() ? value.label : typeof value.value === "string" ? value.value : "";
+    if (!label) return [];
+    return [{
+      label,
+      value: typeof value.value === "string" && value.value.trim() ? value.value : String(index + 1),
+      description: typeof value.description === "string" ? value.description : undefined,
+      disabled: value.disabled === true
+    }];
+  });
+}
+
+function questionId(question: unknown): string | undefined {
+  return question && typeof question === "object" && typeof (question as { id?: unknown }).id === "string"
+    ? (question as { id: string }).id
+    : undefined;
+}
+
+function questionText(question: unknown): string {
+  if (!question || typeof question !== "object") return "Waiting for user input";
+  const text = (question as { text?: unknown }).text;
+  return typeof text === "string" && text.trim() ? text : "Waiting for user input";
+}
+
+function questionAllowsFreeform(question: unknown): boolean {
+  if (!question || typeof question !== "object") return true;
+  return (question as { allow_freeform?: unknown }).allow_freeform !== false;
 }
 function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice }): { mainHeight: number } {
   const headerRows = 3;

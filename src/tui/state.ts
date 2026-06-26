@@ -177,6 +177,7 @@ export type TuiPlanReviewState = {
 
 
   document: string;
+  planFilePath?: string;
 
 
 };

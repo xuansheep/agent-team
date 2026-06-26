@@ -5,7 +5,7 @@ export function PromptInputFooter({ workflowId, isLoading, hasSelection }: { wor
   return (
     <Box>
       <Text dimColor>
-        workflow {workflowId ?? "unselected"} | Enter submit | Alt+Enter newline | Esc cancel | Ctrl+C {hasSelection ? "copy" : "stop"}
+        workflow {workflowId ?? "unselected"} | Enter submit | Alt+Enter newline | Ctrl+O transcript | Esc cancel | Ctrl+C {hasSelection ? "copy" : "stop"}
         {isLoading ? " | running" : ""}
       </Text>
     </Box>

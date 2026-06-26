@@ -307,13 +307,10 @@ describe("PromptInput with local Ink renderer", () => {
       await settleEffects();
 
 
-      await sendKeys(stdin, ["\u000f", "/", "r", "\t", "\r", "\r"]);
+      await sendKeys(stdin, ["/", "r", "\t", "\r", "\r"]);
 
 
       assert.deepEqual(events, [
-
-
-        { type: "toggle_log_detail" },
 
 
         { type: "command", name: "resume", args: [] },
