@@ -178,6 +178,97 @@ describe("WorkflowEngine", () => {
     assert.equal(calls, 2);
   });
 
+  it("writes workflow plan review document to a run-scoped plan file", async () => {
+    const planDocument = "# Plan\n\n- Inspect the affected workflow path.\n- Update the plan review document contract.\n- Verify the TUI shows the full plan.";
+    const provider: ModelProvider = {
+      async generate() {
+        return { content: JSON.stringify({ status: "success", summary: "plan ready", document: planDocument, handoff: { instruction: "follow the approved plan" } }) };
+      }
+    };
+    const runRoot = `.tmp/workflow-plan-file-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    const waiting = await engine.run(planReviewConfig(), "flow", { request: "x" });
+
+    assert.equal(waiting.status, "pending");
+    assert.equal(waiting.pending_review?.document, planDocument);
+    const planFilePath = waiting.pending_review?.plan_file_path;
+    assert.ok(planFilePath);
+    assert.equal(await readFile(planFilePath, "utf8"), `${planDocument}\n`);
+
+    const runId = await latestRunId(runRoot);
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; document?: string; plan_file_path?: string });
+    const reviewEvent = events.find((event) => event.type === "plan_review_requested");
+    assert.equal(reviewEvent?.document, planDocument);
+    assert.equal(reviewEvent?.plan_file_path, planFilePath);
+  });
+
+  it("rejects plan nodes that put the full review plan only in an artifact", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "我先写入计划产物。",
+            tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "plan.md", content: "# Plan\n\n- Build the feature.\n- Run tests.", description: "Review plan" } }]
+          };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "ready", document: "Plan ready", handoff: { instruction: "implement" } }) };
+      }
+    };
+    const runRoot = `.tmp/artifact-only-plan-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    const state = await engine.run({
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const, mode: "plan" as const, permissions: { allow: ["ArtifactWrite"], ask: [], deny: [] } }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(calls, 2);
+    assert.equal(state.status, "pending");
+    assert.equal(state.pending_review, undefined);
+    assert.equal(state.attempts.at(-1)?.status, "failure");
+    const result = state.attempts.at(-1)?.result as { summary?: string; questions?: Array<{ text?: string }> };
+    assert.match(result.summary ?? "", /complete Markdown plan in document|ArtifactWrite/i);
+    assert.match(result.questions?.[0]?.text ?? "", /complete Markdown plan in document|ArtifactWrite/i);
+
+    const runId = await latestRunId(runRoot);
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
+    assert.equal(events.some((event) => event.type === "plan_review_requested"), false);
+  });
+
+  it("passes the approved workflow plan to downstream node context", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const planDocument = "# Plan\n\n- Build feature safely.\n- Add regression coverage.\n- Run verification.";
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: planDocument, handoff: { instruction: "follow the approved plan" } }) };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "implemented", document: "# Summary\nDone.", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = `.tmp/approved-workflow-plan-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    const waiting = await engine.run(planReviewConfig(), "flow", { request: "x" });
+    assert.equal(waiting.status, "pending");
+
+    const runId = await latestRunId(runRoot);
+    const resumed = await engine.resume(planReviewConfig(), "flow", runId, { answer: "Yes, continue execution by plan" });
+
+    assert.equal(resumed.status, "completed");
+    const downstreamMessages = JSON.stringify(requests[1]?.messages ?? []);
+    assert.match(downstreamMessages, /ATTACHMENT plan_mode_exit/);
+    assert.match(downstreamMessages, /Approved plan:/);
+    assert.match(downstreamMessages, /Build feature safely/);
+  });
+
   it("keeps a plan node paused when the user chooses to stay in the plan", async () => {
     let calls = 0;
     const provider: ModelProvider = {

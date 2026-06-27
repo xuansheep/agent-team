@@ -42,7 +42,8 @@ function nodeModeInstructions(node: WorkflowNodeConfig): string {
       "This node is a plan review checkpoint.",
       "First analyze the user's task intent, then write a concrete execution plan for downstream nodes.",
       "Return status success only when the plan is ready for user review.",
-      "Put the complete Markdown plan in document."
+      "Put the complete Markdown plan in document.",
+      "Do not put the primary review plan only in ArtifactWrite; ArtifactWrite may only contain supporting material."
     ].join("\n");
   }
   if (node.mode === "complete") {

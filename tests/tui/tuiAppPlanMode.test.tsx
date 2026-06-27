@@ -73,6 +73,42 @@ describe("TuiApp global Plan Mode", () => {
   });
 
 
+  it("keeps long Plan approval documents out of the bottom interaction area", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const planFilePath = getPlanFilePath("session-long-plan", cwd);
+    const longPlan = Array.from({ length: 80 }, (_, index) => `Step ${String(index + 1).padStart(2, "0")}: verify the migration guardrail before executing.`).join(String.fromCharCode(10));
+    await writePlan(planFilePath, `${longPlan}${String.fromCharCode(10)}`);
+    await new SessionStore(join(cwd, ".session")).savePlanState("session-long-plan", {
+      mode: "waiting_approval",
+      sessionId: "session-long-plan",
+      planFilePath,
+      prePlanMode: "default",
+      originalInput: { request: "Resume long plan" }
+    });
+    const engine = {
+      async listRuns() { return []; },
+      async startInteractive() { throw new Error("workflow must not start before approval"); },
+      async resumeInteractive() { throw new Error("workflow resume must not run for plan session"); }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
+
+    await sendTuiLine(output, "/resume");
+    await waitForFrame(output, /Resume workflow run/);
+    output.stdin.write(String.fromCharCode(13));
+    await settleTuiWork();
+    await waitForFrame(output, /Plan approval request/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Review the plan above/);
+    assert.match(frame, /WAITING_PLAN_REVIEW > Type a request or \/help/);
+    assert.match(frame, /Yes, approve and continue/);
+    assert.match(frame, /No, keep planning/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+
   it("restores waiting Plan Mode sessions from /resume without starting workflow", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-plan", cwd);

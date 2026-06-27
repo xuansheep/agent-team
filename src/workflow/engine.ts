@@ -20,6 +20,8 @@ import { ModelMessage, ModelProvider } from "../providers/types.js";
 import { modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
 
+import { writePlan } from "../plans/planFiles.js";
+
 import { ArtifactStore } from "../storage/artifacts.js";
 
 import { RunStore, RunSummary } from "../storage/runStore.js";
@@ -1592,9 +1594,21 @@ export class WorkflowEngine {
 
             try {
 
-                if ((node.mode === "complete" || node.mode === "plan") && result.status === "success") {
+                let pendingPlanReview: { document: string; planFilePath: string } | undefined;
+
+                if (node.mode === "complete" && result.status === "success") {
 
                     requireDocument(node, result);
+
+                }
+
+                if (node.mode === "plan" && result.status === "success") {
+
+                    const document = requirePlanDocument(node, result);
+
+                    const planFilePath = await this.writePlanReviewFile(options, node.id, attempt, document);
+
+                    pendingPlanReview = { document, planFilePath };
 
                 }
 
@@ -1640,11 +1654,15 @@ export class WorkflowEngine {
 
                 if (node.mode === "plan" && result.status === "success") {
 
-                    const document = requireDocument(node, result);
+                    const planReview = pendingPlanReview;
+
+                    if (!planReview)
+
+                        throw new Error(`Plan node ${node.id} has no review document`);
 
                     attempts[attempts.length - 1] = { node_id: node.id, attempt, status: "waiting_user", result };
 
-                    await this.appendEvent(options.store, options.runId, { type: "plan_review_requested", node_id: node.id, attempt, document }, options.eventSink);
+                    await this.appendEvent(options.store, options.runId, { type: "plan_review_requested", node_id: node.id, attempt, document: planReview.document, plan_file_path: planReview.planFilePath }, options.eventSink);
 
                     const state: WorkflowState = {
 
@@ -1658,7 +1676,7 @@ export class WorkflowEngine {
 
                         handoff,
 
-                        pending_review: { type: "plan", node_id: node.id, attempt, document },
+                        pending_review: { type: "plan", node_id: node.id, attempt, document: planReview.document, plan_file_path: planReview.planFilePath },
 
                         resume_checkpoint: checkpoint()
 
@@ -1848,7 +1866,13 @@ export class WorkflowEngine {
 
         await this.appendEvent(options.store, options.runId, { type: "transition", from: nodeId, to: next, reason: "success" }, options.eventSink);
 
-        const handoff = buildHandoff(next, nodeId, result, attempts.filter((item) => item.node_id === next).length + 1);
+        const handoff = {
+
+            ...buildHandoff(next, nodeId, result, attempts.filter((item) => item.node_id === next).length + 1),
+
+            approved_plan: result.document
+
+        };
 
         const transitionState: WorkflowState = {
 
@@ -2017,6 +2041,16 @@ export class WorkflowEngine {
         await input.store.saveState(input.runId, state);
 
         return state;
+
+    }
+
+    private async writePlanReviewFile(options: ContinueOptions | PlanReviewOptions, nodeId: string, attempt: number, document: string): Promise<string> {
+
+        const planFilePath = join(options.store.runDir(options.runId), "plans", `${safePlanFileSegment(nodeId)}-attempt-${attempt}.md`);
+
+        await writePlan(planFilePath, `${document.trim()}\n`);
+
+        return planFilePath;
 
     }
 
@@ -2287,6 +2321,50 @@ function requireDocument(node: WorkflowNodeConfig, result: NodeResult): string {
         throw new Error(`${node.mode} node ${node.id} must return document`);
 
     return document;
+
+}
+
+function requirePlanDocument(node: WorkflowNodeConfig, result: NodeResult): string {
+
+    const document = requireDocument(node, result);
+
+    const summary = result.summary?.trim() ?? "";
+
+    if (summary && normalizeReviewDocument(document) === normalizeReviewDocument(summary))
+
+        throw new Error(`Plan node ${node.id} must put the full review plan in document; summary must only be a short description.`);
+
+    if (looksLikeArtifactOnlyPlan(document, result))
+
+        throw new Error(`Plan node ${node.id} returned only a short review document while writing deliverables. Put the complete Markdown plan in document, not only in ArtifactWrite.`);
+
+    return document;
+
+}
+
+function looksLikeArtifactOnlyPlan(document: string, result: NodeResult): boolean {
+
+    if (!result.deliverables.length)
+
+        return false;
+
+    if (document.length >= 120)
+
+        return false;
+
+    return !new RegExp("(^|\\n)\\s{0,3}#{1,6}\\s+\\S|(^|\\n)\\s*(?:[-*+]|\\d+[.)])\\s+\\S").test(document);
+
+}
+
+function normalizeReviewDocument(value: string): string {
+
+    return value.replace(/\s+/g, " ").trim();
+
+}
+
+function safePlanFileSegment(value: string): string {
+
+    return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "node";
 
 }
 

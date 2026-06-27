@@ -256,7 +256,8 @@ export function TuiApp({
         planSession: result.state,
         pendingReview: { type: "plan", nodeId: "global-plan", attempt: 1, document: result.plan.document, planFilePath: result.plan.planFilePath },
         error: undefined,
-        conversation: [...current.conversation, { kind: "status", text: "Plan approval requested", detailText: result.plan.document }]
+        conversation: [...current.conversation, { kind: "status", text: "Plan approval requested" }],
+        logMessages: [...current.logMessages, globalPlanLog(result.plan.document, result.plan.planFilePath)]
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -320,7 +321,7 @@ export function TuiApp({
         ...base(current),
         mode: "waiting_plan_approval",
         pendingReview: { type: "plan", nodeId: "global-plan", attempt: 1, document, planFilePath: plan.planFilePath },
-        logMessages: [statusLog("Plan Mode restored", plan.planFilePath)]
+        logMessages: [statusLog("Plan Mode restored", plan.planFilePath), globalPlanLog(document, plan.planFilePath)]
       }));
       return;
     }
@@ -633,6 +634,20 @@ export function TuiApp({
 function statusLog(text: string, detailText?: string): TuiLogMessage {
   return { id: randomUUID(), kind: "status", text, detailText };
 }
+function globalPlanLog(document: string, path?: string): TuiLogMessage {
+  return {
+    id: randomUUID(),
+    kind: "plan",
+    nodeId: "global-plan",
+    attempt: 1,
+    status: "pending",
+    text: "Plan Review",
+    document,
+    detailText: document,
+    detailVisible: true,
+    path
+  };
+}
 function resumeEntryLabel(entry: TuiState["resumeRuns"][number]): string {
   if (entry.kind === "session") {
     const status = entry.planMode ?? entry.status ?? "session";
@@ -772,7 +787,7 @@ function buildActiveChoice(input: {
       { label: "Yes, approve and continue", value: "continue" },
       { label: "No, keep planning", value: "stay", type: "input" as const, placeholder: "Tell the agent what to change", showLabelWithValue: true, allowEmptySubmitToCancel: true, onChange: () => undefined }
     ];
-    return { title: "Plan approval request", detail: input.review.document, options, selectedValue: "continue", allowPromptInput: true, onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue") };
+    return { title: "Plan approval request", detail: "Review the plan above. Press Enter to approve or type feedback below.", options, selectedValue: "continue", allowPromptInput: true, onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue") };
   }
   if (input.mode === "confirm_interrupt") {
     const options = [
