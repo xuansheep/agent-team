@@ -14,8 +14,9 @@ describe("slash command completion", () => {
     assert.equal(suggestions[0]?.description, "Resume a session");
   });
 
-  it("suggests /new as a session command", () => {
+  it("suggests /new and /plan commands", () => {
     assert.deepEqual(slashCommandSuggestions("/n", context).map((item) => item.value), ["/new"]);
+    assert.deepEqual(slashCommandSuggestions("/pl", context).map((item) => item.value), ["/plan"]);
   });
 
   it("does not suggest removed /run arguments", () => {

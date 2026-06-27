@@ -25,6 +25,41 @@ describe("WorkflowEngine", () => {
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b"]);
   });
 
+  it("records model usage as workflow run events", async () => {
+    const runRoot = `.tmp/model-usage-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }),
+          usage: { inputTokens: 11, outputTokens: 13, totalTokens: 24 },
+          stopReason: "stop"
+        };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    const runId = await latestRunId(runRoot);
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; node_id?: string; attempt?: number; model?: string; usage?: unknown; stop_reason?: string; ts: string; seq: number });
+    const usageEvent = events.find((event) => event.type === "model_usage_recorded");
+
+    assert.deepEqual(usageEvent, {
+      type: "model_usage_recorded",
+      node_id: "a",
+      attempt: 1,
+      model: "gpt-test",
+      usage: { inputTokens: 11, outputTokens: 13, totalTokens: 24 },
+      stop_reason: "stop",
+      ts: usageEvent?.ts,
+      seq: usageEvent?.seq
+    });
+  });
+
   it("prepends the configured global prompt to every node system prompt", async () => {
     const systemPrompts: string[] = [];
     const provider: ModelProvider = {
@@ -531,6 +566,6 @@ function planReviewConfig() {
 }
 
 async function latestRunId(root: string): Promise<string> {
-  const runs = await readdir(root);
-  return runs.sort().at(-1) ?? "";
+  const runs = await readdir(root, { withFileTypes: true });
+  return runs.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().at(-1) ?? "";
 }

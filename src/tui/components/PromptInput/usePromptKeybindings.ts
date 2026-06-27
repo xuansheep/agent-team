@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { useInput, useStdin } from "../../ink.js";
 import type { Key } from "../../../ink/events/input-event.js";
 import { applySlashCommandSuggestion, SlashCommandSuggestion } from "../../commandCompletion.js";
-import { parseSlashCommand } from "../../commands.js";
+import { processUserInput } from "../../../input/processUserInput.js";
 import { ensureRefableStdin } from "../../inkStdin.js";
 import { TuiInputEvent, TuiInputKey } from "../../input/types.js";
 import {
@@ -140,16 +140,17 @@ function submit(input: PromptKeybindingInput) {
   const text = input.buffer.text.trim();
   if (!text || !modeAcceptsSubmit(input.mode)) return;
 
-  const command = parseSlashCommand(text);
+  const processed = processUserInput(text);
   input.onHistory(pushHistory(input.history, text));
   input.onBuffer(clearBuffer());
   if (input.isLoading) {
     input.onEvent({ type: "queue", text });
-  } else if (command) {
-    input.onEvent({ type: "command", name: command.name, args: command.args });
-  } else {
-    input.onEvent({ type: "submit", text });
+  } else if (processed.type === "command") {
+    input.onEvent({ type: "command", name: processed.command.type, args: processed.command.args });
+  } else if (processed.type === "query") {
+    input.onEvent({ type: "submit", text: processed.text });
   }
+
 }
 
 function applySuggestion(input: PromptKeybindingInput) {
@@ -177,7 +178,6 @@ function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): 
       else if (inputText === "k") input.onBuffer(deleteToEndOfLine(input.buffer));
       else if (inputText === "w") input.onBuffer(deletePreviousWord(input.buffer));
       else if (inputText === "c") return true;
-      else return false;
       return true;
     }
     if (key.escape) {

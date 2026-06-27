@@ -2,6 +2,7 @@ export function slashCommandSuggestions(input: string, workflows: string[]): str
   const trimmed = input.trim();
   if (trimmed === "/" || trimmed.startsWith("/h")) return ["/help"];
   if (trimmed.startsWith("/r")) return ["/resume"];
+  if (trimmed.startsWith("/p")) return ["/plan", "/permissions"];
   if (trimmed.startsWith("/n")) return ["/new"];
   return [];
 }

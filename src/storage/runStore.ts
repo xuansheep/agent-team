@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { HarnessEvent, StoredEvent } from "../harness/events.js";
 import { WorkflowState } from "../workflow/state.js";
+import { IndexedRunSummary, readRootIndex, writeRootIndex } from "./sessionIndex.js";
 
 export type RunSummary = {
   runId: string;
@@ -54,6 +55,7 @@ export class RunStore {
 
   async saveState(runId: string, state: WorkflowState): Promise<void> {
     await this.enqueueRunWrite(runId, () => writeFile(join(this.runDir(runId), "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8"));
+    await this.updateRunIndex(runId);
   }
 
   async markInterrupted(runId: string, state: WorkflowState): Promise<void> {
@@ -77,6 +79,9 @@ export class RunStore {
   }
 
   async listRuns(options: { limit?: number } = {}): Promise<RunSummary[]> {
+    const indexed = await this.listIndexedRuns(options);
+    if (indexed) return indexed;
+
     let entries;
     try {
       entries = await readdir(this.rootDir, { withFileTypes: true });
@@ -90,20 +95,7 @@ export class RunStore {
       if (!entry.isDirectory()) continue;
       const runId = entry.name;
       try {
-        const state = await this.loadState(runId);
-        const events = await this.loadEvents(runId).catch(() => [] as StoredEvent[]);
-        const started = events.find((event) => event.type === "run_started");
-        const latest = events.at(-1);
-        const stateStat = await stat(join(this.runDir(runId), "state.json"));
-        runs.push({
-          runId,
-          workflowId: state.workflow_id,
-          status: state.status,
-          currentNodeId: state.current_node_id,
-          startedAt: started?.ts,
-          updatedAt: latest?.ts ?? stateStat.mtime.toISOString(),
-          inputPreview: inputPreview(started && "input" in started ? started.input : undefined)
-        });
+        runs.push(await this.buildRunSummary(runId));
       } catch {
         // Ignore partially-written or manually-corrupted run directories.
       }
@@ -113,6 +105,50 @@ export class RunStore {
     return runs
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.runId.localeCompare(a.runId))
       .slice(0, limit);
+  }
+
+  private async listIndexedRuns(options: { limit?: number }): Promise<RunSummary[] | undefined> {
+    const index = await readRootIndex(this.rootDir).catch(() => undefined);
+    if (!index?.runs?.length) return undefined;
+    const limit = options.limit ?? index.runs.length;
+    return index.runs
+      .map((run) => ({
+        runId: run.runId,
+        workflowId: run.workflowId,
+        status: run.status as WorkflowState["status"],
+        currentNodeId: run.currentNodeId,
+        startedAt: run.startedAt,
+        updatedAt: run.updatedAt,
+        inputPreview: run.inputPreview
+      }))
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.runId.localeCompare(a.runId))
+      .slice(0, limit);
+  }
+
+  private async updateRunIndex(runId: string): Promise<void> {
+    const summary = await this.buildRunSummary(runId);
+    const index = await readRootIndex(this.rootDir).catch(() => undefined) ?? { version: 1 as const };
+    const runs: IndexedRunSummary[] = [...index.runs ?? []].filter((run) => run.runId !== runId);
+    runs.push(summary);
+    runs.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.runId.localeCompare(a.runId));
+    await writeRootIndex(this.rootDir, { ...index, runs });
+  }
+
+  private async buildRunSummary(runId: string): Promise<RunSummary> {
+    const state = await this.loadState(runId);
+    const events = await this.loadEvents(runId).catch(() => [] as StoredEvent[]);
+    const started = events.find((event) => event.type === "run_started");
+    const latest = events.at(-1);
+    const stateStat = await stat(join(this.runDir(runId), "state.json"));
+    return {
+      runId,
+      workflowId: state.workflow_id,
+      status: state.status,
+      currentNodeId: state.current_node_id,
+      startedAt: started?.ts,
+      updatedAt: latest?.ts ?? stateStat.mtime.toISOString(),
+      inputPreview: inputPreview(started && "input" in started ? started.input : undefined)
+    };
   }
 
   /**

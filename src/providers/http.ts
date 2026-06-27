@@ -1,7 +1,8 @@
 import { fetch } from "undici";
+import { ModelErrorKind, ModelProviderError } from "./types.js";
 
 export type ApiKeyMode = "bearer" | "x-api-key";
-export type ProviderNetworkError = Error & { detail?: string };
+export type ProviderNetworkError = ModelProviderError;
 
 export const defaultProviderUserAgent = "claude-code/2.1.186";
 
@@ -26,9 +27,24 @@ export async function fetchProvider(endpoint: string, init: Parameters<typeof fe
   }
 
   const message = errorMessage(lastError);
-  const error = new Error(`Provider network request failed after ${providerNetworkAttempts} attempts: ${message}`, { cause: lastError }) as ProviderNetworkError;
-  error.detail = providerNetworkDetail(endpoint, providerNetworkAttempts, lastError);
-  throw error;
+  throw new ModelProviderError(`Provider network request failed after ${providerNetworkAttempts} attempts: ${message}`, {
+    errorKind: "network",
+    detail: providerNetworkDetail(endpoint, providerNetworkAttempts, lastError),
+    cause: lastError
+  });
+}
+
+export function providerHttpError(status: number, body: string): ModelProviderError {
+  return new ModelProviderError(`Provider request failed ${status}: ${body}`, { errorKind: classifyProviderStatus(status), status });
+}
+
+export function classifyProviderStatus(status: number): ModelErrorKind {
+  if (status === 401) return "auth";
+  if (status === 403) return "permission";
+  if (status === 429) return "rate_limit";
+  if (status >= 500) return "server";
+  if (status >= 400) return "invalid_request";
+  return "unknown";
 }
 
 export async function consumeSseBlocks(

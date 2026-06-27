@@ -86,6 +86,20 @@ describe("ResponsesApiProvider", () => {
     assert.equal(result.content, "{\"status\":\"success\"}");
   });
 
+  it("maps usage and status into normalized response metadata", async () => {
+    const server = await startJsonServer({
+      output_text: "ok",
+      status: "completed",
+      usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 }
+    });
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 4, totalTokens: 7 });
+    assert.equal(result.stopReason, "stop");
+  });
+
   it("keeps long trace ids out of prompt_cache_key", async () => {
     const longThreadId = "2026-06-25T10-53-35-371Z-859a43fb-6df8-4959-b37a-97fee9ac57eb:developer";
     const promptCacheKey = "b".repeat(64);

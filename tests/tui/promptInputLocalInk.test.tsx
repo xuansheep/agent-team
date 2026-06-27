@@ -337,6 +337,39 @@ describe("PromptInput with local Ink renderer", () => {
 
 
 
+  it("does not insert ctrl shortcuts into the prompt buffer", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const events: PromptInputEvent[] = [];
+    const instance = renderSync(
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onEvent={(event) => events.push(event)}
+      />,
+      {
+        stdin,
+        stdout: new FakeStdout() as unknown as NodeJS.WriteStream,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      await sendKeys(stdin, ["a", String.fromCharCode(15), "b", String.fromCharCode(13)]);
+      assert.deepEqual(events, [{ type: "submit", text: "ab" }]);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+
+
   it("recalls submitted prompt history with up and down arrows", async () => {
     const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
     const stdout = new FakeStdout() as unknown as NodeJS.WriteStream & { output: string };

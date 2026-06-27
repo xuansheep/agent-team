@@ -137,6 +137,20 @@ describe("AnthropicMessagesProvider", () => {
     assert.equal(result.content, "{\"status\":\"success\"}");
   });
 
+  it("maps usage and stop reason into normalized response metadata", async () => {
+    const server = await startJsonServer({
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "max_tokens",
+      usage: { input_tokens: 3, output_tokens: 4 }
+    });
+    const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
+
+    const result = await provider.generate({ model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 4, totalTokens: 7 });
+    assert.equal(result.stopReason, "length");
+  });
+
   it("keeps multiple tool results in one immediate user message", async () => {
     const server = await startJsonServer({ content: [{ type: "text", text: "ok" }] });
     const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });

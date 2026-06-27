@@ -1,5 +1,6 @@
-import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, ApiKeyMode } from "./http.js";
-import { ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "./types.js";
+import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, ApiKeyMode } from "./http.js";
+import { ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
+import type { ModelUsage } from "../model/usage.js";
 
 export type OpenAiCompatibleOptions = {
   baseUrl: string;
@@ -29,6 +30,7 @@ type OpenAiToolCallDelta = {
 
 type OpenAiStreamChunk = {
   choices?: Array<{
+    finish_reason?: string;
     delta?: {
       content?: string;
       reasoning_content?: string;
@@ -89,13 +91,15 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Provider request failed ${response.status}: ${await response.text()}`);
+      throw providerHttpError(response.status, await response.text());
     }
 
     const body = await response.json() as {
-      choices?: Array<{ message?: { content?: string; reasoning_content?: string; tool_calls?: OpenAiToolCall[] } }>;
+      choices?: Array<{ finish_reason?: string; message?: { content?: string; reasoning_content?: string; tool_calls?: OpenAiToolCall[] } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
-    const message = body.choices?.[0]?.message ?? {};
+    const choice = body.choices?.[0] ?? {};
+    const message = choice.message ?? {};
     return {
       content: message.content ?? undefined,
       thinking: message.reasoning_content ?? undefined,
@@ -103,7 +107,9 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         id: call.id,
         name: call.function.name,
         input: JSON.parse(call.function.arguments || "{}")
-      }))
+      })),
+      usage: openAiUsage(body.usage),
+      stopReason: openAiStopReason(choice.finish_reason)
     };
   }
 
@@ -116,7 +122,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Provider request failed ${response.status}: ${await response.text()}`);
+      throw providerHttpError(response.status, await response.text());
     }
     if (!response.body) throw new Error("Provider stream response had no body");
 
@@ -185,6 +191,20 @@ function toRequestBody(request: ModelRequest, options: OpenAiCompatibleOptions):
     };
   }
   return body;
+}
+
+function openAiUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): ModelUsage | undefined {
+  if (!usage) return undefined;
+  return { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, totalTokens: usage.total_tokens };
+}
+
+function openAiStopReason(reason: string | undefined): ModelStopReason | undefined {
+  if (!reason) return undefined;
+  if (reason === "stop") return "stop";
+  if (reason === "tool_calls" || reason === "function_call") return "tool_call";
+  if (reason === "length") return "length";
+  if (reason === "content_filter") return "content_filter";
+  return "unknown";
 }
 
 function toStreamResponse(content: string[], thinking: string[], streamingToolCalls: Map<number, StreamingToolCall>): ModelResponse {

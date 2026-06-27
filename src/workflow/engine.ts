@@ -17,6 +17,8 @@ import { PermissionController } from "../harness/permissionController.js";
 import { RuntimeInteraction, runNode } from "../harness/runtime.js";
 
 import { ModelMessage, ModelProvider } from "../providers/types.js";
+import { modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
+import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
 
 import { ArtifactStore } from "../storage/artifacts.js";
 
@@ -1522,7 +1524,7 @@ export class WorkflowEngine {
 
                     systemPrompt: effectiveSystemPrompt(options.config.global_prompt, role.system_prompt),
 
-                    model: node.model ?? role.default_model ?? providerConfig.default_model,
+                    model: resolveModelForWorkflowNode({ node, role, provider: providerConfig, permissionMode: node.permission_mode, planModel: providerConfig.plan_model, registry: modelRegistryFromProviderConfig(providerConfig) }),
 
                     provider: this.options.providerFactory(node.provider),
 

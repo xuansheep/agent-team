@@ -1,5 +1,6 @@
-import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, ApiKeyMode } from "./http.js";
-import { ModelContentPart, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "./types.js";
+import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, ApiKeyMode } from "./http.js";
+import { ModelContentPart, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
+import type { ModelUsage } from "../model/usage.js";
 
 export type ResponsesApiOptions = {
   baseUrl: string;
@@ -29,6 +30,9 @@ type ResponsesOutputItem = {
 type ResponsesBody = {
   output_text?: string;
   output?: ResponsesOutputItem[];
+  status?: string;
+  incomplete_details?: { reason?: string };
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
 };
 
 type ResponsesStreamChunk = {
@@ -53,7 +57,7 @@ export class ResponsesApiProvider implements ModelProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Provider request failed ${response.status}: ${await response.text()}`);
+      throw providerHttpError(response.status, await response.text());
     }
 
     return fromResponsesBody(await response.json() as ResponsesBody);
@@ -68,7 +72,7 @@ export class ResponsesApiProvider implements ModelProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Provider request failed ${response.status}: ${await response.text()}`);
+      throw providerHttpError(response.status, await response.text());
     }
     if (!response.body) throw new Error("Provider stream response had no body");
 
@@ -229,8 +233,22 @@ function fromResponsesBody(body: ResponsesBody): ModelResponse {
   return {
     content: outputText.length ? outputText.join("") : undefined,
     thinking: thinking.length ? thinking.join("") : undefined,
-    tool_calls: toolCalls.length ? toolCalls : undefined
+    tool_calls: toolCalls.length ? toolCalls : undefined,
+    usage: responsesUsage(body.usage),
+    stopReason: responsesStopReason(body, toolCalls)
   };
+}
+
+function responsesUsage(usage: ResponsesBody["usage"]): ModelUsage | undefined {
+  if (!usage) return undefined;
+  return { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, totalTokens: usage.total_tokens };
+}
+
+function responsesStopReason(body: ResponsesBody, toolCalls: ModelToolCall[]): ModelStopReason | undefined {
+  if (toolCalls.length) return "tool_call";
+  if (body.status === "completed") return "stop";
+  if (body.status === "incomplete") return body.incomplete_details?.reason === "max_output_tokens" ? "length" : "unknown";
+  return undefined;
 }
 
 function toModelToolCall(item: ResponsesOutputItem): ModelToolCall {

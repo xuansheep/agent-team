@@ -1,5 +1,6 @@
-import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, ApiKeyMode } from "./http.js";
-import { ModelContentPart, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "./types.js";
+import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, ApiKeyMode } from "./http.js";
+import { ModelContentPart, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
+import type { ModelUsage } from "../model/usage.js";
 
 export type AnthropicMessagesOptions = {
   baseUrl: string;
@@ -35,6 +36,8 @@ type AnthropicContentBlock = {
 
 type AnthropicBody = {
   content?: AnthropicContentBlock[];
+  stop_reason?: string;
+  usage?: { input_tokens?: number; output_tokens?: number };
 };
 
 type AnthropicStreamChunk = {
@@ -70,7 +73,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Provider request failed ${response.status}: ${await response.text()}`);
+      throw providerHttpError(response.status, await response.text());
     }
 
     return fromAnthropicBody(await response.json() as AnthropicBody);
@@ -85,7 +88,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Provider request failed ${response.status}: ${await response.text()}`);
+      throw providerHttpError(response.status, await response.text());
     }
     if (!response.body) throw new Error("Provider stream response had no body");
 
@@ -301,8 +304,25 @@ function fromAnthropicBody(body: AnthropicBody): ModelResponse {
   return {
     content: content.length ? content.join("") : undefined,
     thinking: thinking.length ? thinking.join("") : undefined,
-    tool_calls: toolCalls.length ? toolCalls : undefined
+    tool_calls: toolCalls.length ? toolCalls : undefined,
+    usage: anthropicUsage(body.usage),
+    stopReason: anthropicStopReason(body.stop_reason)
   };
+}
+
+function anthropicUsage(usage: AnthropicBody["usage"]): ModelUsage | undefined {
+  if (!usage) return undefined;
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+  return { inputTokens, outputTokens, totalTokens: inputTokens !== undefined || outputTokens !== undefined ? (inputTokens ?? 0) + (outputTokens ?? 0) : undefined };
+}
+
+function anthropicStopReason(reason: string | undefined): ModelStopReason | undefined {
+  if (!reason) return undefined;
+  if (reason === "end_turn" || reason === "stop_sequence") return "stop";
+  if (reason === "tool_use") return "tool_call";
+  if (reason === "max_tokens") return "length";
+  return "unknown";
 }
 
 function contentAsText(content: string | ModelContentPart[]): string {

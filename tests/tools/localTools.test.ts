@@ -48,4 +48,25 @@ describe("local tools", () => {
     assert.equal(tools.get("Bash").name, "Bash");
     assert.equal(tools.get("PowerShell").name, "PowerShell");
   });
+
+  it("marks local tools with safety metadata", async () => {
+    const cwd = await workspace();
+    const tools = createLocalToolRegistry();
+
+    for (const name of ["Read", "LS", "Glob", "Grep"]) {
+      assert.equal(tools.get(name).isReadOnly?.(), true, `${name} should be read-only`);
+      assert.equal(tools.get(name).isConcurrencySafe?.(), true, `${name} should be concurrency-safe`);
+    }
+
+    for (const name of ["Write", "Edit", "MultiEdit", "Bash", "PowerShell"]) {
+      assert.equal(tools.get(name).isConcurrencySafe?.(), false, `${name} should stay serial`);
+    }
+
+    assert.equal(await tools.get("Write").writesPlanFile?.({ file_path: ".session/plans/session-1.md" }, { cwd }), true);
+    assert.equal(await tools.get("Write").writesPlanFile?.({ file_path: "src/index.ts" }, { cwd }), false);
+    assert.equal(await tools.get("Bash").isDestructive?.({ command: "rm -rf dist" }), true);
+    assert.equal(await tools.get("Bash").isDestructive?.({ command: "npm test" }), false);
+    assert.equal(await tools.get("PowerShell").isDestructive?.({ command: "Remove-Item foo" }), true);
+  });
+
 });

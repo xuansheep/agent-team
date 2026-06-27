@@ -1,3 +1,6 @@
+import type { ModelUsage } from "../model/usage.js";
+import type { ModelStopReason } from "../providers/types.js";
+
 export type HarnessEvent =
   | { type: "run_started"; workflow_id: string; input: unknown }
   | { type: "user_message"; text: string; node_id?: string; attempt?: number }
@@ -8,6 +11,7 @@ export type HarnessEvent =
   | { type: "complete_summary_available"; node_id: string; attempt: number; document: string }
   | { type: "model_thinking_delta"; node_id: string; attempt: number; text: string }
   | { type: "model_stream_delta"; node_id: string; attempt: number; text: string }
+  | { type: "model_usage_recorded"; node_id: string; attempt: number; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "tool_invoked"; node_id: string; attempt?: number; tool_call_id?: string; tool: string; input: unknown }
   | { type: "tool_completed"; node_id: string; attempt?: number; tool_call_id?: string; tool: string; result: unknown }
   | { type: "tool_failed"; node_id: string; attempt?: number; tool_call_id?: string; tool: string; error: string }

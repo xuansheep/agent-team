@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { buildPlanModeExitAttachment, RuntimeAttachment } from "../context/attachments.js";
+import { buildRuntimeMessages } from "../context/messages.js";
 import { WorkflowNodeConfig } from "../config/schema.js";
 import { ModelContentPart, ModelMessage } from "../providers/types.js";
 import { nodeResultOutputInstructions } from "../team/nodeResult.js";
@@ -17,11 +19,9 @@ export async function buildNodeMessages(node: WorkflowNodeConfig, systemPrompt: 
   const protocolPrompt = `${systemPrompt}\n\n${nodeResultOutputInstructions}\n\n${nodeModeInstructions(node)}`;
   const images = collectImages(handoff);
   const userContent = JSON.stringify({ node_id: node.id, node_mode: node.mode ?? "task", handoff }, null, 2);
+  const attachments = runtimeAttachmentsFromHandoff(handoff);
   if (!images.length) {
-    return [
-      { role: "system", content: protocolPrompt },
-      { role: "user", content: userContent }
-    ];
+    return buildRuntimeMessages({ system: protocolPrompt, user: userContent, attachments });
   }
 
   const content: ModelContentPart[] = [{ type: "text", text: userContent }];
@@ -29,10 +29,7 @@ export async function buildNodeMessages(node: WorkflowNodeConfig, systemPrompt: 
     const data = await readFile(image.path, "base64");
     content.push({ type: "image", media_type: image.media_type, data });
   }
-  return [
-    { role: "system", content: protocolPrompt },
-    { role: "user", content }
-  ];
+  return buildRuntimeMessages({ system: protocolPrompt, user: content, attachments });
 }
 
 export function handoffHasImages(handoff: unknown): boolean {
@@ -61,6 +58,13 @@ function nodeModeInstructions(node: WorkflowNodeConfig): string {
     "Use ArtifactWrite for user-facing deliverable files that should be returned to the user.",
     "If this task has no user-facing deliverable file, make summary clear and leave document empty; the runtime will create a Markdown explanation artifact."
   ].join("\n");
+}
+
+function runtimeAttachmentsFromHandoff(handoff: unknown): RuntimeAttachment[] {
+  if (!handoff || typeof handoff !== "object") return [];
+  const value = handoff as { approved_plan?: unknown; original_input?: unknown };
+  if (typeof value.approved_plan !== "string" || !value.approved_plan.trim()) return [];
+  return [buildPlanModeExitAttachment({ approvedPlan: value.approved_plan, originalInput: value.original_input })];
 }
 
 function collectImages(handoff: unknown): ImageHandoffItem[] {

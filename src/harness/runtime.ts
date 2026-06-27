@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
-import { ModelMessage, ModelProvider, ModelToolCall } from "../providers/types.js";
+import { ModelMessage, ModelProvider, ModelResponse, ModelToolCall } from "../providers/types.js";
+import { hasModelUsage } from "../model/usage.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { Tool, ToolResult } from "../tools/types.js";
 import { RunStore } from "../storage/runStore.js";
@@ -9,6 +10,7 @@ import { decidePermission } from "./permissions.js";
 import { NodeResult, nodeResultJsonSchema, nodeResultSchema, parseNodeResult, visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { PermissionDecision, PermissionRequest } from "./permissionController.js";
 import { HarnessEvent, StoredEvent } from "./events.js";
+import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
 export type RuntimeInteraction = {
   requestPermission?(request: PermissionRequest): Promise<PermissionDecision>;
 };
@@ -36,6 +38,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   const attempt = options.attempt ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
   const requestTools = [...options.tools.list(), submitNodeResultTool];
+  const turnExecutor = new RuntimeTurnExecutor();
   let resultRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
   const persistDialogueMessages = async () => {
@@ -62,18 +65,20 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       }
     };
     let streamEventWrites: Promise<unknown> = Promise.resolve();
-    const streamed = Boolean(options.provider.stream);
-    const response = options.provider.stream
-      ? await options.provider.stream(request, (event) => {
+    const { streamed, response } = await turnExecutor.requestModel({
+      provider: options.provider,
+      request,
+      onStreamEvent(event) {
         streamEventWrites = streamEventWrites.then(() => appendRuntimeEvent(options, {
           type: event.type === "thinking_delta" ? "model_thinking_delta" : "model_stream_delta",
           node_id: options.node.id,
           attempt,
           text: event.text
         }));
-      })
-      : await options.provider.generate(request);
+      }
+    });
     await streamEventWrites;
+    await appendModelUsageEvent(options, attempt, options.model, response);
     if (!streamed) await appendNonStreamingResponseEvents(options, attempt, response);
     if (response.tool_calls?.length) {
       const submittedResult = response.tool_calls.find((call) => call.name === submitNodeResultTool.name);
@@ -226,6 +231,11 @@ async function appendRuntimeEvent(options: NodeRuntimeOptions, event: HarnessEve
   options.eventSink?.(stored);
   return stored;
 }
+async function appendModelUsageEvent(options: NodeRuntimeOptions, attempt: number, model: string, response: ModelResponse): Promise<void> {
+  if (!hasModelUsage(response.usage)) return;
+  await appendRuntimeEvent(options, { type: "model_usage_recorded", node_id: options.node.id, attempt, model, usage: response.usage, stop_reason: response.stopReason });
+}
+
 async function appendNonStreamingResponseEvents(options: NodeRuntimeOptions, attempt: number, response: { content?: string; thinking?: string }): Promise<void> {
   if (response.thinking) {
     await appendRuntimeEvent(options, { type: "model_thinking_delta", node_id: options.node.id, attempt, text: response.thinking });

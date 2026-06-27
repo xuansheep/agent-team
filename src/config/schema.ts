@@ -19,6 +19,9 @@ const providerBaseSchema = {
   base_url: z.string().url(),
   api_key_env: z.string().min(1),
   default_model: z.string().min(1),
+  plan_model: z.string().min(1).optional(),
+  model_aliases: z.record(z.string().min(1)).optional(),
+  context_windows: z.record(z.number().int().positive()).optional(),
   api_key_mode: apiKeyModeSchema.default("bearer"),
   user_agent: z.string().min(1).optional(),
   capabilities: providerCapabilitiesSchema.default({})

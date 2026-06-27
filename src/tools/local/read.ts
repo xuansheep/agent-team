@@ -9,6 +9,8 @@ export const readTool: Tool = {
   name: "Read",
   description: "Read a UTF-8 text file from the workspace",
   input_schema: { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     const path = resolveWorkspacePath(context.cwd, parsed.file_path);

@@ -98,6 +98,19 @@ describe("OpenAiCompatibleProvider structured output", () => {
     assert.equal(result.content, "{\"status\":\"success\"}");
   });
 
+  it("maps usage and finish reason into normalized response metadata", async () => {
+    const server = await startJsonServer({
+      choices: [{ finish_reason: "tool_calls", message: { content: "checking" } }],
+      usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 }
+    });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 4, totalTokens: 7 });
+    assert.equal(result.stopReason, "tool_call");
+  });
+
   it("retries transient network failures for non-streaming requests", async () => {
     const server = await startFlakyJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });

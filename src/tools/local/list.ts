@@ -9,6 +9,8 @@ export const lsTool: Tool = {
   name: "LS",
   description: "List directory entries in the workspace",
   input_schema: { type: "object", properties: { path: { type: "string" } } },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
   async execute(input, context) {
     const parsed = inputSchema.parse(input ?? {});
     const path = resolveWorkspacePath(context.cwd, parsed.path);

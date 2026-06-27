@@ -1,3 +1,5 @@
+import { commandDefinitions } from "../commands/registry.js";
+
 export type SlashCommandSuggestion = {
   value: string;
   label: string;
@@ -10,17 +12,7 @@ export type SlashCommandCompletionContext = {
   runs?: string[];
 };
 
-type SlashCommandDefinition = {
-  name: "resume" | "help" | "new";
-  description: string;
-  argumentHint?: string;
-};
-
-export const slashCommandDefinitions: SlashCommandDefinition[] = [
-  { name: "resume", description: "Resume a session", argumentHint: "<session>" },
-  { name: "help", description: "Show help" },
-  { name: "new", description: "Start a new session" }
-];
+export const slashCommandDefinitions = commandDefinitions();
 
 export function slashCommandSuggestions(input: string, context: SlashCommandCompletionContext): SlashCommandSuggestion[] {
   if (!input.startsWith("/")) return [];

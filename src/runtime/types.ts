@@ -1,0 +1,62 @@
+import { ModelMessage, ModelProvider, ModelStopReason } from "../providers/types.js";
+import type { ModelUsage } from "../model/usage.js";
+import type { AuditSink } from "../audit/auditEvent.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { ToolPermissionContext } from "../permissions/context.js";
+
+export type { ToolPermissionContext } from "../permissions/context.js";
+export type { PermissionMode } from "../permissions/PermissionMode.js";
+
+export type PlanApprovalRequest = {
+  sessionId: string;
+  document: string;
+  planFilePath: string;
+};
+
+export type RuntimePermissionRequest = {
+  sessionId: string;
+  runId?: string;
+  tool: string;
+  input: unknown;
+  reason?: string;
+  rule?: string;
+};
+
+export type RuntimePermissionDecision = "allow" | "deny";
+
+export type PlanModeEvent =
+  | { type: "plan_mode_entered"; session_id: string; plan_file_path: string }
+  | { type: "plan_draft_updated"; session_id: string; plan_file_path: string }
+  | { type: "plan_approval_requested"; session_id: string; document: string; plan_file_path: string }
+  | { type: "plan_approval_resolved"; session_id: string; decision: "continue" | "stay" };
+
+export type RuntimeEvent =
+  | { type: "runtime_turn_started"; session_id: string; run_id?: string }
+  | { type: "runtime_assistant_message"; session_id: string; run_id?: string; content: string }
+  | { type: "runtime_model_usage"; session_id: string; run_id?: string; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
+  | { type: "runtime_permission_requested"; session_id: string; run_id?: string; tool: string; input: unknown; reason?: string; rule?: string }
+  | { type: "runtime_permission_resolved"; session_id: string; run_id?: string; tool: string; decision: RuntimePermissionDecision }
+  | { type: "runtime_tool_invoked"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown }
+  | { type: "runtime_tool_completed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; result: unknown }
+  | { type: "runtime_tool_failed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; error: string }
+  | PlanModeEvent;
+
+export type RuntimeTurnInput = {
+  messages: ModelMessage[];
+  model: string;
+  provider: ModelProvider;
+  tools: ToolRegistry;
+  permissions: ToolPermissionContext;
+  cwd: string;
+  sessionId: string;
+  runId?: string;
+  eventSink?: (event: RuntimeEvent) => void | Promise<void>;
+  auditSink?: AuditSink;
+  permissionCallback?: (request: RuntimePermissionRequest) => RuntimePermissionDecision | Promise<RuntimePermissionDecision>;
+};
+
+export type RuntimeTurnResult =
+  | { status: "completed"; messages: ModelMessage[]; result?: unknown }
+  | { status: "waiting_permission"; messages: ModelMessage[]; request?: RuntimePermissionRequest }
+  | { status: "waiting_plan_approval"; messages: ModelMessage[]; plan: PlanApprovalRequest }
+  | { status: "failed"; error: string; messages: ModelMessage[] };

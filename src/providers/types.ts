@@ -1,4 +1,5 @@
 import { Tool } from "../tools/types.js";
+import type { ModelUsage } from "../model/usage.js";
 
 export type ModelContentPart =
   | { type: "text"; text: string }
@@ -35,11 +36,32 @@ export type ModelRequest = {
   context?: ModelRequestContext;
 };
 
+export type ModelStopReason = "stop" | "tool_call" | "length" | "content_filter" | "error" | "unknown";
+
+export type ModelErrorKind = "network" | "rate_limit" | "auth" | "permission" | "server" | "invalid_request" | "unknown";
+
 export type ModelResponse = {
   content?: string;
   thinking?: string;
   tool_calls?: ModelToolCall[];
+  usage?: ModelUsage;
+  stopReason?: ModelStopReason;
+  errorKind?: ModelErrorKind;
 };
+
+export class ModelProviderError extends Error {
+  readonly errorKind: ModelErrorKind;
+  readonly status?: number;
+  detail?: string;
+
+  constructor(message: string, input: { errorKind: ModelErrorKind; status?: number; detail?: string; cause?: unknown }) {
+    super(message, { cause: input.cause });
+    this.name = "ModelProviderError";
+    this.errorKind = input.errorKind;
+    this.status = input.status;
+    this.detail = input.detail;
+  }
+}
 
 export type ModelStreamEvent =
   | { type: "content_delta"; text: string }

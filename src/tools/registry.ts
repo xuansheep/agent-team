@@ -13,11 +13,14 @@ import { attachImageTool } from "./local/attachImage.js";
 import { artifactWriteTool } from "./local/artifactWrite.js";
 import { webFetchTool } from "./local/webFetch.js";
 import { webSearchTool } from "./local/webSearch.js";
+import { enterPlanModeTool } from "./local/enterPlanMode.js";
+import { exitPlanModeTool } from "./local/exitPlanMode.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
   add(tool: Tool): void {
+    if (this.tools.has(tool.name)) throw new Error(`Duplicate tool ${tool.name}`);
     this.tools.set(tool.name, tool);
   }
 
@@ -48,7 +51,9 @@ export function createLocalToolRegistry(): ToolRegistry {
     artifactWriteTool,
     attachImageTool,
     webFetchTool,
-    webSearchTool
+    webSearchTool,
+    enterPlanModeTool,
+    exitPlanModeTool
   ]) {
     registry.add(tool);
   }

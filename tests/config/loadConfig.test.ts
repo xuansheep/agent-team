@@ -283,4 +283,37 @@ workflows:
 
     await assert.rejects(() => loadConfig(file), /Unknown role developer/);
   });
+
+  it("loads provider model routing metadata", async () => {
+    const configPath = await tempFile("agent-team.yaml", `providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: default-alias
+    plan_model: plan-alias
+    model_aliases:
+      default-alias: gpt-default
+      plan-alias: gpt-plan
+    context_windows:
+      gpt-default: 128000
+roles:
+  dev:
+    system_prompt: Build safely.
+workflows:
+  delivery:
+    nodes:
+      - id: dev
+        role: dev
+        provider: default
+    edges: []
+`);
+
+    const config = await loadConfig(configPath);
+
+    assert.equal(config.providers.default.plan_model, "plan-alias");
+    assert.deepEqual(config.providers.default.model_aliases, { "default-alias": "gpt-default", "plan-alias": "gpt-plan" });
+    assert.deepEqual(config.providers.default.context_windows, { "gpt-default": 128000 });
+  });
+
 });

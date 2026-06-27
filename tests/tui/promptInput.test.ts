@@ -222,6 +222,7 @@ describe("PromptInput core logic", () => {
     assert.deepEqual(parseSlashCommand("/resume run-1"), { name: "resume", args: ["run-1"] });
 
     assert.deepEqual(parseSlashCommand("/new"), { name: "new", args: [] });
+    assert.deepEqual(parseSlashCommand("/plan"), { name: "plan", args: [] });
 
     assert.deepEqual(parseSlashCommand("normal text"), undefined);
 
@@ -538,6 +539,7 @@ describe("PromptInput core logic", () => {
     assert.deepEqual(slashCommandSuggestions("/r", ["delivery"]), ["/resume"]);
 
     assert.deepEqual(slashCommandSuggestions("/n", ["delivery"]), ["/new"]);
+    assert.deepEqual(slashCommandSuggestions("/p", ["delivery"]), ["/plan", "/permissions"]);
 
     assert.deepEqual(slashCommandSuggestions("plain", ["delivery"]), []);
 

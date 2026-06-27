@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { Tool } from "../types.js";
 import { resolveWorkspacePath } from "./path.js";
+import { writesSessionPlanFile } from "./planFile.js";
 
 const editSchema = z.object({ old_string: z.string(), new_string: z.string() });
 const inputSchema = z.object({ file_path: z.string().min(1), edits: z.array(editSchema).min(1) });
@@ -14,6 +15,10 @@ export const multiEditTool: Tool = {
     properties: { file_path: { type: "string" }, edits: { type: "array" } },
     required: ["file_path", "edits"]
   },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  isDestructive: () => true,
+  writesPlanFile: writesSessionPlanFile,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     const path = resolveWorkspacePath(context.cwd, parsed.file_path);
@@ -23,6 +28,15 @@ export const multiEditTool: Tool = {
       next = next.replace(edit.old_string, edit.new_string);
     }
     await writeFile(path, next, "utf8");
+    await context.auditSink?.({
+      type: "file_write",
+      session_id: context.sessionId,
+      run_id: context.runId,
+      node_id: context.nodeId,
+      attempt: context.attempt,
+      tool: "MultiEdit",
+      path
+    });
     return { output: `Applied ${parsed.edits.length} edits to ${parsed.file_path}` };
   }
 };

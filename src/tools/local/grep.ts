@@ -14,6 +14,8 @@ export const grepTool: Tool = {
     properties: { pattern: { type: "string" }, glob: { type: "string" } },
     required: ["pattern"]
   },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     const regex = new RegExp(parsed.pattern);
