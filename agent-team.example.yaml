@@ -77,6 +77,8 @@ workflows:
             - LS
             - Glob
             - Grep
+            - EnterPlanMode
+            - ExitPlanMode
       - id: dev
         role: developer
         provider: default
