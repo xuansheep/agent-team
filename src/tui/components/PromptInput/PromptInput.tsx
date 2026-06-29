@@ -11,9 +11,10 @@ import { Cursor } from "../../../utils/Cursor.js";
 
 
 import { commandArgumentHint, slashCommandSuggestions } from "../../commandCompletion.js";
+import type { PermissionMode } from "../../../permissions/PermissionMode.js";
 
 
-import { PromptInputEvent, PromptInputMode } from "./types.js";
+import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./types.js";
 
 
 import { createPromptBuffer } from "./usePromptBuffer.js";
@@ -64,13 +65,17 @@ export function PromptInput(props: {
 
 
   isLoading: boolean;
+  permissionMode?: PermissionMode;
   inputBlocked?: boolean;
+  textInputBlocked?: boolean;
 
 
   hasSelection?: boolean;
 
 
   stash?: string;
+  editText?: (text: string) => Promise<{ content: string | null; error?: string }> | { content: string | null; error?: string };
+  resolveImagePaste?: (value: string) => Promise<{ text: string; images: PromptInputImageAttachment[] }>;
 
 
   onEvent: (event: PromptInputEvent) => void;
@@ -97,6 +102,7 @@ export function PromptInput(props: {
 
 
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const [imageAttachments, setImageAttachments] = useState<PromptInputImageAttachment[]>([]);
 
 
   const [dismissedCompletionFor, setDismissedCompletionFor] = useState<string>();
@@ -191,6 +197,11 @@ export function PromptInput(props: {
 
 
 
+  const handleEvent = (event: PromptInputEvent) => {
+    if (event.type === "submit" || event.type === "queue") setImageAttachments([]);
+    props.onEvent(event);
+  };
+
   usePromptKeybindings({
 
 
@@ -207,6 +218,8 @@ export function PromptInput(props: {
 
 
     isActive: !props.inputBlocked,
+    textInputBlocked: props.textInputBlocked,
+    imageAttachments,
 
 
     suggestions,
@@ -224,7 +237,12 @@ export function PromptInput(props: {
     onHistory: setHistory,
 
 
-    onEvent: props.onEvent
+    onEvent: handleEvent,
+    onImagePaste: (image) => setImageAttachments((current) => [...current, image]),
+    resolveImagePaste: props.resolveImagePaste,
+
+
+    editText: props.editText
 
 
   });
@@ -236,7 +254,14 @@ export function PromptInput(props: {
   const hasStash = Boolean(props.stash);
 
 
-  const inputColumns = Math.max(1, terminalColumns - 2 - props.mode.toUpperCase().length - 3);
+  const modeLabel = promptModeLabel(props.mode, props.permissionMode ?? "default");
+  const inputColumns = Math.max(1, terminalColumns - 2 - modeLabel.length - 3);
+  const promptPlaceholder = "Type a request or /help";
+  const promptTextColumns = buffer.text.length || promptPlaceholder.length;
+  const imageAttachmentText = imageAttachments.length ? ` ${imageAttachments.length} image${imageAttachments.length === 1 ? "" : "s"} attached` : "";
+  const argumentHintText = argumentHint ? ` ${argumentHint}` : "";
+  const promptLineColumns = modeLabel.length + 3 + promptTextColumns + imageAttachmentText.length + argumentHintText.length;
+  const promptLinePadding = " ".repeat(Math.max(0, terminalColumns - promptLineColumns));
 
 
   const cursorPosition = Cursor.fromText(buffer.text, inputColumns, buffer.cursor).getPosition();
@@ -248,7 +273,7 @@ export function PromptInput(props: {
     line: cursorPosition.line,
 
 
-    column: props.mode.toUpperCase().length + 3 + cursorPosition.column,
+    column: modeLabel.length + 3 + cursorPosition.column,
 
 
     active: terminalFocus
@@ -268,10 +293,12 @@ export function PromptInput(props: {
 
       <PromptInputSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
       <Box ref={cursorRef}>
-        <PromptInputModeIndicator mode={props.mode} />
+        <PromptInputModeIndicator mode={props.mode} permissionMode={props.permissionMode ?? "default"} />
         <Text> &gt; </Text>
-        <PromptBufferView text={buffer.text} placeholder="Type a request or /help" />
+        <PromptBufferView text={buffer.text} placeholder={promptPlaceholder} />
+        {imageAttachments.length ? <Text dimColor> {imageAttachments.length} image{imageAttachments.length === 1 ? "" : "s"} attached</Text> : null}
         {argumentHint ? <Text dimColor> {argumentHint}</Text> : null}
+        {promptLinePadding ? <Text>{promptLinePadding}</Text> : null}
       </Box>
       <PromptInputQueuedCommands queued={props.queued} />
 
@@ -279,7 +306,7 @@ export function PromptInput(props: {
       <PromptInputStashNotice hasStash={hasStash} />
 
 
-      <PromptInputFooter workflowId={props.workflowId} isLoading={props.isLoading} hasSelection={props.hasSelection ?? false} />
+      <PromptInputFooter workflowId={props.workflowId} isLoading={props.isLoading} permissionMode={props.permissionMode ?? "default"} hasSelection={props.hasSelection ?? false} columns={terminalColumns} />
 
 
     </Box>
@@ -288,6 +315,18 @@ export function PromptInput(props: {
   );
 
 
+}
+
+
+
+function promptModeLabel(mode: PromptInputMode, permissionMode: PermissionMode): string {
+  if (mode !== "input") return mode.toUpperCase();
+  if (permissionMode === "acceptEdits") return "ACCEPT";
+  if (permissionMode === "bypassPermissions") return "BYPASS";
+  if (permissionMode === "dontAsk") return "DONTASK";
+  if (permissionMode === "auto") return "AUTO";
+  if (permissionMode === "plan") return "PLAN";
+  return "INPUT";
 }
 
 
@@ -313,5 +352,3 @@ function PromptBufferView({ text, placeholder }: { text: string; placeholder: st
 
 
 }
-
-

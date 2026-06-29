@@ -1,10 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { commandNames, parseCommandAction } from "../../src/commands/registry.js";
+import { commandDefinitions, commandNames, parseCommandAction } from "../../src/commands/registry.js";
 
 describe("command registry", () => {
   it("parses /plan without creating a query", () => {
-    assert.deepEqual(parseCommandAction("/plan"), { type: "plan", args: [], behavior: "enter_or_request_approval" });
+    assert.deepEqual(parseCommandAction("/plan"), { type: "plan", args: [], behavior: "enter_or_show_plan" });
   });
 
   it("parses resume, clear, model, and permissions commands", () => {
@@ -21,5 +21,9 @@ describe("command registry", () => {
 
   it("exposes stable command names for TUI completion", () => {
     assert.deepEqual(commandNames(), ["clear", "help", "model", "new", "permissions", "plan", "resume"]);
+  });
+
+  it("documents /plan open in the command hint", () => {
+    assert.equal(commandDefinitions().find((command) => command.name === "plan")?.argumentHint, "[open|<description>]");
   });
 });

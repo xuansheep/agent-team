@@ -3,9 +3,19 @@ import { AddressInfo } from "node:net";
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { OpenAiCompatibleProvider, toOpenAiMessages } from "../../src/providers/openaiCompatible.js";
+import type { Tool } from "../../src/tools/types.js";
 
 const servers: Array<{ close: () => Promise<void> }> = [];
 const responseSchema = { type: "object", properties: { status: { type: "string" } }, required: ["status"], additionalProperties: false };
+const promptedTool: Tool = {
+  name: "PromptedTool",
+  description: "Short provider description",
+  prompt: "Long model-facing tool prompt that belongs only in runtime attachments.",
+  input_schema: { type: "object", properties: {} },
+  async execute() {
+    return { output: "" };
+  }
+};
 
 after(async () => {
   await Promise.all(servers.map((server) => server.close()));
@@ -65,6 +75,23 @@ describe("OpenAiCompatibleProvider structured output", () => {
     await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
     assert.equal(server.requestHeaders["user-agent"], "claude-code/2.1.186");
+  });
+
+  it("keeps long tool prompts out of OpenAI-compatible tool schemas", async () => {
+    const server = await startJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [promptedTool] });
+
+    assert.deepEqual(server.requestBody.tools, [{
+      type: "function",
+      function: {
+        name: "PromptedTool",
+        description: "Short provider description",
+        parameters: promptedTool.input_schema
+      }
+    }]);
+    assert.doesNotMatch(JSON.stringify(server.requestBody), /Long model-facing tool prompt/);
   });
 
   it("allows provider user-agent override", async () => {

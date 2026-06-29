@@ -11,8 +11,17 @@ export type PromptHistory = {
   index?: number;
 };
 
+export type PromptInputImageAttachment = {
+  type: "image";
+  media_type: "image/png" | "image/jpeg" | "image/webp";
+  data: string;
+};
+
 export type PromptInputEvent =
-  | { type: "submit"; text: string }
+  | { type: "submit"; text: string; images?: PromptInputImageAttachment[] }
   | { type: "cancel" }
+  | { type: "cycle_mode" }
+  | { type: "external_editor" }
+  | { type: "external_editor_error"; error: string }
   | { type: "command"; name: string; args: string[] }
-  | { type: "queue"; text: string };
+  | { type: "queue"; text: string; images?: PromptInputImageAttachment[] };

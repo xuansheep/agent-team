@@ -16,13 +16,13 @@
 
 `tui-code` 是 conversation-first CLI 产品：核心能力分布在 `QueryEngine.ts`、`query.ts`、`Tool.ts`、`tools/`、`utils/messages.ts`、`utils/attachments.ts`、`utils/permissions/`、`utils/plans.ts`、`commands/`、`services/mcp/`、`plugins/`、`tasks/`、`bridge/`、`entrypoints/sdk/`。
 
-当前项目的 `node.mode === "plan"` 只是 workflow 内部的审核暂停点；`tui-code` 的 Plan Mode 是全局 `permissionMode: "plan"`，会改变可用工具、安全边界、上下文附件、计划文件和退出审批语义。后续实现时必须避免把当前 plan 节点误当成安全模式。
+旧版 `agent-team` 曾把 `node.mode === "plan"` 当作 workflow 内部审核暂停点；现已移除该节点概念。`tui-code` 的 Plan Mode 是全局 `permissionMode: "plan"`，会改变可用工具、安全边界、上下文附件、计划文件和退出审批语义，后续实现不得重新把计划能力塞回 workflow 节点。
 
 本计划不复刻 TUI 日志系统，不引入外发 telemetry，不实现远程能力。生产需要的是本地审计和可恢复执行，不是默认外发遥测或外部控制面。
 
 ## 1. 总体执行原则
 
-- [ ] 每个 phase 必须能独立通过 `npm run build` 和相关测试。
+- [ ] 每个 phase 必须能独立通过 TypeScript 编译和相关测试。
 - [ ] 每个行为变更先写测试，再改实现；测试必须覆盖失败路径。
 - [ ] 不删除现有 workflow 能力；新 runtime 先并行接入，再逐步收敛。
 - [ ] Plan Mode 必须是流程前安全模式：用户未批准计划前，不启动 workflow、不推进节点、不执行修改。
@@ -155,7 +155,7 @@ export type Tool<Input = unknown, Output = unknown> = ToolSafety & {
 
 ## 5. Phase 3 - Permission Mode System
 
-**目标:** 把当前 allow/ask/deny 规则升级为 session-level permission mode，并让 `permission_mode: "plan"` 真正具备安全语义。
+**目标:** 把当前 allow/ask/deny 规则升级为 session-level permission mode，并让 session `mode: "plan"` 真正具备安全语义。
 
 **Files:**
 - Create: `src/permissions/PermissionMode.ts`
@@ -194,13 +194,13 @@ export type ToolPermissionContext = {
 - [x] Step 3.8: 保留 `PermissionController` 的交互审批，但审批结果只影响当前 request。
 
 **Acceptance:**
-- `permission_mode: "plan"` 是安全模式，不只是 UI 状态。
+- session `mode: "plan"` 是安全模式，不只是 UI 状态；节点级 `permission_mode: "plan"` 不受支持。
 - 现有 workflow 权限规则继续生效。
 - Plan Mode 下不会出现“模型调用工具后顺手改文件”的路径。
 
 ## 6. Phase 4 - Plan Mode V2
 
-**目标:** 复刻 `tui-code` 的全局 Plan Mode，并支持用户在 workflow 流程执行前先规划、审批、再执行。该模式必须与当前 workflow plan 节点分层，不能复用 `node.mode === "plan"` 作为安全模式。
+**目标:** 复刻 `tui-code` 的全局 Plan Mode，并支持用户在 workflow 流程执行前先规划、审批、再执行。该模式是 session/TUI 级安全模式；workflow 节点不再支持 `node.mode === "plan"`。
 
 **Files:**
 - Create: `src/plans/planFiles.ts`
@@ -225,7 +225,7 @@ export type ToolPermissionContext = {
 - `ExitPlanMode` 读取 plan 文件，生成 session-level plan approval request。
 - 用户批准后恢复 `prePlanMode` 或指定模式，并以“原始用户请求 + 已批准计划”启动 workflow。
 - 用户拒绝后保持 Plan Mode，并把反馈作为下一轮规划输入。
-- 当前 `node.mode === "plan"` 继续作为 workflow 内部审核节点；它使用 `pending_review`，但不承担全局权限隔离。
+- workflow 内部不再保留 `node.mode === "plan"` 审核节点；`mode` 仅支持普通任务和完成节点，计划审批只发生在全局 Plan Mode。
 
 **State:**
 
@@ -258,16 +258,16 @@ export type PlanModeEvent =
 - [x] Step 4.4: 实现 `PlanSessionState` 和 `EnterPlanMode` 工具。
 - [x] Step 4.5: 写测试：进入 Plan Mode 后不会调用 `WorkflowEngine.run`。
 - [x] Step 4.6: 写测试：Plan Mode 下 `Write` 非 plan 文件被拒绝，当前 plan 文件允许。
-- [x] Step 4.7: 写测试：`ExitPlanMode` 无 plan 文件或空 plan 时返回可审计错误。
+- [x] Step 4.7: 写测试：`ExitPlanMode` 无 plan 文件或空 plan 时生成可审计的退出确认。
 - [x] Step 4.8: 实现 `ExitPlanMode` 工具和 session-level plan approval event。
 - [x] Step 4.9: 写测试：批准计划后恢复 `prePlanMode`，并把批准计划注入 workflow 初始 handoff。
 - [x] Step 4.10: 写测试：拒绝计划后保持 Plan Mode，用户反馈进入下一轮规划消息。
-- [x] Step 4.11: 保留 workflow `node.mode === "plan"` 的 `pending_review` 行为，只共享展示组件，不共享权限状态。
+- [x] Step 4.11: 移除 workflow `node.mode === "plan"` 支持，并拒绝 `permission_mode: "plan"` 的节点配置。
 
 **Acceptance:**
 - Plan Mode 是流程前安全模式，不只是 UI 暂停。
 - 未批准计划前不会执行 workflow、不会执行节点、不会修改普通文件。
-- 当前 workflow plan 节点测试继续通过。
+- workflow `node.mode === "plan"` 和节点级 `permission_mode: "plan"` 会被配置校验拒绝。
 
 ## 7. Phase 5 - Attachments and Context Pipeline
 
@@ -535,16 +535,17 @@ export type PlanModeEvent =
 每个 phase 完成后运行：
 
 ```bash
-npm run build
-npm test
-npm run lint
+./node_modules/.bin/tsc -p tsconfig.test.json
+node --test --test-concurrency=1 --test-reporter=dot $(find dist-test/tests -name '*.test.js' ! -path '*/providers/*' | sort)
+./node_modules/.bin/tsc -p tsconfig.json --noEmit
+git diff --check
 ```
 
 最终完成时至少覆盖以下场景：
 
 - [x] 普通 workflow run 完成。
-- [x] workflow plan 节点暂停、批准、继续。
-- [x] workflow plan 节点拒绝、输入反馈、重新生成计划。
+- [x] workflow 节点级 `mode: "plan"` 被拒绝，不再作为审核节点。
+- [x] workflow 节点级 `permission_mode: "plan"` 被拒绝，Plan Mode 只存在于 session/TUI 层。
 - [x] 流程执行前 `/plan` 进入 Plan Mode。
 - [x] Plan Mode 下不会调用 `WorkflowEngine.run`。
 - [x] Plan Mode 下读工具可用。
@@ -569,7 +570,7 @@ npm run lint
 - 不创建远程 transport、远程 resume、远程 agent 或外部控制面。
 - 不把所有配置塞进 `agent-team.yaml`。
 - 不绕过当前 workflow harness 直接替换为 `tui-code` 内核。
-- 不把 workflow 内部 `node.mode === "plan"` 当成全局 Plan Mode。
+- 不重新引入 workflow 内部 `node.mode === "plan"`；Plan Mode 只存在于 session/TUI 层。
 
 ## 18. 建议提交拆分
 

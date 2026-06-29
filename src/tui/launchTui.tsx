@@ -40,7 +40,16 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
 
   const instance = await render(
     <AlternateScreen mouseTracking>
-      <TuiApp cwd={options.cwd} initialError={initialError} config={config} workflows={workflows} workflowId={workflowId} engine={engine} settings={settings} />
+      <TuiApp
+        cwd={options.cwd}
+        initialError={initialError}
+        config={config}
+        workflows={workflows}
+        workflowId={workflowId}
+        engine={engine}
+        providerFactory={config ? (providerId) => createProvider(config!, providerId) : undefined}
+        settings={settings}
+      />
     </AlternateScreen>,
     {
     exitOnCtrlC: false

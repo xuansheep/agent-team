@@ -71,11 +71,14 @@ export function useSelectInput<T>({
       event.stopImmediatePropagation();
       return;
     }
-    if (!isInInput && disableSelection !== true && disableSelection !== "numeric" && /^[0-9]+$/.test(input)) {
+    if (!isInInput && disableSelection !== true && /^[0-9]+$/.test(input)) {
       const index = Number(input) - 1;
       const selected = options[index];
       if (!selected || selected.disabled) return;
-      if (selected.type === "input" && !(inputValues?.get(selected.value) ?? "").trim() && !selected.allowEmptySubmitToCancel) {
+      if (
+        disableSelection === "numeric" ||
+        (selected.type === "input" && !(inputValues?.get(selected.value) ?? "").trim() && !selected.allowEmptySubmitToCancel)
+      ) {
         state.focusOption(selected.value);
       } else {
         state.onChange?.(selected.value);

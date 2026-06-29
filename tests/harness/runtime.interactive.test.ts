@@ -8,6 +8,52 @@ import { RunStore } from "../../src/storage/runStore.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
 describe("runNode interactive permissions", () => {
+  it("injects long tool prompts into workflow node system messages", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-tool-prompt-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    tools.add({
+      name: "PromptedTool",
+      description: "Short provider description",
+      prompt: "Long workflow-facing tool prompt.",
+      input_schema: {},
+      async execute() {
+        return { output: "" };
+      }
+    });
+    let capturedSystem = "";
+    let capturedDescription = "";
+    const provider: ModelProvider = {
+      async generate(request) {
+        capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        capturedDescription = request.tools.find((tool) => tool.name === "PromptedTool")?.description ?? "";
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+
+    assert.equal(result.status, "success");
+    assert.equal(capturedDescription, "Short provider description");
+    assert.match(capturedSystem, /ATTACHMENT tool_prompts/);
+    assert.match(capturedSystem, /### PromptedTool/);
+    assert.match(capturedSystem, /Long workflow-facing tool prompt/);
+    assert.doesNotMatch(capturedSystem, /Short provider description/);
+  });
+
   it("asks for permission and executes tool after allow_once", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-"));
     const store = new RunStore(root);

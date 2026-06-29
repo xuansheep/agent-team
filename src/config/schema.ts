@@ -82,8 +82,8 @@ export const nodeSchema = z.object({
   role: z.string().min(1),
   provider: z.string().default("default"),
   model: z.string().optional(),
-  mode: z.enum(["task", "plan", "complete"]).default("task"),
-  permission_mode: z.enum(["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]).default("default"),
+  mode: z.enum(["task", "complete"]).default("task"),
+  permission_mode: z.enum(["default", "acceptEdits", "auto", "dontAsk", "bypassPermissions"]).default("default"),
   permissions: permissionSetSchema.optional()
 });
 
@@ -117,7 +117,7 @@ type ProviderConfig = ParsedProviderConfig extends infer Provider
     : Provider
   : never;
 
-export type WorkflowNodeMode = "task" | "plan" | "complete";
+export type WorkflowNodeMode = "task" | "complete";
 export type WorkflowNodeConfig = Omit<ParsedWorkflowNodeConfig, "mode"> & { mode?: WorkflowNodeMode };
 export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes"> & { nodes: WorkflowNodeConfig[] };
 export type AgentTeamConfig = Omit<ParsedAgentTeamConfig, "providers" | "workflows"> & { providers: Record<string, ProviderConfig>; workflows: Record<string, WorkflowConfig> };

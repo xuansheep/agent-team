@@ -35,6 +35,9 @@ function matchesRule(rule: string, tool: string, specifier: string): boolean {
   const parsed = parseRule(rule);
   if (parsed.tool !== tool) return false;
   if (!parsed.specifier) return true;
+  if (parsed.specifier.toLowerCase().startsWith("prompt:")) {
+    return matchesPromptRule(tool, parsed.specifier.slice("prompt:".length), specifier);
+  }
   return wildcardMatch(parsed.specifier, specifier);
 }
 
@@ -49,4 +52,50 @@ function wildcardMatch(pattern: string, value: string): boolean {
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`).test(value);
+}
+
+function matchesPromptRule(tool: string, prompt: string, specifier: string): boolean {
+  if (tool !== "Bash") return false;
+  const normalizedPrompt = prompt.toLowerCase();
+  const command = specifier.trim().toLowerCase();
+  if (!command || hasUnsafeShellSyntax(command)) return false;
+  if (/\btests?\b/.test(normalizedPrompt)) return isTestCommand(command);
+  if (/\binstall\b/.test(normalizedPrompt) && /\b(dependencies|packages|deps)\b/.test(normalizedPrompt)) {
+    return isDependencyInstallCommand(command);
+  }
+  return false;
+}
+
+function hasUnsafeShellSyntax(command: string): boolean {
+  return /[;&|<>`]/.test(command) || command.includes("$(") || command.includes("\n") || command.includes("\r");
+}
+
+function isTestCommand(command: string): boolean {
+  return [
+    /^npm\s+(test|t)(\s|$)/,
+    /^pnpm\s+(test|t)(\s|$)/,
+    /^yarn\s+(test|t)(\s|$)/,
+    /^bun\s+test(\s|$)/,
+    /^node\s+--test(\s|$)/,
+    /^deno\s+test(\s|$)/,
+    /^cargo\s+test(\s|$)/,
+    /^go\s+test(\s|$)/,
+    /^mvn(\s+\S+)*\s+test(\s|$)/,
+    /^gradle\s+test(\s|$)/,
+    /^\.\/gradlew\s+test(\s|$)/
+  ].some((pattern) => pattern.test(command));
+}
+
+function isDependencyInstallCommand(command: string): boolean {
+  return [
+    /^npm\s+(install|i|ci)(\s|$)/,
+    /^pnpm\s+install(\s|$)/,
+    /^yarn\s+install(\s|$)/,
+    /^bun\s+install(\s|$)/,
+    /^pip\s+install(\s|$)/,
+    /^pip3\s+install(\s|$)/,
+    /^poetry\s+install(\s|$)/,
+    /^bundle\s+install(\s|$)/,
+    /^composer\s+install(\s|$)/
+  ].some((pattern) => pattern.test(command));
 }

@@ -1,15 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import React, { useEffect, useRef, useState } from "react";
 import { Box, ScrollBox, Text, useApp, useHasSelection, useInput, useSelection, useStdin, useStdout } from "./ink.js";
 import type { ScrollBoxHandle } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
-import { approvePlan, buildApprovedPlanHandoff, enterPlanMode, exitPlanMode, resolvePlanApproval } from "../plans/planSession.js";
-import type { PlanSessionState } from "../plans/planSession.js";
-import { readPlan, writePlan } from "../plans/planFiles.js";
+import { approvePlan, buildApprovedPlanHandoff, enterPlanMode, readPlanOrRecoverFromTranscript, resolvePlanApproval } from "../plans/planSession.js";
+import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
+import { readPlan } from "../plans/planFiles.js";
+import { getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
+import type { ModelUsage } from "../model/usage.js";
+import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
+import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
+import type { PermissionMode } from "../permissions/PermissionMode.js";
+import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { SessionIndex } from "../storage/sessionIndex.js";
 import { SessionStore } from "../storage/sessionStore.js";
+import { askUserQuestionModelResult } from "../tools/local/askUserQuestion.js";
+import { createLocalToolRegistry } from "../tools/registry.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { WorkflowSession } from "../workflow/session.js";
 import { initialTuiState, reduceStoredEvent, resetTuiRunState } from "./eventAdapter.js";
@@ -18,10 +26,13 @@ import { TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
-import { PromptInputEvent, PromptInputMode } from "./components/PromptInput/types.js";
+import type { SelectImageAttachment } from "./components/CustomSelect/index.js";
+import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./components/PromptInput/types.js";
 import { ResultPanel } from "./components/ResultPanel.js";
 import { RunLogPanel } from "./components/RunLogPanel.js";
 import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
+import { editFileInExternalEditor, editTextInExternalEditor, externalEditorDisplayName, ExternalEditor, ExternalTextEditor } from "./externalEditor.js";
+import { resolveImagePaste } from "./imagePaste.js";
 export function TuiApp({
   cwd,
   initialError,
@@ -29,6 +40,10 @@ export function TuiApp({
   workflows = [],
   workflowId,
   engine,
+  providerFactory,
+  editPlanFile = editFileInExternalEditor,
+  editQuestionText = (text: string) => editTextInExternalEditor(text, cwd),
+  planSavedMessageDurationMs = 5000,
   settings,
   onExit
 }: {
@@ -38,6 +53,10 @@ export function TuiApp({
   workflows?: string[];
   workflowId?: string;
   engine?: WorkflowEngine;
+  providerFactory?: (providerId: string) => ModelProvider;
+  editPlanFile?: ExternalEditor;
+  editQuestionText?: ExternalTextEditor;
+  planSavedMessageDurationMs?: number;
   settings?: ResolvedAgentTeamSettings;
   onExit?: () => void;
 }) {
@@ -51,22 +70,152 @@ export function TuiApp({
   const exitTui = onExit ?? exit;
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(workflowId);
   const [state, setState] = useState<TuiState>(() => ({
-    ...initialTuiState({ cwd }),
+    ...initialTuiState({ cwd, inputPermissionMode: settings?.permissions?.defaultMode ?? "default" }),
     mode: workflowId ? "input" as const : workflows.length > 1 ? "select_workflow" as const : "input" as const,
     workflowId
   }));
   const [queued, setQueued] = useState<string[]>([]);
   const [promptText, setPromptText] = useState("");
+  const [planReviewOffset, setPlanReviewOffset] = useState(0);
   const [transcriptMode, setTranscriptMode] = useState(false);
   const [choiceKey, setChoiceKey] = useState("");
   const mainScrollRef = useRef<ScrollBoxHandle>(null);
   const sessionRef = useRef<WorkflowSession>();
   const planSessionRef = useRef<PlanSessionState>();
+  const planMessagesRef = useRef<ModelMessage[]>([]);
+  const planQuestionRef = useRef<{ toolCallId: string; questions: unknown[]; index: number; answers: Record<string, unknown> }>();
+  const planTurnQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const planTranscriptWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const planApprovalFeedbackRef = useRef("");
+  const planApprovalImagesRef = useRef<SelectImageAttachment[]>([]);
+  const planApprovalImageIdRef = useRef(1);
+  const [planApprovalImages, setPlanApprovalImages] = useState<SelectImageAttachment[]>([]);
+  const planQuestionImagesRef = useRef<Record<string, SelectImageAttachment[]>>({});
+  const planQuestionImageIdRef = useRef(1);
+  const [planQuestionImages, setPlanQuestionImages] = useState<Record<string, SelectImageAttachment[]>>({});
   const sessionStoreRef = useRef<SessionStore>();
   if (!sessionStoreRef.current) sessionStoreRef.current = new SessionStore(join(cwd, ".session"));
   const sessionStore = sessionStoreRef.current;
   const listeningSessionRef = useRef<WorkflowSession>();
+  const abandonedRunIdsRef = useRef<Set<string>>(new Set());
+  const lastWorkflowPromptRef = useRef("");
   const canceledChoiceKeyRef = useRef<string>();
+  const defaultPlanModeStartedRef = useRef(false);
+  const scrollMainAfterRenderRef = useRef(false);
+  const resetPlanApprovalFeedback = () => {
+    planApprovalFeedbackRef.current = "";
+    planApprovalImagesRef.current = [];
+    setPlanApprovalImages([]);
+  };
+  const addPlanApprovalImage = (image: Omit<SelectImageAttachment, "id">) => {
+    const next = [...planApprovalImagesRef.current, { ...image, id: planApprovalImageIdRef.current++ }];
+    planApprovalImagesRef.current = next;
+    setPlanApprovalImages(next);
+  };
+  const resolvePlanApprovalImagePaste = (value: string) => resolveImagePaste(value, { cwd });
+  const removePlanApprovalImage = (id: number) => {
+    const next = planApprovalImagesRef.current.filter((image) => image.id !== id);
+    planApprovalImagesRef.current = next;
+    setPlanApprovalImages(next);
+  };
+  const resetPlanQuestionImages = () => {
+    planQuestionImagesRef.current = {};
+    setPlanQuestionImages({});
+  };
+  const addPlanQuestionImage = (question: string, image: Omit<SelectImageAttachment, "id">) => {
+    const current = planQuestionImagesRef.current[question] ?? [];
+    const next = { ...planQuestionImagesRef.current, [question]: [...current, { ...image, id: planQuestionImageIdRef.current++ }] };
+    planQuestionImagesRef.current = next;
+    setPlanQuestionImages(next);
+  };
+  const removePlanQuestionImage = (question: string, id: number) => {
+    const nextQuestionImages = (planQuestionImagesRef.current[question] ?? []).filter((image) => image.id !== id);
+    const next = { ...planQuestionImagesRef.current, [question]: nextQuestionImages };
+    planQuestionImagesRef.current = next;
+    setPlanQuestionImages(next);
+  };
+  const resolvePlanQuestionImagePaste = (value: string) => resolveImagePaste(value, { cwd });
+  const resolvePlanPromptImagePaste = (value: string) => resolveImagePaste(value, { cwd });
+  const planApprovalFeedbackPayload = (): unknown => {
+    const answer = planApprovalFeedbackRef.current.trim();
+    const contentBlocks = planApprovalImagesRef.current.map(({ type, media_type, data }) => ({ type, media_type, data }));
+    if (contentBlocks.length) return { ...(answer ? { answer } : {}), contentBlocks };
+    return answer || undefined;
+  };
+  const planApprovalAcceptFeedback = (): unknown => {
+    const answer = planApprovalFeedbackRef.current.trim();
+    return answer || undefined;
+  };
+  const hasPlanApprovalFeedback = (): boolean => planApprovalFeedbackPayload() !== undefined;
+  const planApprovalPromptFeedback = (text: string, images: PromptInputImageAttachment[] = []): unknown => {
+    const feedbackTextValue = [text, planApprovalFeedbackRef.current]
+      .map((value) => value.trim())
+      .sort((left, right) => right.length - left.length)[0] ?? "";
+    const parsed = imageFeedbackFromText(feedbackTextValue);
+    const contentBlocks = uniqueImageBlocks([
+      ...planApprovalImagesRef.current.map(({ type, media_type, data }) => ({ type, media_type, data })),
+      ...images.map(({ type, media_type, data }) => ({ type, media_type, data })),
+      ...parsed.contentBlocks
+    ]);
+    if (contentBlocks.length) return { ...(parsed.answer ? { answer: parsed.answer } : {}), contentBlocks };
+    return parsed.answer || undefined;
+  };
+  const handlePromptTextChange = (text: string) => {
+    setPromptText(text);
+    if (state.pendingReview) planApprovalFeedbackRef.current = text;
+  };
+  const planQuestionImageBlocks = (): ModelContentPart[] => uniqueImageBlocks(
+    Object.values(planQuestionImagesRef.current)
+      .flat()
+      .map(({ type, media_type, data }) => ({ type, media_type, data }))
+  );
+  const planQuestionContinuationMessages = (toolCallId: string, payload: unknown): ModelMessage[] => {
+    const mapped = askUserQuestionModelResult(payload);
+    const toolResultMessage: ModelMessage = { role: "tool" as const, tool_call_id: toolCallId, content: typeof mapped === "string" ? mapped : JSON.stringify(mapped) };
+    const contentBlocks = planQuestionImageBlocks();
+    if (!contentBlocks.length) return [toolResultMessage];
+    return [
+      toolResultMessage,
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "The user attached image feedback while answering AskUserQuestion." },
+          ...contentBlocks
+        ]
+      }
+    ];
+  };
+  const requestMainScrollToBottom = () => {
+    scrollMainAfterRenderRef.current = true;
+    mainScrollRef.current?.scrollToBottom();
+    queueMicrotask(() => mainScrollRef.current?.scrollToBottom());
+    setTimeout(() => mainScrollRef.current?.scrollToBottom(), 0);
+  };
+  useEffect(() => {
+    if (!scrollMainAfterRenderRef.current) return;
+    scrollMainAfterRenderRef.current = false;
+    mainScrollRef.current?.scrollToBottom();
+  }, [state.logMessages.length, state.mode]);
+  useEffect(() => {
+    const review = state.pendingReview;
+    if (!review?.savedMessage) return;
+    const timer = setTimeout(() => {
+      setState((current) => {
+        const pending = current.pendingReview;
+        if (
+          !pending ||
+          pending.nodeId !== review.nodeId ||
+          pending.attempt !== review.attempt ||
+          pending.savedMessage !== review.savedMessage
+        ) {
+          return current;
+        }
+        const { savedMessage: _savedMessage, ...pendingWithoutSavedMessage } = pending;
+        return { ...current, pendingReview: pendingWithoutSavedMessage };
+      });
+    }, planSavedMessageDurationMs);
+    return () => clearTimeout(timer);
+  }, [planSavedMessageDurationMs, state.pendingReview?.attempt, state.pendingReview?.nodeId, state.pendingReview?.savedMessage]);
   const selectWorkflow = (workflow: string) => {
     setSelectedWorkflowId(workflow);
     setState((current) => ({ ...current, workflowId: workflow, mode: "input" }));
@@ -76,10 +225,15 @@ export function TuiApp({
     setState((current) => ({ ...current, mode: "failed", error: message }));
   };
   const interruptAndExit = () => {
-    void sessionRef.current?.interrupt().finally(() => exitTui());
+    const session = sessionRef.current;
+    if (!session) {
+      exitTui();
+      return;
+    }
+    void session.interrupt().finally(() => exitTui());
   };
   const handleCtrlC = () => {
-    const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current), hasSelection || selection.hasSelection());
+    const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current || planSessionRef.current), hasSelection || selection.hasSelection());
     if (behavior === "copy_selection") {
       selection.copySelection();
       return;
@@ -108,9 +262,11 @@ export function TuiApp({
   const resetSession = () => {
     sessionRef.current = undefined;
     planSessionRef.current = undefined;
+    resetPlanApprovalFeedback();
+    resetPlanQuestionImages();
     setQueued([]);
     setState((current) => ({
-      ...initialTuiState({ cwd: current.cwd }),
+      ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: selectedWorkflowId,
       mode: selectedWorkflowId ? "input" : "select_workflow"
     }));
@@ -121,6 +277,7 @@ export function TuiApp({
     void (async () => {
       try {
         for await (const event of session.events) {
+          if (abandonedRunIdsRef.current.has(session.runId)) continue;
           setState((current) => reduceStoredEvent({ ...current, runId: session.runId, workflowId: nextWorkflowId }, event));
         }
       } finally {
@@ -135,6 +292,7 @@ export function TuiApp({
     listenSession(session, nextWorkflowId);
     void session.result
       .then((result) => {
+        if (abandonedRunIdsRef.current.has(session.runId)) return;
         setState((current) => ({
           ...current,
           mode: workflowResultMode(result.status),
@@ -142,9 +300,12 @@ export function TuiApp({
           runId: session.runId
         }));
       })
-      .catch((error) => failUi(error));
+      .catch((error) => {
+        if (abandonedRunIdsRef.current.has(session.runId)) return;
+        failUi(error);
+      });
   };
-  const startWorkflowInput = async (input: unknown) => {
+  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean } = {}) => {
     if (!config || !engine) {
       failUi("TUI is missing workflow configuration");
       return;
@@ -154,13 +315,17 @@ export function TuiApp({
       return;
     }
     try {
-      const session = await engine.startInteractive(config, selectedWorkflowId, input);
+      const session = await engine.startInteractive(config, selectedWorkflowId, input, {
+        permissionMode: options.permissionMode ?? workflowPermissionMode(state.inputPermissionMode),
+        ...(options.clearContext === true ? { clearContext: true } : {})
+      });
       attachSession(session, selectedWorkflowId);
     } catch (error) {
       failUi(error);
     }
   };
   const startRun = async (text: string) => {
+    lastWorkflowPromptRef.current = text;
     await startWorkflowInput({ request: text, images: [] });
   };
   const resumeRun = async (runId: string) => {
@@ -184,6 +349,7 @@ export function TuiApp({
       void startRun(text);
       return;
     }
+    lastWorkflowPromptRef.current = text;
     setState((current) => ({ ...current, mode: "running", error: undefined }));
     const continuation = session.continueWithInput({ request: text, images: [] });
     listenSession(session, nextWorkflowId);
@@ -192,100 +358,503 @@ export function TuiApp({
   const savePlanSession = (plan: PlanSessionState) => {
     void sessionStore.savePlanState(plan.sessionId, plan).catch((error) => failUi(error));
   };
+  const appendPlanTranscriptMessages = (sessionId: string, messages: ModelMessage[]) => {
+    if (!messages.length) return;
+    planTranscriptWriteRef.current = planTranscriptWriteRef.current
+      .then(async () => {
+        for (const message of messages) {
+          await sessionStore.appendTranscript(sessionId, message);
+        }
+      })
+      .catch((error) => failUi(error));
+  };
   const enterGlobalPlanMode = () => {
+    const previousPlan = planSessionRef.current;
+    const reentry = Boolean(previousPlan?.mode === "inactive" && previousPlan.approvedPlan?.trim());
     const entered = enterPlanMode({
-      sessionId: `plan-${randomUUID()}`,
+      sessionId: reentry ? previousPlan?.sessionId ?? `plan-${randomUUID()}` : `plan-${randomUUID()}`,
       cwd,
       plansDirectory: settings?.plansDirectory,
       originalInput: { request: "" },
-      permissions: { mode: settings?.permissions?.defaultMode ?? "default", allow: [], ask: [], deny: [], source: settings?.permissions?.defaultMode ? "settings" : undefined }
+      permissions: {
+        mode: settings?.permissions?.defaultMode ?? "default",
+        allow: [],
+        ask: [],
+        deny: [],
+        source: settings?.permissions?.defaultMode ? "settings" : undefined,
+        ...(reentry ? { planFilePath: previousPlan?.planFilePath } : {})
+      },
+      useAutoModeDuringPlan: settings?.useAutoModeDuringPlan !== false,
+      reentry
     });
     planSessionRef.current = entered.state;
+    planMessagesRef.current = [];
     savePlanSession(entered.state);
     setState((current) => ({
       ...current,
       mode: "planning",
+      inputPermissionMode: "plan",
       planSession: entered.state,
       pendingReview: undefined,
       error: undefined,
-      conversation: [...current.conversation, { kind: "status", text: `Plan Mode started: ${entered.state.planFilePath}` }],
-      logMessages: [...current.logMessages, statusLog("Plan Mode started", entered.state.planFilePath)]
+      conversation: [...current.conversation, { kind: "status", text: "Enabled plan mode" }],
+      logMessages: [...current.logMessages, statusLog("Enabled plan mode", entered.state.planFilePath)]
     }));
   };
-  const appendGlobalPlanDraft = async (text: string) => {
-    const currentPlan = planSessionRef.current;
-    if (!currentPlan) {
-      enterGlobalPlanMode();
+  useEffect(() => {
+    if (defaultPlanModeStartedRef.current) return;
+    if (state.mode !== "input") return;
+    if (settings?.planMode?.defaultEntry !== true && settings?.permissions?.defaultMode !== "plan") return;
+    defaultPlanModeStartedRef.current = true;
+    enterGlobalPlanMode();
+  }, [settings?.permissions?.defaultMode, settings?.planMode?.defaultEntry, state.mode]);
+  const executePlanMessages = async (currentPlan: PlanSessionState, messages: ModelMessage[], options: { ensureUserLogText?: string } = {}) => {
+    const providerSelection = selectPlanProvider({ config, workflowId: selectedWorkflowId ?? state.workflowId, providerFactory });
+    if (!providerSelection) {
+      failUi("Plan Mode is missing provider configuration");
       return;
     }
-    const previous = await readPlan(currentPlan.planFilePath) ?? "";
-    const nextContent = previous.trim() ? `${previous.trim()}\n\n${text}\n` : `${text}\n`;
-    await writePlan(currentPlan.planFilePath, nextContent);
-    const original = currentPlan.originalInput && typeof currentPlan.originalInput === "object" && (currentPlan.originalInput as { request?: unknown }).request
-      ? currentPlan.originalInput
-      : { request: text };
-    const nextPlan = { ...currentPlan, originalInput: original };
-    planSessionRef.current = nextPlan;
-    savePlanSession(nextPlan);
+    const result = await new RuntimeTurnExecutor().execute({
+      messages,
+      model: providerSelection.model,
+      provider: providerSelection.provider,
+      tools: createLocalToolRegistry(),
+      permissions: {
+        mode: "plan",
+        prePlanMode: currentPlan.prePlanMode,
+        allow: [],
+        ask: [],
+        deny: [],
+        planFilePath: currentPlan.planFilePath,
+        planUseAutoMode: currentPlan.useAutoModeDuringPlan
+      },
+      cwd,
+      sessionId: currentPlan.sessionId,
+      planState: currentPlan
+    });
+    planMessagesRef.current = result.messages;
+    appendPlanTranscriptMessages(currentPlan.sessionId, result.messages.slice(messages.length));
+    if (result.status === "failed") {
+      setState((current) => ({ ...current, mode: "planning", error: result.error }));
+      return;
+    }
+    if (result.status === "waiting_permission") {
+      setState((current) => ({ ...current, mode: "planning", error: "Plan Mode cannot wait on interactive tool permissions" }));
+      return;
+    }
+    if (result.status === "waiting_user_input") {
+      resetPlanQuestionImages();
+      planQuestionRef.current = { toolCallId: result.request.toolCallId, questions: result.request.questions, index: 0, answers: {} };
+      setState((current) => ({
+        ...current,
+        mode: "question",
+        questions: nextQuestionSlice(result.request.questions, 0),
+        error: undefined,
+        logMessages: [...current.logMessages, statusLog("Plan Mode needs user input", questionLogDetail(result.request.questions))]
+      }));
+      requestMainScrollToBottom();
+      return;
+    }
+    if (result.status === "waiting_plan_approval") {
+      resetPlanApprovalFeedback();
+      planSessionRef.current = result.planState;
+      savePlanSession(result.planState);
+      setState((current) => ({
+        ...current,
+        mode: "waiting_plan_approval",
+        planSession: result.planState,
+        pendingReview: {
+          type: "plan",
+          nodeId: "global-plan",
+          attempt: 1,
+          document: result.plan.document,
+          planFilePath: result.plan.planFilePath,
+          empty: result.plan.empty,
+          requestedPermissions: result.plan.requestedPermissions,
+          contextUsedPercent: contextUsedPercent(result.usage, providerSelection.contextWindow)
+        },
+        error: undefined,
+        conversation: [...current.conversation, { kind: "status", text: result.plan.empty ? "Exit Plan Mode requested" : "Plan approval requested" }],
+        logMessages: [...current.logMessages, globalPlanLog(result.plan.document, result.plan.planFilePath, result.plan.requestedPermissions, result.plan.empty)]
+      }));
+      requestMainScrollToBottom();
+      return;
+    }
+    const assistant = result.messages.at(-1);
+    const assistantText = assistant?.role === "assistant" && typeof assistant.content === "string" ? assistant.content : "";
+    if (assistantText.trim()) {
+      setState((current) => {
+        const next = appendMissingUserLogMessage(current, options.ensureUserLogText);
+        return {
+          ...next,
+          mode: "planning",
+          pendingReview: undefined,
+          error: undefined,
+          conversation: [...next.conversation, { kind: "assistant", text: assistantText }],
+          logMessages: [...next.logMessages, { id: randomUUID(), kind: "assistant", text: assistantText }]
+        };
+      });
+      requestMainScrollToBottom();
+      return;
+    }
+    setState((current) => ({
+      ...appendMissingUserLogMessage(current, options.ensureUserLogText),
+      mode: "planning",
+      pendingReview: undefined,
+      error: undefined
+    }));
+    requestMainScrollToBottom();
+  };
+  const preparePlanTurn = (text: string, images: ModelContentPart[] = [], options: { logUser?: boolean; ensureUserLog?: boolean } = {}): { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean } | undefined => {
+    let currentPlan = planSessionRef.current;
+    if (!currentPlan) {
+      enterGlobalPlanMode();
+      currentPlan = planSessionRef.current;
+    }
+    if (!currentPlan) {
+      failUi("Plan Mode failed to initialize");
+      return;
+    }
+    if (currentPlan.mode === "waiting_approval") {
+      return;
+    }
+    const displayText = text.trim() || (images.length ? "See attached image." : "");
+    if (isEmptyPlanOriginalInput(currentPlan.originalInput)) {
+      currentPlan = { ...currentPlan, originalInput: { request: displayText } };
+      planSessionRef.current = currentPlan;
+      savePlanSession(currentPlan);
+    }
+    const userMessage: ModelMessage = { role: "user", content: images.length ? [{ type: "text", text: displayText }, ...images] : displayText };
+    if (options.logUser !== false) {
+      setState((current) => appendUserLogMessage({ ...current, mode: "planning", error: undefined }, displayText));
+      requestMainScrollToBottom();
+    }
+    return { plan: currentPlan, userMessage, displayText, ensureUserLog: options.ensureUserLog === true };
+  };
+  const runPreparedPlanTurn = async (turn: { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean }) => {
+    const currentPlan = planSessionRef.current?.sessionId === turn.plan.sessionId ? planSessionRef.current : turn.plan;
+    if (currentPlan?.mode === "waiting_approval") return;
+    const messages = [...planMessagesRef.current, turn.userMessage];
+    appendPlanTranscriptMessages(currentPlan.sessionId, [turn.userMessage]);
+    await executePlanMessages(currentPlan, messages, { ...(turn.ensureUserLog ? { ensureUserLogText: turn.displayText } : {}) });
+  };
+  const enqueuePlanTurn = (text: string, images: ModelContentPart[] = [], options: { logUser?: boolean; ensureUserLog?: boolean } = {}) => {
+    const turn = preparePlanTurn(text, images, options);
+    if (!turn) return;
+    planTurnQueueRef.current = planTurnQueueRef.current
+      .then(() => runPreparedPlanTurn(turn))
+      .catch((error) => failUi(error));
+  };
+  const approveEnterPlanModeRequest = (requestId: string) => {
+    const session = sessionRef.current;
+    if (session) abandonedRunIdsRef.current.add(session.runId);
+    try {
+      session?.permissions.resolve(requestId, "deny_once");
+    } catch (error) {
+      failUi(error);
+      return;
+    }
+    void session?.interrupt().catch((error) => failUi(error));
+    sessionRef.current = undefined;
+    setQueued([]);
     setState((current) => ({
       ...current,
-      mode: "planning",
-      planSession: nextPlan,
-      error: undefined,
-      conversation: [
-        ...current.conversation,
-        { kind: "user", text },
-        { kind: "status", text: "Plan draft updated", detailText: currentPlan.planFilePath }
-      ],
-      logMessages: [...current.logMessages, statusLog("Plan draft updated", currentPlan.planFilePath)]
+      permissionRequests: current.permissionRequests.filter((request) => request.requestId !== requestId),
+      logMessages: current.logMessages.map((message) => (
+        message.kind === "permission" && message.requestId === requestId
+          ? { ...message, status: "allowed", text: "Entered plan mode" }
+          : message
+      ))
     }));
+    const prompt = lastWorkflowPromptRef.current.trim();
+    enterGlobalPlanMode();
+    if (prompt) enqueuePlanTurn(prompt);
   };
-  const requestGlobalPlanApproval = async () => {
+  const continuePlanQuestion = async (answer: unknown) => {
+    const currentPlan = planSessionRef.current;
+    const pendingQuestion = planQuestionRef.current;
+    if (!currentPlan || !pendingQuestion) {
+      setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
+      await sessionRef.current?.resumeWithUserInput(answer);
+      return;
+    }
+    planQuestionRef.current = undefined;
+    if (isCancelQuestionAnswer(answer)) {
+      const continuationMessages = planQuestionContinuationMessages(pendingQuestion.toolCallId, planQuestionCancelPayload());
+      const messages = [...planMessagesRef.current, ...continuationMessages];
+      resetPlanQuestionImages();
+      setState((current) => ({
+        ...current,
+        mode: "planning",
+        questions: [],
+        error: undefined,
+        logMessages: [...current.logMessages, statusLog("Question canceled")]
+      }));
+      requestMainScrollToBottom();
+      appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
+      await executePlanMessages(currentPlan, messages);
+      return;
+    }
+    const navigation = questionNavigationDirection(answer);
+    if (navigation) {
+      const nextIndex = navigation === "next"
+        ? Math.min(pendingQuestion.questions.length, pendingQuestion.index + 1)
+        : Math.max(0, pendingQuestion.index - 1);
+      planQuestionRef.current = { ...pendingQuestion, index: nextIndex };
+      setState((current) => ({
+        ...current,
+        mode: "question",
+        questions: nextIndex >= pendingQuestion.questions.length
+          ? [submitQuestionReview(pendingQuestion.questions, pendingQuestion.answers)]
+          : nextQuestionSlice(pendingQuestion.questions, nextIndex, pendingQuestion.answers),
+        error: undefined
+      }));
+      return;
+    }
+    if (isRespondToClaudeQuestionAnswer(answer) || isFinishPlanInterviewQuestionAnswer(answer)) {
+      const toolPayload = planQuestionInterviewFeedback(pendingQuestion.questions, pendingQuestion.answers, isFinishPlanInterviewQuestionAnswer(answer));
+      const continuationMessages = planQuestionContinuationMessages(pendingQuestion.toolCallId, toolPayload);
+      const messages = [...planMessagesRef.current, ...continuationMessages];
+      resetPlanQuestionImages();
+      setState((current) => ({
+        ...current,
+        mode: "planning",
+        questions: [],
+        error: undefined
+      }));
+      requestMainScrollToBottom();
+      appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
+      await executePlanMessages(currentPlan, messages);
+      return;
+    }
+    if (pendingQuestion.index >= pendingQuestion.questions.length) {
+      if (isSubmitQuestionAnswer(answer)) {
+        const toolPayload = multiQuestionToolAnswer(pendingQuestion.answers);
+        const continuationMessages = planQuestionContinuationMessages(pendingQuestion.toolCallId, toolPayload);
+        const messages = [...planMessagesRef.current, ...continuationMessages];
+        resetPlanQuestionImages();
+        setState((current) => ({
+          ...current,
+          mode: "planning",
+          questions: [],
+          error: undefined
+        }));
+        requestMainScrollToBottom();
+        appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
+        await executePlanMessages(currentPlan, messages);
+        return;
+      }
+      const previousIndex = Math.max(0, pendingQuestion.questions.length - 1);
+      planQuestionRef.current = { ...pendingQuestion, index: previousIndex };
+      setState((current) => ({
+        ...current,
+        mode: "question",
+        questions: nextQuestionSlice(pendingQuestion.questions, previousIndex, pendingQuestion.answers),
+        error: undefined
+      }));
+      return;
+    }
+    const text = answerText(answer);
+    const answers = { ...pendingQuestion.answers, [questionText(pendingQuestion.questions[pendingQuestion.index])]: answer };
+    const nextIndex = pendingQuestion.index + 1;
+    if (nextIndex < pendingQuestion.questions.length) {
+      planQuestionRef.current = { ...pendingQuestion, index: nextIndex, answers };
+      setState((current) => appendUserLogMessage({
+        ...current,
+        mode: "question",
+        questions: nextQuestionSlice(pendingQuestion.questions, nextIndex, answers),
+        error: undefined
+      }, text));
+      requestMainScrollToBottom();
+      return;
+    }
+    if (pendingQuestion.questions.length > 1) {
+      planQuestionRef.current = { ...pendingQuestion, index: nextIndex, answers };
+      setState((current) => appendUserLogMessage({
+        ...current,
+        mode: "question",
+        questions: [submitQuestionReview(pendingQuestion.questions, answers)],
+        error: undefined
+      }, text));
+      requestMainScrollToBottom();
+      return;
+    }
+    const toolPayload = multiQuestionToolAnswer(answers);
+    const continuationMessages = planQuestionContinuationMessages(pendingQuestion.toolCallId, toolPayload);
+    const messages = [...planMessagesRef.current, ...continuationMessages];
+    resetPlanQuestionImages();
+    setState((current) => appendUserLogMessage({ ...current, mode: "planning", questions: [], error: undefined }, text));
+    requestMainScrollToBottom();
+    appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
+    await executePlanMessages(currentPlan, messages);
+  };
+  const showCurrentPlan = async () => {
     const currentPlan = planSessionRef.current;
     if (!currentPlan) {
       enterGlobalPlanMode();
       return;
     }
     try {
-      const result = await exitPlanMode(currentPlan);
-      planSessionRef.current = result.state;
-      savePlanSession(result.state);
+      const document = (await readPlan(currentPlan.planFilePath))?.trim();
+      if (!document) {
+        setState((current) => ({
+          ...current,
+          mode: "planning",
+          error: undefined,
+          conversation: [...current.conversation, { kind: "status", text: "Already in plan mode. No plan written yet." }],
+          logMessages: [...current.logMessages, statusLog("Already in plan mode. No plan written yet.", currentPlan.planFilePath)]
+        }));
+        return;
+      }
+      const editorName = externalEditorDisplayName();
+      const editorHint = editorName ? `\n\n"/plan open" to edit this plan in ${editorName}` : "";
+      const displayPath = displayPlanFilePath(currentPlan.planFilePath, cwd);
       setState((current) => ({
         ...current,
-        mode: "waiting_plan_approval",
-        planSession: result.state,
-        pendingReview: { type: "plan", nodeId: "global-plan", attempt: 1, document: result.plan.document, planFilePath: result.plan.planFilePath },
+        mode: "planning",
         error: undefined,
-        conversation: [...current.conversation, { kind: "status", text: "Plan approval requested" }],
-        logMessages: [...current.logMessages, globalPlanLog(result.plan.document, result.plan.planFilePath)]
+        conversation: [...current.conversation, { kind: "status", text: "Current Plan", detailText: document }],
+        logMessages: [...current.logMessages, { ...statusLog("Current Plan", `${displayPath}\n\n${document}${editorHint}`), detailVisible: true }]
       }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setState((current) => ({ ...current, mode: "planning", error: message }));
+      failUi(error);
     }
   };
-  const resolveGlobalPlan = (decision: "continue" | "stay") => {
+  const openCurrentPlan = async () => {
+    const currentPlan = planSessionRef.current;
+    if (!currentPlan) return;
+    try {
+      const document = (await readPlan(currentPlan.planFilePath))?.trim();
+      if (!document) {
+        await showCurrentPlan();
+        return;
+      }
+      const edited = await editPlanFile(currentPlan.planFilePath);
+      if (edited.error) {
+        setState((current) => ({ ...current, error: edited.error }));
+        return;
+      }
+      setState((current) => ({
+        ...current,
+        error: undefined,
+        logMessages: [...current.logMessages, statusLog("Opened plan in editor", currentPlan.planFilePath)]
+      }));
+      requestMainScrollToBottom();
+    } catch (error) {
+      failUi(error);
+    }
+  };
+  const refreshPendingPlanReview = async (options: { openEditor?: boolean } = {}) => {
+    const review = state.pendingReview;
+    const planFilePath = review?.planFilePath;
+    if (!review || !planFilePath) return;
+    try {
+      const edited = options.openEditor ? await editPlanFile(planFilePath) : undefined;
+      if (edited?.error) {
+        setState((current) => ({ ...current, error: edited.error }));
+      }
+      const document = (await readPlan(planFilePath))?.trim() ?? "";
+      const empty = !document;
+      const savedMessage = edited && edited.content !== null ? "✓Plan saved!" : review.savedMessage;
+      setState((current) => ({
+        ...current,
+        pendingReview: current.pendingReview
+          ? { ...current.pendingReview, document, empty, savedMessage }
+          : current.pendingReview,
+        error: undefined,
+        logMessages: current.logMessages.map((message) => (
+          message.kind === "plan" && message.nodeId === review.nodeId && message.attempt === review.attempt && message.status === "pending"
+            ? globalPlanLog(document, planFilePath, review.requestedPermissions, empty)
+            : message
+        ))
+      }));
+      requestMainScrollToBottom();
+    } catch (error) {
+      failUi(error);
+    }
+  };
+  const showPendingPlanReview = async () => {
+    const review = state.pendingReview;
+    const planFilePath = review?.planFilePath;
+    if (!review || !planFilePath) return;
+    try {
+      const document = (await readPlan(planFilePath))?.trim() ?? review.document.trim();
+      if (!document) {
+        setState((current) => ({
+          ...current,
+          error: undefined,
+          logMessages: [...current.logMessages, statusLog("Already in plan mode. No plan written yet.", planFilePath)]
+        }));
+        requestMainScrollToBottom();
+        return;
+      }
+      const editorName = externalEditorDisplayName();
+      const editorHint = editorName ? `\n\n"/plan open" to edit this plan in ${editorName}` : "";
+      const displayPath = displayPlanFilePath(planFilePath, cwd);
+      setState((current) => ({
+        ...current,
+        error: undefined,
+        pendingReview: current.pendingReview
+          ? { ...current.pendingReview, document, empty: false }
+          : current.pendingReview,
+        logMessages: [...current.logMessages, { ...statusLog("Current Plan", `${displayPath}\n\n${document}${editorHint}`), detailVisible: true }]
+      }));
+      requestMainScrollToBottom();
+    } catch (error) {
+      failUi(error);
+    }
+  };
+  const resolveGlobalPlan = (decision: "continue" | "stay", mode: PermissionMode = "default", feedback?: unknown, options: { clearContext?: boolean } = {}): boolean => {
     const currentPlan = planSessionRef.current;
     const document = state.pendingReview?.document ?? "";
-    if (!currentPlan) return;
+    if (!currentPlan) return false;
     if (decision === "stay") {
-      const resolved = resolvePlanApproval(currentPlan, "stay");
+      const resolved = resolvePlanApproval(currentPlan, "stay", feedback);
+      const rejectionMessage = planRejectionMessage(document, feedback);
+      const review = state.pendingReview;
+      const feedbackDetail = feedbackText(feedback);
+      const rejectedDocument = feedbackDetail
+        ? `${document.trim() || "Claude wants to exit plan mode"}\n\nUser feedback:\n${feedbackDetail}`
+        : document;
       planSessionRef.current = resolved.state;
+      planMessagesRef.current = [...planMessagesRef.current, rejectionMessage];
+      appendPlanTranscriptMessages(resolved.state.sessionId, [rejectionMessage]);
       savePlanSession(resolved.state);
-      setState((current) => ({ ...current, mode: "planning", planSession: resolved.state, pendingReview: undefined, error: undefined }));
-      return;
+      resetPlanApprovalFeedback();
+      setState((current) => ({
+        ...current,
+        mode: "planning",
+        planSession: resolved.state,
+        pendingReview: undefined,
+        error: undefined,
+        logMessages: [
+          ...current.logMessages.map((message) => (
+            review && message.kind === "plan" && message.nodeId === review.nodeId && message.attempt === review.attempt && message.status === "pending"
+              ? { ...message, status: "rejected" as const, document: rejectedDocument, detailText: feedbackDetail ? `User feedback: ${feedbackDetail}` : message.detailText }
+              : message
+          )),
+          ...(feedbackDetail ? [{ id: randomUUID(), kind: "user" as const, text: feedbackDetail }] : []),
+          statusLog("Plan rejected; keep planning", feedbackDetail)
+        ]
+      }));
+      requestMainScrollToBottom();
+      void executePlanMessages(resolved.state, planMessagesRef.current).catch((error) => failUi(error));
+      return true;
     }
-    const approved = approvePlan(currentPlan, document);
+    const approved = approvePlan(currentPlan, document, feedbackText(feedback));
     const resolved = resolvePlanApproval(approved, "continue");
     planSessionRef.current = resolved.state;
     savePlanSession(resolved.state);
+    resetPlanApprovalFeedback();
     setState((current) => ({ ...current, mode: "running", planSession: resolved.state, pendingReview: undefined, error: undefined }));
-    void startWorkflowInput(buildApprovedPlanHandoff(resolved.state));
+    const handoff = buildApprovedPlanHandoff(resolved.state);
+    void startWorkflowInput(handoff, { permissionMode: mode === "plan" ? "default" : mode, ...(options.clearContext === true ? { clearContext: true } : {}) });
+    return true;
   };
   const clearTuiContext = () => {
     setQueued([]);
     setState((current) => ({
-      ...initialTuiState({ cwd: current.cwd }),
+      ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: current.workflowId,
       runId: current.runId,
       mode: current.mode === "planning" || current.mode === "waiting_plan_approval" ? current.mode : "input",
@@ -307,21 +876,24 @@ export function TuiApp({
     }
 
     planSessionRef.current = plan;
+    const transcript = await sessionStore.loadTranscript(sessionId);
+    planMessagesRef.current = transcript.map((entry) => entry.message);
+    const transcriptLogs = planLogMessagesFromTranscript(planMessagesRef.current);
     const base = (current: TuiState) => ({
-      ...initialTuiState({ cwd: current.cwd }),
+      ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: current.workflowId ?? selectedWorkflowId,
       planSession: plan,
       error: undefined
     });
 
     if (plan.mode === "waiting_approval") {
-      const document = (await readPlan(plan.planFilePath))?.trim() ?? plan.approvedPlan ?? "";
-      if (!document.trim()) throw new Error(`Plan file is empty or missing: ${plan.planFilePath}`);
+      const document = (await readPlanOrRecoverFromTranscript({ planFilePath: plan.planFilePath, cwd, messages: planMessagesRef.current }))?.trim() ?? plan.approvedPlan ?? "";
+      const empty = !document.trim();
       setState((current) => ({
         ...base(current),
         mode: "waiting_plan_approval",
-        pendingReview: { type: "plan", nodeId: "global-plan", attempt: 1, document, planFilePath: plan.planFilePath },
-        logMessages: [statusLog("Plan Mode restored", plan.planFilePath), globalPlanLog(document, plan.planFilePath)]
+        pendingReview: { type: "plan", nodeId: "global-plan", attempt: 1, document, planFilePath: plan.planFilePath, empty, requestedPermissions: plan.requestedPermissions },
+        logMessages: [statusLog("Plan Mode restored", plan.planFilePath), ...transcriptLogs, globalPlanLog(document, plan.planFilePath, plan.requestedPermissions, empty)]
       }));
       return;
     }
@@ -330,7 +902,7 @@ export function TuiApp({
       setState((current) => ({
         ...base(current),
         mode: "planning",
-        logMessages: [statusLog("Plan Mode restored", plan.planFilePath)]
+        logMessages: [statusLog("Plan Mode restored", plan.planFilePath), ...transcriptLogs]
       }));
       return;
     }
@@ -387,8 +959,44 @@ export function TuiApp({
       return;
     }
     if (event.type === "queue") {
+      if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan")) {
+        enqueuePlanTurn(event.text, event.images);
+        return;
+      }
       setQueued((current) => [...current, event.text]);
       setState((current) => ({ ...current, timeline: [...current.timeline, `queued:${event.text}`] }));
+      return;
+    }
+    if (event.type === "cycle_mode") {
+      if (state.pendingReview) {
+        const approval = planApprovalFastAccept(
+          state.pendingReview.empty === true || !state.pendingReview.document.trim(),
+          settings?.showClearContextOnPlanAccept === true,
+          planSessionRef.current?.prePlanMode === "bypassPermissions"
+        );
+        resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
+      } else if (state.mode === "input") {
+        const nextMode = nextInputPermissionMode(state.inputPermissionMode);
+        if (nextMode === "plan") {
+          enterGlobalPlanMode();
+        } else {
+          setState((current) => ({
+            ...current,
+            inputPermissionMode: nextMode,
+            error: undefined,
+            logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(nextMode)}`)]
+          }));
+        }
+      }
+      else if (state.mode === "planning" || state.mode === "waiting_plan_approval") setState((current) => ({ ...current, error: "Plan Mode is already active" }));
+      return;
+    }
+    if (event.type === "external_editor") {
+      if (state.pendingReview) void refreshPendingPlanReview({ openEditor: true });
+      return;
+    }
+    if (event.type === "external_editor_error") {
+      setState((current) => ({ ...current, error: event.error }));
       return;
     }
     if (event.type === "command") {
@@ -397,12 +1005,17 @@ export function TuiApp({
         else resetSession();
       }
       if (event.name === "plan") {
+        const description = event.args.join(" ").trim();
+        const openPlan = event.args[0] === "open";
         if (state.mode === "waiting_plan_approval") {
-          setState((current) => ({ ...current, error: "Plan approval is already pending" }));
+          if (openPlan) void refreshPendingPlanReview({ openEditor: true });
+          else void showPendingPlanReview();
         } else if (state.mode === "planning") {
-          void requestGlobalPlanApproval();
+          if (openPlan) void openCurrentPlan();
+          else void showCurrentPlan();
         } else {
           enterGlobalPlanMode();
+          if (description && description !== "open") enqueuePlanTurn(description);
         }
       }
       if (event.name === "clear") {
@@ -416,23 +1029,23 @@ export function TuiApp({
       }
       return;
     }
-    if (state.mode === "planning") {
-      void appendGlobalPlanDraft(event.text).catch((error) => failUi(error));
+    if (state.pendingReview) {
+      if (event.text.trim()) {
+        const feedback = planApprovalPromptFeedback(event.text);
+        resolveGlobalPlan("stay", "default", feedback);
+      }
       return;
     }
-    if (state.mode === "plan_revision") {
-      setState((current) => ({ ...current, mode: "running", pendingReview: undefined, questions: [], error: undefined }));
-      void sessionRef.current?.revisePlan({ answer: event.text }).catch((error) => failUi(error));
+    if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan")) {
+      enqueuePlanTurn(event.text, event.images);
       return;
     }
     if (state.mode === "question") {
-      setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
-      void sessionRef.current?.resumeWithUserInput({ answer: event.text }).catch((error) => failUi(error));
-      return;
-    }
-    if (state.mode === "waiting_plan_review") {
-      setState((current) => ({ ...current, mode: "plan_revision", questions: [], error: undefined }));
-      void sessionRef.current?.revisePlan({ answer: event.text }).catch((error) => failUi(error));
+      if (planQuestionRef.current) void continuePlanQuestion(freeformQuestionAnswer(nextQuestionSlice(planQuestionRef.current.questions, planQuestionRef.current.index), event.text)).catch((error) => failUi(error));
+      else {
+        setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
+        void sessionRef.current?.resumeWithUserInput({ answer: event.text }).catch((error) => failUi(error));
+      }
       return;
     }
     if (state.mode === "permission" || state.mode === "confirm_interrupt" || state.mode === "confirm_new" || state.mode === "confirm_resume" || state.mode === "resume_picker" || state.mode === "select_workflow") return;
@@ -450,28 +1063,62 @@ export function TuiApp({
   const workflowNodes = selectedWorkflowId
     ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => ({ id: node.id, role: node.role, model: node.model ?? config.roles[node.role]?.default_model ?? config.providers[node.provider]?.default_model }))
     : undefined;
+  const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : state.mode;
+  const logMessages = planInteractionLogMessages(state, Boolean(planQuestionRef.current));
   const activeChoice = buildActiveChoice({
-    mode: state.mode,
+    mode: interactionMode,
     workflows,
     permission: state.permissionRequests[0],
     review: state.pendingReview,
     questions: state.questions,
+    isPlanQuestion: Boolean(planQuestionRef.current),
+    planFilePath: planQuestionRef.current && planSessionRef.current?.planFilePath ? displayPlanFilePath(planSessionRef.current.planFilePath, cwd) : undefined,
+    planApprovalPlanFilePath: state.pendingReview?.planFilePath ? displayPlanFilePath(state.pendingReview.planFilePath, cwd) : undefined,
+    planApprovalEditorName: state.pendingReview ? externalEditorDisplayName() : undefined,
+    showClearContextOnPlanAccept: settings?.showClearContextOnPlanAccept === true,
+    contextUsedPercent: state.pendingReview?.contextUsedPercent,
+    isAutoModeAvailable: planSessionRef.current?.prePlanMode === "auto",
+    isBypassPermissionsModeAvailable: planSessionRef.current?.prePlanMode === "bypassPermissions",
     selectWorkflow,
     resolvePermission: (requestId, decision) => {
+      const request = state.permissionRequests.find((item) => item.requestId === requestId);
+      if (request?.tool === "EnterPlanMode" && decision === "allow_once") {
+        approveEnterPlanModeRequest(requestId);
+        return;
+      }
       try {
         sessionRef.current?.permissions.resolve(requestId, decision);
       } catch (error) {
         failUi(error);
       }
     },
-    resolvePlan: (decision) => {
-      if (state.mode === "waiting_plan_approval") resolveGlobalPlan(decision);
-      else void sessionRef.current?.resumePlanReview(decision).catch((error) => failUi(error));
+    resolvePlan: (decision, mode, feedbackOverride, options) => {
+      if (!state.pendingReview) return;
+      const feedback = feedbackOverride ?? planApprovalFeedbackPayload();
+      resolveGlobalPlan(decision, mode, feedback, options);
     },
+    planApprovalPromptFeedback,
+    planApprovalAcceptFeedback,
+    updatePlanApprovalFeedback: (text) => {
+      planApprovalFeedbackRef.current = text;
+    },
+    hasPlanApprovalFeedback,
+    planApprovalImages,
+    addPlanApprovalImage,
+    removePlanApprovalImage,
+    resolvePlanApprovalImagePaste,
+    planQuestionImages,
+    addPlanQuestionImage,
+    removePlanQuestionImage,
+    resolvePlanQuestionImagePaste,
     resolveQuestion: (answer) => {
-      setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
-      void sessionRef.current?.resumeWithUserInput(answer).catch((error) => failUi(error));
+      if (planQuestionRef.current) void continuePlanQuestion(answer).catch((error) => failUi(error));
+      else {
+        setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
+        void sessionRef.current?.resumeWithUserInput(answer).catch((error) => failUi(error));
+      }
     },
+    editQuestionText,
     resolveInterrupt: (decision) => {
       if (decision === "interrupt") interruptAndExit();
       else setState((current) => ({ ...current, mode: current.modeBeforeConfirmation ?? "running", modeBeforeConfirmation: undefined }));
@@ -500,9 +1147,9 @@ export function TuiApp({
       }
     }
   });
-  const nextChoiceKey = activeChoice ? `${state.mode}:${activeChoice.title}:${activeChoice.options.map((option) => option.value).join("|")}` : "";
+  const nextChoiceKey = activeChoice ? `${interactionMode}:${activeChoice.title}:${activeChoice.options.map((option) => option.value).join("|")}` : "";
   const cancelActiveChoice = (): boolean => {
-    const action = resolveActiveChoiceCancel(state);
+    const action = resolveActiveChoiceCancel({ ...state, mode: interactionMode });
     if (action.type === "none") return false;
     if (canceledChoiceKeyRef.current === action.key) return true;
     canceledChoiceKeyRef.current = action.key;
@@ -529,8 +1176,7 @@ export function TuiApp({
       }
       return true;
     }
-    if (state.mode === "waiting_plan_approval") resolveGlobalPlan("stay");
-    else void sessionRef.current?.resumePlanReview("stay").catch((error) => failUi(error));
+    if (state.pendingReview) resolveGlobalPlan("stay");
     return true;
   };
   useEffect(() => {
@@ -538,7 +1184,18 @@ export function TuiApp({
     setChoiceKey(nextChoiceKey);
     canceledChoiceKeyRef.current = undefined;
   }, [choiceKey, nextChoiceKey]);
-  const layout = layoutMetrics({ terminalRows, choice: activeChoice });
+  const activePlanReview = state.pendingReview && !state.pendingReview.empty && state.pendingReview.document.trim()
+    ? state.pendingReview
+    : undefined;
+  const layout = layoutMetrics({ terminalRows, choice: activeChoice, planReview: activePlanReview });
+  useEffect(() => {
+    setPlanReviewOffset(0);
+  }, [activePlanReview?.attempt, activePlanReview?.nodeId, activePlanReview?.document]);
+  useEffect(() => {
+    if (!activePlanReview) return;
+    const maxOffset = maxPlanReviewOffset(activePlanReview.document, layout.planReviewHeight);
+    setPlanReviewOffset((current) => Math.min(current, maxOffset));
+  }, [activePlanReview, layout.planReviewHeight]);
   useInput((input, key, event) => {
     if ((input === "o" && key.ctrl) || input === "\u000f") {
       setTranscriptMode((current) => !current);
@@ -565,6 +1222,14 @@ export function TuiApp({
       return;
     }
     const mainScroll = mainScrollRef.current;
+    if (activePlanReview && (key.pageUp || key.pageDown || key.wheelUp || key.wheelDown)) {
+      const page = Math.max(1, planReviewVisibleLineCount(layout.planReviewHeight));
+      const delta = key.pageUp || key.wheelUp ? -page : page;
+      const maxOffset = maxPlanReviewOffset(activePlanReview.document, layout.planReviewHeight);
+      setPlanReviewOffset((current) => Math.max(0, Math.min(maxOffset, current + delta)));
+      event.stopImmediatePropagation();
+      return;
+    }
     if (mainScroll && key.wheelUp) {
       scrollMainUp(mainScroll, 3);
       return;
@@ -593,14 +1258,18 @@ export function TuiApp({
     );
   }
   const promptMode: PromptInputMode =
-    state.mode === "plan_revision"
-      ? "running"
-      : state.mode === "waiting_plan_approval"
-        ? "waiting_plan_review"
-        : state.mode === "running" || state.mode === "permission" || state.mode === "question" || state.mode === "waiting_plan_review" || state.mode === "confirm_interrupt"
-          ? state.mode
-          : "input";
-  const isLoading = state.mode === "running" || state.mode === "permission" || state.mode === "plan_revision";
+    interactionMode === "waiting_plan_approval"
+      ? "waiting_plan_review"
+      : interactionMode === "running"
+        ? "running"
+        : interactionMode === "permission"
+          ? "permission"
+          : interactionMode === "question"
+            ? "question"
+            : interactionMode === "confirm_interrupt"
+              ? "confirm_interrupt"
+              : "input";
+  const isLoading = state.mode === "running" || state.mode === "permission";
   return (
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
@@ -608,25 +1277,29 @@ export function TuiApp({
       <ScrollBox ref={mainScrollRef} flexDirection="column" height={layout.mainHeight} stickyScroll>
         {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
         <RunLogPanel
-          items={state.logMessages}
+          items={logMessages}
           currentNodeId={state.currentNodeId}
           currentAttempt={currentAttempt}
           detailMode={transcriptMode}
         />
         <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
       </ScrollBox>
+      {activePlanReview && layout.planReviewHeight > 0 ? <ActivePlanReviewPanel document={activePlanReview.document} height={layout.planReviewHeight} offset={planReviewOffset} /> : null}
       <InteractionArea
         choice={activeChoice}
         mode={promptMode}
         workflowId={state.workflowId}
         queued={queued}
         workflows={workflows}
+        questions={state.questions}
         isLoading={isLoading}
+        permissionMode={state.inputPermissionMode}
         hasSelection={hasSelection}
         promptText={promptText}
         inputDisabled={transcriptMode}
+        resolvePromptImagePaste={state.pendingReview || state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") ? resolvePlanPromptImagePaste : undefined}
         onPromptEvent={handlePromptEvent}
-        onPromptTextChange={setPromptText}
+        onPromptTextChange={handlePromptTextChange}
       />
     </Box>
   );
@@ -634,19 +1307,66 @@ export function TuiApp({
 function statusLog(text: string, detailText?: string): TuiLogMessage {
   return { id: randomUUID(), kind: "status", text, detailText };
 }
-function globalPlanLog(document: string, path?: string): TuiLogMessage {
+function appendUserLogMessage(state: TuiState, text: string): TuiState {
+  if (!text) return state;
+  return {
+    ...state,
+    conversation: [...state.conversation, { kind: "user", text }],
+    logMessages: [...state.logMessages, { id: randomUUID(), kind: "user", text }]
+  };
+}
+function appendMissingUserLogMessage(state: TuiState, text: string | undefined): TuiState {
+  const normalized = text?.trim();
+  if (!normalized) return state;
+  if (state.logMessages.some((message) => message.kind === "user" && message.text === normalized)) return state;
+  return appendUserLogMessage(state, normalized);
+}
+function planInteractionLogMessages(state: TuiState, hasPlanQuestion: boolean): TuiLogMessage[] {
+  if (!state.pendingReview && !(state.mode === "question" && hasPlanQuestion)) return state.logMessages;
+  for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
+    if (state.logMessages[index]?.kind === "user") return withoutActivePendingPlanLog(state.logMessages.slice(index), state.pendingReview);
+  }
+  return withoutActivePendingPlanLog(state.logMessages, state.pendingReview);
+}
+function withoutActivePendingPlanLog(messages: TuiLogMessage[], pendingReview: TuiState["pendingReview"]): TuiLogMessage[] {
+  if (!pendingReview) return messages;
+  return messages.filter((message) => !(
+    message.kind === "plan" &&
+    message.status === "pending" &&
+    message.nodeId === pendingReview.nodeId &&
+    message.attempt === pendingReview.attempt
+  ));
+}
+function globalPlanLog(document: string, path?: string, requestedPermissions?: PlanRequestedPermission[], empty?: boolean): TuiLogMessage {
+  const displayDocument = document || "Claude wants to exit plan mode";
   return {
     id: randomUUID(),
     kind: "plan",
     nodeId: "global-plan",
     attempt: 1,
     status: "pending",
-    text: "Plan Review",
-    document,
-    detailText: document,
+    text: empty ? "Exit Plan Mode" : "Plan Review",
+    document: displayDocument,
+    detailText: displayDocument,
     detailVisible: true,
-    path
+    path,
+    requestedPermissions
   };
+}
+function planLogMessagesFromTranscript(messages: ModelMessage[]): TuiLogMessage[] {
+  const logs: TuiLogMessage[] = [];
+  for (const message of messages) {
+    if (typeof message.content !== "string" || !message.content.trim()) continue;
+    if (message.role === "user") {
+      if (message.content.startsWith(planRejectionPrefix)) continue;
+      logs.push({ id: randomUUID(), kind: "user", text: message.content });
+      continue;
+    }
+    if (message.role === "assistant") {
+      logs.push({ id: randomUUID(), kind: "assistant", text: message.content });
+    }
+  }
+  return logs;
 }
 function resumeEntryLabel(entry: TuiState["resumeRuns"][number]): string {
   if (entry.kind === "session") {
@@ -667,6 +1387,268 @@ function inputPreview(input: unknown): string {
   } else if (input !== undefined) text = String(input);
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
+function isEmptyPlanOriginalInput(input: unknown): boolean {
+  if (!input || typeof input !== "object") return input === undefined || input === "";
+  const request = (input as { request?: unknown }).request;
+  return typeof request === "string" && request.trim() === "";
+}
+export function planRejectionMessage(document: string, feedback: unknown): ModelMessage {
+  const images = feedbackImages(feedback);
+  const text = [
+    planRejectionPrefix,
+    document.trim() || "(empty plan)",
+    "",
+    "User feedback:",
+    feedbackText(feedback) ?? (images.length ? "(see attached image)" : "(no feedback provided)")
+  ].join("\n");
+  if (!images.length) return { role: "user", content: text };
+  return { role: "user", content: [{ type: "text", text }, ...images] };
+}
+
+const planRejectionPrefix = "The agent proposed a plan that was rejected by the user. The user chose to stay in plan mode rather than proceed with implementation.\n\nRejected plan:";
+
+function feedbackText(feedback: unknown): string | undefined {
+  if (!feedback || typeof feedback !== "object") return typeof feedback === "string" && feedback.trim() ? feedback.trim() : undefined;
+  const answer = (feedback as { answer?: unknown }).answer;
+  return typeof answer === "string" && answer.trim() ? answer.trim() : undefined;
+}
+
+function feedbackImages(feedback: unknown): ModelContentPart[] {
+  if (!feedback || typeof feedback !== "object") return [];
+  const images = (feedback as { images?: unknown; contentBlocks?: unknown }).images ?? (feedback as { contentBlocks?: unknown }).contentBlocks;
+  if (!Array.isArray(images)) return [];
+  return images.flatMap((image) => {
+    const normalized = normalizeFeedbackImage(image);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function imageFeedbackFromText(value: string): { answer: string; contentBlocks: ModelContentPart[] } {
+  const contentBlocks: ModelContentPart[] = [];
+  const answer = value.replace(/data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)/g, (_match, mediaType: "image/png" | "image/jpeg" | "image/webp", data: string) => {
+    if (data.trim()) contentBlocks.push({ type: "image", media_type: mediaType, data });
+    return "";
+  }).trim();
+  return { answer, contentBlocks };
+}
+
+function uniqueImageBlocks(images: ModelContentPart[]): ModelContentPart[] {
+  const seen = new Set<string>();
+  const unique: ModelContentPart[] = [];
+  for (const image of images) {
+    if (image.type !== "image") continue;
+    const key = `${image.media_type}:${image.data}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(image);
+  }
+  return unique;
+}
+
+function normalizeFeedbackImage(image: unknown): ModelContentPart | undefined {
+  if (!image || typeof image !== "object" || (image as { type?: unknown }).type !== "image") return undefined;
+  const direct = image as { media_type?: unknown; mediaType?: unknown; data?: unknown; content?: unknown };
+  const source = (image as { source?: unknown }).source;
+  const sourceValue = source && typeof source === "object" ? source as { media_type?: unknown; data?: unknown } : undefined;
+  const mediaType = direct.media_type ?? direct.mediaType ?? sourceValue?.media_type;
+  const data = direct.data ?? direct.content ?? sourceValue?.data;
+  if (!isImageMediaType(mediaType) || typeof data !== "string" || !data.trim()) return undefined;
+  return { type: "image", media_type: mediaType, data };
+}
+
+function isImageMediaType(value: unknown): value is "image/png" | "image/jpeg" | "image/webp" {
+  return value === "image/png" || value === "image/jpeg" || value === "image/webp";
+}
+
+function answerText(answer: unknown): string {
+  if (typeof answer === "string") return answer;
+  if (answer && typeof answer === "object") {
+    const value = (answer as { answer?: unknown }).answer;
+    if (typeof value === "string") return value;
+  }
+  return JSON.stringify(answer);
+}
+
+function freeformQuestionAnswer(questions: unknown[], text: string): unknown {
+  const question = questions.find((item) => questionAllowsFreeform(item)) ?? questions[0];
+  return {
+    answer: text,
+    question_id: questionId(question),
+    option_value: otherQuestionOptionValue
+  };
+}
+
+function nextQuestionSlice(questions: unknown[], index: number, answers: Record<string, unknown> = {}): unknown[] {
+  const question = questions[index];
+  if (question === undefined) return [];
+  if (!question || typeof question !== "object") return [question];
+  return [{ ...question as Record<string, unknown>, __questionIndex: index, __questionCount: questions.length, __allQuestions: questions, __answers: answers }];
+}
+
+function multiQuestionToolAnswer(rawAnswers: Record<string, unknown>): { answers: Record<string, unknown>; annotations?: Record<string, unknown> } {
+  const answers: Record<string, unknown> = {};
+  const annotations: Record<string, unknown> = {};
+  for (const [question, answer] of Object.entries(rawAnswers)) {
+    answers[question] = answerValue(answer);
+    const annotation = answerAnnotation(answer);
+    if (annotation) annotations[question] = annotation;
+  }
+  return Object.keys(annotations).length ? { answers, annotations } : { answers };
+}
+
+function submitQuestionReview(questions: unknown[], answers: Record<string, unknown>): unknown {
+  return {
+    __submitQuestionReview: true,
+    questions,
+    answers,
+    detail: submitQuestionReviewDetail(questions, answers),
+    __questionIndex: questions.length,
+    __questionCount: questions.length
+  };
+}
+
+function submitQuestionReviewDetail(questions: unknown[], answers: Record<string, unknown>): string {
+  const lines: string[] = [];
+  if (questions.some((question) => !Object.prototype.hasOwnProperty.call(answers, questionText(question)))) {
+    lines.push("⚠ You have not answered all questions");
+  }
+  for (const question of questions) {
+    const text = questionText(question);
+    if (!Object.prototype.hasOwnProperty.call(answers, text)) continue;
+    lines.push(`• ${text}`, `  → ${String(answerValue(answers[text]) ?? "")}`);
+  }
+  lines.push("", "Ready to submit your answers?");
+  return lines.join("\n");
+}
+
+function submitQuestionReviewData(value: unknown): { detail: string; questions: unknown[]; answers: Record<string, unknown> } | undefined {
+  if (!value || typeof value !== "object" || (value as { __submitQuestionReview?: unknown }).__submitQuestionReview !== true) return undefined;
+  const detail = (value as { detail?: unknown }).detail;
+  const questions = (value as { questions?: unknown }).questions;
+  const answers = (value as { answers?: unknown }).answers;
+  return {
+    detail: typeof detail === "string" ? detail : "",
+    questions: Array.isArray(questions) ? questions : [],
+    answers: answers && typeof answers === "object" ? answers as Record<string, unknown> : {}
+  };
+}
+
+function isSubmitQuestionAnswer(answer: unknown): boolean {
+  return Boolean(answer && typeof answer === "object" && (answer as { type?: unknown }).type === "__submit_answers__");
+}
+
+function isRespondToClaudeQuestionAnswer(answer: unknown): boolean {
+  return Boolean(answer && typeof answer === "object" && (answer as { type?: unknown }).type === "__respond_to_claude__");
+}
+
+function isFinishPlanInterviewQuestionAnswer(answer: unknown): boolean {
+  return Boolean(answer && typeof answer === "object" && (answer as { type?: unknown }).type === "__finish_plan_interview__");
+}
+
+function isCancelQuestionAnswer(answer: unknown): boolean {
+  return Boolean(answer && typeof answer === "object" && (answer as { type?: unknown }).type === "__cancel_question__");
+}
+
+const planQuestionRejectMessage = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+
+function planQuestionCancelPayload(): { error: string; rejected: true } {
+  return { error: planQuestionRejectMessage, rejected: true };
+}
+
+function planQuestionInterviewFeedback(questions: unknown[], rawAnswers: Record<string, unknown>, finish: boolean): { feedback: string; answers: Record<string, unknown>; action: string } {
+  const answers = multiQuestionToolAnswer(rawAnswers).answers;
+  const questionsWithAnswers = questions.map((question) => {
+    const text = questionText(question);
+    const answer = answers[text];
+    return answer ? `- "${text}"\n  Answer: ${String(answer)}` : `- "${text}"\n  (No answer provided)`;
+  }).join("\n");
+  const feedback = finish
+    ? `The user has indicated they have provided enough answers for the plan interview.\nStop asking clarifying questions and proceed to finish the plan with the information you have.\n\nQuestions asked and answers provided:\n${questionsWithAnswers}`
+    : `The user wants to clarify these questions.\nThis means they may have additional information, context or questions for you.\nTake their response into account and then reformulate the questions if appropriate.\nStart by asking them what they would like to clarify.\n\nQuestions asked:\n${questionsWithAnswers}`;
+  return { action: finish ? "__finish_plan_interview__" : "__respond_to_claude__", feedback, answers };
+}
+
+function questionNavigationDirection(answer: unknown): "previous" | "next" | undefined {
+  if (!answer || typeof answer !== "object") return undefined;
+  const type = (answer as { type?: unknown }).type;
+  if (type === previousQuestionOptionValue || type === previousQuestionNavigationValue) return "previous";
+  if (type === nextQuestionNavigationValue) return "next";
+  return undefined;
+}
+
+function answerValue(answer: unknown): unknown {
+  if (!answer || typeof answer !== "object") return answer;
+  const value = (answer as { answer?: unknown }).answer;
+  if (Array.isArray(value)) return value.join(", ");
+  return value ?? answer;
+}
+
+function answerAnnotation(answer: unknown): unknown | undefined {
+  if (!answer || typeof answer !== "object") return undefined;
+  const value = answer as { annotations?: unknown; preview?: unknown };
+  if (value.annotations) return value.annotations;
+  if (typeof value.preview === "string" && value.preview.trim()) return { preview: value.preview };
+  return undefined;
+}
+
+function questionProgress(question: unknown): { index: number; count: number } | undefined {
+  if (!question || typeof question !== "object") return undefined;
+  const value = question as { __questionIndex?: unknown; __questionCount?: unknown };
+  return typeof value.__questionIndex === "number" && typeof value.__questionCount === "number" && value.__questionCount > 1
+    ? { index: value.__questionIndex, count: value.__questionCount }
+    : undefined;
+}
+
+function questionsFromQuestion(question: unknown): unknown[] {
+  if (!question || typeof question !== "object") return [];
+  const questions = (question as { __allQuestions?: unknown }).__allQuestions;
+  return Array.isArray(questions) ? questions : [question];
+}
+
+function answersFromQuestion(question: unknown): Record<string, unknown> {
+  if (!question || typeof question !== "object") return {};
+  const answers = (question as { __answers?: unknown }).__answers;
+  return answers && typeof answers === "object" ? answers as Record<string, unknown> : {};
+}
+
+function questionNavigationData(
+  questions: unknown[],
+  currentIndex: number,
+  answers: Record<string, unknown>
+): InteractionChoice["questionNavigation"] | undefined {
+  if (questions.length <= 1) return undefined;
+  return {
+    questions: questions.map((question, index) => ({
+      text: questionText(question),
+      header: questionHeader(question, index)
+    })),
+    currentIndex,
+    answers
+  };
+}
+
+function questionLogDetail(questions: unknown[]): string {
+  return questions.map((question) => questionText(question)).join("\n");
+}
+function nextInputPermissionMode(mode: PermissionMode): PermissionMode {
+  if (mode === "default") return "acceptEdits";
+  if (mode === "acceptEdits") return "plan";
+  if (mode === "plan") return "bypassPermissions";
+  return "default";
+}
+
+function workflowPermissionMode(mode: PermissionMode): Exclude<PermissionMode, "plan"> | undefined {
+  return mode === "plan" ? undefined : mode;
+}
+
+function permissionModeLabel(mode: PermissionMode): string {
+  if (mode === "acceptEdits") return "Accept Edits";
+  if (mode === "bypassPermissions") return "Bypass Permissions";
+  if (mode === "dontAsk") return "Don't Ask";
+  if (mode === "auto") return "Auto";
+  if (mode === "plan") return "Plan Mode";
+  return "Default";
+}
 export type ActiveChoiceCancelAction =
   | { type: "none" }
   | { type: "exit"; key: string }
@@ -685,7 +1667,7 @@ export function resolveActiveChoiceCancel(state: {
     const request = state.permissionRequests?.[0];
     return request ? { type: "deny_permission", requestId: request.requestId, key: `permission:${request.requestId}` } : { type: "none" };
   }
-  if (state.mode === "waiting_plan_review" || state.mode === "waiting_plan_approval") {
+  if (state.mode === "waiting_plan_approval") {
     const review = state.pendingReview;
     return review ? { type: "stay_plan", key: `plan:${review.nodeId}:${review.attempt}` } : { type: "none" };
   }
@@ -705,7 +1687,10 @@ export function resolveCtrlCBehavior(mode: TuiState["mode"], hasSession: boolean
   return mode === "confirm_interrupt" ? "interrupt" : "confirm_interrupt";
 }
 function isActiveSessionMode(mode: TuiState["mode"]): boolean {
-  return mode === "running" || mode === "permission" || mode === "question" || mode === "waiting_plan_review" || mode === "planning" || mode === "waiting_plan_approval" || mode === "plan_revision" || mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume";
+  return mode === "running" || mode === "permission" || mode === "question" || mode === "planning" || mode === "waiting_plan_approval" || mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume";
+}
+function isConfirmationMode(mode: TuiState["mode"]): boolean {
+  return mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume";
 }
 function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiState["mode"] {
   if (status === "pending") return "question";
@@ -725,11 +1710,32 @@ function buildActiveChoice(input: {
   permission?: TuiState["permissionRequests"][number];
   review?: TuiState["pendingReview"];
   questions: TuiState["questions"];
+  isPlanQuestion?: boolean;
+  planFilePath?: string;
+  planApprovalPlanFilePath?: string;
+  planApprovalEditorName?: string;
+  showClearContextOnPlanAccept?: boolean;
+  contextUsedPercent?: number;
+  isAutoModeAvailable?: boolean;
+  isBypassPermissionsModeAvailable?: boolean;
   resumeRuns: TuiState["resumeRuns"];
   selectWorkflow: (workflow: string) => void;
   resolvePermission: (requestId: string, decision: "allow_once" | "deny_once") => void;
-  resolvePlan: (decision: "continue" | "stay") => void;
+  resolvePlan: (decision: "continue" | "stay", mode?: PermissionMode, feedback?: unknown, options?: { clearContext?: boolean }) => void;
+  planApprovalPromptFeedback: (text: string, images?: PromptInputImageAttachment[]) => unknown;
+  planApprovalAcceptFeedback: () => unknown;
+  updatePlanApprovalFeedback: (text: string) => void;
+  hasPlanApprovalFeedback: () => boolean;
+  planApprovalImages?: SelectImageAttachment[];
+  addPlanApprovalImage?: (image: Omit<SelectImageAttachment, "id">) => void;
+  removePlanApprovalImage?: (id: number) => void;
+  resolvePlanApprovalImagePaste?: (value: string) => Promise<{ text: string; images: Array<Omit<SelectImageAttachment, "id">> }>;
+  planQuestionImages?: Record<string, SelectImageAttachment[]>;
+  addPlanQuestionImage?: (question: string, image: Omit<SelectImageAttachment, "id">) => void;
+  removePlanQuestionImage?: (question: string, id: number) => void;
+  resolvePlanQuestionImagePaste?: (value: string) => Promise<{ text: string; images: Array<Omit<SelectImageAttachment, "id">> }>;
   resolveQuestion: (answer: unknown) => void;
+  editQuestionText: ExternalTextEditor;
   resolveInterrupt: (decision: "interrupt" | "stay") => void;
   resolveResume: (runId: string) => void;
   resolveNew: (decision: "new" | "stay") => void;
@@ -765,6 +1771,30 @@ function buildActiveChoice(input: {
     return { title: "Resume another workflow?", options, selectedValue, onSubmit: (value) => input.resolvePendingResume(value === "resume" ? "resume" : "stay") };
   }
   if (input.mode === "permission" && input.permission) {
+    if (input.permission.tool === "EnterPlanMode") {
+      const options = [
+        { label: "Yes, enter plan mode", value: "allow_once" },
+        { label: "No, start implementing now", value: "deny_once" }
+      ];
+      return {
+        title: "Enter plan mode?",
+        detail: [
+          "Claude wants to enter plan mode to explore and design an implementation approach.",
+          "",
+          "In plan mode, Claude will:",
+          " · Explore the codebase thoroughly",
+          " · Identify existing patterns",
+          " · Design an implementation strategy",
+          " · Present a plan for your approval",
+          "",
+          "No code changes will be made until you approve the plan."
+        ].join("\n"),
+        options,
+        selectedValue: options[0].value,
+        onCancel: () => input.resolvePermission(input.permission?.requestId ?? "", "deny_once"),
+        onSubmit: (value) => input.resolvePermission(input.permission?.requestId ?? "", value === "deny_once" ? "deny_once" : "allow_once")
+      };
+    }
     const options = [
       { label: "Allow once", value: "allow_once" },
       { label: "Deny once", value: "deny_once" }
@@ -779,15 +1809,68 @@ function buildActiveChoice(input: {
     };
   }
   if (input.mode === "question") {
-    const questionChoice = buildQuestionChoice(input.questions, input.resolveQuestion);
+    const questionChoice = buildQuestionChoice({
+      questions: input.questions,
+      isPlanQuestion: input.isPlanQuestion === true,
+      planFilePath: input.planFilePath,
+      resolveQuestion: input.resolveQuestion,
+      editQuestionText: input.editQuestionText,
+      imagesByQuestion: input.planQuestionImages,
+      addImage: input.addPlanQuestionImage,
+      removeImage: input.removePlanQuestionImage,
+      resolveImagePaste: input.resolvePlanQuestionImagePaste
+    });
     if (questionChoice) return questionChoice;
   }
-  if ((input.mode === "waiting_plan_review" || input.mode === "waiting_plan_approval") && input.review) {
-    const options = [
-      { label: "Yes, approve and continue", value: "continue" },
-      { label: "No, keep planning", value: "stay", type: "input" as const, placeholder: "Tell the agent what to change", showLabelWithValue: true, allowEmptySubmitToCancel: true, onChange: () => undefined }
-    ];
-    return { title: "Plan approval request", detail: "Review the plan above. Press Enter to approve or type feedback below.", options, selectedValue: "continue", allowPromptInput: true, onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue") };
+  if (input.mode === "waiting_plan_approval" && input.review) {
+    if (input.review.empty || !input.review.document.trim()) {
+      const options = [
+        { label: "Yes", value: "yes-default-keep-context" },
+        { label: "No", value: "stay" }
+      ];
+      return {
+        title: "Exit plan mode?",
+        detail: "Claude wants to exit plan mode",
+        options,
+        selectedValue: options[0].value,
+        onCancel: () => input.resolvePlan("stay", "default"),
+        onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue", "default")
+      };
+    }
+    const options = buildPlanApprovalOptions(
+      input.showClearContextOnPlanAccept === true,
+      input.contextUsedPercent ?? null,
+      input.isAutoModeAvailable === true,
+      input.isBypassPermissionsModeAvailable === true,
+      input.updatePlanApprovalFeedback
+    );
+    return {
+      title: "Ready to code?",
+      detail: planApprovalDetail({
+        requestedPermissions: input.review.requestedPermissions,
+        savedMessage: input.review.savedMessage,
+        planFilePath: input.planApprovalPlanFilePath,
+        editorName: input.planApprovalEditorName
+      }),
+      options,
+      selectedValue: options[0]?.value ?? "yes-default-keep-context",
+      allowPromptInput: true,
+      imageAttachments: input.planApprovalImages,
+      onImagePaste: input.addPlanApprovalImage,
+      onRemoveImage: input.removePlanApprovalImage,
+      resolveImagePaste: input.resolvePlanApprovalImagePaste,
+      onCancel: () => input.resolvePlan("stay", "default"),
+      onSubmit: (value) => {
+        if (value === "stay") {
+          if (input.hasPlanApprovalFeedback()) input.resolvePlan("stay");
+          return;
+        }
+        input.resolvePlan("continue", planApprovalPermissionMode(value, input.isBypassPermissionsModeAvailable === true), input.planApprovalAcceptFeedback(), { clearContext: planApprovalClearsContext(value) });
+      },
+      onPromptSubmit: (text, _focusedValue, images) => {
+        input.resolvePlan("stay", "default", input.planApprovalPromptFeedback(text, images));
+      }
+    };
   }
   if (input.mode === "confirm_interrupt") {
     const options = [
@@ -800,32 +1883,273 @@ function buildActiveChoice(input: {
   return undefined;
 }
 
-function buildQuestionChoice(questions: unknown[], resolveQuestion: (answer: unknown) => void): InteractionChoice | undefined {
-  const question = questions.find((item) => questionOptions(item).length > 0);
+function planApprovalPermissionMode(value: string, isBypassPermissionsModeAvailable = false): PermissionMode {
+  if (value === "yes-auto-clear-context" || value === "yes-resume-auto-mode") return "auto";
+  if (value === "yes-bypass-permissions") return "bypassPermissions";
+  if (value === "yes-accept-edits") return "acceptEdits";
+  if (value === "yes-accept-edits-keep-context") return isBypassPermissionsModeAvailable ? "bypassPermissions" : "acceptEdits";
+  return "default";
+}
+
+function planApprovalClearsContext(value: string): boolean {
+  return value === "yes-auto-clear-context" || value === "yes-bypass-permissions" || value === "yes-accept-edits";
+}
+
+function buildPlanApprovalOptions(
+  showClearContext: boolean,
+  usedPercent: number | null,
+  isAutoModeAvailable: boolean,
+  isBypassPermissionsModeAvailable: boolean,
+  onFeedbackChange: (text: string) => void
+): InteractionChoice["options"] {
+  const options: InteractionChoice["options"] = [];
+  const usedLabel = usedPercent !== null ? ` (${usedPercent}% used)` : "";
+  if (showClearContext) {
+    if (isAutoModeAvailable) {
+      options.push({ label: `Yes, clear context${usedLabel} and use auto mode`, value: "yes-auto-clear-context" });
+    } else {
+      options.push(isBypassPermissionsModeAvailable
+        ? { label: `Yes, clear context${usedLabel} and bypass permissions`, value: "yes-bypass-permissions" }
+        : { label: `Yes, clear context${usedLabel} and auto-accept edits`, value: "yes-accept-edits" });
+    }
+  }
+  options.push(
+    isAutoModeAvailable
+      ? { label: "Yes, and use auto mode", value: "yes-resume-auto-mode" }
+      : isBypassPermissionsModeAvailable
+      ? { label: "Yes, and bypass permissions", value: "yes-accept-edits-keep-context" }
+      : { label: "Yes, auto-accept edits", value: "yes-accept-edits-keep-context" },
+    { label: "Yes, manually approve edits", value: "yes-default-keep-context" },
+    {
+      type: "input",
+      label: "No, keep planning",
+      value: "stay",
+      placeholder: "Tell Claude what to change",
+      description: "shift+tab to approve with this feedback",
+      showLabelWithValue: true,
+      labelValueSeparator: ": ",
+      onChange: onFeedbackChange
+    }
+  );
+  return options;
+}
+
+function planApprovalFastAccept(empty: boolean, showClearContext: boolean, isBypassPermissionsModeAvailable = false): { permissionMode: PermissionMode; clearContext: boolean } {
+  if (empty) return { permissionMode: "default", clearContext: false };
+  const value = showClearContext ? "yes-accept-edits" : "yes-accept-edits-keep-context";
+  return {
+    permissionMode: planApprovalPermissionMode(value, isBypassPermissionsModeAvailable),
+    clearContext: planApprovalClearsContext(value)
+  };
+}
+
+function planApprovalDetail(input: {
+  requestedPermissions?: PlanRequestedPermission[];
+  savedMessage?: string;
+  planFilePath?: string;
+  editorName?: string;
+}): string {
+  const lines: string[] = [];
+  if (input.requestedPermissions?.length) {
+    lines.push(
+      "Requested permissions:",
+      ...input.requestedPermissions.map((permission) => `  · ${permission.tool}(prompt: ${permission.prompt})`)
+    );
+  }
+  lines.push("Claude has written up a plan and is ready to execute. Would you like to proceed?");
+  if (input.editorName) {
+    const path = input.planFilePath ? ` · ${input.planFilePath}` : "";
+    lines.push(`ctrl-g to edit in ${input.editorName}${path}`);
+  }
+  if (input.savedMessage) lines.push(input.savedMessage);
+  return lines.join("\n");
+}
+function displayPlanFilePath(planFilePath: string, cwd: string): string {
+  const relativePath = relative(cwd, planFilePath);
+  if (relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath)) return relativePath;
+  return planFilePath;
+}
+
+function selectPlanProvider(input: {
+  config?: AgentTeamConfig;
+  workflowId?: string;
+  providerFactory?: (providerId: string) => ModelProvider;
+}): { provider: ModelProvider; model: string; contextWindow?: number } | undefined {
+  if (!input.config || !input.providerFactory) return undefined;
+  const providerId = input.config.providers.default
+    ? "default"
+    : input.workflowId
+      ? input.config.workflows[input.workflowId]?.nodes[0]?.provider
+      : Object.keys(input.config.providers)[0];
+  if (!providerId) return undefined;
+  const providerConfig = input.config.providers[providerId];
+  if (!providerConfig) return undefined;
+  const registry = modelRegistryFromProviderConfig(providerConfig);
+  const model = resolveModelForWorkflowNode({
+    provider: providerConfig,
+    permissionMode: "plan",
+    planModel: providerConfig.plan_model,
+    registry
+  });
+  return {
+    provider: input.providerFactory(providerId),
+    model,
+    contextWindow: getModelContextWindow(model, registry)
+  };
+}
+
+function contextUsedPercent(usage: ModelUsage | undefined, contextWindow: number | undefined): number | undefined {
+  if (!usage?.inputTokens || !contextWindow) return undefined;
+  return Math.max(0, Math.round((usage.inputTokens / contextWindow) * 100));
+}
+
+function buildQuestionChoice(input: {
+  questions: unknown[];
+  isPlanQuestion?: boolean;
+  planFilePath?: string;
+  resolveQuestion: (answer: unknown) => void;
+  editQuestionText?: ExternalTextEditor;
+  imagesByQuestion?: Record<string, SelectImageAttachment[]>;
+  addImage?: (question: string, image: Omit<SelectImageAttachment, "id">) => void;
+  removeImage?: (question: string, id: number) => void;
+  resolveImagePaste?: (value: string) => Promise<{ text: string; images: Array<Omit<SelectImageAttachment, "id">> }>;
+}): InteractionChoice | undefined {
+  const review = submitQuestionReviewData(input.questions[0]);
+  if (review) {
+    const options = [
+      { label: "Submit answers", value: "__submit_answers__" },
+      { label: "Cancel", value: "__cancel_question__" }
+    ];
+    return {
+      title: "Review your answers",
+      detail: review.detail,
+      questionNavigation: questionNavigationData(review.questions, review.questions.length, review.answers),
+      options,
+      selectedValue: options[0].value,
+      onCancel: () => input.resolveQuestion({ type: "__cancel_question__" }),
+      onNavigate: (direction) => input.resolveQuestion({ type: direction === "next" ? nextQuestionNavigationValue : previousQuestionNavigationValue }),
+      onSubmit: (value) => input.resolveQuestion({ type: value })
+    };
+  }
+  const question = input.questions.find((item) => questionOptions(item).length > 0);
   if (!question) return undefined;
   const id = questionId(question);
-  const options = questionOptions(question).map((option) => ({
+  const questionKey = questionText(question);
+  const imageAttachments = input.imagesByQuestion?.[questionKey] ?? [];
+  let freeformText = "";
+  const baseOptions = questionOptions(question);
+  const hasPreview = baseOptions.some((option) => typeof option.preview === "string" && option.preview.trim());
+  const progress = questionProgress(question);
+  const planDetail = input.isPlanQuestion && input.planFilePath && !hasPreview ? `Planning: ${input.planFilePath}` : undefined;
+  const options: InteractionChoice["options"] = baseOptions.map((option) => ({
     label: option.label,
     value: option.value,
     description: option.description,
+    preview: option.preview,
     disabled: option.disabled
   }));
+  if (questionAllowsFreeform(question) && !hasPreview) {
+    options.push({
+      type: "input" as const,
+      label: "Other",
+      value: otherQuestionOptionValue,
+      placeholder: questionIsMultiSelect(question) ? "Type something" : "Type something.",
+      showLabelWithValue: true,
+      onChange: (value: string) => {
+        freeformText = value;
+      }
+    });
+  }
+  if (progress && progress.index > 0 && !questionIsMultiSelect(question)) {
+    options.push({ label: "Previous question", value: previousQuestionOptionValue });
+  }
+  const footerActions = input.isPlanQuestion
+    ? [
+        { label: "Chat about this", value: respondToClaudeQuestionValue },
+        { label: "Skip interview and plan immediately", value: finishPlanInterviewQuestionValue }
+      ]
+    : undefined;
   return {
-    title: questionText(question),
+    title: progress ? `Question ${progress.index + 1}/${progress.count}: ${questionText(question)}` : questionText(question),
+    detail: planDetail,
+    questionNavigation: progress ? questionNavigationData(questionsFromQuestion(question), progress.index, answersFromQuestion(question)) : undefined,
     options,
+    footerActions,
     selectedValue: options[0]?.value ?? "",
+    multiSelect: questionIsMultiSelect(question),
+    selectedValues: [],
+    submitButtonText: questionIsMultiSelect(question) ? (progress && progress.index < progress.count - 1 ? "Next" : "Submit") : undefined,
     allowPromptInput: questionAllowsFreeform(question),
+    onCancel: () => input.resolveQuestion({ type: "__cancel_question__" }),
+    imageAttachments,
+    onImagePaste: input.addImage ? (image) => input.addImage?.(questionKey, image) : undefined,
+    onRemoveImage: input.removeImage ? (imageId) => input.removeImage?.(questionKey, imageId) : undefined,
+    resolveImagePaste: input.resolveImagePaste,
     onSubmit: (value) => {
+      if (value === previousQuestionOptionValue) {
+        input.resolveQuestion({ type: previousQuestionOptionValue });
+        return;
+      }
+      if (value === respondToClaudeQuestionValue || value === finishPlanInterviewQuestionValue) {
+        input.resolveQuestion({ type: value });
+        return;
+      }
+      if (value === otherQuestionOptionValue) {
+        input.resolveQuestion({ answer: questionFreeformAnswer(freeformText, imageAttachments), question_id: id, option_value: otherQuestionOptionValue });
+        return;
+      }
       const selected = questionOptions(question).find((option) => option.value === value);
-      resolveQuestion({ answer: selected?.label ?? value, question_id: id, option_value: value });
+      input.resolveQuestion({ answer: selected?.label ?? value, question_id: id, option_value: value, ...(selected?.preview ? { preview: selected.preview } : {}) });
+    },
+    onNavigate: progress ? (direction) => input.resolveQuestion({ type: direction === "next" ? nextQuestionNavigationValue : previousQuestionNavigationValue }) : undefined,
+    onPromptSubmit: hasPreview
+      ? (text, focusedValue) => {
+          const selected = questionOptions(question).find((option) => option.value === focusedValue) ?? questionOptions(question)[0];
+          input.resolveQuestion({
+            answer: selected?.label ?? text,
+            question_id: id,
+            option_value: selected?.value,
+            ...(selected?.preview || text.trim() ? { annotations: { ...(selected?.preview ? { preview: selected.preview } : {}), ...(text.trim() ? { notes: text.trim() } : {}) } } : {})
+          });
+        }
+      : undefined,
+    editInputText: input.editQuestionText,
+    editPromptText: hasPreview ? input.editQuestionText : undefined,
+    onSubmitValues: (values) => {
+      const answerValues = values.filter((value) => value !== respondToClaudeQuestionValue && value !== finishPlanInterviewQuestionValue);
+      const selected = questionOptions(question).filter((option) => answerValues.includes(option.value));
+      const answer = selected.map((option) => option.label);
+      if (answerValues.includes(otherQuestionOptionValue)) {
+        const otherAnswer = questionFreeformAnswer(freeformText, imageAttachments);
+        if (otherAnswer.trim()) answer.push(otherAnswer);
+      }
+      input.resolveQuestion({
+        answer,
+        question_id: id,
+        option_values: answerValues
+      });
     }
   };
+}
+
+const otherQuestionOptionValue = "__other__";
+const previousQuestionOptionValue = "__previous_question__";
+const previousQuestionNavigationValue = "__navigate_previous_question__";
+const nextQuestionNavigationValue = "__navigate_next_question__";
+const respondToClaudeQuestionValue = "__respond_to_claude__";
+const finishPlanInterviewQuestionValue = "__finish_plan_interview__";
+
+function questionFreeformAnswer(text: string, images: SelectImageAttachment[] = []): string {
+  const answer = text.trim();
+  if (!images.length) return answer;
+  return answer ? `${answer} (Image attached)` : "(Image attached)";
 }
 
 type QuestionOption = {
   label: string;
   value: string;
   description?: string;
+  preview?: string;
   disabled?: boolean;
 };
 
@@ -842,6 +2166,7 @@ function questionOptions(question: unknown): QuestionOption[] {
       label,
       value: typeof value.value === "string" && value.value.trim() ? value.value : String(index + 1),
       description: typeof value.description === "string" ? value.description : undefined,
+      preview: typeof value.preview === "string" ? value.preview : undefined,
       disabled: value.disabled === true
     }];
   });
@@ -856,20 +2181,110 @@ function questionId(question: unknown): string | undefined {
 function questionText(question: unknown): string {
   if (!question || typeof question !== "object") return "Waiting for user input";
   const text = (question as { text?: unknown }).text;
-  return typeof text === "string" && text.trim() ? text : "Waiting for user input";
+  if (typeof text === "string" && text.trim()) return text;
+  const tuiCodeQuestion = (question as { question?: unknown }).question;
+  return typeof tuiCodeQuestion === "string" && tuiCodeQuestion.trim() ? tuiCodeQuestion : "Waiting for user input";
+}
+
+function questionHeader(question: unknown, index: number): string {
+  if (question && typeof question === "object") {
+    const header = (question as { header?: unknown }).header;
+    if (typeof header === "string" && header.trim()) return header;
+  }
+  return `Q${index + 1}`;
 }
 
 function questionAllowsFreeform(question: unknown): boolean {
   if (!question || typeof question !== "object") return true;
   return (question as { allow_freeform?: unknown }).allow_freeform !== false;
 }
-function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice }): { mainHeight: number } {
+
+function questionIsMultiSelect(question: unknown): boolean {
+  return Boolean(question && typeof question === "object" && (question as { multiSelect?: unknown }).multiSelect === true);
+}
+function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string } }): { mainHeight: number; planReviewHeight: number } {
   const headerRows = 3;
   const flowRows = 4;
   const promptRows = 5;
-  const choiceRows = input.choice ? input.choice.options.length + 3 + (input.choice.detail ? 1 : 0) : 0;
-  const mainHeight = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
-  return { mainHeight };
+  const choiceRows = input.choice ? estimateChoiceRows(input.choice) : 0;
+  const available = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
+  const planReviewHeight = input.planReview ? Math.max(0, Math.min(12, available - 1)) : 0;
+  const mainHeight = Math.max(1, available - planReviewHeight);
+  return { mainHeight, planReviewHeight };
+}
+
+function estimateChoiceRows(choice: InteractionChoice): number {
+  const borderRows = 2;
+  const titleRows = 1;
+  const detailRows = choice.detail ? choice.detail.split(/\r?\n/).length : 0;
+  const documentRows = choice.documentBlock
+    ? (choice.documentBlock.title ? 1 : 0) +
+      2 +
+      Math.min(choice.documentBlock.text.split(/\r?\n/).length, choice.documentBlock.maxLines ?? 18) +
+      (choice.documentBlock.text.split(/\r?\n/).length > (choice.documentBlock.maxLines ?? 18) ? 1 : 0) +
+      1
+    : 0;
+  const visibleOptionRows = choice.multiSelect
+    ? Math.min(choice.options.length + 1, choice.visibleOptionCount ?? 7)
+    : Math.min(choice.options.length, choice.visibleOptionCount ?? 7);
+  const footerRows = choice.footerActions?.length ? choice.footerActions.length + 1 : 0;
+  return borderRows + titleRows + detailRows + documentRows + visibleOptionRows + footerRows;
+}
+
+function ActivePlanReviewPanel({ document, height, offset }: { document: string; height: number; offset: number }) {
+  const lines = document.split(/\r?\n/);
+  const maxOffset = maxPlanReviewOffset(document, height);
+  const start = Math.max(0, Math.min(offset, maxOffset));
+  if (height <= 3) {
+    const line = lines[start] ?? "";
+    const hidden = Math.max(0, lines.length - start - (line ? 1 : 0));
+    return (
+      <Box flexDirection="column" height={height} flexShrink={0} overflow="hidden" opaque>
+        <Text wrap="truncate-end">Here is Claude's plan: {line}</Text>
+        {height > 1 && hidden ? <Text dimColor>{`... ${hidden} lines hidden`}</Text> : null}
+      </Box>
+    );
+  }
+  const visibleLines = planReviewVisibleLineCount(height);
+  const visible = lines.slice(start, start + visibleLines);
+  const hidden = Math.max(0, lines.length - start - visible.length);
+  const before = start > 0 ? `${start} previous line${start === 1 ? "" : "s"}` : "";
+  const after = hidden ? `${hidden} lines hidden` : "";
+  const hiddenText = [before, after].filter(Boolean).join(", ");
+  const separator = "╌".repeat(72);
+  return (
+    <Box flexDirection="column" height={height} flexShrink={0} overflow="hidden" opaque>
+      <Text>Here is Claude's plan:</Text>
+      <Text dimColor>{separator}</Text>
+      {visible.map((line, index) => <PlanReviewLine key={index} line={line} />)}
+      {hiddenText ? <Text dimColor>{`... ${hiddenText}`}</Text> : null}
+      {planReviewShowsBottomSeparator(height, hiddenText.length > 0) ? <Text dimColor>{separator}</Text> : null}
+    </Box>
+  );
+}
+
+function planReviewVisibleLineCount(height: number): number {
+  if (height <= 3) return 1;
+  const reservedRows = 2;
+  const hiddenRows = 1;
+  const bottomSeparatorRows = height - reservedRows - hiddenRows >= 2 ? 1 : 0;
+  return Math.max(1, height - reservedRows - hiddenRows - bottomSeparatorRows);
+}
+
+function planReviewShowsBottomSeparator(height: number, hasHiddenText: boolean): boolean {
+  if (height <= 3) return false;
+  const hiddenRows = hasHiddenText ? 1 : 0;
+  return height - 2 - hiddenRows - planReviewVisibleLineCount(height) >= 1;
+}
+
+function maxPlanReviewOffset(document: string, height: number): number {
+  const lineCount = document.split(/\r?\n/).length;
+  return Math.max(0, lineCount - planReviewVisibleLineCount(height));
+}
+
+function PlanReviewLine({ line }: { line: string }) {
+  if (/^(#{1,6})\s+/.test(line)) return <Text bold wrap="wrap">{line}</Text>;
+  return <Text wrap="wrap">{line || " "}</Text>;
 }
 export function jumpMainScrollBy(scroll: Pick<ScrollBoxHandle, "getScrollHeight" | "getViewportHeight" | "getScrollTop" | "getPendingDelta" | "scrollTo" | "scrollToBottom">, delta: number): boolean {
   const max = Math.max(0, scroll.getScrollHeight() - scroll.getViewportHeight());

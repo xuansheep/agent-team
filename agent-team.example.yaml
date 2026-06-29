@@ -35,12 +35,6 @@ providers:
       json_schema_output: true
 
 roles:
-  product:
-    description: Clarifies requirements and prepares an execution plan for user review.
-    system_prompt: You are the product planning node. Analyze the user's intent and produce a concise implementation plan for downstream nodes.
-    requires:
-      tool_calling: false
-      vision: true
   developer:
     description: Implements the approved plan.
     system_prompt: You are the development node. Use local tools to complete the implementation according to the approved plan.
@@ -67,18 +61,6 @@ workflows:
       ask: []
       allow: []
     nodes:
-      - id: product
-        role: product
-        provider: default
-        mode: plan
-        permissions:
-          allow:
-            - Read
-            - LS
-            - Glob
-            - Grep
-            - EnterPlanMode
-            - ExitPlanMode
       - id: dev
         role: developer
         provider: default
@@ -115,9 +97,6 @@ workflows:
             - LS
             - Glob
     edges:
-      - from: product
-        to: dev
-        condition: success
       - from: dev
         to: test
         condition: success

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { checkToolPermission } from "../../src/permissions/checkToolPermission.js";
+import { bashTool as localBashTool } from "../../src/tools/local/bash.js";
+import { exitPlanModeTool } from "../../src/tools/local/exitPlanMode.js";
 import { Tool } from "../../src/tools/types.js";
 
 async function workspace(): Promise<string> {
@@ -59,6 +61,56 @@ describe("checkToolPermission", () => {
     })).decision, "deny");
   });
 
+  it("uses conservative deterministic decisions in auto mode", async () => {
+    const cwd = await workspace();
+
+    assert.equal((await checkToolPermission(writeTool, { file_path: "src/index.ts", content: "x" }, {
+      mode: "auto",
+      allow: [],
+      ask: [],
+      deny: [],
+      cwd
+    })).decision, "allow");
+
+    assert.equal((await checkToolPermission(bashTool, { command: "npm test" }, {
+      mode: "auto",
+      allow: [],
+      ask: [],
+      deny: [],
+      cwd
+    })).decision, "deny");
+
+    assert.equal((await checkToolPermission(bashTool, { command: "node --test --help" }, {
+      mode: "auto",
+      allow: ["Bash(prompt:run tests)"],
+      ask: [],
+      deny: [],
+      cwd
+    })).decision, "allow");
+
+    assert.equal((await checkToolPermission(bashTool, { command: "git reset --hard" }, {
+      mode: "auto",
+      allow: [],
+      ask: [],
+      deny: ["Bash(git reset*)"],
+      cwd
+    })).decision, "deny");
+  });
+
+  it("turns permission prompts into denials in dontAsk mode", async () => {
+    const cwd = await workspace();
+    const decision = await checkToolPermission(bashTool, { command: "npm test" }, {
+      mode: "dontAsk",
+      allow: [],
+      ask: ["Bash(npm test)"],
+      deny: [],
+      cwd
+    });
+
+    assert.equal(decision.decision, "deny");
+    assert.equal(decision.reason, "dontAsk mode blocks permission prompts");
+  });
+
   it("allows read-only tools and rejects normal write tools in plan mode", async () => {
     const cwd = await workspace();
 
@@ -81,6 +133,38 @@ describe("checkToolPermission", () => {
     });
     assert.equal(writeDecision.decision, "deny");
     assert.match(writeDecision.reason ?? "", /Plan Mode/);
+  });
+
+  it("rejects ExitPlanMode outside plan mode before prompting for approval", async () => {
+    const cwd = await workspace();
+
+    const decision = await checkToolPermission(exitPlanModeTool, {}, {
+      mode: "default",
+      allow: [],
+      ask: ["ExitPlanMode"],
+      deny: [],
+      cwd
+    });
+
+    assert.equal(decision.decision, "deny");
+    assert.match(decision.reason ?? "", /You are not in plan mode/);
+    assert.match(decision.reason ?? "", /only for exiting plan mode after writing a plan/);
+  });
+
+  it("allows TodoWrite in plan mode as a planning checklist tool", async () => {
+    const cwd = await workspace();
+
+    const decision = await checkToolPermission(todoWriteTool, { todos: [{ content: "Inspect code", status: "pending" }] }, {
+      mode: "plan",
+      allow: [],
+      ask: [],
+      deny: [],
+      cwd,
+      planFilePath: ".session/plans/session-1.md"
+    });
+
+    assert.equal(decision.decision, "allow");
+    assert.equal(decision.reason, "plan mode todo tool");
   });
 
   it("allows only the current session plan file in plan mode", async () => {
@@ -115,6 +199,29 @@ describe("checkToolPermission", () => {
     assert.equal((await checkToolPermission(powerShellTool, { command: "Remove-Item out.txt" }, context)).decision, "deny");
     assert.equal((await checkToolPermission(workflowRunTool, { workflow: "delivery" }, context)).decision, "deny");
   });
+
+  it("allows only read-only Bash commands in plan mode", async () => {
+    const cwd = await workspace();
+    const context = {
+      mode: "plan" as const,
+      allow: [],
+      ask: [],
+      deny: [],
+      cwd,
+      planFilePath: ".session/plans/session-1.md"
+    };
+
+    assert.equal((await checkToolPermission(localBashTool, { command: "pwd" }, context)).decision, "allow");
+    assert.equal((await checkToolPermission(localBashTool, { command: "rg \"Plan Mode\" src" }, context)).decision, "allow");
+    assert.equal((await checkToolPermission(localBashTool, { command: "pwd && ls -la" }, context)).decision, "allow");
+    assert.equal((await checkToolPermission(localBashTool, { command: "rg \"Plan Mode\" src | head -20" }, context)).decision, "allow");
+    assert.equal((await checkToolPermission(localBashTool, { command: "git status --short" }, context)).decision, "allow");
+    assert.equal((await checkToolPermission(localBashTool, { command: "npm test" }, context)).decision, "deny");
+    assert.equal((await checkToolPermission(localBashTool, { command: "cat package.json > copy.json" }, context)).decision, "deny");
+    assert.equal((await checkToolPermission(localBashTool, { command: "rg foo src | tee out.txt" }, context)).decision, "deny");
+    assert.equal((await checkToolPermission(localBashTool, { command: "git reset --hard" }, context)).decision, "deny");
+    assert.equal((await checkToolPermission(localBashTool, { command: "git reset --hard" }, context)).reason, "Plan Mode blocks shell execution");
+  });
 });
 
 const readTool: Tool = {
@@ -139,6 +246,17 @@ const writeTool: Tool = {
     const path = String((input as { file_path?: unknown }).file_path ?? "");
     return path.startsWith(".session/plans/") && Boolean(context.cwd);
   },
+  async execute() {
+    return { output: "" };
+  }
+};
+
+const todoWriteTool: Tool = {
+  name: "TodoWrite",
+  description: "todos",
+  input_schema: {},
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
   async execute() {
     return { output: "" };
   }

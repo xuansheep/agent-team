@@ -15,6 +15,15 @@ const tool: Tool = {
     return { output: "" };
   }
 };
+const promptedTool: Tool = {
+  name: "PromptedTool",
+  description: "Short provider description",
+  prompt: "Long model-facing tool prompt that belongs only in runtime attachments.",
+  input_schema: { type: "object", properties: {} },
+  async execute() {
+    return { output: "" };
+  }
+};
 const context = {
   runId: "run-1",
   nodeId: "dev",
@@ -69,6 +78,21 @@ describe("ResponsesApiProvider", () => {
     assert.deepEqual(server.requestBody.text, {
       format: { type: "json_schema", name: "node_result", strict: true, schema: responseSchema }
     });
+  });
+
+  it("keeps long tool prompts out of Responses API tool schemas", async () => {
+    const server = await startJsonServer({ output_text: "{\"status\":\"success\"}" });
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [promptedTool] });
+
+    assert.deepEqual(server.requestBody.tools, [{
+      type: "function",
+      name: "PromptedTool",
+      description: "Short provider description",
+      parameters: promptedTool.input_schema
+    }]);
+    assert.doesNotMatch(JSON.stringify(server.requestBody), /Long model-facing tool prompt/);
   });
 
   it("maps reasoning summary output into normalized thinking text", async () => {

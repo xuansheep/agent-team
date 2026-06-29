@@ -67,6 +67,7 @@ function PermissionLogMessage({ item, detailMode }: { item: TuiPermissionLogMess
 function PlanLogMessage({ item, detailMode }: { item: TuiPlanLogMessage; detailMode: boolean }) {
   const color = item.status === "approved" ? "green" : item.status === "rejected" ? "red" : "yellow";
   const statusText = item.status === "approved" ? "approved" : item.status === "rejected" ? "needs revision" : "pending approval";
+  const showPlanApprovalLabel = item.status === "pending" && item.text !== "Exit Plan Mode";
   const document = detailMode ? item.document : truncate(item.document, 2400);
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -77,17 +78,51 @@ function PlanLogMessage({ item, detailMode }: { item: TuiPlanLogMessage; detailM
         <Text bold>Plan Review</Text>
         <Text dimColor> ({statusText})</Text>
       </Box>
+      {item.status === "rejected" && item.detailText ? (
+        <Box paddingLeft={2}>
+          <Text dimColor wrap="wrap">{item.detailText}</Text>
+        </Box>
+      ) : null}
       {item.path ? (
         <Box paddingLeft={2}>
           <Text dimColor wrap="truncate-end">{item.path}</Text>
         </Box>
       ) : null}
-      <MessageResponse>
-        <SimpleMarkdown text={document} />
-      </MessageResponse>
+      {item.requestedPermissions?.length ? (
+        <Box flexDirection="column" paddingLeft={2} marginTop={1}>
+          <Text bold>Requested permissions:</Text>
+          {item.requestedPermissions.map((permission, index) => (
+            <Text key={index} dimColor wrap="wrap">  · {permission.tool}(prompt: {permission.prompt})</Text>
+          ))}
+        </Box>
+      ) : null}
+      {showPlanApprovalLabel ? (
+        <Box paddingLeft={2} marginTop={1}>
+          <Text>Here is Claude's plan:</Text>
+        </Box>
+      ) : null}
+      <PlanDocumentBlock text={document} dashed={showPlanApprovalLabel} />
     </Box>
   );
 }
+function PlanDocumentBlock({ text, dashed }: { text: string; dashed: boolean }) {
+  if (!dashed) {
+    return (
+      <MessageResponse>
+        <SimpleMarkdown text={text} />
+      </MessageResponse>
+    );
+  }
+  return (
+    <Box flexDirection="column" marginTop={1} paddingX={1} overflow="hidden">
+      <Text dimColor>{planDocumentSeparator}</Text>
+      <SimpleMarkdown text={text} />
+      <Text dimColor>{planDocumentSeparator}</Text>
+    </Box>
+  );
+}
+const planDocumentSeparator = "╌".repeat(72);
+
 function SimpleMarkdown({ text }: { text: string }) {
   const lines = text.split(/\r?\n/);
   let inCode = false;

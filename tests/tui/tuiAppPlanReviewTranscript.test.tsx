@@ -1,45 +1,43 @@
 import React from "react";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { render } from "ink-testing-library";
 import { TuiApp } from "../../src/tui/TuiApp.js";
+import { getPlanFilePath, writePlan } from "../../src/plans/planFiles.js";
+import { SessionStore } from "../../src/storage/sessionStore.js";
 
 describe("TuiApp plan review transcript", () => {
-  it("renders plan review documents as transcript entries instead of a persistent bottom panel", async () => {
-    const session = fakeInteractiveSession({
-      runId: "run-plan-transcript",
-      workflowId: "delivery",
-      events: [
-        {
-          type: "plan_review_requested",
-          node_id: "product",
-          attempt: 1,
-          document: "# Plan\nold plan",
-          ts: "2026-06-24T00:00:00.000Z",
-          seq: 1
-        },
-        {
-          type: "model_stream_delta",
-          node_id: "product",
-          attempt: 1,
-          text: "后续日志应该出现在计划之后。",
-          ts: "2026-06-24T00:00:01.000Z",
-          seq: 2
-        }
-      ]
+  it("renders restored Plan Mode approvals in the active approval dialog", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-plan-transcript-"));
+    const planFilePath = getPlanFilePath("session-plan-transcript", cwd);
+    await writePlan(planFilePath, "# Plan\nreview from restored session\n");
+    await new SessionStore(join(cwd, ".session")).savePlanState("session-plan-transcript", {
+      mode: "waiting_approval",
+      sessionId: "session-plan-transcript",
+      planFilePath,
+      prePlanMode: "default",
+      originalInput: { request: "review plan" }
     });
-    const engine = { async startInteractive() { return session; } };
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const engine = {
+      async listRuns() { return []; },
+      async startInteractive() { throw new Error("workflow must not start"); },
+      async resumeInteractive() { throw new Error("workflow resume must not run for plan session"); }
+    };
+    const output = render(<TuiApp cwd={cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
 
-    await sendTuiLine(output, "review plan");
+    await sendTuiLine(output, "/resume");
+    await settleTuiWork();
+    output.stdin.write("\r");
     await settleTuiWork();
 
     const frame = output.lastFrame() ?? "";
-    const planIndex = frame.indexOf("# Plan");
-    const laterLogIndex = frame.indexOf("后续日志应该出现在计划之后。");
-    assert.notEqual(planIndex, -1);
-    assert.notEqual(laterLogIndex, -1);
-    assert.ok(planIndex < laterLogIndex, frame);
+    assert.match(frame, /Ready to code\?/);
+    assert.match(frame, /Here is Claude's plan:/);
+    assert.match(frame, /review from restored session/);
+    assert.doesNotMatch(frame, /Ready to code\?.*\.session\/plans/);
     assert.doesNotMatch(frame, /scroll main window with mouse wheel or PageUp\/PageDown/);
 
     output.unmount();
@@ -61,23 +59,6 @@ function tuiConfig() {
   };
 }
 
-function fakeInteractiveSession(input: { runId: string; workflowId: string; events: unknown[] }) {
-  const state = { status: "running" as const, workflow_id: input.workflowId, attempts: [], handoff: undefined };
-  return {
-    runId: input.runId,
-    state,
-    events: (async function* () {
-      for (const event of input.events) yield event;
-    })(),
-    permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
-    interrupt: async () => undefined,
-    resumeWithUserInput: async () => undefined,
-    resumePlanReview: async () => undefined,
-    revisePlan: async () => undefined,
-    result: new Promise(() => undefined)
-  };
-}
-
 async function sendTuiLine(output: { stdin: { write(value: string): void } }, text: string): Promise<void> {
   output.stdin.write(text);
   await settleTuiWork();
@@ -86,5 +67,5 @@ async function sendTuiLine(output: { stdin: { write(value: string): void } }, te
 }
 
 function settleTuiWork(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 20));
+  return new Promise((resolve) => setTimeout(resolve, 25));
 }

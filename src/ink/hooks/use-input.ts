@@ -20,6 +20,13 @@ type Options = {
   isActive?: boolean
 }
 
+type RawInputPropagation = {
+  chunk: unknown
+  stoppedIndexes: Set<number>
+}
+
+const rawInputPropagation = new WeakMap<object, RawInputPropagation>()
+
 /**
  * This hook is used for handling user input.
  * It's a more convenient alternative to using `StdinContext` and listening to `data` events.
@@ -104,6 +111,7 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 
     const handleRawData = (value: unknown) => {
       if (typeof value !== 'string' && !Buffer.isBuffer(value)) return
+      const propagation = rawInputPropagationState(stdinState.stdin, value)
       if (flushTimerRef.current) {
         clearTimeout(flushTimerRef.current)
         flushTimerRef.current = null
@@ -113,9 +121,12 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
         Buffer.isBuffer(value) ? value.toString('utf8') : value,
       )
       parserRef.current = nextState
-      for (const item of items) {
+      for (const [index, item] of items.entries()) {
+        if (propagation.stoppedIndexes.has(index)) continue
         if (item.kind !== 'key') continue
-        handleData(new InkInputEvent(item))
+        const event = new InkInputEvent(item)
+        handleData(event)
+        if (event.didStopImmediatePropagation()) propagation.stoppedIndexes.add(index)
       }
       if (nextState.incomplete) {
         flushTimerRef.current = setTimeout(() => {
@@ -127,7 +138,9 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
           flushTimerRef.current = null
           for (const item of flushedItems) {
             if (item.kind !== 'key') continue
-            handleData(new InkInputEvent(item))
+            const event = new InkInputEvent(item)
+            handleData(event)
+            if (event.didStopImmediatePropagation()) break
           }
         }, 25)
       }
@@ -145,6 +158,17 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
 }
 
 export default useInput
+
+function rawInputPropagationState(stdin: NodeJS.ReadStream, chunk: unknown): RawInputPropagation {
+  const current = rawInputPropagation.get(stdin)
+  if (current && current.chunk === chunk) return current
+  const next = { chunk, stoppedIndexes: new Set<number>() }
+  rawInputPropagation.set(stdin, next)
+  queueMicrotask(() => {
+    if (rawInputPropagation.get(stdin) === next) rawInputPropagation.delete(stdin)
+  })
+  return next
+}
 
 function useEventCallback<T extends (...args: never[]) => void>(callback: T): T {
   const callbackRef = useRef(callback)

@@ -6,11 +6,12 @@ import { ToolRegistry } from "../tools/registry.js";
 import { Tool, ToolResult } from "../tools/types.js";
 import { RunStore } from "../storage/runStore.js";
 import { buildNodeMessages } from "./context.js";
-import { decidePermission } from "./permissions.js";
 import { NodeResult, nodeResultJsonSchema, nodeResultSchema, parseNodeResult, visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { PermissionDecision, PermissionRequest } from "./permissionController.js";
 import { HarnessEvent, StoredEvent } from "./events.js";
 import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
+import type { ToolPermissionContext } from "../permissions/context.js";
+import { checkToolPermission } from "../permissions/checkToolPermission.js";
 export type RuntimeInteraction = {
   requestPermission?(request: PermissionRequest): Promise<PermissionDecision>;
 };
@@ -20,7 +21,7 @@ export type NodeRuntimeOptions = {
   model: string;
   provider: ModelProvider;
   tools: ToolRegistry;
-  permissions: PermissionSet;
+  permissions: ToolPermissionContext | PermissionSet;
   cwd: string;
   runId: string;
   store: RunStore;
@@ -32,12 +33,13 @@ export type NodeRuntimeOptions = {
   eventSink?: (event: StoredEvent) => void;
 };
 export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> {
-  const baseMessages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff);
-  const messages: ModelMessage[] = [...baseMessages, ...(options.dialogueMessages ?? [])];
-  const baseMessageCount = baseMessages.length;
   const attempt = options.attempt ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
   const requestTools = [...options.tools.list(), submitNodeResultTool];
+  const runtimePermissions = normalizeRuntimePermissions(options.permissions);
+  const baseMessages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff, { tools: requestTools, permissionMode: runtimePermissions.mode });
+  const messages: ModelMessage[] = [...baseMessages, ...(options.dialogueMessages ?? [])];
+  const baseMessageCount = baseMessages.length;
   const turnExecutor = new RuntimeTurnExecutor();
   let resultRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
@@ -94,9 +96,10 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls });
       for (const call of response.tool_calls) {
         const specifier = toolSpecifier(call.name, call.input);
-        const permission = decidePermission(call.name, specifier, options.permissions);
+        const tool = options.tools.get(call.name);
+        const permission = await checkToolPermission(tool, call.input, { ...runtimePermissions, cwd: options.cwd });
         if (permission.decision === "deny") {
-          const error = `Permission denied for ${call.name}: ${permission.rule ?? "no rule"}`;
+          const error = `Permission denied for ${call.name}: ${permission.reason ?? permission.rule ?? "no rule"}`;
           await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, error });
           throw new Error(error);
         }
@@ -146,7 +149,6 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         }
         await appendRuntimeEvent(options, { type: "tool_invoked", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, input: call.input });
         try {
-          const tool = options.tools.get(call.name);
           const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt });
           await appendRuntimeEvent(options, { type: "tool_completed", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, result });
           const artifact = artifactFromToolResult(result);
@@ -190,6 +192,10 @@ const submitNodeResultTool: Tool = {
 function artifactFromToolResult(result: ToolResult): { artifact_id: string; path: string; description: string } | undefined {
   if (!result.artifact_id || !result.path) return undefined;
   return { artifact_id: result.artifact_id, path: result.path, description: result.description ?? "" };
+}
+function normalizeRuntimePermissions(permissions: ToolPermissionContext | PermissionSet): ToolPermissionContext {
+  if ("mode" in permissions) return permissions;
+  return { mode: "default", source: "workflow", ...permissions };
 }
 function nodeResultRepairPrompt(error: unknown): string {
   return [

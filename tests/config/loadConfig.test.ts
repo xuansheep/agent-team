@@ -159,7 +159,7 @@ workflows:
     assert.equal(config.providers.default.api_key_mode, "bearer");
   });
 
-  it("loads plan and complete node modes", async () => {
+  it("loads complete node mode and rejects plan node mode", async () => {
     const file = await tempFile("agent-team.yaml", `
 providers:
   default:
@@ -178,7 +178,6 @@ workflows:
       - id: product
         role: product
         provider: default
-        mode: plan
       - id: final_delivery
         role: final_delivery
         provider: default
@@ -191,8 +190,29 @@ workflows:
 
     const config = await loadConfig(file);
 
-    assert.equal(config.workflows.delivery.nodes[0]?.mode, "plan");
     assert.equal(config.workflows.delivery.nodes[1]?.mode, "complete");
+
+    const planFile = await tempFile("agent-team.yaml", `
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: gpt-test
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+        mode: plan
+    edges: []
+`);
+
+    await assert.rejects(() => loadConfig(planFile), /Invalid enum value/);
   });
 
   it("keeps the bundled example workflow free of user_acceptance nodes", async () => {
@@ -201,7 +221,7 @@ workflows:
 
     assert.equal(config.roles.user_acceptance, undefined);
     assert.equal(workflow.nodes.some((node) => node.id === "user_acceptance" || node.role === "user_acceptance"), false);
-    assert.equal(workflow.nodes.find((node) => node.id === "product")?.mode, "plan");
+    assert.equal(workflow.nodes.some((node) => node.id === "product"), false);
     assert.equal(workflow.nodes.find((node) => node.id === "final_delivery")?.mode, "complete");
     assert.equal(workflow.edges.some((edge) => edge.from === "user_acceptance" || edge.to === "user_acceptance"), false);
   });

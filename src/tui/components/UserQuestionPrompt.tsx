@@ -14,5 +14,10 @@ export function UserQuestionPrompt({ questions }: { questions: unknown[] }) {
 }
 
 function questionText(question: unknown): string {
+  if (question && typeof question === "object") {
+    const value = question as { text?: unknown; question?: unknown };
+    if (typeof value.text === "string" && value.text.trim()) return value.text;
+    if (typeof value.question === "string" && value.question.trim()) return value.question;
+  }
   return readableValue(question) || "等待用户补充信息";
 }

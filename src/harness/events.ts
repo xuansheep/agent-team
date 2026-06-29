@@ -6,8 +6,6 @@ export type HarnessEvent =
   | { type: "user_message"; text: string; node_id?: string; attempt?: number }
   | { type: "node_started"; node_id: string; attempt: number }
   | { type: "node_waiting_user"; node_id: string; questions: unknown[] }
-  | { type: "plan_review_requested"; node_id: string; attempt: number; document: string; plan_file_path?: string }
-  | { type: "plan_review_resolved"; node_id: string; attempt: number; decision: "continue" | "stay" }
   | { type: "complete_summary_available"; node_id: string; attempt: number; document: string }
   | { type: "model_thinking_delta"; node_id: string; attempt: number; text: string }
   | { type: "model_stream_delta"; node_id: string; attempt: number; text: string }

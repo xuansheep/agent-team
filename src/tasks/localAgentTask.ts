@@ -1,10 +1,11 @@
 import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { assertNoPlanModeTaskExecution } from "./taskRegistry.js";
 import { LocalAgentTaskInput, TaskHandler, TaskRunResult } from "./types.js";
 
 export function createLocalAgentTask(): TaskHandler {
-  return async (task): Promise<TaskRunResult> => {
-    const input = parseLocalAgentInput(task.input);
+  return async (task, context): Promise<TaskRunResult> => {
+    const input = parseLocalAgentInput(task.input, context);
     const sessionId = input.sessionId ?? `${task.id}:agent`;
     const events: unknown[] = [];
     const result = await new RuntimeTurnExecutor().execute({
@@ -19,7 +20,8 @@ export function createLocalAgentTask(): TaskHandler {
         ask: input.permissions?.ask ?? [],
         deny: input.permissions?.deny ?? [],
         source: input.permissions?.source,
-        planFilePath: input.permissions?.planFilePath
+        planFilePath: input.permissions?.planFilePath,
+        planUseAutoMode: input.permissions?.planUseAutoMode
       },
       cwd: input.cwd,
       sessionId,
@@ -37,8 +39,9 @@ export function createLocalAgentTask(): TaskHandler {
   };
 }
 
-function parseLocalAgentInput(input: unknown): LocalAgentTaskInput {
+function parseLocalAgentInput(input: unknown, context?: Parameters<typeof assertNoPlanModeTaskExecution>[1]): LocalAgentTaskInput {
   if (!input || typeof input !== "object") throw new Error("Local agent task input must be an object");
+  assertNoPlanModeTaskExecution(input, context);
   const value = input as Partial<LocalAgentTaskInput>;
   if (!value.provider) throw new Error("Local agent task requires provider");
   if (!value.model) throw new Error("Local agent task requires model");

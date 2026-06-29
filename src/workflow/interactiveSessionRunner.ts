@@ -3,7 +3,7 @@ import { PermissionController } from "../harness/permissionController.js";
 import { StoredEvent, HarnessEvent } from "../harness/events.js";
 import { RunStore } from "../storage/runStore.js";
 import { WorkflowState } from "./state.js";
-import { WorkflowSession, PlanReviewDecision } from "./session.js";
+import { WorkflowSession } from "./session.js";
 import { WorkflowConfig } from "../config/schema.js";
 import { RuntimeInteraction } from "../harness/runtime.js";
 

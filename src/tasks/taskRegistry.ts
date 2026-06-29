@@ -12,9 +12,7 @@ export class TaskRegistry {
   }
 
   startTask(input: TaskStartInput, context: TaskRunContext): TaskRecord {
-    if (context.permissions?.mode === "plan") {
-      throw new Error("Plan Mode must be approved before background task execution starts");
-    }
+    assertNoPlanModeTaskExecution(input.input, context);
     const handler = this.handlers.get(input.kind);
     if (!handler) throw new Error(`Unknown task kind ${input.kind}`);
 
@@ -128,4 +126,35 @@ export class TaskRegistry {
 
 function timestamp(): string {
   return new Date().toISOString();
+}
+
+export function assertNoPlanModeTaskExecution(input: unknown, context?: Pick<TaskRunContext, "permissions">): void {
+  if (context?.permissions?.mode === "plan" || containsPlanModeRequest(input)) {
+    throw new Error("Plan Mode must be approved before background task execution starts");
+  }
+}
+
+function containsPlanModeRequest(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+
+  if (Array.isArray(value)) return value.some((item) => containsPlanModeRequest(item, seen));
+
+  const record = value as Record<string, unknown>;
+  if (isPlanModePermissionObject(record.permissions)) return true;
+
+  for (const [key, child] of Object.entries(record)) {
+    if (isPlanPermissionKey(key) && child === "plan") return true;
+    if (containsPlanModeRequest(child, seen)) return true;
+  }
+  return false;
+}
+
+function isPlanModePermissionObject(value: unknown): boolean {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && (value as { mode?: unknown }).mode === "plan");
+}
+
+function isPlanPermissionKey(key: string): boolean {
+  return key === "permissionMode" || key === "permission_mode" || key === "runPermissionMode" || key === "run_permission_mode";
 }

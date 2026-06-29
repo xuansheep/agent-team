@@ -22,28 +22,38 @@ export async function executeToolCalls(
 ): Promise<ToolCallExecution[]> {
   const results: ToolCallExecution[] = [];
   for (let index = 0; index < calls.length;) {
-    const group = nextConcurrencySafeGroup(calls, index, registry);
+    const call = calls[index];
+    if (await requiresUserInteraction(call, registry)) {
+      results.push(await executeOne(call, registry, context, hooks));
+      break;
+    }
+
+    const group = await nextConcurrencySafeGroup(calls, index, registry);
     if (group.length > 0) {
       results.push(...await Promise.all(group.map((call) => executeOne(call, registry, context, hooks))));
       index += group.length;
       continue;
     }
 
-    const call = calls[index];
     results.push(await executeOne(call, registry, context, hooks));
     index += 1;
   }
   return results;
 }
 
-function nextConcurrencySafeGroup(calls: ModelToolCall[], start: number, registry: ToolRegistry): ModelToolCall[] {
+async function nextConcurrencySafeGroup(calls: ModelToolCall[], start: number, registry: ToolRegistry): Promise<ModelToolCall[]> {
   const group: ModelToolCall[] = [];
   for (let index = start; index < calls.length; index += 1) {
     const tool = registry.get(calls[index].name);
+    if (await tool.requiresUserInteraction?.(calls[index].input)) break;
     if (!tool.isConcurrencySafe?.()) break;
     group.push(calls[index]);
   }
   return group.length > 1 ? group : [];
+}
+
+async function requiresUserInteraction(call: ModelToolCall, registry: ToolRegistry): Promise<boolean> {
+  return await registry.get(call.name).requiresUserInteraction?.(call.input) === true;
 }
 
 async function executeOne(

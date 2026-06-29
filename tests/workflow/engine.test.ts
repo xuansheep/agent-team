@@ -4,6 +4,8 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
+import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
+import { RunStore } from "../../src/storage/runStore.js";
 
 class FakeProvider implements ModelProvider {
   async generate() {
@@ -60,11 +62,93 @@ describe("WorkflowEngine", () => {
     });
   });
 
+  it("applies Plan Mode requested Bash prompt permissions during workflow execution", async () => {
+    const runRoot = `.tmp/plan-requested-permission-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "checking test runner",
+            tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "node --test --help", timeout_ms: 30000 } }]
+          };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", {
+      original_input: { request: "build" },
+      approved_plan: "Run the relevant tests.",
+      plan_requested_permissions: [{ tool: "Bash", prompt: "run tests" }]
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+
+    const runId = await latestRunId(runRoot);
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string });
+    assert.equal(events.some((event) => event.type === "permission_requested"), false);
+    assert.equal(events.some((event) => event.type === "tool_completed" && event.tool === "Bash"), true);
+  });
+
+  it("keeps Plan Mode requested Bash prompt permissions after workflow resume", async () => {
+    const runRoot = `.tmp/plan-requested-permission-resume-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) return { content: JSON.stringify({ status: "success", summary: "a done", handoff: { instruction: "continue" } }) };
+        if (calls === 2) return { content: JSON.stringify({ status: "failure", summary: "need tests", feedback: { defects: ["missing tests"], change_requests: [] }, handoff: { instruction: "run tests" } }) };
+        if (calls === 3) {
+          return {
+            content: "checking test runner",
+            tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "node --test --help", timeout_ms: 30000 } }]
+          };
+        }
+        return { content: JSON.stringify({ status: "success", summary: "b done", handoff: { instruction: "done" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const config = {
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
+        b: { description: "", system_prompt: "B", requires: { tool_calling: true, vision: false } }
+      },
+      workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" as const }, { id: "b", role: "b", provider: "default", permission_mode: "default" as const }], edges: [{ from: "a", to: "b", condition: "success" as const }] } }
+    };
+
+    const failed = await engine.run(config, "flow", {
+      original_input: { request: "build" },
+      approved_plan: "Run the relevant tests.",
+      plan_requested_permissions: [{ tool: "Bash", prompt: "run tests" }]
+    });
+
+    assert.equal(failed.status, "pending");
+    assert.deepEqual(failed.plan_requested_permission_rules, ["Bash(prompt:run tests)"]);
+
+    const runId = await latestRunId(runRoot);
+    const resumed = await engine.resume(config, "flow", runId, { answer: "run tests now" });
+
+    assert.equal(resumed.status, "completed");
+    assert.equal(calls, 4);
+  });
+
   it("prepends the configured global prompt to every node system prompt", async () => {
     const systemPrompts: string[] = [];
     const provider: ModelProvider = {
       async generate(request: ModelRequest) {
-        const system = request.messages.find((message) => message.role === "system")?.content;
+        const system = request.messages
+          .filter((message) => message.role === "system")
+          .map((message) => String(message.content))
+          .find((content) => /^Global safety rules\.\n\nRole [AB]/.test(content));
         systemPrompts.push(String(system));
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
@@ -147,185 +231,148 @@ describe("WorkflowEngine", () => {
     assert.match(resumedMessages, /operators/);
   });
 
-  it("pauses after a plan node and resumes directly to the next node after approval", async () => {
-    let calls = 0;
-    const provider: ModelProvider = {
-      async generate() {
-        calls += 1;
-        if (calls === 1) {
-          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\n\n1. Build it.", handoff: { instruction: "follow the approved plan" } }) };
-        }
-        return { content: JSON.stringify({ status: "success", summary: "implemented", document: "# Summary\nDone.", handoff: { instruction: "done" } }) };
-      }
-    };
-    const runRoot = ".tmp/plan-review-runs";
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
-    const config = planReviewConfig();
+  it("persists a run-level permission mode override", async () => {
+    const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: `.tmp/run-permission-mode-${Date.now()}` });
 
-    const waiting = await engine.run(config, "flow", { request: "x" });
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" }, { permissionMode: "bypassPermissions" });
 
-    assert.equal(waiting.status, "pending");
-    assert.equal(waiting.current_node_id, "product");
-    assert.equal(waiting.attempts[0]?.status, "waiting_user");
-    assert.equal(waiting.pending_review?.node_id, "product");
-    assert.equal(calls, 1);
-
-    const runId = await latestRunId(runRoot);
-    const resumed = await engine.resume(config, "flow", runId, { answer: "Yes, continue execution by plan" });
-
-    assert.equal(resumed.status, "completed");
-    assert.deepEqual(resumed.attempts.map((attempt) => `${attempt.node_id}:${attempt.status}`), ["product:success", "dev:success"]);
-    assert.equal(calls, 2);
+    assert.equal(result.status, "completed");
+    assert.equal(result.run_permission_mode, "bypassPermissions");
   });
 
-  it("writes workflow plan review document to a run-scoped plan file", async () => {
-    const planDocument = "# Plan\n\n- Inspect the affected workflow path.\n- Update the plan review document contract.\n- Verify the TUI shows the full plan.";
-    const provider: ModelProvider = {
-      async generate() {
-        return { content: JSON.stringify({ status: "success", summary: "plan ready", document: planDocument, handoff: { instruction: "follow the approved plan" } }) };
-      }
-    };
-    const runRoot = `.tmp/workflow-plan-file-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
-
-    const waiting = await engine.run(planReviewConfig(), "flow", { request: "x" });
-
-    assert.equal(waiting.status, "pending");
-    assert.equal(waiting.pending_review?.document, planDocument);
-    const planFilePath = waiting.pending_review?.plan_file_path;
-    assert.ok(planFilePath);
-    assert.equal(await readFile(planFilePath, "utf8"), `${planDocument}\n`);
-
-    const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; document?: string; plan_file_path?: string });
-    const reviewEvent = events.find((event) => event.type === "plan_review_requested");
-    assert.equal(reviewEvent?.document, planDocument);
-    assert.equal(reviewEvent?.plan_file_path, planFilePath);
-  });
-
-  it("rejects plan nodes that put the full review plan only in an artifact", async () => {
-    let calls = 0;
-    const provider: ModelProvider = {
-      async generate() {
-        calls += 1;
-        if (calls === 1) {
-          return {
-            content: "我先写入计划产物。",
-            tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "plan.md", content: "# Plan\n\n- Build the feature.\n- Run tests.", description: "Review plan" } }]
-          };
-        }
-        return { content: JSON.stringify({ status: "success", summary: "ready", document: "Plan ready", handoff: { instruction: "implement" } }) };
-      }
-    };
-    const runRoot = `.tmp/artifact-only-plan-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
-
-    const state = await engine.run({
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
-      roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: true, vision: false } } },
-      workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const, mode: "plan" as const, permissions: { allow: ["ArtifactWrite"], ask: [], deny: [] } }], edges: [] } }
-    }, "flow", { request: "x" });
-
-    assert.equal(calls, 2);
-    assert.equal(state.status, "pending");
-    assert.equal(state.pending_review, undefined);
-    assert.equal(state.attempts.at(-1)?.status, "failure");
-    const result = state.attempts.at(-1)?.result as { summary?: string; questions?: Array<{ text?: string }> };
-    assert.match(result.summary ?? "", /complete Markdown plan in document|ArtifactWrite/i);
-    assert.match(result.questions?.[0]?.text ?? "", /complete Markdown plan in document|ArtifactWrite/i);
-
-    const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
-    assert.equal(events.some((event) => event.type === "plan_review_requested"), false);
-  });
-
-  it("passes the approved workflow plan to downstream node context", async () => {
-    let calls = 0;
-    const requests: ModelRequest[] = [];
-    const planDocument = "# Plan\n\n- Build feature safely.\n- Add regression coverage.\n- Run verification.";
-    const provider: ModelProvider = {
-      async generate(request) {
-        calls += 1;
-        requests.push(request);
-        if (calls === 1) {
-          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: planDocument, handoff: { instruction: "follow the approved plan" } }) };
-        }
-        return { content: JSON.stringify({ status: "success", summary: "implemented", document: "# Summary\nDone.", handoff: { instruction: "done" } }) };
-      }
-    };
-    const runRoot = `.tmp/approved-workflow-plan-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
-
-    const waiting = await engine.run(planReviewConfig(), "flow", { request: "x" });
-    assert.equal(waiting.status, "pending");
-
-    const runId = await latestRunId(runRoot);
-    const resumed = await engine.resume(planReviewConfig(), "flow", runId, { answer: "Yes, continue execution by plan" });
-
-    assert.equal(resumed.status, "completed");
-    const downstreamMessages = JSON.stringify(requests[1]?.messages ?? []);
-    assert.match(downstreamMessages, /ATTACHMENT plan_mode_exit/);
-    assert.match(downstreamMessages, /Approved plan:/);
-    assert.match(downstreamMessages, /Build feature safely/);
-  });
-
-  it("keeps a plan node paused when the user chooses to stay in the plan", async () => {
-    let calls = 0;
-    const provider: ModelProvider = {
-      async generate() {
-        calls += 1;
-        return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nStay here.", handoff: { instruction: "wait" } }) };
-      }
-    };
-    const runRoot = ".tmp/plan-stay-runs";
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
-    const config = planReviewConfig();
-
-    const waiting = await engine.run(config, "flow", { request: "x" });
-    const runId = await latestRunId(runRoot);
-    const stillWaiting = await engine.resume(config, "flow", runId, { answer: "No, staying in the plan" });
-
-    assert.equal(waiting.status, "pending");
-    assert.equal(stillWaiting.status, "pending");
-    assert.equal(stillWaiting.current_node_id, "product");
-    assert.equal(stillWaiting.attempts[0]?.status, "waiting_user");
-    assert.equal(calls, 1);
-  });
-
-  it("treats custom headless input during pending plan review as model context", async () => {
-    let calls = 0;
+  it("turns clear-context approved plans into a tui-code style implementation request", async () => {
     const requests: ModelRequest[] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        calls += 1;
         requests.push(request);
-        if (calls === 1) {
-          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nOld plan.", handoff: { instruction: "old" } }) };
-        }
-        return { content: JSON.stringify({ status: "success", summary: "revised plan", document: "# Plan\nRevised plan.", handoff: { instruction: "revised" } }) };
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
-    const runRoot = `.tmp/headless-plan-review-input-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
-    const config = planReviewConfig();
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/clear-context-plan-${Date.now()}` });
+    const config = {
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default" as const, permission_mode: "default" as const }], edges: [] } }
+    };
 
-    const waiting = await engine.run(config, "flow", { request: "x" });
-    assert.equal(waiting.status, "pending");
+    await engine.run(config, "flow", {
+      original_input: { request: "build" },
+      approved_plan: "# Plan\nBuild it.",
+      plan_file_path: ".session/plans/session-1.md",
+      plan_approval_feedback: "Also update README."
+    }, { permissionMode: "acceptEdits", clearContext: true });
+
+    const firstUser = requests[0]?.messages.find((message) => message.role === "user");
+    const firstUserText = String(firstUser?.content ?? "");
+
+    assert.match(firstUserText, /"request": "Implement the following plan:\\n\\n# Plan\\nBuild it\.\\n\\nUser feedback on this plan: Also update README\."/);
+    assert.match(firstUserText, /"clear_context": true/);
+    assert.match(firstUserText, /"approved_plan": "# Plan\\nBuild it\."/);
+
+    requests.length = 0;
+    await engine.run(config, "flow", {
+      original_input: { request: "build" },
+      approved_plan: "# Plan\nBuild it."
+    }, { permissionMode: "acceptEdits" });
+
+    const keepContextUser = requests[0]?.messages.find((message) => message.role === "user");
+    assert.doesNotMatch(String(keepContextUser?.content ?? ""), /Implement the following plan/);
+    assert.doesNotMatch(String(keepContextUser?.content ?? ""), /"clear_context": true/);
+  });
+
+  it("does not persist internal Plan Mode handoff markers in run start metadata", async () => {
+    const runRoot = `.tmp/plan-marker-public-input-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "Ready empty exit.", [planModeExitHandoffMarker]: true, [planModeExitPlanExistsMarker]: false });
 
     const runId = await latestRunId(runRoot);
-    const revised = await engine.resume(config, "flow", runId, { answer: "请把计划拆得更细" });
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; input?: unknown });
+    const started = events.find((event) => event.type === "run_started");
+    const startedText = JSON.stringify(started?.input);
+    assert.doesNotMatch(startedText, new RegExp(planModeExitHandoffMarker));
+    assert.doesNotMatch(startedText, new RegExp(planModeExitPlanExistsMarker));
 
-    const resumedUserMessages = requests[1]?.messages
-      .filter((message) => message.role === "user")
-      .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))
-      .join("\n") ?? "";
+    const summaries = await new RunStore(runRoot).listRuns();
+    assert.equal(summaries[0]?.inputPreview, "Ready empty exit.");
 
+    const system = requests[0]?.messages
+      .filter((message) => message.role === "system")
+      .map((message) => String(message.content))
+      .join("\n\n") ?? "";
+    const user = String(requests[0]?.messages.find((message) => message.role === "user")?.content ?? "");
+    assert.match(system, /ATTACHMENT plan_mode_exit/);
+    assert.doesNotMatch(user, new RegExp(planModeExitHandoffMarker));
+    assert.doesNotMatch(user, new RegExp(planModeExitPlanExistsMarker));
+  });
+
+  it("uses run-level bypass permissions for workflow tool execution", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) return { content: "checking", tool_calls: [{ id: "tool-1", name: "Bash", input: { command: "echo workflow-bypass" } }] };
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/run-bypass-${Date.now()}` });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" }, { permissionMode: "bypassPermissions" });
+
+    assert.equal(result.status, "completed");
     assert.equal(calls, 2);
-    assert.equal(revised.status, "pending");
-    assert.equal(revised.pending_review?.node_id, "product");
-    assert.match(revised.pending_review?.document ?? "", /Revised plan/);
-    assert.match(resumedUserMessages, /pending_review/);
-    assert.match(resumedUserMessages, /请把计划拆得更细/);
+  });
+
+  it("uses run-level auto permissions for workflow edit tools", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const runRoot = `.tmp/run-auto-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        calls += 1;
+        if (calls === 1) return { content: "writing artifact", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "auto.md", content: "# Auto\nDone.", description: "Auto artifact" } }] };
+        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" }, { permissionMode: "auto" });
+
+    assert.equal(result.status, "completed");
+    assert.equal(result.run_permission_mode, "auto");
+    assert.equal(calls, 2);
+    const firstSystem = requests[0]?.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n") ?? "";
+    assert.match(firstSystem, /ATTACHMENT auto_mode/);
+    assert.match(firstSystem, /## Auto Mode Active/);
+
+    const runId = await latestRunId(runRoot);
+    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string });
+    assert.equal(events.some((event) => event.type === "permission_requested"), false);
+    assert.equal(events.some((event) => event.type === "tool_completed" && event.tool === "ArtifactWrite"), true);
   });
 
   it("completes only after a complete node returns a summary document", async () => {
@@ -559,7 +606,7 @@ describe("WorkflowEngine", () => {
     assert.match(resumedText, /adding more context for rework/);
   });
 
-  it("resumes a failed node after plan approval with user rework", async () => {
+  it("resumes a failed node with user rework", async () => {
     let calls = 0;
     const requests: ModelRequest[] = [];
     const provider: ModelProvider = {
@@ -567,42 +614,33 @@ describe("WorkflowEngine", () => {
         calls += 1;
         requests.push(request);
         if (calls === 1) {
-          return { content: JSON.stringify({ status: "success", summary: "plan ready", document: "# Plan\nBuild feature X.", handoff: { instruction: "implement" } }) };
-        }
-        if (calls === 2) {
           return { content: JSON.stringify({ status: "failure", summary: "implementation rejected", feedback: { defects: ["missing tests"], change_requests: [] }, handoff: { instruction: "fix" } }) };
         }
         return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
       }
     };
-    const runRoot = `.tmp/plan-failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const runRoot = `.tmp/failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       roles: {
-        product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
       },
-      workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const, mode: "plan" as const }, { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [{ from: "product", to: "dev", condition: "success" as const }] } }
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
     };
 
-    const planWaiting = await engine.run(config, "flow", { request: "x" });
-    assert.equal(planWaiting.status, "pending");
-    assert.equal(planWaiting.pending_review?.node_id, "product");
+    const failed = await engine.run(config, "flow", { request: "x" });
+    assert.equal(failed.status, "pending");
+    assert.equal(failed.attempts.at(-1)?.status, "failure");
 
     const runId = await latestRunId(runRoot);
-    const approved = await engine.resume(config, "flow", runId, { answer: "Yes, continue execution by plan" });
-    assert.equal(approved.status, "pending");
-    assert.equal(approved.attempts.at(-1)?.status, "failure");
-    assert.equal(calls, 2);
-
     const resumed = await engine.resume(config, "flow", runId, { answer: "add unit tests and retry" });
 
     assert.equal(resumed.status, "completed");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
 
-    const devMessages = requests[2]?.messages.filter((m) => m.role === "user");
+    const devMessages = requests[1]?.messages.filter((m) => m.role === "user");
     const devText = devMessages.map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content)).join(" ");
     assert.match(devText, /add unit tests and retry/);
   });
@@ -643,18 +681,6 @@ describe("WorkflowEngine", () => {
   });
 
 });
-
-
-function planReviewConfig() {
-  return {
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
-    roles: {
-      product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
-      dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
-    },
-    workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const, mode: "plan" as const }, { id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [{ from: "product", to: "dev", condition: "success" as const }] } }
-  };
-}
 
 async function latestRunId(root: string): Promise<string> {
   const runs = await readdir(root, { withFileTypes: true });

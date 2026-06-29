@@ -15,6 +15,7 @@ import { webFetchTool } from "./local/webFetch.js";
 import { webSearchTool } from "./local/webSearch.js";
 import { enterPlanModeTool } from "./local/enterPlanMode.js";
 import { exitPlanModeTool } from "./local/exitPlanMode.js";
+import { askUserQuestionTool } from "./local/askUserQuestion.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
@@ -53,7 +54,8 @@ export function createLocalToolRegistry(): ToolRegistry {
     webFetchTool,
     webSearchTool,
     enterPlanModeTool,
-    exitPlanModeTool
+    exitPlanModeTool,
+    askUserQuestionTool
   ]) {
     registry.add(tool);
   }

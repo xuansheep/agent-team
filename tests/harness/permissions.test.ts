@@ -32,4 +32,24 @@ describe("decidePermission", () => {
 
     assert.equal(decision.decision, "allow");
   });
+
+  it("matches conservative Bash prompt permission rules", () => {
+    assert.equal(decidePermission("Bash", "node --test --help", {
+      allow: ["Bash(prompt:run tests)"],
+      ask: [],
+      deny: []
+    }).decision, "allow");
+
+    assert.equal(decidePermission("Bash", "npm test && rm -rf dist", {
+      allow: ["Bash(prompt:run tests)"],
+      ask: [],
+      deny: []
+    }).decision, "ask");
+
+    assert.equal(decidePermission("Bash", "npm install", {
+      allow: ["Bash(prompt:install dependencies)"],
+      ask: [],
+      deny: []
+    }).decision, "allow");
+  });
 });

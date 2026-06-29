@@ -8,10 +8,13 @@ import { useSelectState } from "./use-select-state.js";
 type BaseOption<T> = {
   label: ReactNode;
   value: T;
+  prefix?: ReactNode;
   description?: string;
+  preview?: string;
   dimDescription?: boolean;
   disabled?: boolean;
   shortcut?: string;
+  multiSelectAction?: boolean;
 };
 
 export type OptionWithDescription<T = string> =
@@ -26,6 +29,13 @@ export type OptionWithDescription<T = string> =
       labelValueSeparator?: string;
       resetCursorOnUpdate?: boolean;
     });
+
+export type SelectImageAttachment = {
+  id: number;
+  type: "image";
+  media_type: "image/png" | "image/jpeg" | "image/webp";
+  data: string;
+};
 
 export function Select<T>({
   isDisabled = false,
@@ -43,7 +53,14 @@ export function Select<T>({
   enableVimNavigation = true,
   onUpFromFirstItem,
   onDownFromLastItem,
-  onInputModeToggle
+  onInputModeToggle,
+  onOpenEditor,
+  inputTextDisabled = false,
+  imageAttachments = [],
+  onImagePaste,
+  onRemoveImage,
+  resolveImagePaste,
+  enableInputImageSelection = true
 }: {
   isDisabled?: boolean;
   disableSelection?: boolean | "numeric";
@@ -61,6 +78,13 @@ export function Select<T>({
   onUpFromFirstItem?: () => void;
   onDownFromLastItem?: () => void;
   onInputModeToggle?: (value: T) => void;
+  onOpenEditor?: (currentValue: string, setValue: (value: string) => void) => void;
+  inputTextDisabled?: boolean;
+  imageAttachments?: SelectImageAttachment[];
+  onImagePaste?: (image: Omit<SelectImageAttachment, "id">) => void;
+  onRemoveImage?: (id: number) => void;
+  resolveImagePaste?: (value: string) => Promise<{ text: string; images: Array<Omit<SelectImageAttachment, "id">> }>;
+  enableInputImageSelection?: boolean;
 }) {
   const [inputValues, setInputValues] = useState<Map<T, string>>(() => inputValuesFromOptions(options));
   const lastOptionsRef = useRef(options);
@@ -103,16 +127,23 @@ export function Select<T>({
               maxIndexWidth={maxIndexWidth}
               index={ordinal}
               inputValue={value}
+              prefix={option.prefix}
               onInputChange={(text) => {
                 setInputValues((current) => new Map(current).set(option.value, text));
                 option.onChange(text);
               }}
               onSubmit={(text) => {
-                if (text.trim() || option.allowEmptySubmitToCancel) onChange?.(option.value);
-                else onCancel?.();
+                if (text.trim() || imageAttachments.length || option.allowEmptySubmitToCancel) onChange?.(option.value);
               }}
               onExit={onCancel}
+              onOpenEditor={onOpenEditor}
+              inputTextDisabled={inputTextDisabled}
               showLabel={inlineDescriptions}
+              imageAttachments={imageAttachments}
+              onImagePaste={onImagePaste}
+              onRemoveImage={onRemoveImage}
+              resolveImagePaste={resolveImagePaste}
+              enableImageSelection={enableInputImageSelection}
             />
           );
         }
@@ -121,6 +152,7 @@ export function Select<T>({
             <Box flexDirection={layout === "compact" ? "row" : "column"} flexShrink={0}>
               <Box flexDirection="row" flexShrink={0}>
                 {!hideIndexes ? <Text dimColor>{`${ordinal}.`.padEnd(maxIndexWidth + 2)}</Text> : null}
+                {option.prefix ? <Text>{option.prefix} </Text> : null}
                 <Text color={option.disabled ? undefined : isSelected ? "green" : isFocused ? "cyan" : undefined} dimColor={option.disabled}>{option.label}</Text>
                 {inlineDescriptions && option.description ? <Text dimColor> {option.description}</Text> : null}
               </Box>

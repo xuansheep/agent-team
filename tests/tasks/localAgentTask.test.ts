@@ -36,4 +36,56 @@ describe("local agent task", () => {
     assert.equal(parentMessages.length, 1);
     assert.equal(completed.output, "child done");
   });
+
+  it("rejects direct Plan Mode execution input before starting a child runtime", async () => {
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("should not call provider");
+      }
+    };
+    const handler = createLocalAgentTask();
+
+    await assert.rejects(async () => await Promise.resolve(handler({
+      id: "task-1",
+      kind: "local-agent",
+      status: "queued",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      events: [],
+      input: {
+        provider,
+        model: "test-model",
+        messages: [{ role: "user", content: "child request" }],
+        cwd: process.cwd(),
+        permissions: { mode: "plan" }
+      }
+    }, { cwd: process.cwd() })), /Plan Mode must be approved/);
+  });
+
+  it("rejects direct Plan Mode execution context before starting a child runtime", async () => {
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("should not call provider");
+      }
+    };
+    const handler = createLocalAgentTask();
+
+    await assert.rejects(async () => await Promise.resolve(handler({
+      id: "task-1",
+      kind: "local-agent",
+      status: "queued",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      events: [],
+      input: {
+        provider,
+        model: "test-model",
+        messages: [{ role: "user", content: "child request" }],
+        cwd: process.cwd()
+      }
+    }, {
+      cwd: process.cwd(),
+      permissions: { mode: "plan", allow: [], ask: [], deny: [] }
+    })), /Plan Mode must be approved/);
+  });
 });

@@ -1,4 +1,5 @@
 import { ModelMessage } from "../providers/types.js";
+import type { PermissionMode } from "../permissions/PermissionMode.js";
 
 export type RunStatus = "running" | "pending" | "completed";
 
@@ -7,14 +8,6 @@ export type NodeAttemptState = {
   attempt: number;
   status: "running" | "success" | "failure" | "waiting_user";
   result?: unknown;
-};
-
-export type PendingReview = {
-  type: "plan";
-  node_id: string;
-  attempt: number;
-  document: string;
-  plan_file_path?: string;
 };
 
 export type ResumeCheckpoint = {
@@ -27,9 +20,10 @@ export type ResumeCheckpoint = {
 export type WorkflowState = {
   status: RunStatus;
   workflow_id: string;
+  run_permission_mode?: Exclude<PermissionMode, "plan">;
+  plan_requested_permission_rules?: string[];
   current_node_id?: string;
   attempts: NodeAttemptState[];
   handoff?: unknown;
-  pending_review?: PendingReview;
   resume_checkpoint?: ResumeCheckpoint;
 };

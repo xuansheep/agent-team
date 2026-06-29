@@ -16,8 +16,13 @@ export function buildRuntimeMessages(input: BuildRuntimeMessagesInput): ModelMes
 
 export function withRuntimeAttachments(messages: ModelMessage[], attachments: RuntimeAttachment[]): ModelMessage[] {
   if (!attachments.length) return messages.slice();
+  const humanTurnCount = Math.max(0, messages.filter((message) => message.role === "user").length - 1);
   return [
-    ...attachments.map((attachment) => ({ role: "system" as const, content: attachment.content })),
+    ...attachments.map((attachment) => ({
+      role: "system" as const,
+      content: attachment.content,
+      metadata: { runtimeAttachment: { type: attachment.type, humanTurnCount } }
+    })),
     ...messages
   ];
 }

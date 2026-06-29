@@ -8,7 +8,7 @@ describe("processUserInput", () => {
   });
 
   it("returns a command action for /plan and does not treat it as model input", () => {
-    assert.deepEqual(processUserInput("/plan"), { type: "command", command: { type: "plan", args: [], behavior: "enter_or_request_approval" } });
+    assert.deepEqual(processUserInput("/plan"), { type: "command", command: { type: "plan", args: [], behavior: "enter_or_show_plan" } });
   });
 
   it("returns empty for whitespace input", () => {

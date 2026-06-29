@@ -13,6 +13,9 @@ export const todoWriteTool: Tool = {
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     const output = JSON.stringify(parsed.todos, null, 2);
+    if (context.planState?.mode === "planning" || context.planState?.mode === "waiting_approval") {
+      return { output };
+    }
     if (!context.runDir) return { output };
     const dir = join(context.runDir, "artifacts", "todos");
     await mkdir(dir, { recursive: true });

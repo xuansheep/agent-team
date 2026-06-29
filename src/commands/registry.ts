@@ -13,7 +13,7 @@ export type CommandAction =
   | { type: "model"; args: string[]; model?: string }
   | { type: "new"; args: string[] }
   | { type: "permissions"; args: string[] }
-  | { type: "plan"; args: string[]; behavior: "enter_or_request_approval" }
+  | { type: "plan"; args: string[]; behavior: "enter_or_show_plan" }
   | { type: "resume"; args: string[]; runId?: string };
 
 const definitions: CommandDefinition[] = [
@@ -22,7 +22,7 @@ const definitions: CommandDefinition[] = [
   { name: "model", description: "Switch model", argumentHint: "<model>", parse: (args) => ({ type: "model", args, model: args[0] }) },
   { name: "new", description: "Start a new session", parse: (args) => ({ type: "new", args }) },
   { name: "permissions", description: "Show or change permissions", parse: (args) => ({ type: "permissions", args }) },
-  { name: "plan", description: "Enter or exit Plan Mode", parse: (args) => ({ type: "plan", args, behavior: "enter_or_request_approval" }) },
+  { name: "plan", description: "Enter Plan Mode or show the current plan", argumentHint: "[open|<description>]", parse: (args) => ({ type: "plan", args, behavior: "enter_or_show_plan" }) },
   { name: "resume", description: "Resume a session", argumentHint: "<session>", parse: (args) => ({ type: "resume", args, runId: args[0] }) }
 ];
 

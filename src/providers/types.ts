@@ -10,6 +10,12 @@ export type ModelMessage = {
   content: string | ModelContentPart[];
   tool_call_id?: string;
   tool_calls?: ModelToolCall[];
+  metadata?: {
+    runtimeAttachment?: {
+      type: string;
+      humanTurnCount: number;
+    };
+  };
 };
 
 export type ModelToolCall = {

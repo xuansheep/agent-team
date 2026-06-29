@@ -45,6 +45,28 @@ describe("executeToolCalls", () => {
       "end:ReadTwo"
     ]);
   });
+
+  it("stops after a user-interaction tool and does not execute later tools", async () => {
+    const events: string[] = [];
+    const registry = new ToolRegistry();
+    registry.add(recordingTool("ReadOne", true, events));
+    registry.add(interactiveTool("AskUserQuestion", events));
+    registry.add(recordingTool("ReadAfterQuestion", true, events));
+
+    const results = await executeToolCalls([
+      { id: "1", name: "ReadOne", input: {} },
+      { id: "2", name: "AskUserQuestion", input: {} },
+      { id: "3", name: "ReadAfterQuestion", input: {} }
+    ], registry, { cwd: process.cwd() });
+
+    assert.deepEqual(results.map((item) => item.call.name), ["ReadOne", "AskUserQuestion"]);
+    assert.deepEqual(events, [
+      "start:ReadOne",
+      "end:ReadOne",
+      "start:AskUserQuestion",
+      "end:AskUserQuestion"
+    ]);
+  });
 });
 
 function delayedTool(name: string, delayMs: number, concurrencySafe: boolean): Tool {
@@ -73,6 +95,23 @@ function recordingTool(name: string, concurrencySafe: boolean, events: string[])
       await delay(5);
       events.push(`end:${name}`);
       return { output: name };
+    }
+  };
+}
+
+function interactiveTool(name: string, events: string[]): Tool {
+  return {
+    name,
+    description: name,
+    input_schema: {},
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    requiresUserInteraction: () => true,
+    async execute() {
+      events.push(`start:${name}`);
+      await delay(5);
+      events.push(`end:${name}`);
+      return { output: name, data: { type: "user_input_requested", questions: [] } };
     }
   };
 }

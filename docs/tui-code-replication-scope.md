@@ -23,7 +23,7 @@ The target is not source-level replacement. `agent-team` keeps its current `work
 | `tools/` | adapt | Keep existing local tools, then add orchestration and permission-aware execution around them. |
 | `PermissionMode` | replicate | Add session-level modes: `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, and `bypassPermissions`. |
 | `utils/permissions/` | replicate | Centralize permission checks so local tools, MCP tools, plugin tools, workflow execution, and headless API calls cannot bypass the same policy. |
-| `Plan Mode` | replicate | Implement global pre-workflow Plan Mode as a safety mode. It is separate from workflow node `mode: "plan"`. |
+| `Plan Mode` | replicate | Implement global pre-workflow Plan Mode as a safety mode. Workflow node `mode: "plan"` is no longer supported. |
 | `utils/plans.ts` | adapt | Store plan drafts under `.session/plans/` and allow writes only to the current session plan file while in Plan Mode. |
 | `Session Storage` | replicate | Expand run state into session transcript, metadata, plan state, and index files while retaining old run fallback. |
 | `utils/messages.ts` | adapt | Build runtime messages through a shared context pipeline for workflow handoff, Plan Mode attachments, images, and reviews. |
@@ -43,7 +43,7 @@ The target is not source-level replacement. `agent-team` keeps its current `work
 
 Plan Mode is a process-before-execution safety mode. Before a user approves a plan, the system must not start workflow execution, advance workflow nodes, write ordinary project files, run shell write operations, start background execution tasks, or allow extensions to bypass permission checks.
 
-Workflow node `mode: "plan"` remains an internal review pause. It may share display components with global Plan Mode, but it is not a permission mode and must not be used as the security boundary.
+Workflow node `mode: "plan"` is removed from the supported model. Plan Mode is a session/TUI-level permission mode only, and workflow nodes must reject both `mode: "plan"` and `permission_mode: "plan"` configuration.
 
 All high-risk capabilities, including shell commands, file writes, SDK calls, MCP tools, plugin tools, and task orchestration, must produce local audit evidence before they are enabled for production workflows.
 

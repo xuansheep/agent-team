@@ -20,7 +20,7 @@ import {
   moveRight
 } from "./usePromptBuffer.js";
 import { nextHistory, previousHistory, pushHistory } from "./usePromptHistory.js";
-import { PromptBuffer, PromptHistory, PromptInputEvent, PromptInputMode } from "./types.js";
+import { PromptBuffer, PromptHistory, PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./types.js";
 
 type PromptKeybindingInput = {
   mode: PromptInputMode;
@@ -28,12 +28,17 @@ type PromptKeybindingInput = {
   history: PromptHistory;
   isLoading: boolean;
   isActive?: boolean;
+  textInputBlocked?: boolean;
+  imageAttachments?: PromptInputImageAttachment[];
   suggestions: SlashCommandSuggestion[];
   selectedSuggestion: number;
   onSelectedSuggestion: (index: number) => void;
   onBuffer: (buffer: PromptBuffer) => void;
   onHistory: (history: PromptHistory) => void;
   onEvent: (event: PromptInputEvent) => void;
+  onImagePaste?: (image: PromptInputImageAttachment) => void;
+  resolveImagePaste?: (value: string) => Promise<{ text: string; images: PromptInputImageAttachment[] }>;
+  editText?: (text: string) => Promise<{ content: string | null; error?: string }> | { content: string | null; error?: string };
 };
 
 export function usePromptKeybindings(input: PromptKeybindingInput) {
@@ -67,7 +72,10 @@ export function usePromptKeybindings(input: PromptKeybindingInput) {
       return;
     }
 
-    handleInputEvent({ type: "key", input: value, key: toTuiInputKey(key, value) }, syncedInput);
+    const inputKey = toTuiInputKey(key, value);
+    const promptSubmit = inputKey.return && (current.buffer.text.trim() || current.imageAttachments?.length) && modeAcceptsSubmit(current.mode);
+    handleInputEvent({ type: "key", input: value, key: inputKey }, syncedInput);
+    if (promptSubmit) event.stopImmediatePropagation();
   }, { isActive: input.isActive !== false });
 }
 
@@ -89,6 +97,7 @@ function toTuiInputKey(key: Key, input: string): TuiInputKey {
     meta: key.meta,
     shift: key.shift,
     tab: key.tab,
+    ...(input === "\u001b[Z" ? { shift: true, tab: true } : {}),
     backspace: key.backspace || input === "\u007f",
     delete: key.delete || input === "\u001b[3~"
   };
@@ -97,11 +106,22 @@ function toTuiInputKey(key: Key, input: string): TuiInputKey {
 function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
   if (event.type === "mouse") return;
   if (event.type === "paste") {
-    if (modeAcceptsText(input.mode)) input.onBuffer(insertText(input.buffer, event.text));
+    if (!input.textInputBlocked && modeAcceptsText(input.mode)) {
+      if (input.resolveImagePaste) void pasteWithImages(event.text, input);
+      else input.onBuffer(insertText(input.buffer, event.text));
+    }
     return;
   }
 
   const { key } = event;
+  if (key.shift && key.tab) {
+    input.onEvent({ type: "cycle_mode" });
+    return;
+  }
+  if (input.textInputBlocked) {
+    if (event.input === "\u0007" || (key.ctrl && event.input === "g")) input.onEvent({ type: "external_editor" });
+    return;
+  }
   if (input.suggestions.length > 0) {
     if (key.upArrow) {
       input.onSelectedSuggestion(wrapIndex(input.selectedSuggestion - 1, input.suggestions.length));
@@ -129,6 +149,14 @@ function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
     submit(input);
     return;
   }
+  if (event.input === "\u0007" || (key.ctrl && event.input === "g")) {
+    if (input.editText) {
+      void editPromptBuffer(input);
+    } else {
+      input.onEvent({ type: "external_editor" });
+    }
+    return;
+  }
 
   const action = keyAction(event.input, key, input.mode);
   if (action(input)) return;
@@ -136,19 +164,45 @@ function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
   if (event.input && modeAcceptsText(input.mode)) input.onBuffer(insertText(input.buffer, event.input));
 }
 
+async function editPromptBuffer(input: PromptKeybindingInput) {
+  try {
+    const result = await input.editText?.(input.buffer.text);
+    if (!result) return;
+    if (result.error) {
+      input.onEvent({ type: "external_editor_error", error: result.error });
+      return;
+    }
+    if (result.content !== null) {
+      input.onBuffer({ text: result.content, cursor: result.content.length });
+    }
+  } catch (error) {
+    input.onEvent({ type: "external_editor_error", error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function pasteWithImages(text: string, input: PromptKeybindingInput) {
+  const parsed = await input.resolveImagePaste?.(text);
+  if (!parsed) return;
+  for (const image of parsed.images) input.onImagePaste?.(image);
+  if (parsed.text) input.onBuffer(insertText(input.buffer, parsed.text));
+}
+
 function submit(input: PromptKeybindingInput) {
   const text = input.buffer.text.trim();
-  if (!text || !modeAcceptsSubmit(input.mode)) return;
+  const images = input.imageAttachments ?? [];
+  if ((!text && !images.length) || !modeAcceptsSubmit(input.mode)) return;
 
   const processed = processUserInput(text);
   input.onHistory(pushHistory(input.history, text));
   input.onBuffer(clearBuffer());
   if (input.isLoading) {
-    input.onEvent({ type: "queue", text });
+    input.onEvent({ type: "queue", text, ...(images.length ? { images } : {}) });
   } else if (processed.type === "command") {
     input.onEvent({ type: "command", name: processed.command.type, args: processed.command.args });
+  } else if (images.length && processed.type === "empty") {
+    input.onEvent({ type: "submit", text, images });
   } else if (processed.type === "query") {
-    input.onEvent({ type: "submit", text: processed.text });
+    input.onEvent({ type: "submit", text: processed.text, ...(images.length ? { images } : {}) });
   }
 
 }

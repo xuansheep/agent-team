@@ -32,6 +32,8 @@ describe("tui-code replication scope", () => {
     assert.match(scope, /Do not implement remote capabilities\./);
     assert.match(scope, /Do not create remote transport\./);
     assert.match(scope, /Do not implement remote resume\./);
+    assert.match(scope, /Workflow node `mode: "plan"` is removed from the supported model\./);
+    assert.match(scope, /workflow nodes must reject both `mode: "plan"` and `permission_mode: "plan"` configuration\./);
   });
 });
 

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { ModelMessage, ModelProvider } from "../providers/types.js";
-import { enterPlanMode, exitPlanMode, PlanSessionState, resolvePlanApproval } from "../plans/planSession.js";
-import { writePlan } from "../plans/planFiles.js";
-import { RuntimeEvent, RuntimePermissionDecision, RuntimePermissionRequest } from "../runtime/types.js";
+import { buildApprovedPlanHandoff, enterPlanMode, exitPlanMode, PlanSessionState, resolvePlanApproval } from "../plans/planSession.js";
+import { readPlan, writePlan } from "../plans/planFiles.js";
+import { PlanApprovalRequest, RuntimeEvent, RuntimePermissionDecision, RuntimePermissionRequest } from "../runtime/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ToolPermissionContext } from "../permissions/context.js";
 import { headlessQuery, HeadlessQueryResult, normalizePermissions } from "./headless.js";
@@ -15,7 +15,7 @@ export type LocalHeadlessSessionOptions = {
   tools?: ToolRegistry;
   permissions?: Partial<ToolPermissionContext>;
   permissionCallback?: (request: RuntimePermissionRequest) => RuntimePermissionDecision | Promise<RuntimePermissionDecision>;
-  planApprovalCallback?: (plan: { sessionId: string; document: string; planFilePath: string }) => "continue" | "stay" | Promise<"continue" | "stay">;
+  planApprovalCallback?: (plan: PlanApprovalRequest) => "continue" | "stay" | Promise<"continue" | "stay">;
   workflowStarter?: (handoff: unknown) => void | Promise<void>;
 };
 
@@ -53,10 +53,12 @@ export class LocalHeadlessSession {
       provider: this.options.provider,
       tools: this.options.tools,
       permissions: this.permissions,
+      planState: this.planState,
       cwd: this.options.cwd,
       permissionCallback: this.options.permissionCallback
     });
     this.messages = result.messages;
+    if (result.planState) this.planState = result.planState;
     return result;
   }
 
@@ -80,7 +82,9 @@ export class LocalHeadlessSession {
 
   async requestPlanApproval(): Promise<PlanApprovalResolution> {
     if (!this.planState) throw new Error("Plan Mode is not active");
-    const requested = await exitPlanMode(this.planState);
+    const requested = this.planState.mode === "waiting_approval"
+      ? await currentPlanApprovalRequest(this.planState)
+      : await requestPlanApprovalFromDraft(this.planState);
     this.planState = requested.state;
     const decision = await this.options.planApprovalCallback?.(requested.plan) ?? "stay";
     const approvedState = decision === "continue" ? { ...this.planState, approvedPlan: requested.plan.document } : this.planState;
@@ -88,8 +92,37 @@ export class LocalHeadlessSession {
     this.planState = resolved.state;
     this.permissions = resolved.permissions;
     if (decision === "continue") {
-      await this.options.workflowStarter?.({ original_input: this.planState.originalInput, approved_plan: requested.plan.document });
+      await this.options.workflowStarter?.(buildApprovedPlanHandoff(this.planState));
     }
-    return { decision, events: [requested.event, resolved.event], planState: this.planState };
+    return { decision, events: [...requested.events, resolved.event], planState: this.planState };
   }
+}
+
+async function currentPlanApprovalRequest(state: PlanSessionState): Promise<{
+  state: PlanSessionState;
+  plan: PlanApprovalRequest;
+  events: RuntimeEvent[];
+}> {
+  const document = (await readPlan(state.planFilePath))?.trim() ?? "";
+  const empty = !document.trim();
+  return {
+    state,
+    plan: {
+      sessionId: state.sessionId,
+      document,
+      planFilePath: state.planFilePath,
+      ...(empty ? { empty: true } : {}),
+      ...(state.requestedPermissions?.length ? { requestedPermissions: state.requestedPermissions } : {})
+    },
+    events: []
+  };
+}
+
+async function requestPlanApprovalFromDraft(state: PlanSessionState): Promise<{
+  state: PlanSessionState;
+  plan: PlanApprovalRequest;
+  events: RuntimeEvent[];
+}> {
+  const requested = await exitPlanMode(state);
+  return { state: requested.state, plan: requested.plan, events: [requested.event] };
 }

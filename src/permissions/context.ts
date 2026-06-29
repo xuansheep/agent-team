@@ -9,6 +9,7 @@ export type ToolPermissionContext = {
   deny: string[];
   source?: "workflow" | "session" | "settings";
   planFilePath?: string;
+  planUseAutoMode?: boolean;
 };
 
 export type ToolPermissionCheckContext = ToolPermissionContext & Pick<ToolContext, "cwd">;

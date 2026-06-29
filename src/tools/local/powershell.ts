@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { z } from "zod";
 import { Tool } from "../types.js";
-import { isDestructiveShellCommand } from "./shellSafety.js";
+import { isDestructiveShellCommand, isReadOnlyPowerShellCommand } from "./shellSafety.js";
 
 const inputSchema = z.object({ command: z.string().min(1), timeout_ms: z.number().int().positive().default(120000) });
 
@@ -13,7 +13,7 @@ export const powerShellTool: Tool = {
     properties: { command: { type: "string" }, timeout_ms: { type: "number" } },
     required: ["command"]
   },
-  isReadOnly: () => false,
+  isReadOnly: isReadOnlyPowerShellCommand,
   isConcurrencySafe: () => false,
   isDestructive: isDestructiveShellCommand,
   requiresUserInteraction: () => false,

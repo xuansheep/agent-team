@@ -216,7 +216,8 @@ import { WorkflowFlowChart } from "../../src/tui/components/WorkflowFlowChart.js
 
 
 import { ChoicePrompt } from "../../src/tui/components/ChoicePrompt.js";
-import { Select } from "../../src/tui/components/CustomSelect/index.js";
+import { Select, SelectMulti } from "../../src/tui/components/CustomSelect/index.js";
+import type { SelectImageAttachment } from "../../src/tui/components/CustomSelect/index.js";
 
 
 
@@ -1304,6 +1305,82 @@ describe("PromptInput component", () => {
 
   });
 
+  it("renders AskUserQuestion option previews beside choices", () => {
+
+    const output = render(
+      <InteractionArea
+        mode="question"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onPromptEvent={() => undefined}
+        choice={{
+          title: "Which rollout path?",
+          selectedValue: "staged",
+          options: [
+            { label: "Staged", value: "staged", description: "Release gradually", preview: "Phase 1\nPhase 2" },
+            { label: "Big bang", value: "big_bang", description: "Release at once", preview: "All users" }
+          ],
+          onSubmit: () => undefined
+        }}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Which rollout path\?/);
+    assert.match(frame, /Phase 1/);
+    assert.match(frame, /Phase 2/);
+    assert.match(frame, /Notes: press n to add notes/);
+    assert.doesNotMatch(frame, /Release gradually/);
+
+    output.unmount();
+    output.cleanup();
+
+  });
+
+  it("renders AskUserQuestion navigation tabs with tui-code style markers", () => {
+
+    const output = render(
+      <InteractionArea
+        mode="question"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onPromptEvent={() => undefined}
+        choice={{
+          title: "Question 2/2: Which verification steps?",
+          selectedValue: "unit",
+          questionNavigation: {
+            questions: [
+              { text: "Which rollout path?", header: "Rollout" },
+              { text: "Which verification steps?", header: "Verify" }
+            ],
+            currentIndex: 1,
+            answers: { "Which rollout path?": "Staged" }
+          },
+          options: [
+            { label: "Unit tests", value: "unit" },
+            { label: "Manual smoke", value: "manual" }
+          ],
+          onSubmit: () => undefined
+        }}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /☒ Rollout/);
+    assert.match(frame, /☐ Verify/);
+    assert.match(frame, /✓ Submit/);
+    assert.doesNotMatch(frame, /\[x\] Rollout/);
+    assert.doesNotMatch(frame, />\[ \] Verify</);
+
+    output.unmount();
+    output.cleanup();
+
+  });
+
 
 
 
@@ -2219,6 +2296,8 @@ describe("PromptInput component", () => {
 
 
     assert.equal(resolveCtrlCBehavior("running", true), "confirm_interrupt");
+    assert.equal(resolveCtrlCBehavior("planning", true), "confirm_interrupt");
+    assert.equal(resolveCtrlCBehavior("waiting_plan_approval", true), "confirm_interrupt");
 
 
 
@@ -2322,7 +2401,7 @@ describe("PromptInput component", () => {
 
 
 
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "waiting_plan_review", pendingReview: { nodeId: "product", attempt: 1 } }), { type: "stay_plan", key: "plan:product:1" });
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "waiting_plan_approval", pendingReview: { nodeId: "product", attempt: 1 } }), { type: "stay_plan", key: "plan:product:1" });
 
 
 
@@ -5340,6 +5419,12 @@ function RefableStdinSelectProbe(props: Parameters<typeof Select<string>>[0]) {
   return <Select<string> {...props} />;
 }
 
+function RefableStdinSelectMultiProbe(props: Parameters<typeof SelectMulti<string>>[0]) {
+  const { stdin } = useStdin();
+  ensureRefableStdin(stdin);
+  return <SelectMulti<string> {...props} />;
+}
+
 it("navigates CustomSelect with tui-code shortcut semantics", async () => {
 
   const submitted: string[] = [];
@@ -5394,6 +5479,131 @@ it("navigates CustomSelect with tui-code shortcut semantics", async () => {
 
 });
 
+it("renders CustomSelect multi-select checkmarks without mutating option labels", async () => {
+  const output = render(
+    <RefableStdinSelectMultiProbe
+      options={[
+        { label: "Unit tests", value: "unit" },
+        {
+          type: "input",
+          label: "Other",
+          value: "other",
+          placeholder: "Other",
+          onChange: () => undefined
+        }
+      ]}
+      defaultValue={["unit"]}
+      submitButtonText="Submit"
+      onSubmit={() => undefined}
+    />
+  );
+
+  await settleInkInput();
+  const frame = output.lastFrame() ?? "";
+
+  assert.match(frame, /\[✓\] Unit tests/);
+  assert.match(frame, /\[ \] Other/);
+  assert.doesNotMatch(frame, /\[x\]/);
+
+  output.unmount();
+  output.cleanup();
+});
+
+it("keeps CustomSelect input cursor position across typed updates", async () => {
+  let latest = "";
+  const submitted: string[] = [];
+  const output = render(
+    <RefableStdinSelectProbe
+      options={[
+        {
+          type: "input",
+          label: "Other",
+          value: "other",
+          placeholder: "Other",
+          onChange: (value) => {
+            latest = value;
+          }
+        }
+      ]}
+      defaultValue="other"
+      onChange={(value) => submitted.push(value)}
+    />
+  );
+
+  output.stdin.write("abc");
+  await settleInkInput();
+  output.stdin.write("\u001b[D");
+  await settleInkInput();
+  output.stdin.write("\u001b[D");
+  await settleInkInput();
+  output.stdin.write("XY");
+  await settleInkInput();
+  output.stdin.write("\r");
+  await settleInkInput();
+
+  assert.equal(latest, "aXYbc");
+  assert.deepEqual(submitted, ["other"]);
+
+  output.unmount();
+  output.cleanup();
+});
+
+function SelectImageRemovalProbe({ removed }: { removed: number[] }) {
+  const [images, setImages] = React.useState<SelectImageAttachment[]>([
+    { id: 1, type: "image", media_type: "image/png", data: "one" },
+    { id: 2, type: "image", media_type: "image/png", data: "two" }
+  ]);
+  const { stdin } = useStdin();
+  ensureRefableStdin(stdin);
+  return (
+    <Select<string>
+      options={[{
+        type: "input",
+        label: "Other",
+        value: "other",
+        placeholder: "Other",
+        onChange: () => undefined
+      }]}
+      defaultValue="other"
+      imageAttachments={images}
+      onRemoveImage={(id) => {
+        removed.push(id);
+        setImages((current) => current.filter((image) => image.id !== id));
+      }}
+      onChange={() => undefined}
+    />
+  );
+}
+
+it("selects and removes CustomSelect input image attachments with tui-code shortcuts", async () => {
+  const removed: number[] = [];
+  const output = render(<SelectImageRemovalProbe removed={removed} />);
+
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /2 images attached/);
+
+  output.stdin.write("\u001b[B");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /image 1\/2 selected/);
+
+  output.stdin.write("\u001b[C");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /image 2\/2 selected/);
+
+  output.stdin.write("\u007f");
+  await settleInkInput();
+
+  assert.deepEqual(removed, [2]);
+  assert.match(output.lastFrame() ?? "", /image 1\/1 selected/);
+
+  output.stdin.write("\u001b");
+  await settleEscapeInput();
+  assert.match(output.lastFrame() ?? "", /1 image attached/);
+
+  output.unmount();
+  output.cleanup();
+});
+
 
 
 
@@ -5443,6 +5653,26 @@ describe("UserQuestionPrompt", () => {
     assert.doesNotMatch(frame, /"id"/);
 
     assert.doesNotMatch(frame, /"required"/);
+
+    output.unmount();
+
+    output.cleanup();
+
+  });
+
+  it("renders tui-code style question fields", () => {
+
+    const output = render(<UserQuestionPrompt questions={[{ header: "Rollout", question: "Which rollout path?", options: [{ label: "Staged", description: "Release gradually" }] }]} />);
+
+
+
+    const frame = output.lastFrame() ?? "";
+
+    assert.match(frame, /Which rollout path\?/);
+
+    assert.doesNotMatch(frame, /Rollout/);
+
+    assert.doesNotMatch(frame, /\[\{/);
 
     output.unmount();
 
@@ -6400,6 +6630,35 @@ describe("RunLogPanel", () => {
 
     output.cleanup();
 
+  });
+
+  it("renders plan requested permissions in plan review logs", () => {
+    const output = render(
+      <RunLogPanel
+        detailMode={false}
+        items={[
+          {
+            id: "plan-1",
+            kind: "plan",
+            nodeId: "global-plan",
+            attempt: 1,
+            status: "pending",
+            text: "Plan Review",
+            document: "# Plan\n\nRun the migration.",
+            requestedPermissions: [{ tool: "Bash", prompt: "run tests" }]
+          }
+        ]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Here is Claude's plan:/);
+    assert.match(frame, /╌/);
+    assert.match(frame, /Requested permissions:/);
+    assert.match(frame, /Bash\(prompt: run tests\)/);
+
+    output.unmount();
+    output.cleanup();
   });
 
 
@@ -11043,587 +11302,6 @@ describe("TuiApp", () => {
 
   });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("keeps plan review paused when Escape is pressed on the plan choice", async () => {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const decisions: string[] = [];
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const session = fakeInteractiveSession({
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      runId: "run-plan",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      workflowId: "delivery",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      events: [{
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        type: "plan_review_requested",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        node_id: "dev",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        attempt: 1,
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        document: "<proposed_plan>\nplan\n</proposed_plan>",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        ts: "2026-06-24T00:00:00.000Z",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        seq: 1
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      }],
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-      resumePlanReview: (decision: "continue" | "stay") => { decisions.push(decision); }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const engine = { async startInteractive() { return session; } };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await sendTuiLine(output, "review plan");
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    output.stdin.write("\u001b");
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    await settleTerminalEscape();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.deepEqual(decisions, ["stay"]);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    output.unmount();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    output.cleanup();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  it("offers approval and revision options for plan review", async () => {
-    const session = fakeInteractiveSession({
-      runId: "run-plan-claude-option",
-      workflowId: "delivery",
-      events: [{
-        type: "plan_review_requested",
-        node_id: "dev",
-        attempt: 1,
-        document: "# Plan\nplan",
-        ts: "2026-06-24T00:00:00.000Z",
-        seq: 1
-      }]
-    });
-
-    const engine = { async startInteractive() { return session; } };
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-    await sendTuiLine(output, "review plan");
-    await waitForTuiFrame(output, /Plan approval request/);
-
-    const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Yes, approve and continue/);
-    assert.match(frame, /No, keep planning/);
-    assert.doesNotMatch(frame, /Yes, implement the plan by Claude/);
-
-    output.unmount();
-    output.cleanup();
-  });
-
-
-  it("submits custom text during plan review as user input", async () => {
-
-    const inputs: unknown[] = [];
-
-    const decisions: string[] = [];
-
-    const session = fakeInteractiveSession({
-
-      runId: "run-plan-custom-input",
-
-      workflowId: "delivery",
-
-      events: [{
-
-        type: "plan_review_requested",
-
-        node_id: "dev",
-
-        attempt: 1,
-
-        document: "# Plan\nplan",
-
-        ts: "2026-06-24T00:00:00.000Z",
-
-        seq: 1
-
-      }],
-
-      revisePlan: (input: unknown) => { inputs.push(input); },
-
-      resumePlanReview: (decision: "continue" | "stay") => decisions.push(decision)
-
-    });
-
-
-
-    const engine = { async startInteractive() { return session; } };
-
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
-
-
-
-    await sendTuiLine(output, "review plan");
-
-    output.stdin.write("j");
-    await settleTuiWork();
-    output.stdin.write("ust refine the plan");
-    await settleTuiWork();
-    output.stdin.write("\r");
-    await settleTuiWork();
-
-
-
-    assert.deepEqual(inputs, [{ answer: "just refine the plan" }]);
-
-    assert.deepEqual(decisions, []);
-
-    const frame = output.lastFrame() ?? "";
-
-    assert.match(frame, /# Plan/);
-
-    assert.match(frame, /plan/);
-
-    assert.doesNotMatch(frame, /Plan approval request/);
-
-
-
-    output.unmount();
-
-    output.cleanup();
-
-  });
-
   it("exits transcript mode with Escape without denying the active permission", async () => {
 
     const resolved: Array<[string, "allow_once" | "deny_once"]> = [];
@@ -13378,27 +13056,7 @@ function fakeInteractiveSession(input: {
   permissions?: { resolve(requestId: string, decision: "allow_once" | "deny_once"): void };
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-  resumePlanReview?: (decision: "continue" | "stay") => void;
-
-
-
   resumeWithUserInput?: (input: unknown) => void | Promise<void>;
-
-  revisePlan?: (input: unknown) => void | Promise<void>;
-
 
 
   interrupt?: () => void | Promise<void>;
@@ -13642,39 +13300,6 @@ function fakeInteractiveSession(input: {
 
 
     resumeWithUserInput: async (resumeInput: unknown) => input.resumeWithUserInput?.(resumeInput),
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    resumePlanReview: async (decision: "continue" | "stay") => input.resumePlanReview?.(decision),
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    revisePlan: async (revisionInput: unknown) => input.revisePlan?.(revisionInput),
-
 
 
 
@@ -13992,39 +13617,6 @@ function fakeCompletedSession(runId: string, workflowId: string, request: string
 
 
 
-
-    resumePlanReview: async () => undefined,
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    revisePlan: async () => undefined,
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     continueWithInput: async (input: unknown) => continueWithInput?.(input),
 
 
@@ -14305,6 +13897,10 @@ function settleInkInput(): Promise<void> {
 
 
 
+}
+
+function settleEscapeInput(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 30));
 }
 
 

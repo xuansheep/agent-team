@@ -1,4 +1,5 @@
 import type { PlanSessionState } from "../plans/planSession.js";
+import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RunSummary } from "../storage/runStore.js";
 import type { TuiLogMessage } from "./logTypes.js";
 
@@ -9,10 +10,8 @@ export type TuiMode =
   | "running"
   | "permission"
   | "question"
-  | "waiting_plan_review"
   | "planning"
   | "waiting_plan_approval"
-  | "plan_revision"
   | "resume_picker"
   | "confirm_new"
   | "confirm_resume"
@@ -63,6 +62,10 @@ export type TuiPlanReviewState = {
   attempt: number;
   document: string;
   planFilePath?: string;
+  empty?: boolean;
+  requestedPermissions?: Array<{ tool: string; prompt: string }>;
+  savedMessage?: string;
+  contextUsedPercent?: number;
 };
 
 export type TuiModelStreamState = {
@@ -98,6 +101,7 @@ export type TuiResumeEntry =
 export type TuiState = {
   cwd: string;
   mode: TuiMode;
+  inputPermissionMode: PermissionMode;
   workflowId?: string;
   runId?: string;
   currentNodeId?: string;

@@ -1,6 +1,8 @@
 import { ModelMessage } from "../providers/types.js";
 
-export type RuntimeAttachmentType = "plan_mode" | "plan_mode_reminder" | "plan_mode_exit";
+import { Tool } from "../tools/types.js";
+
+export type RuntimeAttachmentType = "plan_mode" | "plan_mode_reminder" | "plan_mode_reentry" | "plan_mode_exit" | "auto_mode" | "auto_mode_reminder" | "auto_mode_exit" | "tool_prompts";
 
 export type RuntimeAttachment = {
   type: RuntimeAttachmentType;
@@ -15,9 +17,57 @@ export type PlanModeAttachmentInput = {
 };
 
 export type PlanModeExitAttachmentInput = {
-  approvedPlan: string;
-  originalInput: unknown;
+  planFilePath?: string;
 };
+
+export type PlanModeReentryAttachmentInput = {
+  planFilePath: string;
+};
+
+export type ToolPromptsAttachmentInput = {
+  tools: Tool[];
+};
+
+export function buildAutoModeAttachment(input: { sparse?: boolean } = {}): RuntimeAttachment {
+  if (input.sparse) {
+    return {
+      type: "auto_mode_reminder",
+      content: [
+        attachmentMarker("auto_mode_reminder"),
+        "Auto mode still active (see full instructions earlier in conversation). Execute autonomously, minimize interruptions, prefer action over planning."
+      ].join("\n")
+    };
+  }
+
+  return {
+    type: "auto_mode",
+    content: [
+      attachmentMarker("auto_mode"),
+      "## Auto Mode Active",
+      "",
+      "Auto mode is active. The user chose continuous, autonomous execution. You should:",
+      "",
+      "1. Execute immediately - Start implementing right away. Make reasonable assumptions and proceed on low-risk work.",
+      "2. Minimize interruptions - Prefer making reasonable assumptions over asking questions for routine decisions.",
+      "3. Prefer action over planning - Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.",
+      "4. Expect course corrections - The user may provide suggestions or course corrections at any point; treat those as normal input.",
+      "5. Do not take overly destructive actions - Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.",
+      "6. Avoid data exfiltration - Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets unless the user has explicitly authorized both that specific secret and its destination."
+    ].join("\n")
+  };
+}
+
+export function buildAutoModeExitAttachment(): RuntimeAttachment {
+  return {
+    type: "auto_mode_exit",
+    content: [
+      attachmentMarker("auto_mode_exit"),
+      "## Exited Auto Mode",
+      "",
+      "Auto mode is no longer active. Follow the current permission mode and ask for approval when required."
+    ].join("\n")
+  };
+}
 
 export function buildPlanModeAttachment(input: PlanModeAttachmentInput): RuntimeAttachment {
   if (input.sparse) {
@@ -25,37 +75,122 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
       type: "plan_mode_reminder",
       content: [
         attachmentMarker("plan_mode_reminder"),
-        "Continue planning only. Do not start workflow execution, modify ordinary project files, or run destructive shell commands.",
-        `Current plan file: ${input.planFilePath}`
+        `Plan mode still active. Read-only except the current plan file (${input.planFilePath}).`,
+        "Follow the iterative workflow: explore the codebase, interview the user when needed, and write to the plan incrementally.",
+        "End turns only with AskUserQuestion for clarifications or ExitPlanMode for plan approval.",
+        "Never ask about plan approval via plain text or AskUserQuestion."
       ].join("\n")
     };
   }
 
+  const planFileInfo = input.draft === undefined
+    ? `No plan file exists yet. Create your plan at ${input.planFilePath} using the Write tool.`
+    : `A plan file already exists at ${input.planFilePath}. Read it and make incremental edits using Write/Edit as the plan evolves.`;
   const lines = [
     attachmentMarker("plan_mode"),
     `Session: ${input.sessionId}`,
+    "Plan mode is active. The user indicated that they do not want execution yet.",
+    "You MUST NOT make edits except to the plan file, run non-readonly tools, change configs, make commits, start workflow execution, or otherwise change the system before approval.",
+    "This supersedes any conflicting instruction.",
+    "",
+    "## Plan File Info",
     `Current plan file: ${input.planFilePath}`,
-    "You are in Plan Mode.",
-    "Do not start workflow execution before the user approves the plan.",
-    "Do not modify ordinary project files, run destructive shell commands, or launch background workflow tasks.",
-    "Use read-only tools for investigation. The only writable target is the current plan file.",
-    "When the plan is ready, request approval instead of executing it."
+    planFileInfo,
+    "",
+    "## Iterative Planning Workflow",
+    "You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you cannot make alone, and write findings into the plan file as you go.",
+    "The plan file above is the ONLY file you may edit. It starts as a rough skeleton and gradually becomes the final plan.",
+    "",
+    "### The Loop",
+    "Repeat this cycle until the plan is complete:",
+    "1. Explore: use read-only tools and read-only Bash commands to inspect relevant code, existing functions, utilities, and patterns to reuse.",
+    "2. Update the plan file: after each discovery, immediately capture what you learned. Do not wait until the end.",
+    "3. Ask the user: when you hit an ambiguity or decision you cannot resolve from code alone, use AskUserQuestion. Then return to exploration.",
+    "",
+    "### First Turn",
+    "Start by quickly scanning a few key files to form an initial understanding of the task scope. Then write a skeleton plan with headers and rough notes, and ask the user your first round of questions if clarification is needed. Do not explore exhaustively before engaging the user.",
+    "",
+    "### Asking Good Questions",
+    "- Never ask what you could find out by reading the code.",
+    "- Batch related questions together using AskUserQuestion.",
+    "- Focus on things only the user can answer: requirements, preferences, tradeoffs, and edge case priorities.",
+    "- Scale depth to the task: vague feature requests need more rounds; focused bug fixes may need one or none.",
+    "",
+    "### Plan File Structure",
+    "Use markdown headers that fit the request. The plan should include:",
+    "- Context: why this change is being made, the problem it addresses, and the intended outcome.",
+    "- Recommended approach only, not a list of all alternatives.",
+    "- Critical file paths to modify.",
+    "- Existing functions, utilities, and patterns to reuse, with file paths.",
+    "- Risks, edge cases, and verification steps for testing end-to-end.",
+    "",
+    "### When to Converge",
+    "The plan is ready when ambiguities are addressed and it covers what to change, which files to modify, what existing code to reuse, and how to verify the change.",
+    "When the plan is ready, call ExitPlanMode to request approval instead of executing it.",
+    "",
+    "### Ending Your Turn",
+    "Your turn should only end by either:",
+    "- Using AskUserQuestion to gather more information.",
+    "- Calling ExitPlanMode when the plan is ready for approval.",
+    "",
+    "Important: Use ExitPlanMode to request plan approval. Do NOT ask about plan approval via text or AskUserQuestion. Phrases like \"should I proceed\", \"does this plan look good\", or \"any changes before we start\" must use ExitPlanMode."
   ];
   if (input.draft?.trim()) lines.push("", "Current draft:", input.draft.trim());
   return { type: "plan_mode", content: lines.join("\n") };
 }
 
 export function buildPlanModeExitAttachment(input: PlanModeExitAttachmentInput): RuntimeAttachment {
+  const planReference = input.planFilePath
+    ? ` The plan file is located at ${input.planFilePath} if you need to reference it.`
+    : "";
+  const lines = [
+    attachmentMarker("plan_mode_exit"),
+    "## Exited Plan Mode",
+    "",
+    `You have exited plan mode. You can now make edits, run tools, and take actions.${planReference}`
+  ];
   return {
     type: "plan_mode_exit",
+    content: lines.join("\n")
+  };
+}
+
+export function buildPlanModeReentryAttachment(input: PlanModeReentryAttachmentInput): RuntimeAttachment {
+  return {
+    type: "plan_mode_reentry",
     content: [
-      attachmentMarker("plan_mode_exit"),
-      "The user approved the plan. Workflow execution may proceed according to the approved plan and normal permissions.",
-      "Original input:",
-      JSON.stringify(input.originalInput, null, 2),
+      attachmentMarker("plan_mode_reentry"),
+      "## Re-entering Plan Mode",
       "",
-      "Approved plan:",
-      input.approvedPlan.trim()
+      `You are returning to plan mode after having previously exited it. A plan file exists at ${input.planFilePath} from your previous planning session.`,
+      "",
+      "Before proceeding with any new planning, you should:",
+      "1. Read the existing plan file to understand what was previously planned.",
+      "2. Evaluate the user's current request against that plan.",
+      "3. Decide how to proceed:",
+      "   - Different task: if the user's request is for a different task, start fresh by overwriting the existing plan.",
+      "   - Same task, continuing: if this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections.",
+      "4. Continue the plan process and always edit the plan file one way or another before calling ExitPlanMode.",
+      "",
+      "Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first."
+    ].join("\n")
+  };
+}
+
+export function buildToolPromptsAttachment(input: ToolPromptsAttachmentInput): RuntimeAttachment | undefined {
+  const entries = input.tools.flatMap((tool) => {
+    const prompt = typeof tool.prompt === "function" ? tool.prompt() : tool.prompt;
+    return prompt?.trim() ? [{ name: tool.name, prompt: prompt.trim() }] : [];
+  });
+  if (!entries.length) return undefined;
+  return {
+    type: "tool_prompts",
+    content: [
+      attachmentMarker("tool_prompts"),
+      "## Tool Prompts",
+      "",
+      "The following tool-specific instructions supplement the short tool descriptions in the tool schema.",
+      ...entries.flatMap((entry) => ["", `### ${entry.name}`, entry.prompt])
     ].join("\n")
   };
 }

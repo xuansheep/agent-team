@@ -1,1 +1,6 @@
-export { isDestructiveShellCommand, shellCommandText } from "../../security/shellSafety.js";
+export {
+  isDestructiveShellCommand,
+  isReadOnlyPowerShellCommand,
+  isReadOnlyShellCommand,
+  shellCommandText
+} from "../../security/shellSafety.js";

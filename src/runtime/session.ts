@@ -22,7 +22,8 @@ export function createRuntimeSession(input: {
       ask: input.permissions?.ask ?? [],
       deny: input.permissions?.deny ?? [],
       source: input.permissions?.source,
-      planFilePath: input.permissions?.planFilePath
+      planFilePath: input.permissions?.planFilePath,
+      planUseAutoMode: input.permissions?.planUseAutoMode
     }
   };
 }

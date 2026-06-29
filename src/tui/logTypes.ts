@@ -37,6 +37,7 @@ export type TuiPlanLogMessage = BaseLogMessage & {
   status: "pending" | "approved" | "rejected";
   document: string;
   path?: string;
+  requestedPermissions?: Array<{ tool: string; prompt: string }>;
 };
 
 export type TuiToolLogMessage = BaseLogMessage & {

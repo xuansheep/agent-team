@@ -15,6 +15,15 @@ const tool: Tool = {
     return { output: "" };
   }
 };
+const promptedTool: Tool = {
+  name: "PromptedTool",
+  description: "Short provider description",
+  prompt: "Long model-facing tool prompt that belongs only in runtime attachments.",
+  input_schema: { type: "object", properties: {} },
+  async execute() {
+    return { output: "" };
+  }
+};
 const context = {
   runId: "run-1",
   nodeId: "dev",
@@ -70,6 +79,20 @@ describe("AnthropicMessagesProvider", () => {
     assert.deepEqual(server.requestBody.output_config, {
       format: { type: "json_schema", schema: responseSchema }
     });
+  });
+
+  it("keeps long tool prompts out of Anthropic tool schemas", async () => {
+    const server = await startJsonServer({ content: [{ type: "text", text: "{\"status\":\"success\"}" }] });
+    const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
+
+    await provider.generate({ model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [promptedTool] });
+
+    assert.deepEqual(server.requestBody.tools, [{
+      name: "PromptedTool",
+      description: "Short provider description",
+      input_schema: promptedTool.input_schema
+    }]);
+    assert.doesNotMatch(JSON.stringify(server.requestBody), /Long model-facing tool prompt/);
   });
 
   it("omits Anthropic prompt cache controls when disabled", async () => {

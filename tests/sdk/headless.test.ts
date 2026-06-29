@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { getPlanFilePath } from "../../src/plans/planFiles.js";
 import { headlessQuery } from "../../src/sdk/headless.js";
-import { ToolRegistry } from "../../src/tools/registry.js";
+import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { Tool } from "../../src/tools/types.js";
 import { ModelProvider } from "../../src/providers/types.js";
 
@@ -72,6 +73,44 @@ describe("headless SDK", () => {
 
     assert.equal(result.status, "failed");
     assert.match(result.error ?? "", /callback denied/);
+  });
+
+  it("carries Plan Mode state into headless turns for ExitPlanMode approval", async () => {
+    const cwd = process.cwd();
+    const sessionId = "sdk-headless-plan";
+    const planFilePath = getPlanFilePath(sessionId, cwd);
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          content: "ready for approval",
+          tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: { plan: "# Plan\nDo it carefully." } }]
+        };
+      }
+    };
+
+    const result = await headlessQuery({
+      sessionId,
+      messages: [{ role: "user", content: "plan first" }],
+      model: "test-model",
+      provider,
+      tools: createLocalToolRegistry(),
+      permissions: { mode: "plan" },
+      planState: {
+        mode: "planning",
+        sessionId,
+        planFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "plan first" },
+        useAutoModeDuringPlan: true,
+        feedbackMessages: []
+      },
+      cwd
+    });
+
+    assert.equal(result.status, "waiting_plan_approval");
+    assert.equal(result.plan?.document, "# Plan\nDo it carefully.");
+    assert.equal(result.planState?.mode, "waiting_approval");
+    assert.ok(result.events.some((event) => event.type === "plan_approval_requested"));
   });
 });
 

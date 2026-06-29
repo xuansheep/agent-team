@@ -27,8 +27,6 @@ describe("TuiApp session continuation", () => {
       permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
       interrupt: async () => undefined,
       resumeWithUserInput: async () => undefined,
-      resumePlanReview: async () => undefined,
-      revisePlan: async () => undefined,
       continueWithInput: async (input: unknown) => {
         continued.push(input);
         events.reopen();

@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 
 import { join } from "node:path";
 
-import { AgentTeamConfig, permissionSetSchema, WorkflowConfig, WorkflowNodeConfig } from "../config/schema.js";
+import { AgentTeamConfig, PermissionSet, permissionSetSchema, WorkflowConfig, WorkflowNodeConfig } from "../config/schema.js";
 
 import { handoffHasImages } from "../harness/context.js";
 
@@ -15,18 +15,20 @@ import { mergePermissions } from "../harness/permissions.js";
 import { PermissionController } from "../harness/permissionController.js";
 
 import { RuntimeInteraction, runNode } from "../harness/runtime.js";
+import type { ToolPermissionContext } from "../permissions/context.js";
+import type { PermissionMode } from "../permissions/PermissionMode.js";
 
 import { ModelMessage, ModelProvider } from "../providers/types.js";
 import { modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
-
-import { writePlan } from "../plans/planFiles.js";
 
 import { ArtifactStore } from "../storage/artifacts.js";
 
 import { RunStore, RunSummary } from "../storage/runStore.js";
 
 import { buildHandoff } from "../team/handoff.js";
+import type { PlanRequestedPermission } from "../plans/planSession.js";
+import { stripInternalPlanModeHandoffMarkers } from "../plans/planSession.js";
 
 import { NodeResult } from "../team/nodeResult.js";
 
@@ -34,7 +36,7 @@ import { createLocalToolRegistry } from "../tools/registry.js";
 
 import { WorkflowState } from "./state.js";
 
-import { PlanReviewDecision, WorkflowSession } from "./session.js";
+import { WorkflowSession } from "./session.js";
 
 import { firstNodeId, nextNodeId } from "./transitions.js";
 
@@ -84,21 +86,26 @@ type ContinueOptions = {
 
     };
 
+    runPermissionMode?: WorkflowRunPermissionMode;
+
+    planRequestedPermissionRules?: string[];
+
 };
 
-type PlanReviewOptions = Omit<ContinueOptions, "startNodeId" | "initialHandoff" | "attempts"> & {
+export type WorkflowRunPermissionMode = Exclude<PermissionMode, "plan">;
 
-    state: WorkflowState;
-
-    decision: PlanReviewDecision;
-
+export type WorkflowRunOptions = {
+    permissionMode?: WorkflowRunPermissionMode;
+    clearContext?: boolean;
 };
 
 export class WorkflowEngine {
 
     constructor(private readonly options: WorkflowEngineOptions) { }
 
-    async run(config: AgentTeamConfig, workflowId: string, input: unknown): Promise<WorkflowState> {
+    async run(config: AgentTeamConfig, workflowId: string, input: unknown, options: WorkflowRunOptions = {}): Promise<WorkflowState> {
+
+        assertWorkflowRunPermissionMode(options.permissionMode);
 
         const workflow = config.workflows[workflowId];
 
@@ -108,9 +115,10 @@ export class WorkflowEngine {
 
         const store = new RunStore(this.options.runRoot ?? ".session");
 
-        const run = await store.createRun(workflowId, input);
+        const run = await store.createRun(workflowId, publicWorkflowInput(input));
 
-        const initialHandoff = await this.prepareInitialHandoff(input, run.runDir);
+        const initialHandoff = await this.prepareInitialHandoff(input, run.runDir, options);
+        const planRequestedPermissionRules = planRequestedPermissionRulesFromHandoff(initialHandoff);
 
         return this.continueFrom({
 
@@ -128,7 +136,11 @@ export class WorkflowEngine {
 
             initialHandoff,
 
-            attempts: []
+            attempts: [],
+
+            runPermissionMode: options.permissionMode,
+
+            planRequestedPermissionRules
 
         });
 
@@ -145,34 +157,6 @@ export class WorkflowEngine {
         const store = new RunStore(this.options.runRoot ?? ".session");
 
         const state = await store.loadState(runId);
-
-        if (state.pending_review) {
-
-            const decision = exactPlanReviewDecisionFromInput(userInput);
-
-            if (decision) {
-
-                return this.continuePlanReview({
-
-                    config,
-
-                    workflowId,
-
-                    workflow,
-
-                    store,
-
-                    runId,
-
-                    state,
-
-                    decision
-
-                });
-
-            }
-
-        }
 
         if (state.status === "pending") {
 
@@ -202,7 +186,11 @@ export class WorkflowEngine {
 
                 initialHandoff: { previous_handoff: state.handoff, user_input: userInput },
 
-                attempts: state.attempts
+                attempts: state.attempts,
+
+                runPermissionMode: state.run_permission_mode,
+
+                planRequestedPermissionRules: state.plan_requested_permission_rules
 
             });
 
@@ -234,7 +222,11 @@ export class WorkflowEngine {
 
             initialHandoff: { previous_handoff: state.resume_checkpoint.handoff, resumed: true, user_input: userInput },
 
-            attempts: state.attempts
+            attempts: state.attempts,
+
+            runPermissionMode: state.run_permission_mode,
+
+            planRequestedPermissionRules: state.plan_requested_permission_rules
 
         });
 
@@ -382,6 +374,10 @@ export class WorkflowEngine {
 
                 resume: segment.resume,
 
+                runPermissionMode: latestState.run_permission_mode,
+
+                planRequestedPermissionRules: latestState.plan_requested_permission_rules,
+
                 eventSink: (event) => stream.push(event),
 
                 interaction: {
@@ -518,11 +514,7 @@ export class WorkflowEngine {
 
                         startNodeId: checkpointResume.nodeId,
 
-                        initialHandoff: latestState.pending_review
-
-                            ? { previous_handoff: checkpointResume.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                            : checkpointResume.handoff,
+                        initialHandoff: checkpointResume.handoff,
 
                         attempts: latestState.attempts,
 
@@ -552,141 +544,7 @@ export class WorkflowEngine {
 
                     startNodeId: latestState.current_node_id,
 
-                    initialHandoff: latestState.pending_review
-
-                        ? { previous_handoff: latestState.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                        : { previous_handoff: latestState.handoff, user_input: input },
-
-                    attempts: latestState.attempts
-
-                });
-
-                finishWhenTerminal(nextState);
-
-            },
-
-            resumePlanReview: async (decision) => {
-
-                if (activeRun)
-
-                    await activeRun;
-
-                if (latestState.status !== "pending" || !latestState.pending_review)
-
-                    throw new Error(`Run ${runId} is not waiting for plan review`);
-
-                stream.reopen();
-
-                const nextState = await this.continuePlanReview({
-
-                    config,
-
-                    workflowId,
-
-                    workflow,
-
-                    store,
-
-                    runId,
-
-                    state: latestState,
-
-                    decision,
-
-                    eventSink: (event) => stream.push(event),
-
-                    interaction: {
-
-                        requestPermission: (request) => permissions.request(request)
-
-                    },
-
-                    isInterrupted: () => interrupted,
-
-                    onState: (next) => {
-
-                        latestState = next;
-
-                    }
-
-                });
-
-                finishWhenTerminal(nextState);
-
-            },
-
-            revisePlan: async (input) => {
-
-                if (activeRun)
-
-                    await activeRun;
-
-                if (latestState.status !== "pending" || !latestState.pending_review)
-
-                    throw new Error(`Run ${runId} is not waiting for plan review`);
-
-                if (!latestState.current_node_id)
-
-                    throw new Error(`Run ${runId} has no current node`);
-
-                stream.reopen();
-
-                const checkpointResume = resumeFromCheckpoint(latestState, input);
-
-                if (checkpointResume) {
-
-                    await this.appendEvent(store, runId, {
-
-                        type: "user_message",
-
-                        text: checkpointResume.userText,
-
-                        node_id: checkpointResume.nodeId,
-
-                        attempt: checkpointResume.attempt
-
-                    }, (event) => stream.push(event));
-
-                    const nextState = await runSegment({
-
-                        startNodeId: checkpointResume.nodeId,
-
-                        initialHandoff: latestState.pending_review
-
-                            ? { previous_handoff: checkpointResume.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                            : checkpointResume.handoff,
-
-                        attempts: latestState.attempts,
-
-                        resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, dialogueMessages: checkpointResume.dialogueMessages }
-
-                    });
-
-                    finishWhenTerminal(nextState);
-
-                    return;
-
-                }
-
-                await this.appendEvent(store, runId, {
-
-                    type: "user_message",
-
-                    text: userMessageText(input),
-
-                    node_id: latestState.current_node_id,
-
-                    attempt: latestState.attempts.filter((attempt) => attempt.node_id === latestState.current_node_id).length + 1
-
-                }, (event) => stream.push(event));
-
-                const nextState = await runSegment({
-
-                    startNodeId: latestState.current_node_id,
-
-                    initialHandoff: { previous_handoff: latestState.handoff, pending_review: latestState.pending_review, user_input: input },
+                    initialHandoff: { previous_handoff: latestState.handoff, user_input: input },
 
                     attempts: latestState.attempts
 
@@ -734,11 +592,7 @@ export class WorkflowEngine {
 
                             startNodeId: checkpointResume.nodeId,
 
-                            initialHandoff: latestState.pending_review
-
-                                ? { previous_handoff: checkpointResume.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                                : checkpointResume.handoff,
+                            initialHandoff: checkpointResume.handoff,
 
                             attempts: latestState.attempts,
 
@@ -784,7 +638,7 @@ export class WorkflowEngine {
 
                 const initialHandoff = await this.prepareInitialHandoff(input, store.runDir(runId));
 
-                await this.appendEvent(store, runId, { type: "run_started", workflow_id: workflowId, input }, (event) => stream.push(event));
+                await this.appendEvent(store, runId, { type: "run_started", workflow_id: workflowId, input: publicWorkflowInput(input) }, (event) => stream.push(event));
 
                 const nextState = await runSegment({
 
@@ -806,7 +660,9 @@ export class WorkflowEngine {
 
     }
 
-    async startInteractive(config: AgentTeamConfig, workflowId: string, input: unknown): Promise<WorkflowSession> {
+    async startInteractive(config: AgentTeamConfig, workflowId: string, input: unknown, options: WorkflowRunOptions = {}): Promise<WorkflowSession> {
+
+        assertWorkflowRunPermissionMode(options.permissionMode);
 
         const workflow = config.workflows[workflowId];
 
@@ -816,9 +672,10 @@ export class WorkflowEngine {
 
         const store = new RunStore(this.options.runRoot ?? ".session");
 
-        const run = await store.createRun(workflowId, input);
+        const run = await store.createRun(workflowId, publicWorkflowInput(input));
 
-        const initialHandoff = await this.prepareInitialHandoff(input, run.runDir);
+        const initialHandoff = await this.prepareInitialHandoff(input, run.runDir, options);
+        const planRequestedPermissionRules = planRequestedPermissionRulesFromHandoff(initialHandoff);
 
         const stream = new EventStream<StoredEvent>();
 
@@ -832,6 +689,8 @@ export class WorkflowEngine {
 
         const startNodeId = firstNodeId(workflow);
 
+        const runPermissionMode = options.permissionMode;
+
         let interrupted = false;
 
         let resultSettled = false;
@@ -843,6 +702,9 @@ export class WorkflowEngine {
             status: "running",
 
             workflow_id: workflowId,
+
+            ...(runPermissionMode ? { run_permission_mode: runPermissionMode } : {}),
+            ...(planRequestedPermissionRules.length ? { plan_requested_permission_rules: planRequestedPermissionRules } : {}),
 
             current_node_id: startNodeId,
 
@@ -949,6 +811,10 @@ export class WorkflowEngine {
                 attempts: segment.attempts,
 
                 resume: segment.resume,
+
+                runPermissionMode,
+
+                planRequestedPermissionRules: latestState.plan_requested_permission_rules,
 
                 eventSink: (event) => stream.push(event),
 
@@ -1070,11 +936,7 @@ export class WorkflowEngine {
 
                         startNodeId: checkpointResume.nodeId,
 
-                        initialHandoff: latestState.pending_review
-
-                            ? { previous_handoff: checkpointResume.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                            : checkpointResume.handoff,
+                        initialHandoff: checkpointResume.handoff,
 
                         attempts: latestState.attempts,
 
@@ -1104,141 +966,7 @@ export class WorkflowEngine {
 
                     startNodeId: latestState.current_node_id,
 
-                    initialHandoff: latestState.pending_review
-
-                        ? { previous_handoff: latestState.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                        : { previous_handoff: latestState.handoff, user_input: input },
-
-                    attempts: latestState.attempts
-
-                });
-
-                finishWhenTerminal(state);
-
-            },
-
-            resumePlanReview: async (decision) => {
-
-                if (activeRun)
-
-                    await activeRun;
-
-                if (latestState.status !== "pending" || !latestState.pending_review)
-
-                    throw new Error(`Run ${run.runId} is not waiting for plan review`);
-
-                stream.reopen();
-
-                const state = await this.continuePlanReview({
-
-                    config,
-
-                    workflowId,
-
-                    workflow,
-
-                    store,
-
-                    runId: run.runId,
-
-                    state: latestState,
-
-                    decision,
-
-                    eventSink: (event) => stream.push(event),
-
-                    interaction: {
-
-                        requestPermission: (request) => permissions.request(request)
-
-                    },
-
-                    isInterrupted: () => interrupted,
-
-                    onState: (next) => {
-
-                        latestState = next;
-
-                    }
-
-                });
-
-                finishWhenTerminal(state);
-
-            },
-
-            revisePlan: async (input) => {
-
-                if (activeRun)
-
-                    await activeRun;
-
-                if (latestState.status !== "pending" || !latestState.pending_review)
-
-                    throw new Error(`Run ${run.runId} is not waiting for plan review`);
-
-                if (!latestState.current_node_id)
-
-                    throw new Error(`Run ${run.runId} has no current node`);
-
-                stream.reopen();
-
-                const checkpointResume = resumeFromCheckpoint(latestState, input);
-
-                if (checkpointResume) {
-
-                    await this.appendEvent(store, run.runId, {
-
-                        type: "user_message",
-
-                        text: checkpointResume.userText,
-
-                        node_id: checkpointResume.nodeId,
-
-                        attempt: checkpointResume.attempt
-
-                    }, (event) => stream.push(event));
-
-                    const state = await runSegment({
-
-                        startNodeId: checkpointResume.nodeId,
-
-                        initialHandoff: latestState.pending_review
-
-                            ? { previous_handoff: checkpointResume.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                            : checkpointResume.handoff,
-
-                        attempts: latestState.attempts,
-
-                        resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, dialogueMessages: checkpointResume.dialogueMessages }
-
-                    });
-
-                    finishWhenTerminal(state);
-
-                    return;
-
-                }
-
-                await this.appendEvent(store, run.runId, {
-
-                    type: "user_message",
-
-                    text: userMessageText(input),
-
-                    node_id: latestState.current_node_id,
-
-                    attempt: latestState.attempts.filter((attempt) => attempt.node_id === latestState.current_node_id).length + 1
-
-                }, (event) => stream.push(event));
-
-                const state = await runSegment({
-
-                    startNodeId: latestState.current_node_id,
-
-                    initialHandoff: { previous_handoff: latestState.handoff, pending_review: latestState.pending_review, user_input: input },
+                    initialHandoff: { previous_handoff: latestState.handoff, user_input: input },
 
                     attempts: latestState.attempts
 
@@ -1286,11 +1014,7 @@ export class WorkflowEngine {
 
                             startNodeId: checkpointResume.nodeId,
 
-                            initialHandoff: latestState.pending_review
-
-                                ? { previous_handoff: checkpointResume.handoff, pending_review: latestState.pending_review, user_input: input }
-
-                                : checkpointResume.handoff,
+                            initialHandoff: checkpointResume.handoff,
 
                             attempts: latestState.attempts,
 
@@ -1336,7 +1060,7 @@ export class WorkflowEngine {
 
                 const initialHandoff = await this.prepareInitialHandoff(input, run.runDir);
 
-                await this.appendEvent(store, run.runId, { type: "run_started", workflow_id: workflowId, input }, (event) => stream.push(event));
+                await this.appendEvent(store, run.runId, { type: "run_started", workflow_id: workflowId, input: publicWorkflowInput(input) }, (event) => stream.push(event));
 
                 const state = await runSegment({
 
@@ -1408,15 +1132,15 @@ export class WorkflowEngine {
 
             startNodeId: checkpointResume.nodeId,
 
-            initialHandoff: input.state.pending_review
-
-                ? { previous_handoff: checkpointResume.handoff, pending_review: input.state.pending_review, user_input: input.input }
-
-                : checkpointResume.handoff,
+            initialHandoff: checkpointResume.handoff,
 
             attempts: input.state.attempts,
 
-            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, dialogueMessages: checkpointResume.dialogueMessages }
+            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, dialogueMessages: checkpointResume.dialogueMessages },
+
+            runPermissionMode: input.state.run_permission_mode,
+
+            planRequestedPermissionRules: input.state.plan_requested_permission_rules
 
         });
 
@@ -1427,6 +1151,18 @@ export class WorkflowEngine {
         const tools = createLocalToolRegistry();
 
         const basePermissions = options.workflow.workflow_permissions ?? permissionSetSchema.parse(undefined);
+        const planRequestedPermissionRules = options.planRequestedPermissionRules?.length
+            ? options.planRequestedPermissionRules
+            : planRequestedPermissionRulesFromHandoff(options.initialHandoff);
+        options.planRequestedPermissionRules = planRequestedPermissionRules;
+
+        const runPermissionMode = options.runPermissionMode;
+
+        const stateBase = () => ({
+            workflow_id: options.workflowId,
+            ...(runPermissionMode ? { run_permission_mode: runPermissionMode } : {}),
+            ...(planRequestedPermissionRules.length ? { plan_requested_permission_rules: planRequestedPermissionRules } : {})
+        });
 
         const attempts = [...options.attempts];
 
@@ -1451,6 +1187,8 @@ export class WorkflowEngine {
             const role = options.config.roles[node.role];
 
             const providerConfig = options.config.providers[node.provider];
+
+            const effectivePermissionMode = runPermissionMode ?? node.permission_mode;
 
             this.assertCapabilities(node, role.requires, providerConfig.capabilities, handoff);
 
@@ -1496,7 +1234,7 @@ export class WorkflowEngine {
 
                 status: "running",
 
-                workflow_id: options.workflowId,
+                ...stateBase(),
 
                 current_node_id: node.id,
 
@@ -1526,13 +1264,13 @@ export class WorkflowEngine {
 
                     systemPrompt: effectiveSystemPrompt(options.config.global_prompt, role.system_prompt),
 
-                    model: resolveModelForWorkflowNode({ node, role, provider: providerConfig, permissionMode: node.permission_mode, planModel: providerConfig.plan_model, registry: modelRegistryFromProviderConfig(providerConfig) }),
+                    model: resolveModelForWorkflowNode({ node, role, provider: providerConfig, permissionMode: effectivePermissionMode, planModel: providerConfig.plan_model, registry: modelRegistryFromProviderConfig(providerConfig) }),
 
                     provider: this.options.providerFactory(node.provider),
 
                     tools,
 
-                    permissions: mergePermissions(basePermissions, node.permissions ?? permissionSetSchema.parse(undefined)),
+                    permissions: workflowToolPermissions(effectivePermissionMode, basePermissions, node.permissions ?? permissionSetSchema.parse(undefined), planRequestedPermissionRules),
 
                     cwd: this.options.cwd,
 
@@ -1558,7 +1296,7 @@ export class WorkflowEngine {
 
                             status: "running",
 
-                            workflow_id: options.workflowId,
+                            ...stateBase(),
 
                             current_node_id: node.id,
 
@@ -1594,21 +1332,9 @@ export class WorkflowEngine {
 
             try {
 
-                let pendingPlanReview: { document: string; planFilePath: string } | undefined;
-
                 if (node.mode === "complete" && result.status === "success") {
 
                     requireDocument(node, result);
-
-                }
-
-                if (node.mode === "plan" && result.status === "success") {
-
-                    const document = requirePlanDocument(node, result);
-
-                    const planFilePath = await this.writePlanReviewFile(options, node.id, attempt, document);
-
-                    pendingPlanReview = { document, planFilePath };
 
                 }
 
@@ -1624,7 +1350,7 @@ export class WorkflowEngine {
 
                         status: "pending",
 
-                        workflow_id: options.workflowId,
+                        ...stateBase(),
 
                         current_node_id: node.id,
 
@@ -1652,44 +1378,6 @@ export class WorkflowEngine {
 
                 }
 
-                if (node.mode === "plan" && result.status === "success") {
-
-                    const planReview = pendingPlanReview;
-
-                    if (!planReview)
-
-                        throw new Error(`Plan node ${node.id} has no review document`);
-
-                    attempts[attempts.length - 1] = { node_id: node.id, attempt, status: "waiting_user", result };
-
-                    await this.appendEvent(options.store, options.runId, { type: "plan_review_requested", node_id: node.id, attempt, document: planReview.document, plan_file_path: planReview.planFilePath }, options.eventSink);
-
-                    const state: WorkflowState = {
-
-                        status: "pending",
-
-                        workflow_id: options.workflowId,
-
-                        current_node_id: node.id,
-
-                        attempts,
-
-                        handoff,
-
-                        pending_review: { type: "plan", node_id: node.id, attempt, document: planReview.document, plan_file_path: planReview.planFilePath },
-
-                        resume_checkpoint: checkpoint()
-
-                    };
-
-                    options.onState?.(state);
-
-                    await options.store.saveState(options.runId, state);
-
-                    return state;
-
-                }
-
                 const status = result.status === "success" ? "success" : "failure";
 
                 attempts[attempts.length - 1] = { node_id: node.id, attempt, status, result };
@@ -1708,7 +1396,7 @@ export class WorkflowEngine {
 
                             status: "pending",
 
-                            workflow_id: options.workflowId,
+                            ...stateBase(),
 
                             current_node_id: node.id,
 
@@ -1730,7 +1418,7 @@ export class WorkflowEngine {
 
                     }
 
-                    const finalState: WorkflowState = { status: "completed", workflow_id: options.workflowId, attempts, handoff };
+                    const finalState: WorkflowState = { status: "completed", ...stateBase(), attempts, handoff };
 
                     options.onState?.(finalState);
 
@@ -1750,7 +1438,7 @@ export class WorkflowEngine {
 
                     status: "running",
 
-                    workflow_id: options.workflowId,
+                    ...stateBase(),
 
                     current_node_id: next,
 
@@ -1778,149 +1466,7 @@ export class WorkflowEngine {
 
         }
 
-        return { status: "completed", workflow_id: options.workflowId, attempts, handoff };
-
-    }
-
-    private async continuePlanReview(options: PlanReviewOptions): Promise<WorkflowState> {
-
-        if (options.decision === "stay") {
-
-            await this.appendEvent(options.store, options.runId, {
-
-                type: "user_message",
-
-                text: planReviewUserText("stay"),
-
-                node_id: options.state.current_node_id ?? "",
-
-                attempt: options.state.pending_review?.attempt ?? 1
-
-            }, options.eventSink);
-
-            await this.appendEvent(options.store, options.runId, {
-
-                type: "plan_review_resolved",
-
-                node_id: options.state.current_node_id ?? "",
-
-                attempt: options.state.pending_review?.attempt ?? 1,
-
-                decision: "stay"
-
-            }, options.eventSink);
-
-            return options.state;
-
-        }
-
-        const nodeId = options.state.current_node_id;
-
-        if (!nodeId)
-
-            throw new Error(`Run ${options.runId} has no current node`);
-
-        const node = options.workflow.nodes.find((item) => item.id === nodeId);
-
-        if (!node)
-
-            throw new Error(`Unknown node ${nodeId}`);
-
-        const attempts = [...options.state.attempts];
-
-        const attemptIndex = findWaitingPlanAttempt(attempts, nodeId);
-
-        const attempt = attempts[attemptIndex];
-
-        let result = attempt.result as NodeResult | undefined;
-
-        if (!result)
-
-            throw new Error(`Plan node ${nodeId} has no result to approve`);
-
-        result = await this.ensureNodeDeliverable(options, nodeId, attempt.attempt, result);
-
-        attempts[attemptIndex] = { ...attempt, status: "success", result };
-
-        await this.appendEvent(options.store, options.runId, { type: "user_message", text: planReviewUserText("continue"), node_id: nodeId, attempt: attempt.attempt }, options.eventSink);
-
-        await this.appendEvent(options.store, options.runId, { type: "plan_review_resolved", node_id: nodeId, attempt: attempt.attempt, decision: "continue" }, options.eventSink);
-
-        await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: nodeId, status: "success", result }, options.eventSink);
-
-        const next = nextNodeId(options.workflow, nodeId, "success");
-
-        if (!next) {
-
-            const finalState: WorkflowState = { status: "completed", workflow_id: options.workflowId, attempts, handoff: options.state.handoff };
-
-            options.onState?.(finalState);
-
-            await options.store.saveState(options.runId, finalState);
-
-            await this.appendEvent(options.store, options.runId, { type: "run_completed", result: finalState }, options.eventSink);
-
-            return finalState;
-
-        }
-
-        await this.appendEvent(options.store, options.runId, { type: "transition", from: nodeId, to: next, reason: "success" }, options.eventSink);
-
-        const handoff = {
-
-            ...buildHandoff(next, nodeId, result, attempts.filter((item) => item.node_id === next).length + 1),
-
-            approved_plan: result.document
-
-        };
-
-        const transitionState: WorkflowState = {
-
-            status: "running",
-
-            workflow_id: options.workflowId,
-
-            current_node_id: next,
-
-            attempts,
-
-            handoff,
-
-            resume_checkpoint: { node_id: next, handoff, attempt: attempts.filter((item) => item.node_id === next).length + 1, dialogue_messages: [] }
-
-        };
-
-        options.onState?.(transitionState);
-
-        await options.store.saveState(options.runId, transitionState);
-
-        return this.continueFrom({
-
-            config: options.config,
-
-            workflowId: options.workflowId,
-
-            workflow: options.workflow,
-
-            store: options.store,
-
-            runId: options.runId,
-
-            startNodeId: next,
-
-            initialHandoff: handoff,
-
-            attempts,
-
-            eventSink: options.eventSink,
-
-            interaction: options.interaction,
-
-            isInterrupted: options.isInterrupted,
-
-            onState: options.onState
-
-        });
+        return { status: "completed", ...stateBase(), attempts, handoff };
 
     }
 
@@ -1937,6 +1483,9 @@ export class WorkflowEngine {
             status: "pending",
 
             workflow_id: options.workflowId,
+
+            ...(options.runPermissionMode ? { run_permission_mode: options.runPermissionMode } : {}),
+            ...(options.planRequestedPermissionRules?.length ? { plan_requested_permission_rules: options.planRequestedPermissionRules } : {}),
 
             current_node_id: nodeId,
 
@@ -1969,6 +1518,9 @@ export class WorkflowEngine {
             status: "pending",
 
             workflow_id: options.workflowId,
+
+            ...(options.runPermissionMode ? { run_permission_mode: options.runPermissionMode } : {}),
+            ...(options.planRequestedPermissionRules?.length ? { plan_requested_permission_rules: options.planRequestedPermissionRules } : {}),
 
             current_node_id: nodeId,
 
@@ -2044,17 +1596,7 @@ export class WorkflowEngine {
 
     }
 
-    private async writePlanReviewFile(options: ContinueOptions | PlanReviewOptions, nodeId: string, attempt: number, document: string): Promise<string> {
-
-        const planFilePath = join(options.store.runDir(options.runId), "plans", `${safePlanFileSegment(nodeId)}-attempt-${attempt}.md`);
-
-        await writePlan(planFilePath, `${document.trim()}\n`);
-
-        return planFilePath;
-
-    }
-
-    private async ensureNodeDeliverable(options: ContinueOptions | PlanReviewOptions, nodeId: string, attempt: number, result: NodeResult): Promise<NodeResult> {
+    private async ensureNodeDeliverable(options: ContinueOptions, nodeId: string, attempt: number, result: NodeResult): Promise<NodeResult> {
 
         const runDir = options.store.runDir(options.runId);
 
@@ -2092,13 +1634,15 @@ export class WorkflowEngine {
 
     }
 
-    private async prepareInitialHandoff(input: unknown, runDir: string): Promise<unknown> {
+    private async prepareInitialHandoff(input: unknown, runDir: string, options: WorkflowRunOptions = {}): Promise<unknown> {
 
         if (!input || typeof input !== "object")
 
             return input;
 
-        const images = (input as {
+        let handoff = options.clearContext === true ? clearContextPlanHandoff(input) : input;
+
+        const images = (handoff as {
 
             images?: unknown;
 
@@ -2106,7 +1650,7 @@ export class WorkflowEngine {
 
         if (!Array.isArray(images) || !images.length)
 
-            return input;
+            return handoff;
 
         const artifacts = new ArtifactStore(runDir);
 
@@ -2124,7 +1668,7 @@ export class WorkflowEngine {
 
         }
 
-        return { ...input, images: refs };
+        return { ...handoff as Record<string, unknown>, images: refs };
 
     }
 
@@ -2220,6 +1764,76 @@ function effectiveSystemPrompt(globalPrompt: string | undefined, rolePrompt: str
 
 }
 
+function workflowToolPermissions(mode: WorkflowRunPermissionMode, base: PermissionSet, node: PermissionSet, planRequestedPermissionRules: string[] = []): ToolPermissionContext {
+
+    const merged = mergePermissions(base ?? permissionSetSchema.parse(undefined), node ?? permissionSetSchema.parse(undefined));
+
+    return { mode, source: "workflow", ...merged, allow: [...merged.allow, ...planRequestedPermissionRules] };
+
+}
+
+function assertWorkflowRunPermissionMode(mode: unknown): void {
+    if (mode === "plan")
+        throw new Error("Plan Mode must be approved before workflow execution starts");
+}
+
+function publicWorkflowInput(input: unknown): unknown {
+    return stripInternalPlanModeHandoffMarkers(input);
+}
+
+function planRequestedPermissionRulesFromHandoff(handoff: unknown): string[] {
+    const permissions = collectPlanRequestedPermissions(handoff);
+    return permissions
+        .filter((permission) => permission.tool === "Bash" && permission.prompt.trim())
+        .map((permission) => `Bash(prompt:${permission.prompt.replace(/[()]/g, " ").trim()})`);
+}
+
+function clearContextPlanHandoff(input: unknown): unknown {
+    if (!input || typeof input !== "object" || Array.isArray(input))
+        return input;
+    const value = input as Record<string, unknown>;
+    const approvedPlan = value.approved_plan;
+    if (typeof approvedPlan !== "string" || !approvedPlan.trim())
+        return input;
+    const feedback = approvalFeedbackText(value.plan_approval_feedback);
+    return {
+        ...value,
+        request: [
+            "Implement the following plan:",
+            "",
+            approvedPlan.trim(),
+            ...(feedback ? ["", `User feedback on this plan: ${feedback}`] : [])
+        ].join("\n"),
+        clear_context: true
+    };
+}
+
+function approvalFeedbackText(feedback: unknown): string | undefined {
+    if (typeof feedback === "string" && feedback.trim())
+        return feedback.trim();
+    if (!feedback || typeof feedback !== "object" || Array.isArray(feedback))
+        return undefined;
+    const answer = (feedback as { answer?: unknown }).answer;
+    return typeof answer === "string" && answer.trim() ? answer.trim() : undefined;
+}
+
+function collectPlanRequestedPermissions(handoff: unknown): PlanRequestedPermission[] {
+    if (!handoff || typeof handoff !== "object")
+        return [];
+    const value = handoff as { plan_requested_permissions?: unknown; previous_handoff?: unknown };
+    const direct = Array.isArray(value.plan_requested_permissions)
+        ? value.plan_requested_permissions.filter(isPlanRequestedPermission)
+        : [];
+    return [...direct, ...collectPlanRequestedPermissions(value.previous_handoff)];
+}
+
+function isPlanRequestedPermission(value: unknown): value is PlanRequestedPermission {
+    if (!value || typeof value !== "object")
+        return false;
+    const item = value as { tool?: unknown; prompt?: unknown };
+    return typeof item.tool === "string" && typeof item.prompt === "string";
+}
+
 function errorNodeResult(error: unknown): NodeResult {
 
     const formatted = formatRunError(error);
@@ -2296,22 +1910,6 @@ function markLatestActiveAttemptWaiting(attempts: WorkflowState["attempts"], nod
 
 }
 
-function findWaitingPlanAttempt(attempts: WorkflowState["attempts"], nodeId: string): number {
-
-    for (let index = attempts.length - 1; index >= 0; index -= 1) {
-
-        const attempt = attempts[index];
-
-        if (attempt.node_id === nodeId && attempt.status === "waiting_user")
-
-            return index;
-
-    }
-
-    throw new Error(`Plan node ${nodeId} is not waiting for review`);
-
-}
-
 function requireDocument(node: WorkflowNodeConfig, result: NodeResult): string {
 
     const document = result.document?.trim();
@@ -2321,72 +1919,6 @@ function requireDocument(node: WorkflowNodeConfig, result: NodeResult): string {
         throw new Error(`${node.mode} node ${node.id} must return document`);
 
     return document;
-
-}
-
-function requirePlanDocument(node: WorkflowNodeConfig, result: NodeResult): string {
-
-    const document = requireDocument(node, result);
-
-    const summary = result.summary?.trim() ?? "";
-
-    if (summary && normalizeReviewDocument(document) === normalizeReviewDocument(summary))
-
-        throw new Error(`Plan node ${node.id} must put the full review plan in document; summary must only be a short description.`);
-
-    if (looksLikeArtifactOnlyPlan(document, result))
-
-        throw new Error(`Plan node ${node.id} returned only a short review document while writing deliverables. Put the complete Markdown plan in document, not only in ArtifactWrite.`);
-
-    return document;
-
-}
-
-function looksLikeArtifactOnlyPlan(document: string, result: NodeResult): boolean {
-
-    if (!result.deliverables.length)
-
-        return false;
-
-    if (document.length >= 120)
-
-        return false;
-
-    return !new RegExp("(^|\\n)\\s{0,3}#{1,6}\\s+\\S|(^|\\n)\\s*(?:[-*+]|\\d+[.)])\\s+\\S").test(document);
-
-}
-
-function normalizeReviewDocument(value: string): string {
-
-    return value.replace(/\s+/g, " ").trim();
-
-}
-
-function safePlanFileSegment(value: string): string {
-
-    return value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "node";
-
-}
-
-function planReviewUserText(decision: PlanReviewDecision): string {
-
-    return decision === "continue" ? "Yes, approve and continue" : "No, keep planning";
-
-}
-
-function exactPlanReviewDecisionFromInput(input: unknown): PlanReviewDecision | undefined {
-
-    const text = userMessageText(input).trim();
-
-    if (text === planReviewUserText("continue") || text === "Yes, continue execution by plan")
-
-        return "continue";
-
-    if (text === planReviewUserText("stay") || text === "No, staying in the plan")
-
-        return "stay";
-
-    return undefined;
 
 }
 

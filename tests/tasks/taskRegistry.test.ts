@@ -49,4 +49,27 @@ describe("TaskRegistry", () => {
     }), /Plan Mode must be approved/);
     assert.equal(registry.listTasks().length, 0);
   });
+
+  it("does not let task input smuggle Plan Mode execution into the background", () => {
+    const registry = new TaskRegistry();
+    registry.register("local", async () => ({ status: "completed" }));
+
+    assert.throws(() => registry.startTask({
+      kind: "local",
+      input: { permissions: { mode: "plan" } }
+    }, { cwd: process.cwd() }), /Plan Mode must be approved/);
+    assert.equal(registry.listTasks().length, 0);
+
+    assert.throws(() => registry.startTask({
+      kind: "local",
+      input: { agent: { permissions: { mode: "plan" } } }
+    }, { cwd: process.cwd() }), /Plan Mode must be approved/);
+    assert.equal(registry.listTasks().length, 0);
+
+    assert.throws(() => registry.startTask({
+      kind: "local",
+      input: { permissionMode: "plan" }
+    }, { cwd: process.cwd() }), /Plan Mode must be approved/);
+    assert.equal(registry.listTasks().length, 0);
+  });
 });
