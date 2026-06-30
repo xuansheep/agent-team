@@ -131,16 +131,12 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(workflowRuns, 0);
   });
 
-  it("allows read-only Bash exploration in plan mode", async () => {
+  it("blocks read-only Bash exploration in plan mode", async () => {
     let calls = 0;
     const provider: ModelProvider = {
-      async generate(request) {
+      async generate() {
         calls += 1;
-        if (calls === 1) {
-          return { content: "checking workspace", tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "pwd", timeout_ms: 30000 } }] };
-        }
-        assert.equal(request.messages.at(-1)?.role, "tool");
-        return { content: "Plan can continue." };
+        return { content: "checking workspace", tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "pwd", timeout_ms: 30000 } }] };
       }
     };
     const tools = new ToolRegistry();
@@ -156,9 +152,9 @@ describe("RuntimeTurnExecutor", () => {
       sessionId: "session-plan-bash"
     });
 
-    assert.equal(result.status, "completed");
-    assert.equal(calls, 2);
-    assert.equal(result.messages.at(-1)?.content, "Plan can continue.");
+    assert.equal(result.status, "failed");
+    assert.equal(calls, 1);
+    assert.match(result.status === "failed" ? result.error : "", /Plan Mode blocks shell execution/);
   });
 
   it("accepts tui-code style EnterPlanMode calls during plan mode turns", async () => {

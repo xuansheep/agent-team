@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ModelMessage, ModelProvider } from "../providers/types.js";
+import { createKernelSession, projectAppState, type KernelSession } from "../kernel/session.js";
 import { buildApprovedPlanHandoff, enterPlanMode, exitPlanMode, PlanSessionState, resolvePlanApproval } from "../plans/planSession.js";
 import { readPlan, writePlan } from "../plans/planFiles.js";
 import { PlanApprovalRequest, RuntimeEvent, RuntimePermissionDecision, RuntimePermissionRequest } from "../runtime/types.js";
@@ -30,10 +31,16 @@ export class LocalHeadlessSession {
   private messages: ModelMessage[] = [];
   private permissions: ToolPermissionContext;
   private planState?: PlanSessionState;
+  private kernelSession: KernelSession;
 
   constructor(private readonly options: LocalHeadlessSessionOptions) {
     this.sessionId = options.sessionId ?? `sdk-${randomUUID()}`;
     this.permissions = normalizePermissions(options.permissions);
+    this.kernelSession = createKernelSession({
+      id: this.sessionId,
+      cwd: options.cwd,
+      permissions: this.permissions
+    });
   }
 
   getMessages(): ModelMessage[] {
@@ -42,6 +49,10 @@ export class LocalHeadlessSession {
 
   getPlanState(): PlanSessionState | undefined {
     return this.planState ? { ...this.planState } : undefined;
+  }
+
+  getAppState() {
+    return projectAppState(this.kernelSession);
   }
 
   async query(content: string): Promise<HeadlessQueryResult> {
@@ -59,6 +70,7 @@ export class LocalHeadlessSession {
     });
     this.messages = result.messages;
     if (result.planState) this.planState = result.planState;
+    this.syncKernelSession();
     return result;
   }
 
@@ -71,6 +83,7 @@ export class LocalHeadlessSession {
     });
     this.planState = entered.state;
     this.permissions = entered.permissions;
+    this.syncKernelSession("planning");
     return entered.event;
   }
 
@@ -91,10 +104,21 @@ export class LocalHeadlessSession {
     const resolved = resolvePlanApproval(approvedState, decision);
     this.planState = resolved.state;
     this.permissions = resolved.permissions;
+    this.syncKernelSession(decision === "continue" ? "idle_input" : "planning");
     if (decision === "continue") {
       await this.options.workflowStarter?.(buildApprovedPlanHandoff(this.planState));
     }
     return { decision, events: [...requested.events, resolved.event], planState: this.planState };
+  }
+
+  private syncKernelSession(status = this.kernelSession.status): void {
+    this.kernelSession = {
+      ...this.kernelSession,
+      status,
+      messages: this.messages.slice(),
+      toolPermissionContext: { ...this.permissions },
+      planState: this.planState ?? null
+    };
   }
 }
 

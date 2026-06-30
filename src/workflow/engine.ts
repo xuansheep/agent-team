@@ -15,6 +15,7 @@ import { mergePermissions } from "../harness/permissions.js";
 import { PermissionController } from "../harness/permissionController.js";
 
 import { RuntimeInteraction, runNode } from "../harness/runtime.js";
+import { WorkflowBackend } from "../kernel/workflow/workflowBackend.js";
 import type { ToolPermissionContext } from "../permissions/context.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 
@@ -2088,4 +2089,18 @@ function userMessageText(input: unknown): string {
 
     return JSON.stringify(input);
 
+}
+
+export function createWorkflowBackend(
+    engine: WorkflowEngine,
+    config: AgentTeamConfig,
+    workflowId: string,
+    options: WorkflowRunOptions = {}
+): WorkflowBackend {
+    return new WorkflowBackend({
+        startWorkflow: async (handoff) => {
+            const session = await engine.startInteractive(config, workflowId, handoff, options);
+            return { runId: session.runId, status: session.state.status === "completed" ? "completed" : "running" };
+        }
+    });
 }

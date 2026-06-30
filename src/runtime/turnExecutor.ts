@@ -5,7 +5,8 @@ import { buildAutoModeAttachment, buildAutoModeExitAttachment, buildPlanModeAtta
 import { withRuntimeAttachments } from "../context/messages.js";
 import { readPlan } from "../plans/planFiles.js";
 import type { PlanSessionState } from "../plans/planSession.js";
-import { checkToolPermission } from "../permissions/checkToolPermission.js";
+import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
+import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { executeToolCalls } from "../tools/orchestration.js";
 import { Tool, ToolResult } from "../tools/types.js";
 import { PlanApprovalRequest, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
@@ -33,6 +34,8 @@ export class RuntimeTurnExecutor {
 
   async execute(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
     const messages = await buildTurnMessages(input);
+    const kernelTools = createKernelToolRegistry(input.tools);
+    const permissionKernel = new PermissionKernel();
     await emit(input, { type: "runtime_turn_started", session_id: input.sessionId, run_id: input.runId });
 
     for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
@@ -69,7 +72,7 @@ export class RuntimeTurnExecutor {
 
       for (const call of toolCalls) {
         const tool = input.tools.get(call.name);
-        const permission = await checkToolPermission(tool, call.input, { ...input.permissions, cwd: input.cwd });
+        const permission = await permissionKernel.check(kernelTools.get(call.name), call.input, { ...input.permissions, cwd: input.cwd });
         await audit(input, {
           type: "permission_decision",
           tool: call.name,
@@ -139,21 +142,8 @@ export class RuntimeTurnExecutor {
 }
 
 function modelVisibleTools(input: RuntimeTurnInput): Tool[] {
-  const tools = input.tools.list();
-  if (input.permissions.mode !== "plan") return tools;
-  return tools.filter((tool) => planModeModelToolNames.has(tool.name));
+  return createKernelToolRegistry(input.tools).visibleTools(input.permissions).map((tool) => tool.legacyTool);
 }
-
-const planModeModelToolNames = new Set([
-  "Read",
-  "List",
-  "Glob",
-  "Grep",
-  "WebFetch",
-  "WebSearch",
-  "AskUserQuestion",
-  "ExitPlanMode"
-]);
 
 async function executableToolCalls(calls: ModelToolCall[], tools: RuntimeTurnInput["tools"]): Promise<ModelToolCall[]> {
   for (let index = 0; index < calls.length; index += 1) {

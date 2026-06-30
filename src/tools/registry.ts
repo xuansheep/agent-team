@@ -67,11 +67,15 @@ export function createPlanModeToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   for (const tool of [
     readTool,
+    writeTool,
+    editTool,
+    multiEditTool,
     lsTool,
     globTool,
     grepTool,
     webFetchTool,
     webSearchTool,
+    todoWriteTool,
     askUserQuestionTool,
     exitPlanModeTool
   ]) {
