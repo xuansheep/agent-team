@@ -26,12 +26,7 @@ import { createHistory } from "./usePromptHistory.js";
 import { usePromptKeybindings } from "./usePromptKeybindings.js";
 
 
-import { PromptInputFooter } from "./PromptInputFooter.js";
 
-
-
-
-import { PromptInputModeIndicator } from "./PromptInputModeIndicator.js";
 
 
 import { PromptInputQueuedCommands } from "./PromptInputQueuedCommands.js";
@@ -254,31 +249,19 @@ export function PromptInput(props: {
   const hasStash = Boolean(props.stash);
 
 
-  const modeLabel = promptModeLabel(props.mode, props.permissionMode ?? "default");
-  const inputColumns = Math.max(1, terminalColumns - 2 - modeLabel.length - 3);
+  const inputColumns = Math.max(1, terminalColumns - 2);
   const promptPlaceholder = "Type a request or /help";
-  const promptTextColumns = buffer.text.length || promptPlaceholder.length;
-  const imageAttachmentText = imageAttachments.length ? ` ${imageAttachments.length} image${imageAttachments.length === 1 ? "" : "s"} attached` : "";
-  const argumentHintText = argumentHint ? ` ${argumentHint}` : "";
-  const promptLineColumns = modeLabel.length + 3 + promptTextColumns + imageAttachmentText.length + argumentHintText.length;
-  const promptLinePadding = " ".repeat(Math.max(0, terminalColumns - promptLineColumns));
-
-
-  const cursorPosition = Cursor.fromText(buffer.text, inputColumns, buffer.cursor).getPosition();
-
+  const cursor = Cursor.fromText(buffer.text, inputColumns, buffer.cursor);
+  const viewportStart = cursor.getViewportCharOffset(1);
+  const viewportEnd = cursor.getViewportCharEnd(1);
+  const visibleText = buffer.text.slice(viewportStart, viewportEnd);
+  const visibleCursor = Math.max(0, buffer.cursor - viewportStart);
+  const visibleCursorPosition = Cursor.fromText(visibleText, inputColumns, visibleCursor).getPosition();
 
   const cursorRef = useDeclaredCursor({
-
-
-    line: cursorPosition.line,
-
-
-    column: modeLabel.length + 3 + cursorPosition.column,
-
-
+    line: 0,
+    column: 2 + visibleCursorPosition.column,
     active: terminalFocus
-
-
   });
 
 
@@ -293,12 +276,10 @@ export function PromptInput(props: {
 
       <PromptInputSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
       <Box ref={cursorRef}>
-        <PromptInputModeIndicator mode={props.mode} permissionMode={props.permissionMode ?? "default"} />
-        <Text> &gt; </Text>
-        <PromptBufferView text={buffer.text} placeholder={promptPlaceholder} />
+        <Text>&gt; </Text>
+        <PromptBufferView text={visibleText} placeholder={promptPlaceholder} />
         {imageAttachments.length ? <Text dimColor> {imageAttachments.length} image{imageAttachments.length === 1 ? "" : "s"} attached</Text> : null}
         {argumentHint ? <Text dimColor> {argumentHint}</Text> : null}
-        {promptLinePadding ? <Text>{promptLinePadding}</Text> : null}
       </Box>
       <PromptInputQueuedCommands queued={props.queued} />
 
@@ -306,7 +287,6 @@ export function PromptInput(props: {
       <PromptInputStashNotice hasStash={hasStash} />
 
 
-      <PromptInputFooter workflowId={props.workflowId} isLoading={props.isLoading} permissionMode={props.permissionMode ?? "default"} hasSelection={props.hasSelection ?? false} columns={terminalColumns} />
 
 
     </Box>
@@ -318,16 +298,6 @@ export function PromptInput(props: {
 }
 
 
-
-function promptModeLabel(mode: PromptInputMode, permissionMode: PermissionMode): string {
-  if (mode !== "input") return mode.toUpperCase();
-  if (permissionMode === "acceptEdits") return "ACCEPT";
-  if (permissionMode === "bypassPermissions") return "BYPASS";
-  if (permissionMode === "dontAsk") return "DONTASK";
-  if (permissionMode === "auto") return "AUTO";
-  if (permissionMode === "plan") return "PLAN";
-  return "INPUT";
-}
 
 
 

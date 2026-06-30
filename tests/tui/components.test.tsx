@@ -270,6 +270,7 @@ import { PlanReviewPrompt } from "../../src/tui/components/PlanReviewPrompt.js";
 
 
 import { InteractionArea } from "../../src/tui/components/InteractionArea.js";
+import { StatusLine } from "../../src/tui/components/StatusLine.js";
 
 
 
@@ -333,262 +334,24 @@ describe("PromptInput component", () => {
 
 
 
-  it("renders mode and footer status", () => {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  it("renders the prompt without a mode prefix", () => {
     const output = render(
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       <PromptInput
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         mode="input"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         workflowId="delivery"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         queued={[]}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         workflows={["delivery"]}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         isLoading={false}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         onEvent={() => undefined}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       />
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     );
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /INPUT/);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    assert.match(output.lastFrame() ?? "", /delivery/);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /> Type a request or \/help/);
+    assert.doesNotMatch(frame, /INPUT >/);
+    assert.doesNotMatch(frame, /workflow delivery/);
     output.unmount();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     output.cleanup();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   });
 
 
@@ -621,48 +384,24 @@ describe("PromptInput component", () => {
 
 
 
-  it("renders copy shortcut in the footer when text is selected", () => {
-
-
-
+  it("renders mode and selection in the statusline", () => {
     const output = render(
-
-
-
-      <PromptInput
-
+      <StatusLine
         mode="input"
-
+        permissionMode="acceptEdits"
         workflowId="delivery"
-
-        queued={[]}
-
-        workflows={["delivery"]}
-
         isLoading={false}
-
         hasSelection
-
-        onEvent={() => undefined}
-
+        elements={["mode", "workflow", "selection"]}
       />
-
     );
 
-
-
     const frame = output.lastFrame() ?? "";
-
-    assert.match(frame, /Ctrl\+C copy/);
-
-    assert.doesNotMatch(frame, /Ctrl\+C stop/);
-
+    assert.match(frame, /mode Edit/);
+    assert.match(frame, /workflow delivery/);
+    assert.match(frame, /selection active/);
     output.unmount();
-
     output.cleanup();
-
-
-
   });
 
 
@@ -1183,7 +922,7 @@ describe("PromptInput component", () => {
 
 
 
-    const inputIndex = lines.findIndex((line) => line.includes("INPUT > /r"));
+    const inputIndex = lines.findIndex((line) => line.trim() === "> /r");
 
 
 
@@ -6653,7 +6392,7 @@ describe("RunLogPanel", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Here is Claude's plan:/);
-    assert.match(frame, /╌/);
+    assert.match(frame, /⎿  # Plan/);
     assert.match(frame, /Requested permissions:/);
     assert.match(frame, /Bash\(prompt: run tests\)/);
 
@@ -8543,7 +8282,7 @@ describe("InteractionArea", () => {
 
 
 
-    assert.ok(lines[promptIndex].startsWith("INPUT"));
+    assert.ok(lines[promptIndex].startsWith(">"));
 
 
 
@@ -8622,6 +8361,64 @@ describe("InteractionArea", () => {
 
 
 
+
+
+  it("renders activity status above the prompt when no choice is active", () => {
+    const output = render(
+      <InteractionArea
+        mode="running"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        activityStatus="Working... 12s"
+        onPromptEvent={() => undefined}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /- Working[.][.][.] 12s -+/);
+    assert.match(frame, /> Type a request or \/help/);
+    assert.ok(frame.indexOf("- Working... 12s") < frame.indexOf("> Type a request or /help"));
+    const lines = frame.split("\n");
+    const statusIndex = lines.findIndex((line) => line.includes("- Working... 12s"));
+    const promptIndex = lines.findIndex((line) => line.includes("> Type a request or /help"));
+    assert.equal(lines[statusIndex + 1]?.trim(), "");
+    assert.equal(promptIndex, statusIndex + 2);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("keeps activity status out of active choice layouts", () => {
+    const output = render(
+      <InteractionArea
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        activityStatus="Working... 12s"
+        onPromptEvent={() => undefined}
+        choice={{
+          title: "Ready to code?",
+          selectedValue: "yes",
+          options: [
+            { label: "Yes", value: "yes" },
+            { label: "No", value: "no" }
+          ],
+          onSubmit: () => undefined
+        }}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Ready to code\?/);
+    assert.doesNotMatch(frame, /- Working[.][.][.] 12s -+/);
+
+    output.unmount();
+    output.cleanup();
+  });
 
   it("keeps choices and prompt together in the bottom interaction area", () => {
 
@@ -9023,7 +8820,7 @@ describe("InteractionArea", () => {
 
 
 
-    assert.match(frame, /PERMISSION/);
+    assert.match(frame, /Permission required/);
 
 
 
@@ -10808,9 +10605,9 @@ describe("TuiApp", () => {
 
     assert.match(output.lastFrame() ?? "", /> 2\. delivery completed beta/);
 
-    assert.doesNotMatch(output.lastFrame() ?? "", /INPUT > \/resume/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /> \/resume/);
 
-    assert.doesNotMatch(output.lastFrame() ?? "", /INPUT > first request/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /> first request/);
 
 
 

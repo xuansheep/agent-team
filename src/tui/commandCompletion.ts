@@ -28,6 +28,7 @@ export function slashCommandSuggestions(input: string, context: SlashCommandComp
   const commandName = body.slice(0, spaceIndex);
   const argument = body.slice(spaceIndex + 1).toLowerCase();
   if (commandName === "resume") return argumentSuggestions("/resume", context.runs ?? [], argument, "session");
+  if (commandName === "statusline") return argumentSuggestions("/statusline", ["mode,workflow,run", "mode,permission,workflow,selection", "default"], argument, "statusline elements");
   return [];
 }
 

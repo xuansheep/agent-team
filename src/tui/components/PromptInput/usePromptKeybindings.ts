@@ -131,7 +131,7 @@ function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
       input.onSelectedSuggestion(wrapIndex(input.selectedSuggestion + 1, input.suggestions.length));
       return;
     }
-    if (key.return && isExactSuggestion(input)) {
+    if (key.return && (isExactSuggestion(input) || hasSlashCommandArguments(input.buffer.text))) {
       submit(input);
       return;
     }
@@ -217,6 +217,10 @@ function applySuggestion(input: PromptKeybindingInput) {
 function isExactSuggestion(input: PromptKeybindingInput): boolean {
   const suggestion = input.suggestions[Math.max(0, input.selectedSuggestion)];
   return suggestion?.value.toLowerCase() === input.buffer.text.trim().toLowerCase();
+}
+
+function hasSlashCommandArguments(text: string): boolean {
+  return /^\/\S+\s+\S/.test(text.trim());
 }
 
 function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): (input: PromptKeybindingInput) => boolean {

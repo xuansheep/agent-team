@@ -41,7 +41,7 @@ export class RuntimeTurnExecutor {
         request: {
           model: input.model,
           messages,
-          tools: input.tools.list(),
+          tools: modelVisibleTools(input),
           context: {
             runId: input.runId ?? input.sessionId,
             nodeId: "runtime",
@@ -137,6 +137,23 @@ export class RuntimeTurnExecutor {
     return { status: "failed", error: `Exceeded ${maxToolIterations} tool iterations`, messages };
   }
 }
+
+function modelVisibleTools(input: RuntimeTurnInput): Tool[] {
+  const tools = input.tools.list();
+  if (input.permissions.mode !== "plan") return tools;
+  return tools.filter((tool) => planModeModelToolNames.has(tool.name));
+}
+
+const planModeModelToolNames = new Set([
+  "Read",
+  "List",
+  "Glob",
+  "Grep",
+  "WebFetch",
+  "WebSearch",
+  "AskUserQuestion",
+  "ExitPlanMode"
+]);
 
 async function executableToolCalls(calls: ModelToolCall[], tools: RuntimeTurnInput["tools"]): Promise<ModelToolCall[]> {
   for (let index = 0; index < calls.length; index += 1) {

@@ -12,6 +12,7 @@ describe("command registry", () => {
     assert.deepEqual(parseCommandAction("/clear"), { type: "clear", args: [] });
     assert.deepEqual(parseCommandAction("/model gpt-5"), { type: "model", args: ["gpt-5"], model: "gpt-5" });
     assert.deepEqual(parseCommandAction("/permissions"), { type: "permissions", args: [] });
+    assert.deepEqual(parseCommandAction("/statusline mode,workflow"), { type: "statusline", args: ["mode,workflow"] });
   });
 
   it("keeps unknown slash commands unhandled", () => {
@@ -20,7 +21,7 @@ describe("command registry", () => {
   });
 
   it("exposes stable command names for TUI completion", () => {
-    assert.deepEqual(commandNames(), ["clear", "help", "model", "new", "permissions", "plan", "resume"]);
+    assert.deepEqual(commandNames(), ["clear", "help", "model", "new", "permissions", "plan", "resume", "statusline"]);
   });
 
   it("documents /plan open in the command hint", () => {

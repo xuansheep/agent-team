@@ -61,3 +61,21 @@ export function createLocalToolRegistry(): ToolRegistry {
   }
   return registry;
 }
+
+
+export function createPlanModeToolRegistry(): ToolRegistry {
+  const registry = new ToolRegistry();
+  for (const tool of [
+    readTool,
+    lsTool,
+    globTool,
+    grepTool,
+    webFetchTool,
+    webSearchTool,
+    askUserQuestionTool,
+    exitPlanModeTool
+  ]) {
+    registry.add(tool);
+  }
+  return registry;
+}

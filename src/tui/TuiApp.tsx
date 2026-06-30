@@ -13,6 +13,7 @@ import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
+import type { RuntimeEvent } from "../runtime/types.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { SessionIndex } from "../storage/sessionIndex.js";
 import { SessionStore } from "../storage/sessionStore.js";
@@ -30,9 +31,12 @@ import type { SelectImageAttachment } from "./components/CustomSelect/index.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./components/PromptInput/types.js";
 import { ResultPanel } from "./components/ResultPanel.js";
 import { RunLogPanel } from "./components/RunLogPanel.js";
+import { availableStatusLineElements, defaultStatusLineElements, StatusLine } from "./components/StatusLine.js";
+import type { StatusLineElement } from "./components/StatusLine.js";
 import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
 import { editFileInExternalEditor, editTextInExternalEditor, externalEditorDisplayName, ExternalEditor, ExternalTextEditor } from "./externalEditor.js";
 import { resolveImagePaste } from "./imagePaste.js";
+import { getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail } from "./toolDisplay.js";
 export function TuiApp({
   cwd,
   initialError,
@@ -67,15 +71,22 @@ export function TuiApp({
   const hasSelection = useHasSelection();
   ensureRefableStdin(stdin);
   const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
+  const terminalColumns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
   const exitTui = onExit ?? exit;
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState(workflowId);
+  const initialWorkflowId = workflowId ?? (workflows.length === 1 ? workflows[0] : undefined);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState(initialWorkflowId);
   const [state, setState] = useState<TuiState>(() => ({
     ...initialTuiState({ cwd, inputPermissionMode: settings?.permissions?.defaultMode ?? "default" }),
-    mode: workflowId ? "input" as const : workflows.length > 1 ? "select_workflow" as const : "input" as const,
-    workflowId
+    mode: initialWorkflowId ? "input" as const : workflows.length > 1 ? "select_workflow" as const : "input" as const,
+    workflowId: initialWorkflowId
   }));
   const [queued, setQueued] = useState<string[]>([]);
   const [promptText, setPromptText] = useState("");
+  const [statuslineElements, setStatuslineElements] = useState<StatusLineElement[]>(defaultStatusLineElements);
+  const [planWorkCount, setPlanWorkCount] = useState(0);
+  const [workStartedAtMs, setWorkStartedAtMs] = useState<number>();
+  const [lastWorkDurationMs, setLastWorkDurationMs] = useState<number>();
+  const [clockMs, setClockMs] = useState(() => Date.now());
   const [planReviewOffset, setPlanReviewOffset] = useState(0);
   const [transcriptMode, setTranscriptMode] = useState(false);
   const [choiceKey, setChoiceKey] = useState("");
@@ -162,7 +173,6 @@ export function TuiApp({
   };
   const handlePromptTextChange = (text: string) => {
     setPromptText(text);
-    if (state.pendingReview) planApprovalFeedbackRef.current = text;
   };
   const planQuestionImageBlocks = (): ModelContentPart[] => uniqueImageBlocks(
     Object.values(planQuestionImagesRef.current)
@@ -305,6 +315,7 @@ export function TuiApp({
         failUi(error);
       });
   };
+
   const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean } = {}) => {
     if (!config || !engine) {
       failUi("TUI is missing workflow configuration");
@@ -328,6 +339,7 @@ export function TuiApp({
     lastWorkflowPromptRef.current = text;
     await startWorkflowInput({ request: text, images: [] });
   };
+
   const resumeRun = async (runId: string) => {
     if (!config || !engine) {
       failUi("TUI is missing workflow configuration");
@@ -408,102 +420,116 @@ export function TuiApp({
     defaultPlanModeStartedRef.current = true;
     enterGlobalPlanMode();
   }, [settings?.permissions?.defaultMode, settings?.planMode?.defaultEntry, state.mode]);
+  const isWorking = state.mode === "running" || state.mode === "permission" || planWorkCount > 0;
+  useEffect(() => {
+    if (!isWorking) return;
+    const timer = setInterval(() => setClockMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [isWorking]);
+  useEffect(() => {
+    if (isWorking) {
+      if (workStartedAtMs === undefined) {
+        const now = Date.now();
+        setWorkStartedAtMs(now);
+        setClockMs(now);
+      }
+      return;
+    }
+    if (workStartedAtMs !== undefined) {
+      const duration = Math.max(0, Date.now() - workStartedAtMs);
+      setLastWorkDurationMs(duration);
+      setWorkStartedAtMs(undefined);
+    }
+  }, [isWorking, workStartedAtMs]);
   const executePlanMessages = async (currentPlan: PlanSessionState, messages: ModelMessage[], options: { ensureUserLogText?: string } = {}) => {
     const providerSelection = selectPlanProvider({ config, workflowId: selectedWorkflowId ?? state.workflowId, providerFactory });
     if (!providerSelection) {
       failUi("Plan Mode is missing provider configuration");
       return;
     }
-    const result = await new RuntimeTurnExecutor().execute({
-      messages,
-      model: providerSelection.model,
-      provider: providerSelection.provider,
-      tools: createLocalToolRegistry(),
-      permissions: {
-        mode: "plan",
-        prePlanMode: currentPlan.prePlanMode,
-        allow: [],
-        ask: [],
-        deny: [],
-        planFilePath: currentPlan.planFilePath,
-        planUseAutoMode: currentPlan.useAutoModeDuringPlan
-      },
-      cwd,
-      sessionId: currentPlan.sessionId,
-      planState: currentPlan
-    });
-    planMessagesRef.current = result.messages;
-    appendPlanTranscriptMessages(currentPlan.sessionId, result.messages.slice(messages.length));
-    if (result.status === "failed") {
-      setState((current) => ({ ...current, mode: "planning", error: result.error }));
-      return;
-    }
-    if (result.status === "waiting_permission") {
-      setState((current) => ({ ...current, mode: "planning", error: "Plan Mode cannot wait on interactive tool permissions" }));
-      return;
-    }
-    if (result.status === "waiting_user_input") {
-      resetPlanQuestionImages();
-      planQuestionRef.current = { toolCallId: result.request.toolCallId, questions: result.request.questions, index: 0, answers: {} };
-      setState((current) => ({
-        ...current,
-        mode: "question",
-        questions: nextQuestionSlice(result.request.questions, 0),
-        error: undefined,
-        logMessages: [...current.logMessages, statusLog("Plan Mode needs user input", questionLogDetail(result.request.questions))]
-      }));
-      requestMainScrollToBottom();
-      return;
-    }
-    if (result.status === "waiting_plan_approval") {
-      resetPlanApprovalFeedback();
-      planSessionRef.current = result.planState;
-      savePlanSession(result.planState);
-      setState((current) => ({
-        ...current,
-        mode: "waiting_plan_approval",
-        planSession: result.planState,
-        pendingReview: {
-          type: "plan",
-          nodeId: "global-plan",
-          attempt: 1,
-          document: result.plan.document,
-          planFilePath: result.plan.planFilePath,
-          empty: result.plan.empty,
-          requestedPermissions: result.plan.requestedPermissions,
-          contextUsedPercent: contextUsedPercent(result.usage, providerSelection.contextWindow)
+    setPlanWorkCount((current) => current + 1);
+    try {
+      const result = await new RuntimeTurnExecutor().execute({
+        messages,
+        model: providerSelection.model,
+        provider: providerSelection.provider,
+        tools: createLocalToolRegistry(),
+        permissions: {
+          mode: "plan",
+          prePlanMode: currentPlan.prePlanMode,
+          allow: [],
+          ask: [],
+          deny: [],
+          planFilePath: currentPlan.planFilePath,
+          planUseAutoMode: currentPlan.useAutoModeDuringPlan
         },
-        error: undefined,
-        conversation: [...current.conversation, { kind: "status", text: result.plan.empty ? "Exit Plan Mode requested" : "Plan approval requested" }],
-        logMessages: [...current.logMessages, globalPlanLog(result.plan.document, result.plan.planFilePath, result.plan.requestedPermissions, result.plan.empty)]
+        cwd,
+        sessionId: currentPlan.sessionId,
+        planState: currentPlan,
+        eventSink: (event) => {
+          setState((current) => reducePlanRuntimeEvent(current, event));
+          requestMainScrollToBottom();
+        }
+      });
+      const newMessages = planRuntimeNewMessages(messages, result.messages);
+      planMessagesRef.current = result.messages;
+      appendPlanTranscriptMessages(currentPlan.sessionId, newMessages);
+      if (result.status === "failed") {
+        setState((current) => ({ ...current, mode: "planning", error: result.error }));
+        return;
+      }
+      if (result.status === "waiting_permission") {
+        setState((current) => ({ ...current, mode: "planning", error: "Plan Mode cannot wait on interactive tool permissions" }));
+        return;
+      }
+      if (result.status === "waiting_user_input") {
+        resetPlanQuestionImages();
+        planQuestionRef.current = { toolCallId: result.request.toolCallId, questions: result.request.questions, index: 0, answers: {} };
+        setState((current) => ({
+          ...current,
+          mode: "question",
+          questions: nextQuestionSlice(result.request.questions, 0),
+          error: undefined,
+          logMessages: [...current.logMessages, statusLog("Plan Mode needs user input", questionLogDetail(result.request.questions))]
+        }));
+        requestMainScrollToBottom();
+        return;
+      }
+      if (result.status === "waiting_plan_approval") {
+        resetPlanApprovalFeedback();
+        planSessionRef.current = result.planState;
+        savePlanSession(result.planState);
+        setState((current) => ({
+          ...current,
+          mode: "waiting_plan_approval",
+          planSession: result.planState,
+          pendingReview: {
+            type: "plan",
+            nodeId: "global-plan",
+            attempt: 1,
+            document: result.plan.document,
+            planFilePath: result.plan.planFilePath,
+            empty: result.plan.empty,
+            requestedPermissions: result.plan.requestedPermissions,
+            contextUsedPercent: contextUsedPercent(result.usage, providerSelection.contextWindow)
+          },
+          error: undefined,
+          conversation: [...current.conversation, { kind: "status", text: result.plan.empty ? "Exit Plan Mode requested" : "Plan approval requested" }],
+          logMessages: [...current.logMessages, globalPlanLog(result.plan.document, result.plan.planFilePath, result.plan.requestedPermissions, result.plan.empty)]
+        }));
+        requestMainScrollToBottom();
+        return;
+      }
+      setState((current) => ({
+        ...appendPlanAssistantLogsFromMessages(appendMissingUserLogMessage(current, options.ensureUserLogText), newMessages),
+        mode: "planning",
+        pendingReview: undefined,
+        error: undefined
       }));
       requestMainScrollToBottom();
-      return;
+    } finally {
+      setPlanWorkCount((current) => Math.max(0, current - 1));
     }
-    const assistant = result.messages.at(-1);
-    const assistantText = assistant?.role === "assistant" && typeof assistant.content === "string" ? assistant.content : "";
-    if (assistantText.trim()) {
-      setState((current) => {
-        const next = appendMissingUserLogMessage(current, options.ensureUserLogText);
-        return {
-          ...next,
-          mode: "planning",
-          pendingReview: undefined,
-          error: undefined,
-          conversation: [...next.conversation, { kind: "assistant", text: assistantText }],
-          logMessages: [...next.logMessages, { id: randomUUID(), kind: "assistant", text: assistantText }]
-        };
-      });
-      requestMainScrollToBottom();
-      return;
-    }
-    setState((current) => ({
-      ...appendMissingUserLogMessage(current, options.ensureUserLogText),
-      mode: "planning",
-      pendingReview: undefined,
-      error: undefined
-    }));
-    requestMainScrollToBottom();
   };
   const preparePlanTurn = (text: string, images: ModelContentPart[] = [], options: { logUser?: boolean; ensureUserLog?: boolean } = {}): { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean } | undefined => {
     let currentPlan = planSessionRef.current;
@@ -534,9 +560,34 @@ export function TuiApp({
   const runPreparedPlanTurn = async (turn: { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean }) => {
     const currentPlan = planSessionRef.current?.sessionId === turn.plan.sessionId ? planSessionRef.current : turn.plan;
     if (currentPlan?.mode === "waiting_approval") return;
+    setState((current) => ({
+      ...current,
+      mode: "planning",
+      error: undefined,
+      logMessages: [...current.logMessages, statusLog("Plan Mode is thinking")]
+    }));
+    requestMainScrollToBottom();
     const messages = [...planMessagesRef.current, turn.userMessage];
     appendPlanTranscriptMessages(currentPlan.sessionId, [turn.userMessage]);
     await executePlanMessages(currentPlan, messages, { ...(turn.ensureUserLog ? { ensureUserLogText: turn.displayText } : {}) });
+  };
+  const showHelp = () => {
+    setState((current) => ({
+      ...current,
+      error: undefined,
+      logMessages: [...current.logMessages, { ...statusLog("Help", helpDetailText()), detailVisible: true }]
+    }));
+    requestMainScrollToBottom();
+  };
+  const updateStatusline = (args: string[]) => {
+    const result = parseStatuslineArgs(args, statuslineElements);
+    if (result.elements) setStatuslineElements(result.elements);
+    setState((current) => ({
+      ...current,
+      error: undefined,
+      logMessages: [...current.logMessages, { ...statusLog(result.text, result.detailText), detailVisible: true }]
+    }));
+    requestMainScrollToBottom();
   };
   const enqueuePlanTurn = (text: string, images: ModelContentPart[] = [], options: { logUser?: boolean; ensureUserLog?: boolean } = {}) => {
     const turn = preparePlanTurn(text, images, options);
@@ -572,11 +623,17 @@ export function TuiApp({
   };
   const continuePlanQuestion = async (answer: unknown) => {
     const currentPlan = planSessionRef.current;
-    const pendingQuestion = planQuestionRef.current;
+    let pendingQuestion = planQuestionRef.current;
     if (!currentPlan || !pendingQuestion) {
       setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
       await sessionRef.current?.resumeWithUserInput(answer);
       return;
+    }
+    const answerQuestions = questionsFromAnswer(answer);
+    const visibleQuestions = questionsFromQuestion(state.questions[0]);
+    const fullQuestions = answerQuestions.length > visibleQuestions.length ? answerQuestions : visibleQuestions;
+    if (fullQuestions.length > pendingQuestion.questions.length) {
+      pendingQuestion = { ...pendingQuestion, questions: fullQuestions };
     }
     planQuestionRef.current = undefined;
     if (isCancelQuestionAnswer(answer)) {
@@ -592,6 +649,7 @@ export function TuiApp({
       }));
       requestMainScrollToBottom();
       appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
+      await waitForUiTurn();
       await executePlanMessages(currentPlan, messages);
       return;
     }
@@ -624,6 +682,7 @@ export function TuiApp({
       }));
       requestMainScrollToBottom();
       appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
+      await waitForUiTurn();
       await executePlanMessages(currentPlan, messages);
       return;
     }
@@ -641,6 +700,7 @@ export function TuiApp({
         }));
         requestMainScrollToBottom();
         appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
+        await waitForUiTurn();
         await executePlanMessages(currentPlan, messages);
         return;
       }
@@ -686,8 +746,10 @@ export function TuiApp({
     setState((current) => appendUserLogMessage({ ...current, mode: "planning", questions: [], error: undefined }, text));
     requestMainScrollToBottom();
     appendPlanTranscriptMessages(currentPlan.sessionId, continuationMessages);
-    await executePlanMessages(currentPlan, messages);
+    await waitForUiTurn();
+    await executePlanMessages(currentPlan, messages, { ensureUserLogText: text });
   };
+
   const showCurrentPlan = async () => {
     const currentPlan = planSessionRef.current;
     if (!currentPlan) {
@@ -709,17 +771,21 @@ export function TuiApp({
       const editorName = externalEditorDisplayName();
       const editorHint = editorName ? `\n\n"/plan open" to edit this plan in ${editorName}` : "";
       const displayPath = displayPlanFilePath(currentPlan.planFilePath, cwd);
-      setState((current) => ({
-        ...current,
-        mode: "planning",
-        error: undefined,
-        conversation: [...current.conversation, { kind: "status", text: "Current Plan", detailText: document }],
-        logMessages: [...current.logMessages, { ...statusLog("Current Plan", `${displayPath}\n\n${document}${editorHint}`), detailVisible: true }]
-      }));
+      setState((current) => {
+        const currentPlanLog = { ...statusLog("Current Plan", `${displayPath}\n\n${document}${editorHint}`), detailVisible: true };
+        return {
+          ...current,
+          mode: "planning",
+          error: undefined,
+          conversation: [...current.conversation, { kind: "status", text: "Current Plan", detailText: document }],
+          logMessages: [...compactActiveInteractionLogs(current.logMessages, 2), currentPlanLog]
+        };
+      });
     } catch (error) {
       failUi(error);
     }
   };
+
   const openCurrentPlan = async () => {
     const currentPlan = planSessionRef.current;
     if (!currentPlan) return;
@@ -744,6 +810,7 @@ export function TuiApp({
       failUi(error);
     }
   };
+
   const refreshPendingPlanReview = async (options: { openEditor?: boolean } = {}) => {
     const review = state.pendingReview;
     const planFilePath = review?.planFilePath;
@@ -773,6 +840,7 @@ export function TuiApp({
       failUi(error);
     }
   };
+
   const showPendingPlanReview = async () => {
     const review = state.pendingReview;
     const planFilePath = review?.planFilePath;
@@ -821,22 +889,27 @@ export function TuiApp({
       appendPlanTranscriptMessages(resolved.state.sessionId, [rejectionMessage]);
       savePlanSession(resolved.state);
       resetPlanApprovalFeedback();
-      setState((current) => ({
-        ...current,
-        mode: "planning",
-        planSession: resolved.state,
-        pendingReview: undefined,
-        error: undefined,
-        logMessages: [
+      setState((current) => {
+        const rejectedLogs = [
           ...current.logMessages.map((message) => (
             review && message.kind === "plan" && message.nodeId === review.nodeId && message.attempt === review.attempt && message.status === "pending"
-              ? { ...message, status: "rejected" as const, document: rejectedDocument, detailText: feedbackDetail ? `User feedback: ${feedbackDetail}` : message.detailText }
+              ? { ...message, status: "rejected" as const, document: rejectedDocument, detailText: feedbackDetail ? `Plan Mode rejected.
+User feedback: ${feedbackDetail}` : `Plan Mode rejected.${message.detailText ? `
+${message.detailText}` : ""}` }
               : message
           )),
           ...(feedbackDetail ? [{ id: randomUUID(), kind: "user" as const, text: feedbackDetail }] : []),
-          statusLog("Plan rejected; keep planning", feedbackDetail)
-        ]
-      }));
+          statusLog("Plan Mode rejected; keep planning", feedbackDetail)
+        ];
+        return {
+          ...current,
+          mode: "planning",
+          planSession: resolved.state,
+          pendingReview: undefined,
+          error: undefined,
+          logMessages: compactRejectedPlanLogs(rejectedLogs)
+        };
+      });
       requestMainScrollToBottom();
       void executePlanMessages(resolved.state, planMessagesRef.current).catch((error) => failUi(error));
       return true;
@@ -923,6 +996,7 @@ export function TuiApp({
     if (metadata?.plan || metadata?.workflowRunId) await restorePlanSession(id);
     else await resumeRun(id);
   };
+
   const openResumePicker = async () => {
     try {
       const runs = engine ? await engine.listRuns({ limit: 30 }) : [];
@@ -959,7 +1033,8 @@ export function TuiApp({
       return;
     }
     if (event.type === "queue") {
-      if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan")) {
+      const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
+      if (!hasPlanQuestion && (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || (state.mode !== "question" && isPlanSessionAcceptingInput(planSessionRef.current)))) {
         enqueuePlanTurn(event.text, event.images);
         return;
       }
@@ -977,16 +1052,12 @@ export function TuiApp({
         resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
       } else if (state.mode === "input") {
         const nextMode = nextInputPermissionMode(state.inputPermissionMode);
-        if (nextMode === "plan") {
-          enterGlobalPlanMode();
-        } else {
-          setState((current) => ({
-            ...current,
-            inputPermissionMode: nextMode,
-            error: undefined,
-            logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(nextMode)}`)]
-          }));
-        }
+        setState((current) => ({
+          ...current,
+          inputPermissionMode: nextMode,
+          error: undefined,
+          logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(nextMode)}`)]
+        }));
       }
       else if (state.mode === "planning" || state.mode === "waiting_plan_approval") setState((current) => ({ ...current, error: "Plan Mode is already active" }));
       return;
@@ -1000,6 +1071,12 @@ export function TuiApp({
       return;
     }
     if (event.type === "command") {
+      if (event.name === "help") {
+        showHelp();
+      }
+      if (event.name === "statusline") {
+        updateStatusline(event.args);
+      }
       if (event.name === "new") {
         if (isActiveSessionMode(state.mode)) setState((current) => ({ ...current, mode: "confirm_new", modeBeforeConfirmation: current.mode }));
         else resetSession();
@@ -1007,10 +1084,13 @@ export function TuiApp({
       if (event.name === "plan") {
         const description = event.args.join(" ").trim();
         const openPlan = event.args[0] === "open";
-        if (state.mode === "waiting_plan_approval") {
+        const currentPlanMode = planSessionRef.current?.mode;
+        const inPendingPlanApproval = state.mode === "waiting_plan_approval" || Boolean(state.pendingReview) || currentPlanMode === "waiting_approval";
+        const inActivePlanMode = state.mode === "planning" || isPlanSessionAcceptingInput(planSessionRef.current);
+        if (inPendingPlanApproval) {
           if (openPlan) void refreshPendingPlanReview({ openEditor: true });
           else void showPendingPlanReview();
-        } else if (state.mode === "planning") {
+        } else if (inActivePlanMode) {
           if (openPlan) void openCurrentPlan();
           else void showCurrentPlan();
         } else {
@@ -1036,16 +1116,16 @@ export function TuiApp({
       }
       return;
     }
-    if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan")) {
-      enqueuePlanTurn(event.text, event.images);
-      return;
-    }
-    if (state.mode === "question") {
+    if (planQuestionRef.current || state.mode === "question") {
       if (planQuestionRef.current) void continuePlanQuestion(freeformQuestionAnswer(nextQuestionSlice(planQuestionRef.current.questions, planQuestionRef.current.index), event.text)).catch((error) => failUi(error));
       else {
         setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
         void sessionRef.current?.resumeWithUserInput({ answer: event.text }).catch((error) => failUi(error));
       }
+      return;
+    }
+    if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || isPlanSessionAcceptingInput(planSessionRef.current)) {
+      enqueuePlanTurn(event.text, event.images);
       return;
     }
     if (state.mode === "permission" || state.mode === "confirm_interrupt" || state.mode === "confirm_new" || state.mode === "confirm_resume" || state.mode === "resume_picker" || state.mode === "select_workflow") return;
@@ -1063,8 +1143,10 @@ export function TuiApp({
   const workflowNodes = selectedWorkflowId
     ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => ({ id: node.id, role: node.role, model: node.model ?? config.roles[node.role]?.default_model ?? config.providers[node.provider]?.default_model }))
     : undefined;
-  const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : state.mode;
-  const logMessages = planInteractionLogMessages(state, Boolean(planQuestionRef.current));
+  const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
+  const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : hasPlanQuestion ? "question" : state.mode;
+  const logMessages = planInteractionLogMessages(state, hasPlanQuestion);
+  const activityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs });
   const activeChoice = buildActiveChoice({
     mode: interactionMode,
     workflows,
@@ -1179,23 +1261,30 @@ export function TuiApp({
     if (state.pendingReview) resolveGlobalPlan("stay");
     return true;
   };
+  const cancelCurrentInteraction = (): boolean => {
+    if (activeChoice?.onCancel) {
+      activeChoice.onCancel();
+      return true;
+    }
+    return cancelActiveChoice();
+  };
   useEffect(() => {
     if (choiceKey === nextChoiceKey) return;
     setChoiceKey(nextChoiceKey);
     canceledChoiceKeyRef.current = undefined;
   }, [choiceKey, nextChoiceKey]);
-  const activePlanReview = state.pendingReview && !state.pendingReview.empty && state.pendingReview.document.trim()
-    ? state.pendingReview
-    : undefined;
-  const layout = layoutMetrics({ terminalRows, choice: activeChoice, planReview: activePlanReview });
   useEffect(() => {
-    setPlanReviewOffset(0);
-  }, [activePlanReview?.attempt, activePlanReview?.nodeId, activePlanReview?.document]);
-  useEffect(() => {
-    if (!activePlanReview) return;
-    const maxOffset = maxPlanReviewOffset(activePlanReview.document, layout.planReviewHeight);
-    setPlanReviewOffset((current) => Math.min(current, maxOffset));
-  }, [activePlanReview, layout.planReviewHeight]);
+    const handleEscapeData = (value: unknown) => {
+      const text = typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
+      if (text !== "" || transcriptMode) return;
+      cancelCurrentInteraction();
+    };
+    stdin.on?.("data", handleEscapeData);
+    return () => {
+      stdin.off?.("data", handleEscapeData);
+    };
+  }, [stdin, cancelCurrentInteraction, transcriptMode]);
+  const layout = layoutMetrics({ terminalRows, choice: activeChoice, activityStatusVisible: Boolean(activityStatus && !activeChoice) });
   useInput((input, key, event) => {
     if ((input === "o" && key.ctrl) || input === "\u000f") {
       setTranscriptMode((current) => !current);
@@ -1212,7 +1301,7 @@ export function TuiApp({
       event.stopImmediatePropagation();
       return;
     }
-    if (key.escape && cancelActiveChoice()) {
+    if (key.escape && cancelCurrentInteraction()) {
       event.stopImmediatePropagation();
       return;
     }
@@ -1222,14 +1311,6 @@ export function TuiApp({
       return;
     }
     const mainScroll = mainScrollRef.current;
-    if (activePlanReview && (key.pageUp || key.pageDown || key.wheelUp || key.wheelDown)) {
-      const page = Math.max(1, planReviewVisibleLineCount(layout.planReviewHeight));
-      const delta = key.pageUp || key.wheelUp ? -page : page;
-      const maxOffset = maxPlanReviewOffset(activePlanReview.document, layout.planReviewHeight);
-      setPlanReviewOffset((current) => Math.max(0, Math.min(maxOffset, current + delta)));
-      event.stopImmediatePropagation();
-      return;
-    }
     if (mainScroll && key.wheelUp) {
       scrollMainUp(mainScroll, 3);
       return;
@@ -1284,7 +1365,6 @@ export function TuiApp({
         />
         <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
       </ScrollBox>
-      {activePlanReview && layout.planReviewHeight > 0 ? <ActivePlanReviewPanel document={activePlanReview.document} height={layout.planReviewHeight} offset={planReviewOffset} /> : null}
       <InteractionArea
         choice={activeChoice}
         mode={promptMode}
@@ -1297,12 +1377,37 @@ export function TuiApp({
         hasSelection={hasSelection}
         promptText={promptText}
         inputDisabled={transcriptMode}
+        activityStatus={activityStatus}
         resolvePromptImagePaste={state.pendingReview || state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") ? resolvePlanPromptImagePaste : undefined}
         onPromptEvent={handlePromptEvent}
         onPromptTextChange={handlePromptTextChange}
       />
+      <StatusLine
+        mode={interactionMode}
+        permissionMode={state.inputPermissionMode}
+        workflowId={state.workflowId}
+        runId={state.runId}
+        isLoading={isLoading}
+        hasSelection={hasSelection}
+        elements={statuslineElements}
+        columns={terminalColumns}
+      />
     </Box>
   );
+}
+function activityStatusText(input: { isWorking: boolean; workStartedAtMs?: number; lastWorkDurationMs?: number; nowMs: number }): string | undefined {
+  if (input.isWorking && input.workStartedAtMs !== undefined) return `Working... ${formatWorkDuration(input.nowMs - input.workStartedAtMs)}`;
+  if (!input.isWorking && input.lastWorkDurationMs !== undefined) return `Worked for ${formatWorkDuration(input.lastWorkDurationMs)}`;
+  return undefined;
+}
+function formatWorkDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  return `${seconds}s`;
 }
 function statusLog(text: string, detailText?: string): TuiLogMessage {
   return { id: randomUUID(), kind: "status", text, detailText };
@@ -1321,12 +1426,181 @@ function appendMissingUserLogMessage(state: TuiState, text: string | undefined):
   if (state.logMessages.some((message) => message.kind === "user" && message.text === normalized)) return state;
   return appendUserLogMessage(state, normalized);
 }
-function planInteractionLogMessages(state: TuiState, hasPlanQuestion: boolean): TuiLogMessage[] {
-  if (!state.pendingReview && !(state.mode === "question" && hasPlanQuestion)) return state.logMessages;
-  for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
-    if (state.logMessages[index]?.kind === "user") return withoutActivePendingPlanLog(state.logMessages.slice(index), state.pendingReview);
+function waitForUiTurn(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+function reducePlanRuntimeEvent(state: TuiState, event: RuntimeEvent): TuiState {
+  switch (event.type) {
+    case "runtime_assistant_message":
+      return appendPlanAssistantLog(state, event.content);
+    case "runtime_tool_invoked":
+      if (event.tool === "AskUserQuestion") return state;
+      return appendPlanToolLog(state, event.tool_call_id, event.tool, event.input);
+    case "runtime_tool_completed":
+      if (event.tool === "AskUserQuestion") return state;
+      return updatePlanToolLog(state, event.tool_call_id, event.tool, "completed", getToolResultDetail(event.result));
+    case "runtime_tool_failed":
+      if (event.tool === "AskUserQuestion") return state;
+      return updatePlanToolLog(state, event.tool_call_id, event.tool, "failed", `错误：${event.error}`);
+    default:
+      return state;
   }
-  return withoutActivePendingPlanLog(state.logMessages, state.pendingReview);
+}
+function appendPlanAssistantLog(state: TuiState, content: string): TuiState {
+  const text = content.trim();
+  if (!text) return state;
+  return {
+    ...state,
+    conversation: [...state.conversation, { kind: "assistant", nodeId: planRuntimeNodeId, attempt: planRuntimeAttempt, text }],
+    logMessages: compactRejectedPlanLogs([...state.logMessages, { id: randomUUID(), kind: "assistant", nodeId: planRuntimeNodeId, attempt: planRuntimeAttempt, text }])
+  };
+}
+function appendPlanAssistantLogsFromMessages(state: TuiState, messages: ModelMessage[]): TuiState {
+  return messages.reduce((next, message) => {
+    if (message.role !== "assistant" || message.tool_calls?.length || typeof message.content !== "string") return next;
+    const text = message.content.trim();
+    if (!text) return next;
+    return appendPlanAssistantLog(next, text);
+  }, state);
+}
+function planRuntimeNewMessages(inputMessages: ModelMessage[], resultMessages: ModelMessage[]): ModelMessage[] {
+  const inputCount = inputMessages.filter((message) => !isRuntimeAttachmentMessage(message)).length;
+  return resultMessages.filter((message) => !isRuntimeAttachmentMessage(message)).slice(inputCount);
+}
+function isRuntimeAttachmentMessage(message: ModelMessage): boolean {
+  return Boolean(message.metadata?.runtimeAttachment);
+}
+function appendPlanToolLog(state: TuiState, toolCallId: string, tool: string, input: unknown): TuiState {
+  const parentLogId = findPlanToolParentAssistantLog(state);
+  return {
+    ...state,
+    tools: [
+      ...state.tools,
+      {
+        nodeId: planRuntimeNodeId,
+        attempt: planRuntimeAttempt,
+        toolCallId,
+        tool,
+        status: "running",
+        input,
+        expanded: false
+      }
+    ],
+    logMessages: compactRejectedPlanLogs([
+      ...state.logMessages,
+      {
+        id: randomUUID(),
+        kind: "tool",
+        nodeId: planRuntimeNodeId,
+        attempt: planRuntimeAttempt,
+        toolCallId,
+        parentLogId,
+        tool,
+        status: "running",
+        text: getToolDisplayName(tool),
+        summary: getToolInputSummary(tool, input),
+        detailText: getToolInputDetail(tool, input)
+      }
+    ])
+  };
+}
+function updatePlanToolLog(state: TuiState, toolCallId: string, tool: string, status: "completed" | "failed", detailText: string): TuiState {
+  const hasLog = state.logMessages.some((message) => message.kind === "tool" && message.toolCallId === toolCallId);
+  const tools = state.tools.some((item) => item.toolCallId === toolCallId)
+    ? state.tools.map((item) => item.toolCallId === toolCallId ? { ...item, status } : item)
+    : [
+        ...state.tools,
+        {
+          nodeId: planRuntimeNodeId,
+          attempt: planRuntimeAttempt,
+          toolCallId,
+          tool,
+          status,
+          expanded: false
+        }
+      ];
+  if (!hasLog) {
+    return {
+      ...state,
+      tools,
+      logMessages: compactRejectedPlanLogs([
+        ...state.logMessages,
+        {
+          id: randomUUID(),
+          kind: "tool",
+          nodeId: planRuntimeNodeId,
+          attempt: planRuntimeAttempt,
+          toolCallId,
+          tool,
+          status,
+          text: getToolDisplayName(tool),
+          summary: "",
+          detailText
+        }
+      ])
+    };
+  }
+  return {
+    ...state,
+    tools,
+    logMessages: compactRejectedPlanLogs(state.logMessages.map((message) => (
+      message.kind === "tool" && message.toolCallId === toolCallId
+        ? { ...message, status, detailText }
+        : message
+    )))
+  };
+}
+function findPlanToolParentAssistantLog(state: TuiState): string | undefined {
+  for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
+    const item = state.logMessages[index];
+    if (item.kind === "assistant" && item.nodeId === planRuntimeNodeId && item.attempt === planRuntimeAttempt) return item.id;
+    if (item.parentLogId) continue;
+    if (item.kind === "tool" && item.nodeId === planRuntimeNodeId && item.attempt === planRuntimeAttempt) continue;
+    return undefined;
+  }
+  return undefined;
+}
+const planRuntimeNodeId = "global-plan";
+const planRuntimeAttempt = 1;
+function planInteractionLogMessages(state: TuiState, hasPlanQuestion: boolean): TuiLogMessage[] {
+  const isPendingPlanReview = Boolean(state.pendingReview);
+  const isPlanQuestion = state.mode === "question" && hasPlanQuestion;
+  if (!isPendingPlanReview && !isPlanQuestion) return state.logMessages;
+  let messages = state.logMessages;
+  for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
+    if (state.logMessages[index]?.kind === "user") {
+      messages = state.logMessages.slice(index);
+      break;
+    }
+  }
+  const visible = withoutActivePendingPlanLog(messages, state.pendingReview);
+  return compactActiveInteractionLogs(visible, isPendingPlanReview ? 3 : 4);
+}
+function compactActiveInteractionLogs(messages: TuiLogMessage[], maxMessages: number): TuiLogMessage[] {
+  if (messages.length <= maxMessages) return messages;
+  let lastUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.kind === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  const start = Math.max(lastUserIndex, messages.length - maxMessages, 0);
+  return messages.slice(start).slice(-maxMessages);
+}
+function compactRejectedPlanLogs(messages: TuiLogMessage[]): TuiLogMessage[] {
+  let rejectedIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.kind === "plan" && message.status === "rejected") {
+      rejectedIndex = index;
+      break;
+    }
+  }
+  if (rejectedIndex < 0) return messages;
+  const contextBefore = messages.slice(Math.max(0, rejectedIndex - 1), rejectedIndex);
+  const contextAfter = messages.slice(rejectedIndex + 1).slice(-4);
+  return [...contextBefore, messages[rejectedIndex], ...contextAfter];
 }
 function withoutActivePendingPlanLog(messages: TuiLogMessage[], pendingReview: TuiState["pendingReview"]): TuiLogMessage[] {
   if (!pendingReview) return messages;
@@ -1605,6 +1879,17 @@ function questionsFromQuestion(question: unknown): unknown[] {
   return Array.isArray(questions) ? questions : [question];
 }
 
+function questionAnswerContext(question: unknown): { __allQuestions?: unknown[] } {
+  const questions = questionsFromQuestion(question);
+  return questions.length > 1 ? { __allQuestions: questions } : {};
+}
+
+function questionsFromAnswer(answer: unknown): unknown[] {
+  if (!answer || typeof answer !== "object") return [];
+  const questions = (answer as { __allQuestions?: unknown }).__allQuestions;
+  return Array.isArray(questions) ? questions : [];
+}
+
 function answersFromQuestion(question: unknown): Record<string, unknown> {
   if (!question || typeof question !== "object") return {};
   const answers = (question as { __answers?: unknown }).__answers;
@@ -1852,6 +2137,11 @@ function buildActiveChoice(input: {
         planFilePath: input.planApprovalPlanFilePath,
         editorName: input.planApprovalEditorName
       }),
+      documentBlock: {
+        title: "Here is Claude's plan:",
+        text: planApprovalDocument(input.review.document, input.planApprovalPlanFilePath),
+        maxLines: 4
+      },
       options,
       selectedValue: options[0]?.value ?? "yes-default-keep-context",
       allowPromptInput: true,
@@ -1881,6 +2171,77 @@ function buildActiveChoice(input: {
     return { title: "Stop current run?", options, selectedValue, onSubmit: (value) => input.resolveInterrupt(value === "interrupt" ? "interrupt" : "stay") };
   }
   return undefined;
+}
+
+function helpDetailText(): string {
+  return [
+    "Keyboard shortcuts:",
+    "  Enter submit · Alt+Enter newline",
+    "  Shift+Tab cycle mode or approve selected action",
+    "  Ctrl+O transcript · Ctrl+G edit plan/focused text",
+    "  Esc cancel · Ctrl+C stop current run or copy selection",
+    "",
+    "Slash commands:",
+    "  /help show this help",
+    "  /plan [open|text] Plan Mode, show/open plan, or send plan text",
+    "  /statusline [elements|default] customize the bottom statusline",
+    "  /clear clear visible context · /resume [session] resume",
+    "  /new new session · /model <model> switch · /permissions permissions"
+  ].join("\n");
+}
+
+function parseStatuslineArgs(args: string[], current: StatusLineElement[]): { elements?: StatusLineElement[]; text: string; detailText: string } {
+  const raw = args.join(" ").trim();
+  const available = availableStatusLineElements.join(", ");
+  if (!raw) {
+    return {
+      text: "Statusline",
+      detailText: `Current: ${current.join(", ") || "none"}\nAvailable: ${available}\nUsage: /statusline mode,permission,workflow,run,selection,loading\nUse /statusline default to reset.`
+    };
+  }
+  if (raw === "default") {
+    return {
+      elements: defaultStatusLineElements,
+      text: "Statusline reset",
+      detailText: `Current: ${defaultStatusLineElements.join(", ")}`
+    };
+  }
+  const requested = raw === "all" ? availableStatusLineElements : raw.split(/[,\s]+/).filter(Boolean);
+  const invalid = requested.filter((item) => !isStatusLineElement(item));
+  if (invalid.length) {
+    return {
+      text: "Statusline unchanged",
+      detailText: `Unknown element: ${invalid.join(", ")}\nAvailable: ${available}`
+    };
+  }
+  const elements = uniqueStatuslineElements(requested as StatusLineElement[]);
+  return {
+    elements,
+    text: "Statusline updated",
+    detailText: `Current: ${elements.join(", ") || "none"}`
+  };
+}
+
+function isStatusLineElement(value: string): value is StatusLineElement {
+  return (availableStatusLineElements as string[]).includes(value);
+}
+
+function uniqueStatuslineElements(elements: StatusLineElement[]): StatusLineElement[] {
+  return elements.filter((element, index) => elements.indexOf(element) === index);
+}
+
+function isPlanSessionAcceptingInput(plan: PlanSessionState | undefined): boolean {
+  return Boolean(plan && plan.mode !== "inactive" && plan.mode !== "waiting_approval");
+}
+
+function planApprovalDocument(document: string, planFilePath?: string): string {
+  return planFilePath ? `Plan saved to: ${compactPlanApprovalPath(planFilePath)} · /plan to edit\n${document}` : document;
+}
+
+function compactPlanApprovalPath(planFilePath: string): string {
+  const maxLength = 80;
+  if (planFilePath.length <= maxLength) return planFilePath;
+  return `${planFilePath.slice(0, 20)}...${planFilePath.slice(-(maxLength - 23))}`;
 }
 
 function planApprovalPermissionMode(value: string, isBypassPermissionsModeAvailable = false): PermissionMode {
@@ -1957,10 +2318,7 @@ function planApprovalDetail(input: {
     );
   }
   lines.push("Claude has written up a plan and is ready to execute. Would you like to proceed?");
-  if (input.editorName) {
-    const path = input.planFilePath ? ` · ${input.planFilePath}` : "";
-    lines.push(`ctrl-g to edit in ${input.editorName}${path}`);
-  }
+  if (input.editorName) lines.push(`ctrl-g to edit in ${input.editorName}`);
   if (input.savedMessage) lines.push(input.savedMessage);
   return lines.join("\n");
 }
@@ -2095,11 +2453,11 @@ function buildQuestionChoice(input: {
         return;
       }
       if (value === otherQuestionOptionValue) {
-        input.resolveQuestion({ answer: questionFreeformAnswer(freeformText, imageAttachments), question_id: id, option_value: otherQuestionOptionValue });
+        input.resolveQuestion({ ...questionAnswerContext(question), answer: questionFreeformAnswer(freeformText, imageAttachments), question_id: id, option_value: otherQuestionOptionValue });
         return;
       }
       const selected = questionOptions(question).find((option) => option.value === value);
-      input.resolveQuestion({ answer: selected?.label ?? value, question_id: id, option_value: value, ...(selected?.preview ? { preview: selected.preview } : {}) });
+      input.resolveQuestion({ ...questionAnswerContext(question), answer: selected?.label ?? value, question_id: id, option_value: value, ...(selected?.preview ? { preview: selected.preview } : {}) });
     },
     onNavigate: progress ? (direction) => input.resolveQuestion({ type: direction === "next" ? nextQuestionNavigationValue : previousQuestionNavigationValue }) : undefined,
     onPromptSubmit: hasPreview
@@ -2202,10 +2560,10 @@ function questionAllowsFreeform(question: unknown): boolean {
 function questionIsMultiSelect(question: unknown): boolean {
   return Boolean(question && typeof question === "object" && (question as { multiSelect?: unknown }).multiSelect === true);
 }
-function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string } }): { mainHeight: number; planReviewHeight: number } {
+function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string }; activityStatusVisible?: boolean }): { mainHeight: number; planReviewHeight: number } {
   const headerRows = 3;
   const flowRows = 4;
-  const promptRows = 5;
+  const promptRows = input.activityStatusVisible ? 8 : 6;
   const choiceRows = input.choice ? estimateChoiceRows(input.choice) : 0;
   const available = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
   const planReviewHeight = input.planReview ? Math.max(0, Math.min(12, available - 1)) : 0;
@@ -2216,6 +2574,7 @@ function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice
 function estimateChoiceRows(choice: InteractionChoice): number {
   const borderRows = 2;
   const titleRows = 1;
+  const navigationRows = choice.questionNavigation ? 1 : 0;
   const detailRows = choice.detail ? choice.detail.split(/\r?\n/).length : 0;
   const documentRows = choice.documentBlock
     ? (choice.documentBlock.title ? 1 : 0) +
@@ -2228,7 +2587,10 @@ function estimateChoiceRows(choice: InteractionChoice): number {
     ? Math.min(choice.options.length + 1, choice.visibleOptionCount ?? 7)
     : Math.min(choice.options.length, choice.visibleOptionCount ?? 7);
   const footerRows = choice.footerActions?.length ? choice.footerActions.length + 1 : 0;
-  return borderRows + titleRows + detailRows + documentRows + visibleOptionRows + footerRows;
+  const previewRows = choice.options.some((option) => typeof option.preview === "string" && option.preview.trim())
+    ? 9
+    : 0;
+  return borderRows + navigationRows + titleRows + detailRows + documentRows + Math.max(visibleOptionRows + footerRows, previewRows);
 }
 
 function ActivePlanReviewPanel({ document, height, offset }: { document: string; height: number; offset: number }) {

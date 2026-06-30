@@ -401,19 +401,19 @@ describe("PromptInput with local Ink renderer", () => {
 
       stdin.send("\u001b[A");
       await settleTimers();
-      assert.match(stripAnsi(stdout.output), /INPUT > second/);
+      assert.match(stripAnsi(stdout.output), /> second/);
 
       stdin.send("\u001b[A");
       await settleTimers();
-      assert.match(stripAnsi(stdout.output), /INPUT > first/);
+      assert.match(stripAnsi(stdout.output), /> first/);
 
       stdin.send("\u001b[B");
       await settleTimers();
-      assert.match(stripAnsi(stdout.output), /INPUT > second/);
+      assert.match(stripAnsi(stdout.output), /> second/);
 
       stdin.send("\u001b[B");
       await settleTimers();
-      assert.match(stripAnsi(stdout.output), /INPUT > Type a request or \/help/);
+      assert.match(stripAnsi(stdout.output), /> Type a request or \/help/);
       assert.deepEqual(events, [
         { type: "submit", text: "first" },
         { type: "submit", text: "second" }
@@ -501,10 +501,10 @@ describe("PromptInput with local Ink renderer", () => {
       const initialOutput = stdout.output;
 
 
-      assert.match(stripAnsi(initialOutput), /INPUT > Type a request or \/help/);
+      assert.match(stripAnsi(initialOutput), /> Type a request or \/help/);
 
 
-      assert.doesNotMatch(stripAnsi(initialOutput), /INPUT > \|/);
+      assert.doesNotMatch(stripAnsi(initialOutput), /> \|/);
 
 
       assert.doesNotMatch(initialOutput, /\u001b\[7m|\u001b\[27m/);

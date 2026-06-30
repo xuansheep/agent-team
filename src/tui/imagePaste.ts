@@ -75,7 +75,7 @@ function removeOuterQuotes(value: string): string {
 }
 
 function stripBackslashEscapes(value: string): string {
-  if (process.platform === "win32") return value;
+  if (process.platform === "win32") return value.replace(/\\ /g, " ");
   return value.replace(/\\\\/g, "\0").replace(/\\(.)/g, "$1").replace(/\0/g, "\\");
 }
 

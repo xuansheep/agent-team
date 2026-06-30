@@ -108,4 +108,34 @@ describe("RunLogPanel compact tool output", () => {
     transcript.unmount();
     transcript.cleanup();
   });
+  it("renders complete plan documents in compact mode", () => {
+    const longPlan = [
+      ...Array.from({ length: 90 }, (_, index) => `Step ${String(index + 1).padStart(2, "0")}: keep the complete approval plan visible.`),
+      "TAIL_SENTINEL_AFTER_2400_CHARS"
+    ].join("\n");
+    const output = render(
+      <RunLogPanel
+        detailMode={false}
+        currentNodeId="global-plan"
+        currentAttempt={1}
+        items={[{
+          id: "plan-1",
+          kind: "plan",
+          nodeId: "global-plan",
+          attempt: 1,
+          status: "pending",
+          text: "Plan Review",
+          document: longPlan,
+          path: ".session/plans/plan.md"
+        }]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Plan saved to: \.session\/plans\/plan\.md · \/plan to edit/);
+    assert.match(frame, /TAIL_SENTINEL_AFTER_2400_CHARS/);
+    output.unmount();
+    output.cleanup();
+  });
+
 });

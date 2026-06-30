@@ -37,12 +37,10 @@ export function promptCursorPosition(input: {
   const beforeCursor = input.text.slice(0, input.cursor);
   const lines = beforeCursor.split("\n");
   const currentLine = lines[lines.length - 1] ?? "";
-  const modeWidth = input.mode.toUpperCase().length;
-  const leftBorderAndPadding = 1;
-  const promptSeparator = 3;
+  const promptPrefixWidth = 2;
 
   return {
-    x: leftBorderAndPadding + modeWidth + promptSeparator + terminalDisplayWidth(currentLine),
+    x: promptPrefixWidth + terminalDisplayWidth(currentLine),
     y: lineStartY + lines.length - 1
   };
 }

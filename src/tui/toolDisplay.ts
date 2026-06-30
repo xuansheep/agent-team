@@ -8,6 +8,7 @@ export function getToolInputSummary(tool: string, input: unknown): string {
   const value = input as Record<string, unknown>;
 
   if ((tool === "Bash" || tool === "PowerShell") && typeof value.command === "string") return value.command;
+  if (tool === "AskUserQuestion" && Array.isArray(value.questions)) return `${value.questions.length} question${value.questions.length === 1 ? "" : "s"}`;
   if (tool === "TodoWrite" && Array.isArray(value.todos)) return `${value.todos.length} todos`;
   if (tool === "WebSearch" && typeof value.query === "string") return value.query;
   if (typeof value.path === "string") return value.path;
@@ -22,6 +23,7 @@ export function getToolInputDetail(tool: string, input: unknown): string {
   if (input && typeof input === "object") {
     const value = input as Record<string, unknown>;
     if ((tool === "Bash" || tool === "PowerShell") && typeof value.command === "string") return `命令：${value.command}`;
+    if (tool === "AskUserQuestion" && Array.isArray(value.questions)) return `问题：${value.questions.length} 个`;
     if (typeof value.path === "string") return `目标：${value.path}`;
     if (typeof value.file_path === "string") return `文件：${value.file_path}`;
     if (typeof value.pattern === "string") return `模式：${value.pattern}`;

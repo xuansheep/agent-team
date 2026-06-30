@@ -52,6 +52,7 @@ export function InteractionArea({
   hasSelection = false,
   promptText = "",
   inputDisabled = false,
+  activityStatus,
   onPromptEvent,
   onPromptTextChange,
   resolvePromptImagePaste
@@ -67,6 +68,7 @@ export function InteractionArea({
   hasSelection?: boolean;
   promptText?: string;
   inputDisabled?: boolean;
+  activityStatus?: string;
   onPromptEvent: (event: PromptInputEvent) => void;
   onPromptTextChange?: (text: string) => void;
   resolvePromptImagePaste?: (value: string) => Promise<{ text: string; images: PromptInputImageAttachment[] }>;
@@ -245,6 +247,11 @@ export function InteractionArea({
         </Box>
       ) : null}
       {mode === "question" && !choice && questions.length ? <UserQuestionPrompt questions={questions} /> : null}
+      {activityStatus && !choice ? (
+        <Box marginBottom={1} flexShrink={0}>
+          <ActivityStatusLine text={activityStatus} />
+        </Box>
+      ) : null}
       <PromptInput
         key={choice?.promptInputTakesFocus ? "choice-prompt-focus" : "prompt"}
         mode={mode}
@@ -261,6 +268,18 @@ export function InteractionArea({
         onEvent={handlePromptEvent}
         onTextChange={onPromptTextChange}
       />
+    </Box>
+  );
+}
+
+function ActivityStatusLine({ text }: { text: string }) {
+  const { stdout } = useStdout();
+  const columns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
+  const prefix = `- ${text} `;
+  const line = `${prefix}${"-".repeat(Math.max(1, columns - prefix.length))}`;
+  return (
+    <Box flexDirection="row" flexShrink={0}>
+      <Text dimColor>{line}</Text>
     </Box>
   );
 }

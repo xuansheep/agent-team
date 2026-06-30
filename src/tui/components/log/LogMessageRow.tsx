@@ -64,11 +64,11 @@ function PermissionLogMessage({ item, detailMode }: { item: TuiPermissionLogMess
   const color = item.status === "allowed" ? "green" : item.status === "denied" ? "red" : "yellow";
   return <DotLogMessage color={color} text={item.text} detailText={item.detailText} detailVisible={item.detailVisible} detailMode={detailMode} />;
 }
-function PlanLogMessage({ item, detailMode }: { item: TuiPlanLogMessage; detailMode: boolean }) {
+function PlanLogMessage({ item }: { item: TuiPlanLogMessage; detailMode: boolean }) {
   const color = item.status === "approved" ? "green" : item.status === "rejected" ? "red" : "yellow";
   const statusText = item.status === "approved" ? "approved" : item.status === "rejected" ? "needs revision" : "pending approval";
-  const showPlanApprovalLabel = item.status === "pending" && item.text !== "Exit Plan Mode";
-  const document = detailMode ? item.document : truncate(item.document, 2400);
+  const isExitOnly = item.text === "Exit Plan Mode";
+  const showPlanApprovalLabel = item.status === "pending" && !isExitOnly;
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row" flexWrap="nowrap">
@@ -81,11 +81,6 @@ function PlanLogMessage({ item, detailMode }: { item: TuiPlanLogMessage; detailM
       {item.status === "rejected" && item.detailText ? (
         <Box paddingLeft={2}>
           <Text dimColor wrap="wrap">{item.detailText}</Text>
-        </Box>
-      ) : null}
-      {item.path ? (
-        <Box paddingLeft={2}>
-          <Text dimColor wrap="truncate-end">{item.path}</Text>
         </Box>
       ) : null}
       {item.requestedPermissions?.length ? (
@@ -101,28 +96,20 @@ function PlanLogMessage({ item, detailMode }: { item: TuiPlanLogMessage; detailM
           <Text>Here is Claude's plan:</Text>
         </Box>
       ) : null}
-      <PlanDocumentBlock text={document} dashed={showPlanApprovalLabel} />
+      <PlanDocumentBlock text={item.document} path={showPlanApprovalLabel ? item.path : undefined} />
     </Box>
   );
 }
-function PlanDocumentBlock({ text, dashed }: { text: string; dashed: boolean }) {
-  if (!dashed) {
-    return (
-      <MessageResponse>
-        <SimpleMarkdown text={text} />
-      </MessageResponse>
-    );
-  }
+function PlanDocumentBlock({ text, path }: { text: string; path?: string }) {
   return (
-    <Box flexDirection="column" marginTop={1} paddingX={1} overflow="hidden">
-      <Text dimColor>{planDocumentSeparator}</Text>
-      <SimpleMarkdown text={text} />
-      <Text dimColor>{planDocumentSeparator}</Text>
-    </Box>
+    <MessageResponse>
+      <Box flexDirection="column">
+        {path ? <Text dimColor wrap="truncate-end">Plan saved to: {path} · /plan to edit</Text> : null}
+        <SimpleMarkdown text={text} />
+      </Box>
+    </MessageResponse>
   );
 }
-const planDocumentSeparator = "╌".repeat(72);
-
 function SimpleMarkdown({ text }: { text: string }) {
   const lines = text.split(/\r?\n/);
   let inCode = false;
@@ -162,11 +149,11 @@ function DotLogMessage({
         <Box minWidth={2}>
           <Text color={color}>●</Text>
         </Box>
-        <Text wrap="wrap">{truncate(text, 1200)}</Text>
+        <Text wrap="wrap">{text}</Text>
       </Box>
       {(detailMode || detailVisible) && detailText ? (
         <MessageResponse>
-          <Text dimColor wrap="wrap">{truncate(detailText, 1200)}</Text>
+          <Text dimColor wrap="wrap">{detailText}</Text>
         </MessageResponse>
       ) : null}
     </Box>

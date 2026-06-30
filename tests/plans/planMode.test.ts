@@ -280,7 +280,7 @@ describe("Plan Mode V2", () => {
     assert.equal((exited.data as { event: { type: string } }).event.type, "plan_approval_requested");
   });
 
-  it("accepts hidden ExitPlanMode plan input without exposing it in the model schema", async () => {
+  it("accepts ExitPlanMode plan input through the model schema", async () => {
     const cwd = await workspace();
     const tools = createLocalToolRegistry();
     const { state } = enterPlanMode({
@@ -291,7 +291,7 @@ describe("Plan Mode V2", () => {
     });
 
     const schemaProperties = tools.get("ExitPlanMode").input_schema.properties as Record<string, unknown>;
-    assert.equal("plan" in schemaProperties, false);
+    assert.equal("plan" in schemaProperties, true);
     assert.equal("planFilePath" in schemaProperties, false);
 
     await writePlan(state.planFilePath, "# Plan\nOriginal.\n");
@@ -453,8 +453,8 @@ describe("Plan Mode V2", () => {
     assert.equal(tools.get("ExitPlanMode").input_schema.required, undefined);
     assert.equal("state" in (tools.get("ExitPlanMode").input_schema.properties as Record<string, unknown>), false);
     assert.match(tools.get("ExitPlanMode").description, /exit plan mode/);
-    assert.match(toolPrompt(tools.get("ExitPlanMode")), /finished writing your plan to the plan file/);
-    assert.match(toolPrompt(tools.get("ExitPlanMode")), /does NOT take the plan content as a parameter/);
+    assert.match(toolPrompt(tools.get("ExitPlanMode")), /complete plan in the plan parameter/);
+    assert.match(toolPrompt(tools.get("ExitPlanMode")), /stores that plan in the plan file/);
     assert.match(toolPrompt(tools.get("ExitPlanMode")), /Do NOT use AskUserQuestion to ask "Is this plan okay\?"/);
 
     assert.equal(

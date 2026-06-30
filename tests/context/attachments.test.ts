@@ -164,8 +164,8 @@ describe("runtime context attachments", () => {
     assert.equal(result.status, "completed");
     assert.match(systemContent, /ATTACHMENT plan_mode/);
     assert.match(systemContent, /Plan File Info/);
-    assert.match(systemContent, /plan file already exists/i);
-    assert.match(systemContent, /MUST NOT make edits except to the plan file/);
+    assert.match(systemContent, /previous plan exists/i);
+    assert.match(systemContent, /MUST NOT make edits/);
     assert.match(systemContent, /Iterative Planning Workflow/);
     assert.match(systemContent, /First Turn/);
     assert.match(systemContent, /Plan File Structure/);
@@ -179,9 +179,9 @@ describe("runtime context attachments", () => {
   it("tells the model to create the plan file when no plan exists yet", () => {
     const attachment = buildPlanModeAttachment({ sessionId: "session-1", planFilePath: ".session/plans/session-1.md" });
 
-    assert.match(attachment.content, /No plan file exists yet/);
-    assert.match(attachment.content, /Create your plan at \.session\/plans\/session-1\.md/);
-    assert.match(attachment.content, /using the Write tool/);
+    assert.match(attachment.content, /No plan has been saved yet/);
+    assert.match(attachment.content, /ExitPlanMode will save the plan to \.session\/plans\/session-1\.md/);
+    assert.match(attachment.content, /ExitPlanMode\.plan/);
   });
 
   it("keeps Auto Mode instructions visible during Plan Mode when entered from auto", async () => {
@@ -269,7 +269,7 @@ describe("runtime context attachments", () => {
     assert.match(attachment.content, /Read the existing plan file/);
     assert.match(attachment.content, /Different task/);
     assert.match(attachment.content, /Same task, continuing/);
-    assert.match(attachment.content, /always edit the plan file/);
+    assert.match(attachment.content, /ExitPlanMode\.plan/);
     assert.match(attachment.content, /Do not assume the existing plan is relevant/);
   });
 

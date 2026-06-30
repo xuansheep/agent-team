@@ -223,6 +223,7 @@ describe("PromptInput core logic", () => {
 
     assert.deepEqual(parseSlashCommand("/new"), { name: "new", args: [] });
     assert.deepEqual(parseSlashCommand("/plan"), { name: "plan", args: [] });
+    assert.deepEqual(parseSlashCommand("/statusline mode,workflow"), { name: "statusline", args: ["mode,workflow"] });
 
     assert.deepEqual(parseSlashCommand("normal text"), undefined);
 
@@ -360,7 +361,7 @@ describe("PromptInput core logic", () => {
 
       }),
 
-      { x: 11, y: 21 }
+      { x: 4, y: 21 }
 
     );
 
@@ -388,7 +389,7 @@ describe("PromptInput core logic", () => {
 
       }),
 
-      { x: 14, y: 18 }
+      { x: 4, y: 18 }
 
     );
 
@@ -426,7 +427,7 @@ describe("PromptInput core logic", () => {
 
       }),
 
-      { x: 11, y: 30 }
+      { x: 4, y: 30 }
 
     );
 
@@ -460,7 +461,7 @@ describe("PromptInput core logic", () => {
 
       }),
 
-      { x: 9, y: 36 }
+      { x: 2, y: 36 }
 
     );
 
@@ -480,7 +481,7 @@ describe("PromptInput core logic", () => {
 
       { isTTY: true, write: (data: string) => writes.push(data) },
 
-      { x: 9, y: 36 },
+      { x: 2, y: 36 },
 
       (callback) => {
 
@@ -502,7 +503,7 @@ describe("PromptInput core logic", () => {
 
     callbacks[0]?.();
 
-    assert.deepEqual(writes, ["\u001b[?25h\u001b[37;10H"]);
+    assert.deepEqual(writes, ["\u001b[?25h\u001b[37;3H"]);
 
 
 
@@ -539,6 +540,7 @@ describe("PromptInput core logic", () => {
     assert.deepEqual(slashCommandSuggestions("/r", ["delivery"]), ["/resume"]);
 
     assert.deepEqual(slashCommandSuggestions("/n", ["delivery"]), ["/new"]);
+    assert.deepEqual(slashCommandSuggestions("/s", ["delivery"]), ["/statusline"]);
     assert.deepEqual(slashCommandSuggestions("/p", ["delivery"]), ["/plan", "/permissions"]);
 
     assert.deepEqual(slashCommandSuggestions("plain", ["delivery"]), []);

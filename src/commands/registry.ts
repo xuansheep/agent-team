@@ -1,4 +1,4 @@
-export type CommandName = "clear" | "help" | "model" | "new" | "permissions" | "plan" | "resume";
+export type CommandName = "clear" | "help" | "model" | "new" | "permissions" | "plan" | "resume" | "statusline";
 
 export type CommandDefinition = {
   name: CommandName;
@@ -14,7 +14,8 @@ export type CommandAction =
   | { type: "new"; args: string[] }
   | { type: "permissions"; args: string[] }
   | { type: "plan"; args: string[]; behavior: "enter_or_show_plan" }
-  | { type: "resume"; args: string[]; runId?: string };
+  | { type: "resume"; args: string[]; runId?: string }
+  | { type: "statusline"; args: string[] };
 
 const definitions: CommandDefinition[] = [
   { name: "clear", description: "Clear current context", parse: (args) => ({ type: "clear", args }) },
@@ -23,7 +24,8 @@ const definitions: CommandDefinition[] = [
   { name: "new", description: "Start a new session", parse: (args) => ({ type: "new", args }) },
   { name: "permissions", description: "Show or change permissions", parse: (args) => ({ type: "permissions", args }) },
   { name: "plan", description: "Enter Plan Mode or show the current plan", argumentHint: "[open|<description>]", parse: (args) => ({ type: "plan", args, behavior: "enter_or_show_plan" }) },
-  { name: "resume", description: "Resume a session", argumentHint: "<session>", parse: (args) => ({ type: "resume", args, runId: args[0] }) }
+  { name: "resume", description: "Resume a session", argumentHint: "<session>", parse: (args) => ({ type: "resume", args, runId: args[0] }) },
+  { name: "statusline", description: "Customize bottom statusline elements", argumentHint: "[mode,permission,workflow,run,selection,loading|default]", parse: (args) => ({ type: "statusline", args }) }
 ];
 
 const definitionByName = new Map(definitions.map((definition) => [definition.name, definition]));

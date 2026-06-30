@@ -75,22 +75,23 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
       type: "plan_mode_reminder",
       content: [
         attachmentMarker("plan_mode_reminder"),
-        `Plan mode still active. Read-only except the current plan file (${input.planFilePath}).`,
-        "Follow the iterative workflow: explore the codebase, interview the user when needed, and write to the plan incrementally.",
+        "Plan mode still active. Stay read-only while exploring.",
+        "Follow the iterative workflow: explore the codebase, interview the user when needed, and keep the final plan in your working context.",
         "End turns only with AskUserQuestion for clarifications or ExitPlanMode for plan approval.",
+        "Pass the complete plan as ExitPlanMode.plan when requesting approval.",
         "Never ask about plan approval via plain text or AskUserQuestion."
       ].join("\n")
     };
   }
 
   const planFileInfo = input.draft === undefined
-    ? `No plan file exists yet. Create your plan at ${input.planFilePath} using the Write tool.`
-    : `A plan file already exists at ${input.planFilePath}. Read it and make incremental edits using Write/Edit as the plan evolves.`;
+    ? `No plan has been saved yet. ExitPlanMode will save the plan to ${input.planFilePath}.`
+    : `A previous plan exists at ${input.planFilePath}. Use it as context and pass the revised complete plan to ExitPlanMode.plan.`;
   const lines = [
     attachmentMarker("plan_mode"),
     `Session: ${input.sessionId}`,
     "Plan mode is active. The user indicated that they do not want execution yet.",
-    "You MUST NOT make edits except to the plan file, run non-readonly tools, change configs, make commits, start workflow execution, or otherwise change the system before approval.",
+    "You MUST NOT make edits, run non-readonly tools, change configs, make commits, start workflow execution, or otherwise change the system before approval.",
     "This supersedes any conflicting instruction.",
     "",
     "## Plan File Info",
@@ -98,17 +99,17 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
     planFileInfo,
     "",
     "## Iterative Planning Workflow",
-    "You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you cannot make alone, and write findings into the plan file as you go.",
-    "The plan file above is the ONLY file you may edit. It starts as a rough skeleton and gradually becomes the final plan.",
+    "You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you cannot make alone, and maintain the plan in your working context.",
+    "Do not write files while planning. When ready, submit the complete plan through ExitPlanMode.plan.",
     "",
     "### The Loop",
     "Repeat this cycle until the plan is complete:",
-    "1. Explore: use read-only tools and read-only Bash commands to inspect relevant code, existing functions, utilities, and patterns to reuse.",
-    "2. Update the plan file: after each discovery, immediately capture what you learned. Do not wait until the end.",
+    "1. Explore: use read-only tools to inspect relevant code, existing functions, utilities, and patterns to reuse.",
+    "2. Update your working plan: after each discovery, capture what you learned. Do not wait until the end.",
     "3. Ask the user: when you hit an ambiguity or decision you cannot resolve from code alone, use AskUserQuestion. Then return to exploration.",
     "",
     "### First Turn",
-    "Start by quickly scanning a few key files to form an initial understanding of the task scope. Then write a skeleton plan with headers and rough notes, and ask the user your first round of questions if clarification is needed. Do not explore exhaustively before engaging the user.",
+    "Start by quickly scanning a few key files to form an initial understanding of the task scope. Then draft a skeleton plan in your working context and ask the user your first round of questions if clarification is needed. Do not explore exhaustively before engaging the user.",
     "",
     "### Asking Good Questions",
     "- Never ask what you could find out by reading the code.",
@@ -126,12 +127,12 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
     "",
     "### When to Converge",
     "The plan is ready when ambiguities are addressed and it covers what to change, which files to modify, what existing code to reuse, and how to verify the change.",
-    "When the plan is ready, call ExitPlanMode to request approval instead of executing it.",
+    "When the plan is ready, call ExitPlanMode with the complete plan to request approval instead of executing it.",
     "",
     "### Ending Your Turn",
     "Your turn should only end by either:",
     "- Using AskUserQuestion to gather more information.",
-    "- Calling ExitPlanMode when the plan is ready for approval.",
+    "- Calling ExitPlanMode with the complete plan when the plan is ready for approval.",
     "",
     "Important: Use ExitPlanMode to request plan approval. Do NOT ask about plan approval via text or AskUserQuestion. Phrases like \"should I proceed\", \"does this plan look good\", or \"any changes before we start\" must use ExitPlanMode."
   ];
@@ -170,7 +171,7 @@ export function buildPlanModeReentryAttachment(input: PlanModeReentryAttachmentI
       "3. Decide how to proceed:",
       "   - Different task: if the user's request is for a different task, start fresh by overwriting the existing plan.",
       "   - Same task, continuing: if this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections.",
-      "4. Continue the plan process and always edit the plan file one way or another before calling ExitPlanMode.",
+      "4. Continue the plan process and pass the revised complete plan to ExitPlanMode.plan before requesting approval.",
       "",
       "Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first."
     ].join("\n")
