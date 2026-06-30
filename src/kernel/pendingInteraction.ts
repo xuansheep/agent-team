@@ -1,0 +1,25 @@
+import { randomUUID } from "node:crypto";
+import type { PlanRequestedPermission } from "../plans/planSession.js";
+import type { PendingInteraction } from "./session.js";
+
+export type PlanApprovalPendingInput = {
+  sessionId: string;
+  document: string;
+  planFilePath: string;
+  planHash: string;
+  requestedPermissions?: PlanRequestedPermission[];
+  empty?: boolean;
+};
+
+export function createPlanApprovalPending(input: PlanApprovalPendingInput): Extract<PendingInteraction, { type: "plan_approval" }> {
+  return {
+    type: "plan_approval",
+    id: randomUUID(),
+    sessionId: input.sessionId,
+    document: input.document,
+    planFilePath: input.planFilePath,
+    planHash: input.planHash,
+    empty: input.empty,
+    requestedPermissions: input.requestedPermissions ?? []
+  };
+}

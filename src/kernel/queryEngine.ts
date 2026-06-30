@@ -1,5 +1,6 @@
 import type { ModelProvider, ModelToolCall } from "../providers/types.js";
 import { PermissionKernel } from "./permissions/permissionKernel.js";
+import { PlanModeController } from "./plan/planModeController.js";
 import type { KernelSession } from "./session.js";
 import { reduceKernelSession } from "./session.js";
 import type { KernelToolRegistry } from "./tools/registry.js";
@@ -19,6 +20,7 @@ export type QueryEngineResult = {
 
 export class QueryEngine {
   private readonly permissions = new PermissionKernel();
+  private readonly planMode = new PlanModeController();
 
   async run(input: QueryEngineInput): Promise<QueryEngineResult> {
     let session = reduceKernelSession(input.session, {
@@ -106,12 +108,8 @@ export class QueryEngine {
           };
         }
         if (interaction?.type === "plan_approval") {
-          return {
-            session: reduceKernelSession({ ...session, messages }, {
-              type: "pending_interaction_set",
-              interaction: planApprovalFromResult(call.id, session.id, result, session.planState?.planFilePath ?? "")
-            })
-          };
+          const request = exitPlanRequest(call.input);
+          return { session: await this.planMode.requestPlanApproval({ ...session, messages }, request) };
         }
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(tool.mapToolResultToModelResult(result, context)) });
       }
@@ -121,19 +119,13 @@ export class QueryEngine {
   }
 }
 
-async function callsUntilUserInteraction(
-  calls: ModelToolCall[],
-  tools: KernelToolRegistry,
-  session: KernelSession
-): Promise<ModelToolCall[]> {
+async function callsUntilUserInteraction(calls: ModelToolCall[], tools: KernelToolRegistry, session: KernelSession): Promise<ModelToolCall[]> {
   for (let index = 0; index < calls.length; index += 1) {
     if (await tools.get(calls[index].name).requiresUserInteraction(calls[index].input, {
       cwd: session.cwd,
       sessionId: session.id,
       planState: session.planState ?? undefined
-    })) {
-      return calls.slice(0, index + 1);
-    }
+    })) return calls.slice(0, index + 1);
   }
   return calls;
 }
@@ -143,14 +135,17 @@ function questionsFromResult(result: { data?: unknown }): unknown[] {
   return Array.isArray(data?.questions) ? data.questions : [];
 }
 
-function planApprovalFromResult(id: string, sessionId: string, result: { data?: unknown }, fallbackPath: string) {
-  const data = result.data as { plan?: { document?: string; planFilePath?: string; empty?: boolean } } | undefined;
+function exitPlanRequest(input: unknown): { plan?: string; requestedPermissions?: { tool: string; prompt: string }[] } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const value = input as { plan?: unknown; allowedPrompts?: unknown };
   return {
-    type: "plan_approval" as const,
-    id,
-    sessionId,
-    document: data?.plan?.document ?? "",
-    planFilePath: data?.plan?.planFilePath ?? fallbackPath,
-    empty: data?.plan?.empty
+    plan: typeof value.plan === "string" ? value.plan : undefined,
+    requestedPermissions: Array.isArray(value.allowedPrompts) ? value.allowedPrompts.filter(isRequestedPermission) : undefined
   };
+}
+
+function isRequestedPermission(value: unknown): value is { tool: string; prompt: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as { tool?: unknown; prompt?: unknown };
+  return typeof item.tool === "string" && typeof item.prompt === "string";
 }
