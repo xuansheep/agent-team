@@ -569,7 +569,7 @@ export function TuiApp({
     requestMainScrollToBottom();
     const messages = [...planMessagesRef.current, turn.userMessage];
     appendPlanTranscriptMessages(currentPlan.sessionId, [turn.userMessage]);
-    await executePlanMessages(currentPlan, messages, { ...(turn.ensureUserLog ? { ensureUserLogText: turn.displayText } : {}) });
+    await executePlanMessages(currentPlan, messages, { ensureUserLogText: turn.displayText });
   };
   const showHelp = () => {
     setState((current) => ({
@@ -593,6 +593,7 @@ export function TuiApp({
     const turn = preparePlanTurn(text, images, options);
     if (!turn) return;
     planTurnQueueRef.current = planTurnQueueRef.current
+      .catch(() => undefined)
       .then(() => runPreparedPlanTurn(turn))
       .catch((error) => failUi(error));
   };
@@ -1350,7 +1351,7 @@ ${message.detailText}` : ""}` }
             : interactionMode === "confirm_interrupt"
               ? "confirm_interrupt"
               : "input";
-  const isLoading = state.mode === "running" || state.mode === "permission";
+  const isLoading = state.mode === "running" || state.mode === "permission" || planWorkCount > 0;
   return (
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
@@ -2118,8 +2119,16 @@ function buildActiveChoice(input: {
         detail: "Claude wants to exit plan mode",
         options,
         selectedValue: options[0].value,
+        allowPromptInput: true,
+        imageAttachments: input.planApprovalImages,
+        onImagePaste: input.addPlanApprovalImage,
+        onRemoveImage: input.removePlanApprovalImage,
+        resolveImagePaste: input.resolvePlanApprovalImagePaste,
         onCancel: () => input.resolvePlan("stay", "default"),
-        onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue", "default")
+        onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue", "default"),
+        onPromptSubmit: (text, _focusedValue, images) => {
+          input.resolvePlan("stay", "default", input.planApprovalPromptFeedback(text, images));
+        }
       };
     }
     const options = buildPlanApprovalOptions(

@@ -75,8 +75,8 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
       type: "plan_mode_reminder",
       content: [
         attachmentMarker("plan_mode_reminder"),
-        "Plan mode still active. Stay read-only while exploring.",
-        "Follow the iterative workflow: explore the codebase, interview the user when needed, and keep the final plan in your working context.",
+        "Plan mode still active. Stay read-only except for the current plan file.",
+        "Follow the iterative workflow: explore the codebase, interview the user when needed, and keep the final plan in the current plan file.",
         "End turns only with AskUserQuestion for clarifications or ExitPlanMode for plan approval.",
         "Pass the complete plan as ExitPlanMode.plan when requesting approval.",
         "Never ask about plan approval via plain text or AskUserQuestion."
@@ -85,22 +85,23 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
   }
 
   const planFileInfo = input.draft === undefined
-    ? `No plan has been saved yet. ExitPlanMode will save the plan to ${input.planFilePath}.`
-    : `A previous plan exists at ${input.planFilePath}. Use it as context and pass the revised complete plan to ExitPlanMode.plan.`;
+    ? `No plan has been saved yet. Create your plan at ${input.planFilePath} using Write. ExitPlanMode will also save ExitPlanMode.plan to this file when requesting approval.`
+    : `A previous plan exists at ${input.planFilePath}. Read it and make incremental edits using Edit or MultiEdit. Pass the revised complete plan to ExitPlanMode.plan.`;
   const lines = [
     attachmentMarker("plan_mode"),
     `Session: ${input.sessionId}`,
     "Plan mode is active. The user indicated that they do not want execution yet.",
-    "You MUST NOT make edits, run non-readonly tools, change configs, make commits, start workflow execution, or otherwise change the system before approval.",
+    "You MUST NOT make edits, run non-readonly tools, change configs, make commits, start workflow execution, or otherwise change the system before approval, with the sole exception of the current plan file listed below.",
     "This supersedes any conflicting instruction.",
     "",
     "## Plan File Info",
     `Current plan file: ${input.planFilePath}`,
     planFileInfo,
+    "This is the only file you are allowed to edit while plan mode is active. All other actions must be read-only.",
     "",
     "## Iterative Planning Workflow",
-    "You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you cannot make alone, and maintain the plan in your working context.",
-    "Do not write files while planning. When ready, submit the complete plan through ExitPlanMode.plan.",
+    "You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you cannot make alone, and maintain the plan in the current plan file.",
+    "Do not write source files while planning. When ready, submit the complete plan through ExitPlanMode.plan.",
     "",
     "### The Loop",
     "Repeat this cycle until the plan is complete:",

@@ -131,11 +131,16 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(workflowRuns, 0);
   });
 
-  it("blocks read-only Bash exploration in plan mode", async () => {
+  it("returns Plan Mode Bash denials as model-readable tool results", async () => {
     let calls = 0;
     const provider: ModelProvider = {
-      async generate() {
+      async generate(request) {
         calls += 1;
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Permission denied for Bash: Plan Mode blocks shell execution/);
+          return { content: "Continuing with read-only planning." };
+        }
         return { content: "checking workspace", tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "pwd", timeout_ms: 30000 } }] };
       }
     };
@@ -152,9 +157,9 @@ describe("RuntimeTurnExecutor", () => {
       sessionId: "session-plan-bash"
     });
 
-    assert.equal(result.status, "failed");
-    assert.equal(calls, 1);
-    assert.match(result.status === "failed" ? result.error : "", /Plan Mode blocks shell execution/);
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(result.messages.at(-1)?.content, "Continuing with read-only planning.");
   });
 
   it("accepts tui-code style EnterPlanMode calls during plan mode turns", async () => {
@@ -198,9 +203,16 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(result.messages.at(-1)?.content, "Continuing planning.");
   });
 
-  it("returns the Plan Mode shell execution denial for non-read-only Bash", async () => {
+  it("continues planning after non-read-only Bash is denied in Plan Mode", async () => {
+    let calls = 0;
     const provider: ModelProvider = {
-      async generate() {
+      async generate(request) {
+        calls += 1;
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Permission denied for Bash: Plan Mode blocks shell execution/);
+          return { content: "Tests are part of the verification plan." };
+        }
         return { content: "running tests", tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "npm test", timeout_ms: 30000 } }] };
       }
     };
@@ -217,13 +229,21 @@ describe("RuntimeTurnExecutor", () => {
       sessionId: "session-plan-bash-deny"
     });
 
-    assert.equal(result.status, "failed");
-    assert.equal(result.error, "Permission denied for Bash: Plan Mode blocks shell execution");
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(result.messages.at(-1)?.content, "Tests are part of the verification plan.");
   });
 
-  it("returns the same Plan Mode shell execution denial for destructive Bash", async () => {
+  it("continues planning after destructive Bash is denied in Plan Mode", async () => {
+    let calls = 0;
     const provider: ModelProvider = {
-      async generate() {
+      async generate(request) {
+        calls += 1;
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Permission denied for Bash: Plan Mode blocks shell execution/);
+          return { content: "Destructive commands remain out of scope while planning." };
+        }
         return { content: "resetting", tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "git reset --hard", timeout_ms: 30000 } }] };
       }
     };
@@ -240,8 +260,9 @@ describe("RuntimeTurnExecutor", () => {
       sessionId: "session-plan-bash-destructive-deny"
     });
 
-    assert.equal(result.status, "failed");
-    assert.equal(result.error, "Permission denied for Bash: Plan Mode blocks shell execution");
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(result.messages.at(-1)?.content, "Destructive commands remain out of scope while planning.");
   });
 
   it("executes TodoWrite in plan mode without requiring workflow execution", async () => {
@@ -739,29 +760,51 @@ describe("RuntimeTurnExecutor", () => {
     });
   });
 
-  it("rejects normal write tools in plan mode before execution", async () => {
+  it("returns Plan Mode write denials as tool results and continues to plan approval", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-write-deny-"));
+    const planFilePath = getPlanFilePath("session-plan-write-deny", cwd);
+    let calls = 0;
     let executions = 0;
     const provider: ModelProvider = {
-      async generate() {
+      async generate(request) {
+        calls += 1;
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Permission denied for Write: Plan Mode writes are limited to the current plan file/);
+          return {
+            content: "Ready for approval.",
+            tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: { plan: "# Plan\n\nRemove the edges node after approval." } }]
+          };
+        }
         return { content: "writing", tool_calls: [{ id: "call-1", name: "Write", input: { file_path: "src/index.ts", content: "x" } }] };
       }
     };
     const tools = new ToolRegistry();
     tools.add(writeTool(() => { executions += 1; }));
+    tools.add(exitPlanModeTool);
 
     const result = await new RuntimeTurnExecutor().execute({
       messages: [{ role: "user", content: "plan only" }],
       model: "test-model",
       provider,
       tools,
-      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath: ".session/plans/session-1.md" },
-      cwd: process.cwd(),
-      sessionId: "session-plan"
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
+      cwd,
+      sessionId: "session-plan-write-deny",
+      planState: {
+        mode: "planning",
+        sessionId: "session-plan-write-deny",
+        planFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "plan only" },
+        feedbackMessages: []
+      }
     });
 
-    assert.equal(result.status, "failed");
-    assert.match(result.error, /Plan Mode/);
+    assert.equal(result.status, "waiting_plan_approval");
+    assert.equal(calls, 2);
     assert.equal(executions, 0);
+    assert.match(result.status === "waiting_plan_approval" ? result.plan.document : "", /Remove the edges node/);
   });
 
 });

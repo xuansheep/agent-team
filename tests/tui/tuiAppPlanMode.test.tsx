@@ -291,11 +291,46 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("accepts another prompt after a Plan Mode text turn completes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        return { content: `Plan response ${calls}.` };
+      }
+    };
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "First plan turn.");
+    await waitForFrame(output, /Plan response 1\./);
+    await sendTuiLine(output, "Second plan turn.");
+    await waitForFrame(output, /Second plan turn\./);
+    await waitForFrame(output, /Plan response 2\./);
+
+    assert.equal(starts, 0);
+    assert.equal(calls, 2);
+    assert.match(output.lastFrame() ?? "", /> Type a request or \/help/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("shows the Plan Mode Bash denial in the TUI without starting workflow execution", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
+    let calls = 0;
     const provider: ModelProvider = {
-      async generate() {
+      async generate(request) {
+        calls += 1;
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Permission denied for Bash: Plan Mode blocks shell execution/);
+          return { content: "Planning without running tests." };
+        }
         return { content: "Trying shell.", tool_calls: [{ id: "tool-bash-denied", name: "Bash", input: { command: "npm test", timeout_ms: 30000 } }] };
       }
     };
@@ -307,8 +342,51 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Permission denied for Bash: Plan Mode blocks shell execution/);
 
     assert.equal(starts, 0);
+    assert.equal(calls, 2);
     assert.match(output.lastFrame() ?? "", /Trying shell\./);
+    assert.match(output.lastFrame() ?? "", /Planning without running tests\./);
     assert.match(output.lastFrame() ?? "", /> Type a request or \/help/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("continues planning after Edit targets a non-plan file in Plan Mode", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Permission denied for Edit: Plan Mode writes are limited to the current plan file/);
+          return {
+            content: "Requesting plan approval.",
+            tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: { plan: "# Plan\n\nRemove edges node safely after approval." } }]
+          };
+        }
+        return {
+          content: "Removing edges node.",
+          tool_calls: [{
+            id: "tool-edit-denied",
+            name: "Edit",
+            input: { file_path: "src/graph.ts", old_string: "edges", new_string: "" }
+          }]
+        };
+      }
+    };
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "移除edges节点");
+    await waitForFrame(output, /Permission denied for Edit: Plan Mode writes are limited to the current plan file/);
+    await waitForFrame(output, /Ready to code\?/);
+
+    assert.equal(starts, 0);
+    assert.equal(calls, 2);
+    assert.match(output.lastFrame() ?? "", /Remove edges node safely after approval/);
 
     output.unmount();
     output.cleanup();
@@ -1025,6 +1103,33 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(rejectionText, /\(empty plan\)/);
     assert.match(rejectionText, /User feedback:/);
     assert.match(rejectionText, /\(no feedback provided\)/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("continues planning from typed feedback on an empty Plan Mode exit confirmation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    const requests: ModelRequest[] = [];
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Ready empty exit.");
+    await waitForFrame(output, /Exit plan mode\?/);
+    const requestCount = requests.length;
+
+    await sendTuiLine(output, "先补充一个真实计划。");
+
+    const rejectionRequest = await waitForRequestContaining(requests.slice(requestCount), /先补充一个真实计划/);
+    const rejectionText = requestText(rejectionRequest);
+
+    assert.equal(starts, 0);
+    assert.match(rejectionText, /Rejected plan:/);
+    assert.match(rejectionText, /\(empty plan\)/);
+    assert.match(rejectionText, /User feedback:/);
+    assert.match(rejectionText, /先补充一个真实计划。/);
 
     output.unmount();
     output.cleanup();

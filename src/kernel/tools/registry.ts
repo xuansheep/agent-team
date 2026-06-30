@@ -4,7 +4,7 @@ import { adaptToolToKernelTool, type KernelTool } from "./protocol.js";
 
 const planModeVisibleTools = new Set([
   "Read",
-  "List",
+  "LS",
   "Glob",
   "Grep",
   "WebFetch",

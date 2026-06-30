@@ -35,6 +35,8 @@ describe("Kernel tool protocol", () => {
     assert.equal(visible.includes("Write"), true);
     assert.equal(visible.includes("Edit"), true);
     assert.equal(visible.includes("MultiEdit"), true);
+    assert.equal(visible.includes("LS"), true);
+    assert.equal(visible.includes("List"), false);
     assert.equal(visible.includes("AskUserQuestion"), true);
     assert.equal(visible.includes("ExitPlanMode"), true);
     assert.equal(visible.includes("EnterPlanMode"), false);

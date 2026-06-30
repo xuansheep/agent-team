@@ -70,6 +70,9 @@ export class RuntimeTurnExecutor {
       messages.push({ role: "assistant", content: response.content ?? "", tool_calls: toolCalls });
       await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content ?? "" });
 
+      const permissionResults: Array<{ call: ModelToolCall; decision: "allow" | "deny"; error?: string }> = [];
+      let planModePermissionBlocked = false;
+
       for (const call of toolCalls) {
         const tool = input.tools.get(call.name);
         const permission = await permissionKernel.check(kernelTools.get(call.name), call.input, { ...input.permissions, cwd: input.cwd });
@@ -82,6 +85,12 @@ export class RuntimeTurnExecutor {
           input: call.input
         });
         if (permission.decision === "ask") {
+          if (input.permissions.mode === "plan") {
+            const error = permissionDeniedMessage(call.name, permission.reason ?? permission.rule ?? "interactive permission required");
+            permissionResults.push({ call, decision: "deny", error });
+            planModePermissionBlocked = true;
+            continue;
+          }
           const request = { sessionId: input.sessionId, runId: input.runId, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule };
           await emit(input, { type: "runtime_permission_requested", session_id: input.sessionId, run_id: input.runId, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule });
           if (!input.permissionCallback) return { status: "waiting_permission", messages, request };
@@ -96,16 +105,36 @@ export class RuntimeTurnExecutor {
             input: call.input
           });
           if (decision === "deny") {
-            const error = `Permission denied for ${call.name}: callback denied`;
+            const error = permissionDeniedMessage(call.name, "callback denied");
             await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
             return { status: "failed", error, messages };
           }
         }
         if (permission.decision === "deny") {
-          const error = `Permission denied for ${call.name}: ${permission.reason ?? permission.rule ?? "no rule"}`;
+          const error = permissionDeniedMessage(call.name, permission.reason ?? permission.rule ?? "no rule");
+          if (input.permissions.mode === "plan") {
+            permissionResults.push({ call, decision: "deny", error });
+            planModePermissionBlocked = true;
+            continue;
+          }
           await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
           return { status: "failed", error, messages };
         }
+        permissionResults.push({ call, decision: "allow" });
+      }
+
+      if (planModePermissionBlocked) {
+        for (const result of permissionResults) {
+          if (result.decision === "deny") {
+            const error = result.error ?? permissionDeniedMessage(result.call.name, "Permission denied");
+            await emit(input, { type: "runtime_tool_invoked", session_id: input.sessionId, run_id: input.runId, tool_call_id: result.call.id, tool: result.call.name, input: result.call.input });
+            await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: result.call.id, tool: result.call.name, error });
+            messages.push(permissionDeniedToolMessage(result.call.id, error));
+            continue;
+          }
+          messages.push(skippedPlanModeToolMessage(result.call.id, result.call.name));
+        }
+        continue;
       }
 
       const executions = await executeToolCalls(toolCalls, input.tools, {
@@ -158,7 +187,7 @@ async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[
   const messages = input.messages.slice();
   const toolPromptAttachment = hasRuntimeAttachment(messages, "tool_prompts")
     ? undefined
-    : buildToolPromptsAttachment({ tools: input.tools.list() });
+    : buildToolPromptsAttachment({ tools: modelVisibleTools(input) });
   if (input.permissions.mode !== "plan" || !input.permissions.planFilePath) {
     const attachments: RuntimeAttachment[] = [];
     if (toolPromptAttachment) attachments.push(toolPromptAttachment);
@@ -338,6 +367,25 @@ function isHumanTurn(message: ModelMessage): boolean {
 function toolMessage(toolCallId: string, result: ToolResult, tool: Tool): ModelMessage {
   const mapped = tool.mapToolResultToModelResult?.(result);
   return { role: "tool", tool_call_id: toolCallId, content: typeof mapped === "string" ? mapped : JSON.stringify(mapped ?? result) };
+}
+
+function permissionDeniedMessage(toolName: string, reason: string): string {
+  return `Permission denied for ${toolName}: ${reason}`;
+}
+
+function permissionDeniedToolMessage(toolCallId: string, error: string): ModelMessage {
+  return { role: "tool", tool_call_id: toolCallId, content: JSON.stringify({ error, permission_denied: true }) };
+}
+
+function skippedPlanModeToolMessage(toolCallId: string, toolName: string): ModelMessage {
+  return {
+    role: "tool",
+    tool_call_id: toolCallId,
+    content: JSON.stringify({
+      skipped: true,
+      reason: `Skipped ${toolName} because another Plan Mode tool call was denied. Re-plan using only read-only tools or the current plan file.`
+    })
+  };
 }
 
 function planApprovalFromToolResult(result: ToolResult | undefined): { state: PlanSessionState; plan: PlanApprovalRequest; event: Extract<RuntimeEvent, { type: "plan_approval_requested" }> } | undefined {

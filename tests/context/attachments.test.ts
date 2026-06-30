@@ -165,7 +165,9 @@ describe("runtime context attachments", () => {
     assert.match(systemContent, /ATTACHMENT plan_mode/);
     assert.match(systemContent, /Plan File Info/);
     assert.match(systemContent, /previous plan exists/i);
+    assert.match(systemContent, /Edit or MultiEdit/);
     assert.match(systemContent, /MUST NOT make edits/);
+    assert.match(systemContent, /sole exception of the current plan file/);
     assert.match(systemContent, /Iterative Planning Workflow/);
     assert.match(systemContent, /First Turn/);
     assert.match(systemContent, /Plan File Structure/);
@@ -180,7 +182,8 @@ describe("runtime context attachments", () => {
     const attachment = buildPlanModeAttachment({ sessionId: "session-1", planFilePath: ".session/plans/session-1.md" });
 
     assert.match(attachment.content, /No plan has been saved yet/);
-    assert.match(attachment.content, /ExitPlanMode will save the plan to \.session\/plans\/session-1\.md/);
+    assert.match(attachment.content, /Create your plan at \.session\/plans\/session-1\.md using Write/);
+    assert.match(attachment.content, /only file you are allowed to edit/);
     assert.match(attachment.content, /ExitPlanMode\.plan/);
   });
 
