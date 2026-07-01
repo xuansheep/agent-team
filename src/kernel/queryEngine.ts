@@ -135,11 +135,10 @@ function questionsFromResult(result: { data?: unknown }): unknown[] {
   return Array.isArray(data?.questions) ? data.questions : [];
 }
 
-function exitPlanRequest(input: unknown): { plan?: string; requestedPermissions?: { tool: string; prompt: string }[] } {
+function exitPlanRequest(input: unknown): { requestedPermissions?: { tool: string; prompt: string }[] } {
   if (!input || typeof input !== "object" || Array.isArray(input)) return {};
-  const value = input as { plan?: unknown; allowedPrompts?: unknown };
+  const value = input as { allowedPrompts?: unknown };
   return {
-    plan: typeof value.plan === "string" ? value.plan : undefined,
     requestedPermissions: Array.isArray(value.allowedPrompts) ? value.allowedPrompts.filter(isRequestedPermission) : undefined
   };
 }

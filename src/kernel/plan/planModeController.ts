@@ -7,13 +7,12 @@ import {
   resolvePlanApproval,
   type PlanSessionState
 } from "../../plans/planSession.js";
-import { readPlan, writePlan } from "../../plans/planFiles.js";
+import { readPlan } from "../../plans/planFiles.js";
 import type { KernelSession } from "../session.js";
 import { reduceKernelSession } from "../session.js";
 import { createPlanApprovalPending } from "../pendingInteraction.js";
 
 export type ExitPlanModeRequest = {
-  plan?: string;
   requestedPermissions?: { tool: string; prompt: string }[];
 };
 
@@ -40,7 +39,6 @@ export class PlanModeController {
 
   async requestPlanApproval(session: KernelSession, request: ExitPlanModeRequest = {}): Promise<KernelSession> {
     if (!session.planState || session.planState.mode !== "planning") throw new Error("Plan Mode is not active");
-    if (request.plan !== undefined) await writePlan(session.planState.planFilePath, request.plan);
     const exited = await exitPlanMode(session.planState, { requestedPermissions: request.requestedPermissions });
     const planHash = hashText(exited.plan.document);
     const interaction = createPlanApprovalPending({

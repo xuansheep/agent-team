@@ -56,6 +56,18 @@ describe("Plan Mode V2", () => {
     assert.equal(await readPlan(path), "# Plan\n\nDo it safely.\n");
   });
 
+  it("does not recover plans from ExitPlanMode input plan text", async () => {
+    const cwd = await workspace();
+    const path = getPlanFilePath("session-no-exit-input-recovery", cwd);
+    const messages = [{
+      role: "assistant" as const,
+      content: "request approval",
+      tool_calls: [{ id: "exit-plan", name: "ExitPlanMode", input: { plan: "# Old bypass\n" } }]
+    }];
+
+    assert.equal(recoverPlanFromTranscript(messages, path, cwd), undefined);
+  });
+
   it("enters plan mode from default and records pre mode plus original input", async () => {
     const cwd = await workspace();
     const result = enterPlanMode({

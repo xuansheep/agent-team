@@ -153,10 +153,6 @@ export function recoverPlanFromTranscript(messages: ModelMessage[], planFilePath
       const input = objectInput(call.input);
       if (!input) continue;
 
-      if (call.name === "ExitPlanMode" && typeof input.plan === "string" && input.plan.length) {
-        recovered = input.plan;
-        continue;
-      }
 
       if (!toolPathMatchesPlan(input.file_path, target, cwd)) continue;
       if (call.name === "Write" && typeof input.content === "string") {
