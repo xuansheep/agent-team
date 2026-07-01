@@ -280,7 +280,7 @@ describe("Plan Mode V2", () => {
     assert.equal((exited.data as { event: { type: string } }).event.type, "plan_approval_requested");
   });
 
-  it("accepts ExitPlanMode plan input through the model schema", async () => {
+  it("hides ExitPlanMode plan input from the model schema and reads the plan file", async () => {
     const cwd = await workspace();
     const tools = createLocalToolRegistry();
     const { state } = enterPlanMode({
@@ -291,19 +291,16 @@ describe("Plan Mode V2", () => {
     });
 
     const schemaProperties = tools.get("ExitPlanMode").input_schema.properties as Record<string, unknown>;
-    assert.equal("plan" in schemaProperties, true);
+    assert.equal("allowedPrompts" in schemaProperties, true);
+    assert.equal("plan" in schemaProperties, false);
     assert.equal("planFilePath" in schemaProperties, false);
+    assert.equal("state" in schemaProperties, false);
 
-    await writePlan(state.planFilePath, "# Plan\nOriginal.\n");
-    const exited = await tools.get("ExitPlanMode").execute({
-      state,
-      plan: "# Edited Plan\n\nUse reviewed plan.",
-      planFilePath: state.planFilePath
-    }, { cwd });
+    await writePlan(state.planFilePath, "# Plan\n\nUse the plan file only.\n");
+    const exited = await tools.get("ExitPlanMode").execute({ state }, { cwd });
     const exitedData = exited.data as { plan: { document: string } };
 
-    assert.equal(exitedData.plan.document, "# Edited Plan\n\nUse reviewed plan.");
-    assert.equal(await readPlan(state.planFilePath), "# Edited Plan\n\nUse reviewed plan.");
+    assert.equal(exitedData.plan.document, "# Plan\n\nUse the plan file only.");
   });
 
   it("accepts tui-code style no-argument EnterPlanMode calls", async () => {
@@ -453,8 +450,10 @@ describe("Plan Mode V2", () => {
     assert.equal(tools.get("ExitPlanMode").input_schema.required, undefined);
     assert.equal("state" in (tools.get("ExitPlanMode").input_schema.properties as Record<string, unknown>), false);
     assert.match(tools.get("ExitPlanMode").description, /exit plan mode/);
-    assert.match(toolPrompt(tools.get("ExitPlanMode")), /complete plan in the plan parameter/);
-    assert.match(toolPrompt(tools.get("ExitPlanMode")), /stores that plan in the plan file/);
+    assert.match(toolPrompt(tools.get("ExitPlanMode")), /does not accept plan text as input/);
+    assert.match(toolPrompt(tools.get("ExitPlanMode")), /read from the current plan file/);
+    assert.doesNotMatch(toolPrompt(tools.get("ExitPlanMode")), /complete plan in the plan parameter/);
+    assert.doesNotMatch(toolPrompt(tools.get("ExitPlanMode")), /stores that plan in the plan file/);
     assert.match(toolPrompt(tools.get("ExitPlanMode")), /Do NOT use AskUserQuestion to ask "Is this plan okay\?"/);
 
     assert.equal(

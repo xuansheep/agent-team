@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { exitPlanMode, PlanRequestedPermission, PlanSessionState } from "../../plans/planSession.js";
-import { writePlan } from "../../plans/planFiles.js";
 import { Tool } from "../types.js";
 
 const stateSchema = z.object({
@@ -19,34 +18,26 @@ const allowedPromptSchema = z.object({
 });
 const inputSchema = z.object({
   state: stateSchema.optional(),
-  plan: z.string().optional(),
-  planFilePath: z.string().optional(),
   allowedPrompts: z.array(allowedPromptSchema).optional()
 }).default({});
 
-export const EXIT_PLAN_MODE_TOOL_PROMPT = `Use this tool when you are in plan mode, have finished the implementation plan, and are ready for user approval.
+export const EXIT_PLAN_MODE_TOOL_PROMPT = `Use this tool when you are in plan mode, have finished updating the current plan file, and are ready for user approval.
 
 ## How This Tool Works
-- Put the complete plan in the plan parameter
-- The tool stores that plan in the plan file for the user to review
+- This tool does not accept plan text as input
+- The plan shown to the user is read from the current plan file
+- Before calling this tool, write or update the current plan file with Write, Edit, or MultiEdit
 - This tool signals that you're done planning and ready for the user to review and approve
-- The user will see the contents of your plan file when they review it
 
 ## When to Use This Tool
-IMPORTANT: Only use this tool when the task requires planning the implementation steps of a task that requires writing code. For research tasks where you're gathering information, searching files, reading files or in general trying to understand the codebase - do NOT use this tool.
+IMPORTANT: Only use this tool when the task requires planning implementation steps for a task that requires writing code. For pure research or codebase exploration tasks, do NOT use this tool.
 
 ## Before Using This Tool
-Ensure your plan is complete and unambiguous:
-- If you have unresolved questions about requirements or approach, use AskUserQuestion first (in earlier phases)
-- Once your plan is finalized, use THIS tool with the complete plan parameter to request approval
+Ensure your plan file is complete and unambiguous:
+- If you have unresolved questions about requirements or approach, use AskUserQuestion first
+- Once the plan file is finalized, use this tool with no plan text to request approval
 
-**Important:** Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" - that's exactly what THIS tool does. ExitPlanMode inherently requests user approval of your plan.
-
-## Examples
-
-1. Initial task: "Search for and understand the implementation of vim mode in the codebase" - Do not use the exit plan mode tool because you are not planning the implementation steps of a task.
-2. Initial task: "Help me implement yank mode for vim" - Use the exit plan mode tool with the complete plan after you have finished planning the implementation steps of the task.
-3. Initial task: "Add a new feature to handle user authentication" - If unsure about auth method (OAuth, JWT, etc.), use AskUserQuestion first, then use exit plan mode tool after clarifying the approach.
+**Important:** Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" - that's exactly what THIS tool does. ExitPlanMode inherently requests user approval of the plan file.
 `;
 
 
@@ -67,23 +58,17 @@ export const exitPlanModeTool: Tool = {
           },
           required: ["tool", "prompt"]
         }
-      },
-      plan: {
-        type: "string",
-        description: "The complete implementation plan to show the user for approval"
-      }
-    }
+      }    }
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => true,
   requiresUserInteraction: () => true,
   mapToolResultToModelResult: (result) => exitPlanModePendingApprovalMessage(result),
   async execute(input, context) {
-    const parsed = inputSchema.parse(input) as { state?: PlanSessionState; plan?: string; planFilePath?: string; allowedPrompts?: PlanRequestedPermission[] };
+    const parsed = inputSchema.parse(input) as { state?: PlanSessionState; allowedPrompts?: PlanRequestedPermission[] };
     const state = parsed.state ?? context.planState;
     if (!state) return { error: "Plan Mode is not active", exit_code: 1 };
     try {
-      if (parsed.plan !== undefined) await writePlan(state.planFilePath, parsed.plan);
       const result = await exitPlanMode(state, { requestedPermissions: parsed.allowedPrompts });
       await context.auditSink?.({
         type: "plan_mode",
