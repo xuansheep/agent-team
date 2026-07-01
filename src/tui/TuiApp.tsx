@@ -4,8 +4,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, ScrollBox, Text, useApp, useHasSelection, useInput, useSelection, useStdin, useStdout } from "./ink.js";
 import type { ScrollBoxHandle } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
-import { approvePlan, buildApprovedPlanHandoff, enterPlanMode, readPlanOrRecoverFromTranscript, resolvePlanApproval } from "../plans/planSession.js";
+import { enterPlanMode, readPlanOrRecoverFromTranscript } from "../plans/planSession.js";
 import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
+import { PlanModeController } from "../kernel/plan/planModeController.js";
+import type { KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
 import { getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import type { ModelUsage } from "../model/usage.js";
@@ -497,6 +499,8 @@ export function TuiApp({
       }
       if (result.status === "waiting_plan_approval") {
         resetPlanApprovalFeedback();
+        const document = (await readPlan(result.plan.planFilePath))?.trim() ?? "";
+        const empty = result.plan.empty === true || !document.trim();
         planSessionRef.current = result.planState;
         savePlanSession(result.planState);
         setState((current) => ({
@@ -507,15 +511,15 @@ export function TuiApp({
             type: "plan",
             nodeId: "global-plan",
             attempt: 1,
-            document: result.plan.document,
+            document,
             planFilePath: result.plan.planFilePath,
-            empty: result.plan.empty,
+            empty,
             requestedPermissions: result.plan.requestedPermissions,
             contextUsedPercent: contextUsedPercent(result.usage, providerSelection.contextWindow)
           },
           error: undefined,
-          conversation: [...current.conversation, { kind: "status", text: result.plan.empty ? "Exit Plan Mode requested" : "Plan approval requested" }],
-          logMessages: [...current.logMessages, globalPlanLog(result.plan.document, result.plan.planFilePath, result.plan.requestedPermissions, result.plan.empty)]
+          conversation: [...current.conversation, { kind: "status", text: empty ? "Exit Plan Mode requested" : "Plan approval requested" }],
+          logMessages: [...current.logMessages, globalPlanLog(document, result.plan.planFilePath, result.plan.requestedPermissions, empty)]
         }));
         requestMainScrollToBottom();
         return;
@@ -873,22 +877,33 @@ export function TuiApp({
       failUi(error);
     }
   };
-  const resolveGlobalPlan = (decision: "continue" | "stay", mode: PermissionMode = "default", feedback?: unknown, options: { clearContext?: boolean } = {}): boolean => {
+  const resolveGlobalPlan = async (decision: "continue" | "stay", mode: PermissionMode = "default", feedback?: unknown, options: { clearContext?: boolean } = {}): Promise<boolean> => {
     const currentPlan = planSessionRef.current;
     const document = state.pendingReview?.document ?? "";
     if (!currentPlan) return false;
+    const controller = new PlanModeController();
+    const kernelSession = planApprovalKernelSession({
+      cwd,
+      plan: currentPlan,
+      document,
+      review: state.pendingReview
+    });
     if (decision === "stay") {
-      const resolved = resolvePlanApproval(currentPlan, "stay", feedback);
+      const resolved = (await controller.resolvePlanApproval(kernelSession, { decision: "stay", feedback })).session;
+      const nextPlan = resolved.planState!;
       const rejectionMessage = planRejectionMessage(document, feedback);
       const review = state.pendingReview;
       const feedbackDetail = feedbackText(feedback);
       const rejectedDocument = feedbackDetail
-        ? `${document.trim() || "Claude wants to exit plan mode"}\n\nUser feedback:\n${feedbackDetail}`
+        ? `${document.trim() || "Claude wants to exit plan mode"}
+
+User feedback:
+${feedbackDetail}`
         : document;
-      planSessionRef.current = resolved.state;
+      planSessionRef.current = nextPlan;
       planMessagesRef.current = [...planMessagesRef.current, rejectionMessage];
-      appendPlanTranscriptMessages(resolved.state.sessionId, [rejectionMessage]);
-      savePlanSession(resolved.state);
+      appendPlanTranscriptMessages(nextPlan.sessionId, [rejectionMessage]);
+      savePlanSession(nextPlan);
       resetPlanApprovalFeedback();
       setState((current) => {
         const rejectedLogs = [
@@ -905,24 +920,32 @@ ${message.detailText}` : ""}` }
         return {
           ...current,
           mode: "planning",
-          planSession: resolved.state,
+          planSession: nextPlan,
           pendingReview: undefined,
           error: undefined,
           logMessages: compactRejectedPlanLogs(rejectedLogs)
         };
       });
       requestMainScrollToBottom();
-      void executePlanMessages(resolved.state, planMessagesRef.current).catch((error) => failUi(error));
+      void executePlanMessages(nextPlan, planMessagesRef.current).catch((error) => failUi(error));
       return true;
     }
-    const approved = approvePlan(currentPlan, document, feedbackText(feedback));
-    const resolved = resolvePlanApproval(approved, "continue");
-    planSessionRef.current = resolved.state;
-    savePlanSession(resolved.state);
+    const resolved = await controller.resolvePlanApproval(kernelSession, {
+      decision: "continue",
+      permissionMode: mode === "plan" ? "default" : mode,
+      clearContext: options.clearContext === true,
+      feedback: feedbackText(feedback)
+    });
+    const nextPlan = resolved.session.planState!;
+    planSessionRef.current = nextPlan;
+    savePlanSession(nextPlan);
     resetPlanApprovalFeedback();
-    setState((current) => ({ ...current, mode: "running", planSession: resolved.state, pendingReview: undefined, error: undefined }));
-    const handoff = buildApprovedPlanHandoff(resolved.state);
-    void startWorkflowInput(handoff, { permissionMode: mode === "plan" ? "default" : mode, ...(options.clearContext === true ? { clearContext: true } : {}) });
+    setState((current) => ({ ...current, mode: "running", planSession: nextPlan, pendingReview: undefined, error: undefined }));
+    const execution = resolved.execution;
+    if (!execution) return true;
+    const handoff = execution.handoff as { legacyHandoff?: unknown };
+    const workflowInput = execution.clearContext ? execution.initialInput : handoff.legacyHandoff;
+    void startWorkflowInput(workflowInput, { permissionMode: execution.permissionMode, ...(execution.clearContext ? { clearContext: true } : {}) });
     return true;
   };
   const clearTuiContext = () => {
@@ -963,6 +986,18 @@ ${message.detailText}` : ""}` }
     if (plan.mode === "waiting_approval") {
       const document = (await readPlanOrRecoverFromTranscript({ planFilePath: plan.planFilePath, cwd, messages: planMessagesRef.current }))?.trim() ?? plan.approvedPlan ?? "";
       const empty = !document.trim();
+      if (empty) {
+        const resumedPlan: PlanSessionState = { ...plan, mode: "planning" };
+        planSessionRef.current = resumedPlan;
+        savePlanSession(resumedPlan);
+        setState((current) => ({
+          ...base(current),
+          mode: "planning",
+          planSession: resumedPlan,
+          logMessages: [statusLog("Plan Mode restored", plan.planFilePath), ...transcriptLogs, statusLog("Plan file is empty; keep planning", plan.planFilePath)]
+        }));
+        return;
+      }
       setState((current) => ({
         ...base(current),
         mode: "waiting_plan_approval",
@@ -1050,7 +1085,7 @@ ${message.detailText}` : ""}` }
           settings?.showClearContextOnPlanAccept === true,
           planSessionRef.current?.prePlanMode === "bypassPermissions"
         );
-        resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
+        void resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
       } else if (state.mode === "input") {
         const nextMode = nextInputPermissionMode(state.inputPermissionMode);
         setState((current) => ({
@@ -1113,7 +1148,7 @@ ${message.detailText}` : ""}` }
     if (state.pendingReview) {
       if (event.text.trim()) {
         const feedback = planApprovalPromptFeedback(event.text);
-        resolveGlobalPlan("stay", "default", feedback);
+        void resolveGlobalPlan("stay", "default", feedback);
       }
       return;
     }
@@ -1178,7 +1213,7 @@ ${message.detailText}` : ""}` }
     resolvePlan: (decision, mode, feedbackOverride, options) => {
       if (!state.pendingReview) return;
       const feedback = feedbackOverride ?? planApprovalFeedbackPayload();
-      resolveGlobalPlan(decision, mode, feedback, options);
+      void resolveGlobalPlan(decision, mode, feedback, options);
     },
     planApprovalPromptFeedback,
     planApprovalAcceptFeedback,
@@ -1259,7 +1294,7 @@ ${message.detailText}` : ""}` }
       }
       return true;
     }
-    if (state.pendingReview) resolveGlobalPlan("stay");
+    if (state.pendingReview) void resolveGlobalPlan("stay");
     return true;
   };
   const cancelCurrentInteraction = (): boolean => {
@@ -1603,6 +1638,40 @@ function compactRejectedPlanLogs(messages: TuiLogMessage[]): TuiLogMessage[] {
   const contextAfter = messages.slice(rejectedIndex + 1).slice(-4);
   return [...contextBefore, messages[rejectedIndex], ...contextAfter];
 }
+function planApprovalKernelSession(input: {
+  cwd: string;
+  plan: PlanSessionState;
+  document: string;
+  review?: TuiState["pendingReview"];
+}): KernelSession {
+  const interaction: PendingInteraction = {
+    type: "plan_approval",
+    id: `${input.plan.sessionId}:tui-plan-approval`,
+    sessionId: input.plan.sessionId,
+    planFilePath: input.plan.planFilePath,
+    empty: !input.document.trim(),
+    requestedPermissions: input.review?.requestedPermissions
+  };
+  return {
+    id: input.plan.sessionId,
+    cwd: input.cwd,
+    status: "waiting_plan_approval",
+    messages: [],
+    toolPermissionContext: {
+      mode: "plan",
+      prePlanMode: input.plan.prePlanMode,
+      allow: [],
+      ask: [],
+      deny: [],
+      planFilePath: input.plan.planFilePath,
+      planUseAutoMode: input.plan.useAutoModeDuringPlan
+    },
+    planState: input.plan,
+    workflowBinding: null,
+    pendingInteraction: interaction
+  };
+}
+
 function withoutActivePendingPlanLog(messages: TuiLogMessage[], pendingReview: TuiState["pendingReview"]): TuiLogMessage[] {
   if (!pendingReview) return messages;
   return messages.filter((message) => !(
@@ -2110,16 +2179,30 @@ function buildActiveChoice(input: {
   }
   if (input.mode === "waiting_plan_approval" && input.review) {
     if (input.review.empty || !input.review.document.trim()) {
-      const options = [
+      const options: InteractionChoice["options"] = [
         { label: "Yes", value: "yes-default-keep-context" },
-        { label: "No", value: "stay" }
+        {
+          type: "input",
+          label: "No, keep planning",
+          value: "stay",
+          placeholder: "Tell Claude what to change",
+          allowEmptySubmitToCancel: true,
+          showLabelWithValue: true,
+          labelValueSeparator: ": ",
+          onChange: input.updatePlanApprovalFeedback
+        }
       ];
       return {
         title: "Exit plan mode?",
         detail: "Claude wants to exit plan mode",
+        documentBlock: {
+          title: "Plan file:",
+          text: planApprovalDocument(input.review.document || "No plan found. Please write your plan to the plan file first.", input.planApprovalPlanFilePath),
+          maxLines: 6
+        },
         options,
         selectedValue: options[0].value,
-        allowPromptInput: true,
+        hidePromptInput: true,
         imageAttachments: input.planApprovalImages,
         onImagePaste: input.addPlanApprovalImage,
         onRemoveImage: input.removePlanApprovalImage,
@@ -2153,7 +2236,7 @@ function buildActiveChoice(input: {
       },
       options,
       selectedValue: options[0]?.value ?? "yes-default-keep-context",
-      allowPromptInput: true,
+      hidePromptInput: true,
       imageAttachments: input.planApprovalImages,
       onImagePaste: input.addPlanApprovalImage,
       onRemoveImage: input.removePlanApprovalImage,
@@ -2161,7 +2244,7 @@ function buildActiveChoice(input: {
       onCancel: () => input.resolvePlan("stay", "default"),
       onSubmit: (value) => {
         if (value === "stay") {
-          if (input.hasPlanApprovalFeedback()) input.resolvePlan("stay");
+          input.resolvePlan("stay");
           return;
         }
         input.resolvePlan("continue", planApprovalPermissionMode(value, input.isBypassPermissionsModeAvailable === true), input.planApprovalAcceptFeedback(), { clearContext: planApprovalClearsContext(value) });

@@ -113,6 +113,7 @@ In plan mode, you'll:
 4. Present your plan to the user for approval
 5. Use AskUserQuestion if you need to clarify approaches
 6. Exit plan mode with ExitPlanMode when ready to implement
+7. Keep all planning edits in the current plan file; source files are forbidden and only the current plan file is editable
 
 ## Examples
 
@@ -162,6 +163,6 @@ function enterPlanModeInstructions(message = "Entered plan mode. You should now 
     "5. Design a concrete implementation strategy",
     "6. When ready, use ExitPlanMode to present your plan for approval",
     "",
-    "Remember: DO NOT write or edit any files yet. This is a read-only exploration and planning phase."
+    "Remember: source files are forbidden in plan mode; only the current plan file is editable. All other exploration must be read-only."
   ].join("\n");
 }

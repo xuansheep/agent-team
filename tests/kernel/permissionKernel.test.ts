@@ -28,7 +28,8 @@ describe("PermissionKernel", () => {
     assert.equal(planWrite.reason, "Plan Mode plan file write");
     assert.equal(planEdit.decision, "allow");
     assert.equal(codeWrite.decision, "deny");
-    assert.equal(codeWrite.reason, "Plan Mode writes are limited to the current plan file");
+    assert.match(codeWrite.reason ?? "", /Plan Mode writes are limited to the current plan file/);
+    assert.match(codeWrite.reason ?? "", new RegExp(entered.state.planFilePath.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")));
     assert.equal(shell.decision, "deny");
     assert.equal(shell.reason, "Plan Mode blocks shell execution");
   });

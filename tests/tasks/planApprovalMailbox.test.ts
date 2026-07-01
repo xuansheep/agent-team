@@ -8,7 +8,7 @@ describe("PlanApprovalMailbox", () => {
     const mailbox = new PlanApprovalMailbox();
     const request = mailbox.submit({
       requesterTaskId: "task-1",
-      plan: { sessionId: "child-session", document: "# Plan", planFilePath: ".session/plans/child.md" }
+      plan: { sessionId: "child-session", planFilePath: ".session/plans/child.md" }
     });
 
     assert.equal(request.status, "pending");
@@ -26,7 +26,7 @@ describe("PlanApprovalMailbox", () => {
     registry.register("teammate-plan", async (task) => {
       const approval = mailbox.submit({
         requesterTaskId: task.id,
-        plan: { sessionId: `${task.id}:agent`, document: "# Plan", planFilePath: ".session/plans/agent.md" }
+        plan: { sessionId: `${task.id}:agent`, planFilePath: ".session/plans/agent.md" }
       });
       return { status: "waiting_plan_approval", planApprovalId: approval.id, result: approval.plan };
     });

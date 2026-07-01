@@ -40,5 +40,11 @@ describe("Kernel tool protocol", () => {
     assert.equal(visible.includes("AskUserQuestion"), true);
     assert.equal(visible.includes("ExitPlanMode"), true);
     assert.equal(visible.includes("EnterPlanMode"), false);
+
+    const write = registry.visibleTools({ mode: "plan", allow: [], ask: [], deny: [], planFilePath: ".session/plans/s1.md" }).find((tool) => tool.name === "Write");
+    const schema = write?.input_schema as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+    assert.ok(schema);
+    assert.equal(schema.properties?.file_path, undefined);
+    assert.deepEqual(schema.required, ["content"]);
   });
 });

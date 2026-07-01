@@ -11,13 +11,23 @@ describe("TUI kernel adapter", () => {
       permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath: ".session/plans/s1.md" }
     }), {
       type: "pending_interaction_set",
-      interaction: { type: "plan_approval", id: "approval-1", sessionId: "s1", document: "# Plan", planFilePath: ".session/plans/s1.md", planHash: "hash-1" }
+      interaction: { type: "plan_approval", id: "approval-1", sessionId: "s1", planFilePath: ".session/plans/s1.md", planHash: "hash-1" }
     });
 
     const adapter = createTuiKernelAdapter(session);
     assert.equal(adapter.appState.status, "waiting_plan_approval");
-    assert.equal(adapter.planReview?.document, "# Plan");
+    assert.equal(adapter.planReview?.planFilePath, ".session/plans/s1.md");
+    assert.equal(adapter.planReview && "document" in adapter.planReview, false);
     assert.deepEqual(adapter.planApprovalIntent("continue"), { type: "resolve_plan_approval", decision: "continue" });
-    assert.deepEqual(adapter.planApprovalIntent("stay", { answer: "more tests" }), { type: "resolve_plan_approval", decision: "stay", feedback: { answer: "more tests" } });
+    assert.deepEqual(adapter.planApprovalIntent("stay", { feedback: { answer: "more tests" } }), {
+      type: "resolve_plan_approval",
+      decision: "stay",
+      metadata: { feedback: { answer: "more tests" } }
+    });
+    assert.deepEqual(adapter.planApprovalIntent("continue", { permissionMode: "acceptEdits", clearContext: true, feedback: "ok" }), {
+      type: "resolve_plan_approval",
+      decision: "continue",
+      metadata: { permissionMode: "acceptEdits", clearContext: true, feedback: "ok" }
+    });
   });
 });

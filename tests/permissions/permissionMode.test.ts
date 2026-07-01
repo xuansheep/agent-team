@@ -151,7 +151,7 @@ describe("checkToolPermission", () => {
     assert.match(decision.reason ?? "", /only for exiting plan mode after writing a plan/);
   });
 
-  it("allows TodoWrite in plan mode as a planning checklist tool", async () => {
+  it("denies TodoWrite in plan mode so the plan file remains the only writable surface", async () => {
     const cwd = await workspace();
 
     const decision = await checkToolPermission(todoWriteTool, { todos: [{ content: "Inspect code", status: "pending" }] }, {
@@ -163,8 +163,8 @@ describe("checkToolPermission", () => {
       planFilePath: ".session/plans/session-1.md"
     });
 
-    assert.equal(decision.decision, "allow");
-    assert.equal(decision.reason, "plan mode todo tool");
+    assert.equal(decision.decision, "deny");
+    assert.match(decision.reason ?? "", /Plan Mode allows only read-only tools and the current plan file/);
   });
 
   it("allows only the current session plan file in plan mode", async () => {

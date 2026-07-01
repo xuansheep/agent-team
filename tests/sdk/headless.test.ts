@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { getPlanFilePath } from "../../src/plans/planFiles.js";
+import { getPlanFilePath, readPlan } from "../../src/plans/planFiles.js";
 import { headlessQuery } from "../../src/sdk/headless.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { Tool } from "../../src/tools/types.js";
@@ -79,11 +79,19 @@ describe("headless SDK", () => {
     const cwd = process.cwd();
     const sessionId = "sdk-headless-plan";
     const planFilePath = getPlanFilePath(sessionId, cwd);
+    let calls = 0;
     const provider: ModelProvider = {
       async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "writing plan file",
+            tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: planFilePath, content: "# Plan\nDo it carefully.\n" } }]
+          };
+        }
         return {
           content: "ready for approval",
-          tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: { plan: "# Plan\nDo it carefully." } }]
+          tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: {} }]
         };
       }
     };
@@ -108,7 +116,8 @@ describe("headless SDK", () => {
     });
 
     assert.equal(result.status, "waiting_plan_approval");
-    assert.equal(result.plan?.document, "# Plan\nDo it carefully.");
+    assert.equal(result.plan && "document" in result.plan, false);
+    assert.equal(await readPlan(planFilePath), "# Plan\nDo it carefully.\n");
     assert.equal(result.planState?.mode, "waiting_approval");
     assert.ok(result.events.some((event) => event.type === "plan_approval_requested"));
   });

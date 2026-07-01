@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Box, Text, useInput, useStdout } from "../ink.js";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Box, Text, useInput, useStdin, useStdout } from "../ink.js";
 import { OptionWithDescription, Select, SelectImageAttachment, SelectMulti } from "./CustomSelect/index.js";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
 import { PromptInput } from "./PromptInput/PromptInput.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./PromptInput/types.js";
 import { UserQuestionPrompt } from "./UserQuestionPrompt.js";
+import { ensureRefableStdin } from "../inkStdin.js";
 
 export type InteractionChoice = {
   title: string;
@@ -20,6 +21,7 @@ export type InteractionChoice = {
   selectedValues?: string[];
   submitButtonText?: string;
   promptInputTakesFocus?: boolean;
+  hidePromptInput?: boolean;
   onCancel?: () => void;
   onSubmit: (value: string) => void;
   onSubmitValues?: (values: string[]) => void;
@@ -73,6 +75,9 @@ export function InteractionArea({
   onPromptTextChange?: (text: string) => void;
   resolvePromptImagePaste?: (value: string) => Promise<{ text: string; images: PromptInputImageAttachment[] }>;
 }) {
+  const { stdin } = useStdin();
+  const canUseInput = typeof (stdin as { ref?: unknown }).ref === "function";
+  ensureRefableStdin(stdin);
   const promptHasText = promptText.trim().length > 0;
   const hasPreview = Boolean(!choice?.multiSelect && choice?.options.some((option) => typeof option.preview === "string" && option.preview.trim()));
   const editText = hasPreview ? choice?.editPromptText : undefined;
@@ -80,11 +85,18 @@ export function InteractionArea({
   const [footerFocused, setFooterFocused] = useState(false);
   const [footerIndex, setFooterIndex] = useState(0);
   const [previewNotesActive, setPreviewNotesActive] = useState(false);
+  const [choicePromptText, setChoicePromptText] = useState("");
+  const choicePromptTextRef = useRef("");
+  const updateChoicePromptText = (text: string) => {
+    choicePromptTextRef.current = text;
+    setChoicePromptText(text);
+  };
   useEffect(() => {
     setFocusedChoiceValue(choice?.selectedValue);
     setFooterFocused(false);
     setFooterIndex(0);
     setPreviewNotesActive(false);
+    updateChoicePromptText("");
   }, [choice?.selectedValue, choice?.title]);
   const footerActions = choice?.footerActions ?? [];
   const renderedOptions = useMemo(() => {
@@ -98,6 +110,7 @@ export function InteractionArea({
     return typeof option?.preview === "string" && option.preview.trim() ? option.preview : "No preview available";
   }, [choice, focusedChoiceValue, hasPreview]);
   const focusedChoiceOption = choice?.options.find((item) => item.value === focusedChoiceValue);
+  const hasChoice = Boolean(choice);
   const choiceInputFocused = focusedChoiceOption?.type === "input";
   const promptInputTakesFocus = choice?.promptInputTakesFocus === true;
   const blockPromptTextInput = choiceInputFocused && !promptInputTakesFocus;
@@ -111,6 +124,21 @@ export function InteractionArea({
             return;
           }
           if (result.content !== null) setValue(result.content);
+        } catch (error) {
+          onPromptEvent({ type: "external_editor_error", error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    : undefined;
+  const editPreviewNotes = editText
+    ? async () => {
+        try {
+          const result = await editText(choicePromptText);
+          if (!result) return;
+          if (result.error) {
+            onPromptEvent({ type: "external_editor_error", error: result.error });
+            return;
+          }
+          if (result.content !== null) updateChoicePromptText(result.content);
         } catch (error) {
           onPromptEvent({ type: "external_editor_error", error: error instanceof Error ? error.message : String(error) });
         }
@@ -141,13 +169,48 @@ export function InteractionArea({
       }
       return;
     }
-    if (choiceInputFocused && (input === "\u001b[Z" || (_key.shift && _key.tab))) {
-      onPromptEvent({ type: "cycle_mode" });
-      event.stopImmediatePropagation();
+    if (choice && hasPreview && previewNotesActive) {
+      if (_key.escape) {
+        setPreviewNotesActive(false);
+        event.stopImmediatePropagation();
+        return;
+      }
+      if ((input === "\u0007" || (_key.ctrl && input === "g")) && editPreviewNotes) {
+        void editPreviewNotes();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (_key.return || input === "\r" || input === "\n") {
+        const submittedText = choicePromptTextRef.current;
+        if (submittedText.trim()) choice.onPromptSubmit?.(submittedText, focusedChoiceValue);
+        setPreviewNotesActive(false);
+        updateChoicePromptText("");
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (_key.backspace || _key.delete) {
+        updateChoicePromptText(choicePromptTextRef.current.slice(0, -1));
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (input && !_key.ctrl && !input.startsWith("\u001b")) {
+        updateChoicePromptText(`${choicePromptTextRef.current}${input}`);
+        event.stopImmediatePropagation();
+      }
       return;
     }
     if (choice?.onNavigate && (input === "\u001b[D" || input === "\u001b[Z" || input === "\u001b[C" || input === "\t" || _key.leftArrow || _key.rightArrow || _key.tab)) {
       choice.onNavigate(input === "\u001b[D" || input === "\u001b[Z" || _key.leftArrow || _key.shift ? "previous" : "next");
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (hasChoice && (input === "\u001b[Z" || (_key.shift && _key.tab))) {
+      onPromptEvent({ type: "cycle_mode" });
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (choice?.documentBlock && !choiceInputFocused && (input === "\u0007" || (_key.ctrl && input === "g"))) {
+      onPromptEvent({ type: "external_editor" });
       event.stopImmediatePropagation();
       return;
     }
@@ -156,7 +219,7 @@ export function InteractionArea({
       event.stopImmediatePropagation();
       return;
     }
-    if (!choice || !hasPreview || promptHasText || previewNotesActive) return;
+    if (!choice || !hasPreview || choicePromptText.trim() || previewNotesActive) return;
     if (input !== "j" && input !== "k") return;
     const values = choice.options.map((option) => option.value);
     if (!values.length) return;
@@ -165,7 +228,7 @@ export function InteractionArea({
     const nextIndex = (currentIndex + delta + values.length) % values.length;
     setFocusedChoiceValue(values[nextIndex]);
     event.stopImmediatePropagation();
-  });
+  }, { isActive: canUseInput });
   const handlePromptEvent = (event: PromptInputEvent) => {
     if (event.type === "cancel" && hasPreview && previewNotesActive) {
       setPreviewNotesActive(false);
@@ -191,7 +254,7 @@ export function InteractionArea({
               <Box flexDirection="column" width={hasPreview ? 30 : undefined}>
                 {choice.multiSelect ? (
                   <SelectMulti
-                    isDisabled={footerFocused}
+                    isDisabled={!canUseInput || footerFocused}
                     options={renderedOptions}
                     defaultValue={choice.selectedValues}
                     visibleOptionCount={choice.visibleOptionCount ?? 7}
@@ -210,7 +273,7 @@ export function InteractionArea({
                   />
                 ) : (
                   <Select
-                    isDisabled={footerFocused || (choice.allowPromptInput && promptHasText)}
+                    isDisabled={!canUseInput || footerFocused || previewNotesActive || (choice.allowPromptInput && promptHasText)}
                     options={renderedOptions}
                     defaultValue={choice.selectedValue}
                     defaultFocusValue={focusedChoiceValue ?? choice.selectedValue}
@@ -232,7 +295,7 @@ export function InteractionArea({
                   />
                 )}
               </Box>
-              {hasPreview ? <QuestionPreview content={focusedPreview ?? ""} notesActive={previewNotesActive} notesText={promptText} /> : null}
+              {hasPreview ? <QuestionPreview content={focusedPreview ?? ""} notesActive={previewNotesActive} notesText={choicePromptText} /> : null}
             </Box>
             {footerActions.length ? (
               <ChoiceFooterActions
@@ -252,22 +315,24 @@ export function InteractionArea({
           <ActivityStatusLine text={activityStatus} />
         </Box>
       ) : null}
-      <PromptInput
-        key={choice?.promptInputTakesFocus ? "choice-prompt-focus" : "prompt"}
-        mode={mode}
-        workflowId={workflowId}
-        queued={queued}
-        workflows={workflows}
-        isLoading={isLoading}
-        permissionMode={permissionMode}
-        inputBlocked={inputDisabled || (Boolean(choice) && (choice?.multiSelect || !choice?.allowPromptInput || (hasPreview && !previewNotesActive)))}
-        textInputBlocked={blockPromptTextInput}
-        hasSelection={hasSelection}
-        editText={hasPreview && !previewNotesActive ? undefined : editText}
-        resolveImagePaste={resolvePromptImagePaste}
-        onEvent={handlePromptEvent}
-        onTextChange={onPromptTextChange}
-      />
+      {hasChoice ? null : (
+        <PromptInput
+          key={choice?.promptInputTakesFocus ? "choice-prompt-focus" : "prompt"}
+          mode={mode}
+          workflowId={workflowId}
+          queued={queued}
+          workflows={workflows}
+          isLoading={isLoading}
+          permissionMode={permissionMode}
+          inputBlocked={inputDisabled || (Boolean(choice) && (choice?.multiSelect || !choice?.allowPromptInput || (hasPreview && !previewNotesActive)))}
+          textInputBlocked={blockPromptTextInput}
+          hasSelection={hasSelection}
+          editText={hasPreview && !previewNotesActive ? undefined : editText}
+          resolveImagePaste={resolvePromptImagePaste}
+          onEvent={handlePromptEvent}
+          onTextChange={onPromptTextChange}
+        />
+      )}
     </Box>
   );
 }

@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { render } from "ink-testing-library";
 import { planRejectionMessage, TuiApp } from "../../src/tui/TuiApp.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
-import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
@@ -339,13 +338,15 @@ describe("TuiApp global Plan Mode", () => {
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Try to run tests while planning.");
-    await waitForFrame(output, /Permission denied for Bash: Plan Mode blocks shell execution/);
+    await waitForFrame(output, /Planning without running tests\./);
 
+    const frame = output.lastFrame() ?? "";
     assert.equal(starts, 0);
     assert.equal(calls, 2);
-    assert.match(output.lastFrame() ?? "", /Trying shell\./);
-    assert.match(output.lastFrame() ?? "", /Planning without running tests\./);
-    assert.match(output.lastFrame() ?? "", /> Type a request or \/help/);
+    assert.match(frame, /Trying shell\./);
+    assert.match(frame, /Planning without running tests\./);
+    assert.doesNotMatch(frame, /Permission denied for Bash: Plan Mode blocks shell execution/);
+    assert.match(frame, /> Type a request or \/help/);
 
     output.unmount();
     output.cleanup();
@@ -362,8 +363,15 @@ describe("TuiApp global Plan Mode", () => {
           assert.equal(request.messages.at(-1)?.role, "tool");
           assert.match(String(request.messages.at(-1)?.content), /Permission denied for Edit: Plan Mode writes are limited to the current plan file/);
           return {
+            content: "Writing plan file.",
+            tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePathFromRequest(request), content: "# Plan\n\nRemove edges node safely after approval.\n" } }]
+          };
+        }
+        if (calls === 3) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          return {
             content: "Requesting plan approval.",
-            tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: { plan: "# Plan\n\nRemove edges node safely after approval." } }]
+            tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: {} }]
           };
         }
         return {
@@ -381,12 +389,13 @@ describe("TuiApp global Plan Mode", () => {
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "移除edges节点");
-    await waitForFrame(output, /Permission denied for Edit: Plan Mode writes are limited to the current plan file/);
     await waitForFrame(output, /Ready to code\?/);
 
+    const frame = output.lastFrame() ?? "";
     assert.equal(starts, 0);
-    assert.equal(calls, 2);
-    assert.match(output.lastFrame() ?? "", /Remove edges node safely after approval/);
+    assert.equal(calls, 3);
+    assert.doesNotMatch(frame, /Permission denied for Edit: Plan Mode writes are limited to the current plan file/);
+    assert.match(frame, /Remove edges node safely after approval/);
 
     output.unmount();
     output.cleanup();
@@ -1049,87 +1058,73 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(text, /## Re-entering Plan Mode/);
     assert.match(text, /previously exited it/);
     assert.match(text, /ATTACHMENT plan_mode/);
-    assert.match(text, /Current draft:/);
-    assert.match(text, /Draft the migration first\./);
+    assert.doesNotMatch(text, /Current draft:/);
+    assert.doesNotMatch(text, /Draft the migration first\./);
 
     output.unmount();
     output.cleanup();
   });
 
-  it("approves exiting Plan Mode without a written plan and starts workflow with original input", async () => {
+  it("requires a written plan before ExitPlanMode can request approval", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const inputs: unknown[] = [];
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        const planFilePath = planFilePathFromRequest(request);
+        if (calls === 1) return { content: "Requesting empty exit.", tool_calls: [{ id: "tool-empty-exit", name: "ExitPlanMode", input: {} }] };
+        if (calls === 2) {
+          assert.match(String(request.messages.at(-1)?.content), /Please write your plan to this file before calling ExitPlanMode/);
+          return { content: "Writing missing plan.", tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePath.slice(0, Math.max(3, Math.floor(planFilePath.length / 3))), content: "# Plan\n\nRemove edges after approval.\n" } }] };
+        }
+        return { content: "Requesting approval.", tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: {} }] };
+      }
+    };
     const engine = { async startInteractive(_config: unknown, _workflowId: string, input: unknown) { inputs.push(input); return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Ready empty exit.");
-    await waitForFrame(output, /Exit plan mode\?/);
+    await waitForFrame(output, /Ready to code\?/);
 
-    assert.match(output.lastFrame() ?? "", /Claude wants to exit plan mode/);
     assert.equal(inputs.length, 0);
+    assert.match(output.lastFrame() ?? "", /Remove edges after approval/);
 
     output.stdin.write("\r");
     await settleTuiWork();
 
-    assert.deepEqual(inputs[0], { request: "Ready empty exit.", [planModeExitHandoffMarker]: true, [planModeExitPlanExistsMarker]: false });
+    assertApprovedPlanHandoff(inputs[0], { original_input: { request: "Ready empty exit." }, approved_plan: "# Plan\n\nRemove edges after approval." });
 
     output.unmount();
     output.cleanup();
   });
 
-  it("continues planning after rejecting an empty Plan Mode exit", async () => {
+  it("keeps planning when an empty ExitPlanMode is blocked and the model only writes a draft", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
-    const requests: ModelRequest[] = [];
+    let calls = 0;
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        const planFilePath = planFilePathFromRequest(request);
+        if (calls === 1) return { content: "Requesting empty exit.", tool_calls: [{ id: "tool-empty-exit", name: "ExitPlanMode", input: {} }] };
+        if (calls === 2) return { content: "Writing missing plan.", tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePath, content: "# Plan\n\nStay in planning.\n" } }] };
+        return { content: "Plan draft saved." };
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Ready empty exit.");
-    await waitForFrame(output, /Exit plan mode\?/);
-    const requestCount = requests.length;
+    await waitForFrame(output, /Plan draft saved\./);
 
-    output.stdin.write("\u001b[B");
-    await settleTuiWork();
-    output.stdin.write("\r");
-    await settleTuiWork();
-
-    const rejectionRequest = await waitForRequestContaining(requests.slice(requestCount), /The agent proposed a plan that was rejected by the user/);
-    const rejectionText = requestText(rejectionRequest);
-
+    const frame = output.lastFrame() ?? "";
     assert.equal(starts, 0);
-    assert.match(rejectionText, /Rejected plan:/);
-    assert.match(rejectionText, /\(empty plan\)/);
-    assert.match(rejectionText, /User feedback:/);
-    assert.match(rejectionText, /\(no feedback provided\)/);
-
-    output.unmount();
-    output.cleanup();
-  });
-
-  it("continues planning from typed feedback on an empty Plan Mode exit confirmation", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
-    let starts = 0;
-    const requests: ModelRequest[] = [];
-    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);
-
-    await sendTuiLine(output, "/plan");
-    await sendTuiLine(output, "Ready empty exit.");
-    await waitForFrame(output, /Exit plan mode\?/);
-    const requestCount = requests.length;
-
-    await sendTuiLine(output, "先补充一个真实计划。");
-
-    const rejectionRequest = await waitForRequestContaining(requests.slice(requestCount), /先补充一个真实计划/);
-    const rejectionText = requestText(rejectionRequest);
-
-    assert.equal(starts, 0);
-    assert.match(rejectionText, /Rejected plan:/);
-    assert.match(rejectionText, /\(empty plan\)/);
-    assert.match(rejectionText, /User feedback:/);
-    assert.match(rejectionText, /先补充一个真实计划。/);
+    assert.equal(calls, 3);
+    assert.doesNotMatch(frame, /Exit plan mode\?/);
+    assert.match(frame, /mode Plan/);
 
     output.unmount();
     output.cleanup();
@@ -1490,7 +1485,14 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Deployment window\?/);
 
     assert.match(output.lastFrame() ?? "", /Other/);
-    await sendTuiLine(output, "Saturday night");
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write("Saturday night");
+    await waitForFrame(output, /Other, Saturday night/);
+    output.stdin.write("\r");
+    await settleTuiWork();
     const answerRequest = await waitForToolAnswerRequest(requests, /Saturday night/);
     const answerText = requestText(answerRequest);
 
@@ -1930,7 +1932,7 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("keeps planning with typed feedback during plan approval", async () => {
+  it("keeps planning with typed feedback from the plan approval input", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
     const requests: ModelRequest[] = [];
@@ -1941,19 +1943,28 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Draft the migration first.");
     await sendTuiLine(output, "Ready for approval.");
     await waitForFrame(output, /Ready to code\?/);
-    assert.match(output.lastFrame() ?? "", /Tell Claude what to change/);
-    assert.match(output.lastFrame() ?? "", /shift\+tab to approve with this feedback/);
+    const approvalFrame = output.lastFrame() ?? "";
+    assert.match(approvalFrame, /Tell Claude what to change/);
+    assert.match(approvalFrame, /shift\+tab to approve with this feedback/);
+    assert.doesNotMatch(approvalFrame, /> Type a request or \/help/);
 
     const feedback = "Split the migration into two smaller phases.";
-    await sendTuiLine(output, feedback);
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write(feedback);
+    await waitForFrame(output, /No, keep planning: Split the migration into two smaller phases\./);
+    output.stdin.write("\r");
+    await settleTuiWork();
+
     const feedbackRequest = await waitForRequestContaining(requests, /Split the migration into two smaller phases\./);
     const feedbackRequestText = requestText(feedbackRequest);
-    await waitForFrame(output, /Split the migration into two smaller phases\./);
+    await waitForFrame(output, /Plan Review \(needs revision\)/);
     const frame = output.lastFrame() ?? "";
 
     assert.equal(starts, 0);
     assert.match(frame, /Plan Mode/);
-    assert.match(frame, /Plan Review \(needs revision\)/);
     assert.match(frame, /User feedback: Split the migration into two smaller phases\./);
     assert.match(frame, /> Type a request or \/help/);
     assert.doesNotMatch(frame, /Type a request or \/help[^\n]*smaller phases/);
@@ -1992,7 +2003,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.equal(starts, 0);
     assert.equal(requests.length, requestCount);
     assert.match(frame, /Ready to code\?/);
-    assert.match(frame, /> Type a request or \/help/);
+    assert.doesNotMatch(frame, /> Type a request or \/help/);
     assert.match(frame, /No, keep planning/);
     assert.match(frame, /Tell Claude what to change/);
     assert.doesNotMatch(frame, /needs revision/);
@@ -2245,7 +2256,7 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("restores empty waiting Plan Mode sessions as exit confirmation", async () => {
+  it("restores empty waiting Plan Mode sessions back into planning", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-empty-plan", cwd);
     await new SessionStore(join(cwd, ".session")).savePlanState("session-empty-plan", {
@@ -2268,8 +2279,10 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\r");
     await settleTuiWork();
 
-    await waitForFrame(output, /Exit plan mode\?/);
-    assert.match(output.lastFrame() ?? "", /Claude wants to exit plan mode/);
+    await waitForFrame(output, /Plan file is empty; keep planning/);
+    const frame = output.lastFrame() ?? "";
+    assert.doesNotMatch(frame, /Exit plan mode\?/);
+    assert.match(frame, /mode Plan/);
     assert.equal(starts, 0);
 
     output.unmount();

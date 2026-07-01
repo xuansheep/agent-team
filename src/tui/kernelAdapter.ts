@@ -1,4 +1,4 @@
-import type { KernelIntent, KernelSession, PendingInteraction } from "../kernel/session.js";
+import type { KernelIntent, KernelSession, PendingInteraction, PlanApprovalResolveMetadata } from "../kernel/session.js";
 import { projectKernelAppState } from "../kernel/appState.js";
 
 type PlanApprovalInteraction = Extract<PendingInteraction, { type: "plan_approval" }>;
@@ -6,13 +6,13 @@ type PlanApprovalInteraction = Extract<PendingInteraction, { type: "plan_approva
 export function createTuiKernelAdapter(session: KernelSession): {
   appState: ReturnType<typeof projectKernelAppState>;
   planReview: PlanApprovalInteraction | null;
-  planApprovalIntent: (decision: "continue" | "stay", feedback?: unknown) => KernelIntent;
+  planApprovalIntent: (decision: "continue" | "stay", metadata?: PlanApprovalResolveMetadata) => KernelIntent;
 } {
   return {
     appState: projectKernelAppState(session),
     planReview: session.pendingInteraction?.type === "plan_approval" ? session.pendingInteraction : null,
-    planApprovalIntent: (decision, feedback) => feedback === undefined
+    planApprovalIntent: (decision, metadata) => metadata === undefined
       ? { type: "resolve_plan_approval", decision }
-      : { type: "resolve_plan_approval", decision, feedback }
+      : { type: "resolve_plan_approval", decision, metadata }
   };
 }

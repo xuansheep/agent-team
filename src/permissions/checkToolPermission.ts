@@ -68,9 +68,9 @@ async function checkPlanModePermission(
   context: ToolPermissionCheckContext
 ): Promise<ToolPermissionDecision> {
   if (tool.isReadOnly?.(input, context)) return { decision: "allow", reason: "plan mode read-only tool" };
-  if (tool.name === "ExitPlanMode") return { decision: "allow", reason: "plan mode approval tool" };
+  if (tool.name === "ExitPlanMode") return { decision: "ask", reason: "Exit plan mode?" };
   if (tool.name === "AskUserQuestion") return { decision: "allow", reason: "plan mode clarification tool" };
-  if (tool.name === "TodoWrite") return { decision: "allow", reason: "plan mode todo tool" };
+
   if (await writesCurrentPlanFile(tool, input, context)) return { decision: "allow", reason: "plan mode current plan file" };
   if (tool.name === "Bash" || tool.name === "PowerShell") {
     return { decision: "deny", reason: "Plan Mode blocks shell execution" };
@@ -78,7 +78,12 @@ async function checkPlanModePermission(
   if (isWorkflowExecutionTool(tool.name)) {
     return { decision: "deny", reason: "Plan Mode blocks workflow execution" };
   }
-  return { decision: "deny", reason: "Plan Mode allows only read-only tools and the current plan file" };
+  return {
+    decision: "deny",
+    reason: context.planFilePath
+      ? `Plan Mode allows only read-only tools and the current plan file. Write or edit only ${context.planFilePath} to prepare the plan, then call ExitPlanMode.`
+      : "Plan Mode allows only read-only tools and the current plan file"
+  };
 }
 
 async function writesCurrentPlanFile(tool: Tool, input: unknown, context: ToolPermissionCheckContext): Promise<boolean> {

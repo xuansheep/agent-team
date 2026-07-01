@@ -35,12 +35,13 @@ describe("PlanModeController", () => {
     await writePlan(planning.planState!.planFilePath, "# Plan\n\nShip safely.");
     const waiting = await controller.requestPlanApproval(planning);
     const approvalId = waiting.pendingInteraction?.type === "plan_approval" ? waiting.pendingInteraction.id : "";
-    const approved = controller.resolvePlanApproval(waiting, { decision: "continue" });
+    await writePlan(planning.planState!.planFilePath, "# Plan\n\nUpdated after review opened.");
+    const approved = (await controller.resolvePlanApproval(waiting, { decision: "continue" })).session;
     const handoff = controller.buildApprovedPlanHandoff(approved);
 
     assert.equal(approved.status, "idle_input");
     assert.equal(approved.toolPermissionContext.mode, "acceptEdits");
-    assert.equal(handoff.planText, "# Plan\n\nShip safely.");
+    assert.equal(handoff.planText, "# Plan\n\nUpdated after review opened.");
     assert.equal(handoff.approvalId, approvalId);
   });
 
@@ -51,7 +52,7 @@ describe("PlanModeController", () => {
     const planning = controller.enterPlanMode(session, { request: "build" });
     await writePlan(planning.planState!.planFilePath, "# Plan");
     const waiting = await controller.requestPlanApproval(planning);
-    const rejected = controller.resolvePlanApproval(waiting, { decision: "stay", feedback: { answer: "add tests" } });
+    const rejected = (await controller.resolvePlanApproval(waiting, { decision: "stay", feedback: { answer: "add tests" } })).session;
 
     assert.equal(rejected.status, "planning");
     assert.equal(rejected.toolPermissionContext.mode, "plan");
@@ -68,8 +69,35 @@ describe("PlanModeController", () => {
     const waiting = await controller.requestPlanApproval(planning, { requestedPermissions: [{ tool: "Bash", prompt: "run tests" }] });
 
     assert.equal(waiting.pendingInteraction?.type, "plan_approval");
-    assert.equal(waiting.pendingInteraction?.document, "# Kernel Plan\n\nRead from disk.");
+    assert.equal("document" in waiting.pendingInteraction, false);
+    assert.equal(waiting.pendingInteraction?.planFilePath, planning.planState.planFilePath);
     assert.deepEqual(waiting.pendingInteraction?.requestedPermissions, [{ tool: "Bash", prompt: "run tests" }]);
+  });
+
+  it("resolves plan approval with clear-context metadata", async () => {
+    const cwd = await workspace();
+    const controller = new PlanModeController();
+    const session = controller.enterPlanMode(createKernelSession({
+      id: "approval-clear-context",
+      cwd,
+      permissions: { mode: "default", allow: [], ask: [], deny: [] }
+    }), { request: "build" });
+    assert.ok(session.planState);
+    await writePlan(session.planState.planFilePath, "# Plan\n\nClear context.\n");
+    const waiting = await controller.requestPlanApproval(session);
+
+    const resolved = await controller.resolvePlanApproval(waiting, {
+      decision: "continue",
+      permissionMode: "auto",
+      clearContext: true,
+      feedback: "Run focused tests."
+    });
+
+    assert.equal(resolved.execution?.clearContext, true);
+    assert.equal(resolved.execution?.permissionMode, "auto");
+    assert.match(resolved.execution?.initialInput ?? "", /Implement the following plan:/);
+    assert.match(resolved.execution?.initialInput ?? "", /Clear context\./);
+    assert.match(resolved.execution?.initialInput ?? "", /Run focused tests\./);
   });
 
 });

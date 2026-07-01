@@ -21,7 +21,6 @@ describe("KernelSession", () => {
         id: "approval-1",
         sessionId: "s1",
         planFilePath: ".session/plans/s1.md",
-        document: "# Plan\n",
         planHash: "hash-1",
         requestedPermissions: []
       }

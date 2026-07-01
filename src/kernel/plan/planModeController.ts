@@ -8,7 +8,7 @@ import {
   type PlanSessionState
 } from "../../plans/planSession.js";
 import { readPlan } from "../../plans/planFiles.js";
-import type { KernelSession } from "../session.js";
+import type { KernelExecutionHandoff, KernelSession, PlanApprovalResolveMetadata } from "../session.js";
 import { reduceKernelSession } from "../session.js";
 import { createPlanApprovalPending } from "../pendingInteraction.js";
 
@@ -26,6 +26,11 @@ export type ApprovedPlanHandoff = {
   legacyHandoff: unknown;
 };
 
+export type PlanApprovalResolutionResult = {
+  session: KernelSession;
+  execution?: KernelExecutionHandoff;
+};
+
 type PlanApprovalMetadata = {
   approvalId?: string;
   approvedPlanHash?: string;
@@ -40,10 +45,10 @@ export class PlanModeController {
   async requestPlanApproval(session: KernelSession, request: ExitPlanModeRequest = {}): Promise<KernelSession> {
     if (!session.planState || session.planState.mode !== "planning") throw new Error("Plan Mode is not active");
     const exited = await exitPlanMode(session.planState, { requestedPermissions: request.requestedPermissions });
-    const planHash = hashText(exited.plan.document);
+    const document = (await readPlan(exited.plan.planFilePath))?.trim() ?? "";
+    const planHash = hashText(document);
     const interaction = createPlanApprovalPending({
       sessionId: session.id,
-      document: exited.plan.document,
       planFilePath: exited.plan.planFilePath,
       planHash,
       empty: exited.plan.empty,
@@ -53,21 +58,36 @@ export class PlanModeController {
     return reduceKernelSession({ ...session, planState }, { type: "pending_interaction_set", interaction });
   }
 
-  resolvePlanApproval(session: KernelSession, input: { decision: "continue" | "stay"; feedback?: unknown }): KernelSession {
+  async resolvePlanApproval(session: KernelSession, input: { decision: "continue" | "stay" } & PlanApprovalResolveMetadata): Promise<PlanApprovalResolutionResult> {
     if (!session.planState) throw new Error("Plan Mode is not active");
     if (input.decision === "continue") {
-      const document = session.pendingInteraction?.type === "plan_approval" ? session.pendingInteraction.document : "";
-      const resolved = resolvePlanApproval(approvePlan(session.planState, document, input.feedback), "continue");
-      return reduceKernelSession({ ...session, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
+      const document = (await readPlan(session.planState.planFilePath))?.trim() ?? "";
+      const approved = approvePlan(session.planState, document, input.feedback);
+      const resolved = resolvePlanApproval(approved, "continue");
+      const nextSession = reduceKernelSession({ ...session, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
         type: "pending_interaction_cleared",
         status: "idle_input"
       });
+      const handoff = this.buildApprovedPlanHandoff(nextSession);
+      const permissionMode = input.permissionMode ?? nonPlanPermissionMode(resolved.permissions.mode);
+      const clearContext = input.clearContext === true;
+      return {
+        session: nextSession,
+        execution: {
+          clearContext,
+          permissionMode,
+          ...(clearContext ? { initialInput: freshImplementationInput(handoff.planText, session.planState.originalInput, input.feedback) } : {}),
+          handoff
+        }
+      };
     }
     const resolved = resolvePlanApproval(session.planState, "stay", input.feedback);
-    return reduceKernelSession({ ...session, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
-      type: "pending_interaction_cleared",
-      status: "planning"
-    });
+    return {
+      session: reduceKernelSession({ ...session, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
+        type: "pending_interaction_cleared",
+        status: "planning"
+      })
+    };
   }
 
   buildApprovedPlanHandoff(session: KernelSession): ApprovedPlanHandoff {
@@ -102,4 +122,15 @@ function approvalMetadata(state: PlanSessionState): PlanApprovalMetadata {
 
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function freshImplementationInput(planText: string, originalInput: unknown, feedback: unknown): string {
+  const parts = [`Implement the following plan:\n\n${planText.trim()}`];
+  parts.push(`\nOriginal input:\n${JSON.stringify(originalInput, null, 2)}`);
+  if (typeof feedback === "string" && feedback.trim()) parts.push(`\nApproval feedback:\n${feedback.trim()}`);
+  return parts.join("\n");
+}
+
+function nonPlanPermissionMode(mode: string): Exclude<PlanApprovalResolveMetadata["permissionMode"], undefined> {
+  return mode === "plan" ? "default" : mode as Exclude<PlanApprovalResolveMetadata["permissionMode"], undefined>;
 }

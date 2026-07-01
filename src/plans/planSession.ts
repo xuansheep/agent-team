@@ -4,6 +4,7 @@ import { ToolPermissionContext } from "../permissions/context.js";
 import { ModelMessage } from "../providers/types.js";
 import { PlanApprovalRequest, PlanModeEvent } from "../runtime/types.js";
 import { getPlanFilePath, readPlan, writePlan } from "./planFiles.js";
+import { readRequiredPlan } from "./planGuards.js";
 
 export type PlanSessionState = {
   mode: "inactive" | "planning" | "waiting_approval";
@@ -59,14 +60,13 @@ export function enterPlanMode(input: EnterPlanModeInput): { state: PlanSessionSt
 }
 
 export async function exitPlanMode(state: PlanSessionState, input: { requestedPermissions?: PlanRequestedPermission[] } = {}): Promise<{ state: PlanSessionState; plan: PlanApprovalRequest; event: PlanModeEvent }> {
-  const document = (await readPlan(state.planFilePath))?.trim() ?? "";
+  await readRequiredPlan(state.planFilePath);
   const requestedPermissions = input.requestedPermissions ?? state.requestedPermissions;
-  const empty = !document.trim();
   const next: PlanSessionState = { ...state, mode: "waiting_approval", requestedPermissions };
   return {
     state: next,
-    plan: { sessionId: state.sessionId, document, planFilePath: state.planFilePath, ...(empty ? { empty: true } : {}), ...(requestedPermissions?.length ? { requestedPermissions } : {}) },
-    event: { type: "plan_approval_requested", session_id: state.sessionId, document, plan_file_path: state.planFilePath, ...(empty ? { empty: true } : {}), ...(requestedPermissions?.length ? { requested_permissions: requestedPermissions } : {}) }
+    plan: { sessionId: state.sessionId, planFilePath: state.planFilePath, ...(requestedPermissions?.length ? { requestedPermissions } : {}) },
+    event: { type: "plan_approval_requested", session_id: state.sessionId, plan_file_path: state.planFilePath, ...(requestedPermissions?.length ? { requested_permissions: requestedPermissions } : {}) }
   };
 }
 

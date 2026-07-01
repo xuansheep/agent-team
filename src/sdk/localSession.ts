@@ -100,7 +100,8 @@ export class LocalHeadlessSession {
       : await requestPlanApprovalFromDraft(this.planState);
     this.planState = requested.state;
     const decision = await this.options.planApprovalCallback?.(requested.plan) ?? "stay";
-    const approvedState = decision === "continue" ? { ...this.planState, approvedPlan: requested.plan.document } : this.planState;
+    const approvedDocument = decision === "continue" ? (await readPlan(this.planState.planFilePath))?.trim() ?? "" : "";
+    const approvedState = decision === "continue" ? { ...this.planState, approvedPlan: approvedDocument } : this.planState;
     const resolved = resolvePlanApproval(approvedState, decision);
     this.planState = resolved.state;
     this.permissions = resolved.permissions;
@@ -133,7 +134,6 @@ async function currentPlanApprovalRequest(state: PlanSessionState): Promise<{
     state,
     plan: {
       sessionId: state.sessionId,
-      document,
       planFilePath: state.planFilePath,
       ...(empty ? { empty: true } : {}),
       ...(state.requestedPermissions?.length ? { requestedPermissions: state.requestedPermissions } : {})

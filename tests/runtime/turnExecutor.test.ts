@@ -12,6 +12,7 @@ import { askUserQuestionTool } from "../../src/tools/local/askUserQuestion.js";
 import { enterPlanModeTool } from "../../src/tools/local/enterPlanMode.js";
 import { exitPlanModeTool } from "../../src/tools/local/exitPlanMode.js";
 import { todoWriteTool } from "../../src/tools/local/todoWrite.js";
+import { writeTool as localWriteTool } from "../../src/tools/local/write.js";
 import { Tool } from "../../src/tools/types.js";
 
 describe("RuntimeTurnExecutor", () => {
@@ -172,7 +173,8 @@ describe("RuntimeTurnExecutor", () => {
         }
         assert.equal(request.messages.at(-1)?.role, "tool");
         assert.match(String(request.messages.at(-1)?.content), /Entered plan mode/);
-        assert.match(String(request.messages.at(-1)?.content), /DO NOT write or edit any files|Do not write or edit any files/i);
+        assert.match(String(request.messages.at(-1)?.content), /source files are forbidden/i);
+        assert.match(String(request.messages.at(-1)?.content), /only the current plan file is editable/i);
         assert.doesNotMatch(String(request.messages.at(-1)?.content), /^\{"output":/);
         return { content: "Continuing planning." };
       }
@@ -265,7 +267,7 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(result.messages.at(-1)?.content, "Destructive commands remain out of scope while planning.");
   });
 
-  it("executes TodoWrite in plan mode without requiring workflow execution", async () => {
+  it("denies TodoWrite in plan mode and asks the model to maintain the plan file", async () => {
     let calls = 0;
     const provider: ModelProvider = {
       async generate(request) {
@@ -281,8 +283,8 @@ describe("RuntimeTurnExecutor", () => {
           };
         }
         assert.equal(request.messages.at(-1)?.role, "tool");
-        assert.match(String(request.messages.at(-1)?.content), /Inspect the TUI plan path/);
-        return { content: "Todo list updated for planning." };
+        assert.match(String(request.messages.at(-1)?.content), /Permission denied for TodoWrite: Plan Mode allows only read-only tools and the current plan file/);
+        return { content: "Planning tasks must be captured in the plan file." };
       }
     };
     const tools = new ToolRegistry();
@@ -308,7 +310,7 @@ describe("RuntimeTurnExecutor", () => {
 
     assert.equal(result.status, "completed");
     assert.equal(calls, 2);
-    assert.equal(result.messages.at(-1)?.content, "Todo list updated for planning.");
+    assert.equal(result.messages.at(-1)?.content, "Planning tasks must be captured in the plan file.");
   });
 
   it("does not write TodoWrite artifacts while plan mode is active", async () => {
@@ -444,6 +446,61 @@ describe("RuntimeTurnExecutor", () => {
     assert.deepEqual(result.messages.at(-1)?.tool_calls?.map((call) => call.name), ["AskUserQuestion"]);
   });
 
+  it("does not execute ordinary plan-mode tool calls before AskUserQuestion is resolved", async () => {
+    let beforeQuestionExecutions = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          content: "Need one choice before continuing.",
+          tool_calls: [
+            { id: "call-before-question", name: "ReadBeforeQuestion", input: {} },
+            {
+              id: "call-question",
+              name: "AskUserQuestion",
+              input: {
+                questions: [{
+                  question: "Which rollout path?",
+                  header: "Rollout",
+                  options: [
+                    { label: "Staged", description: "Release gradually" },
+                    { label: "Big bang", description: "Release at once" }
+                  ]
+                }]
+              }
+            }
+          ]
+        };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.add({
+      name: "ReadBeforeQuestion",
+      description: "Should wait for the user's answer because a user interaction is pending.",
+      input_schema: {},
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      async execute() {
+        beforeQuestionExecutions += 1;
+        return { output: "before" };
+      }
+    });
+    tools.add(askUserQuestionTool);
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "plan rollout" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath: ".session/plans/session-1.md" },
+      cwd: process.cwd(),
+      sessionId: "session-plan-question-before-defer"
+    });
+
+    assert.equal(result.status, "waiting_user_input");
+    assert.equal(beforeQuestionExecutions, 0);
+    assert.deepEqual(result.messages.at(-1)?.tool_calls?.map((call) => call.name), ["AskUserQuestion"]);
+  });
+
   it("returns a model-readable ExitPlanMode pending approval result instead of internal JSON", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-exit-plan-"));
     const planFilePath = getPlanFilePath("session-plan-exit", cwd);
@@ -485,6 +542,48 @@ describe("RuntimeTurnExecutor", () => {
     assert.match(String(toolMessage?.content), new RegExp(escapeRegExp(planFilePath)));
     assert.doesNotMatch(String(toolMessage?.content), /^\{"output":/);
     assert.doesNotMatch(String(toolMessage?.content), /"plan_approval_requested"/);
+  });
+
+  it("executes plan-file writes before ExitPlanMode approval in the same assistant turn", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-write-exit-plan-"));
+    const planFilePath = getPlanFilePath("session-plan-write-exit", cwd);
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          content: "Writing plan and requesting approval.",
+          tool_calls: [
+            { id: "call-write-plan", name: "Write", input: { file_path: planFilePath, content: "# Plan\n\nWrite this first.\n" } },
+            { id: "call-exit-plan", name: "ExitPlanMode", input: {} }
+          ]
+        };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.add(localWriteTool);
+    tools.add(exitPlanModeTool);
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "plan before implementation" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
+      cwd,
+      sessionId: "session-plan-write-exit",
+      planState: {
+        mode: "planning",
+        sessionId: "session-plan-write-exit",
+        planFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "plan before implementation" },
+        feedbackMessages: []
+      }
+    });
+
+    assert.equal(result.status, "waiting_plan_approval");
+    assert.equal(await readPlan(planFilePath), "# Plan\n\nWrite this first.\n");
+    assert.equal(result.status === "waiting_plan_approval" ? result.plan.empty : true, undefined);
+    assert.deepEqual(result.messages.filter((message) => message.role === "assistant").at(-1)?.tool_calls?.map((call) => call.name), ["Write", "ExitPlanMode"]);
   });
 
   it("defers tool calls after ExitPlanMode until the plan is approved", async () => {
@@ -567,7 +666,7 @@ describe("RuntimeTurnExecutor", () => {
     assert.match(result.error ?? "", /You are not in plan mode/);
   });
 
-  it("accepts hidden tui-code style ExitPlanMode plan input and syncs it to the plan file", async () => {
+  it("ignores hidden ExitPlanMode plan input and reads the approval document from the plan file", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-exit-plan-edit-"));
     const planFilePath = getPlanFilePath("session-plan-exit-edit", cwd);
     await writePlan(planFilePath, "# Plan\n\nOriginal draft.\n");
@@ -606,8 +705,8 @@ describe("RuntimeTurnExecutor", () => {
 
     assert.equal(result.status, "waiting_plan_approval");
     if (result.status !== "waiting_plan_approval") return;
-    assert.equal(result.plan.document, "# Edited Plan\n\nUse the reviewed approach.");
-    assert.equal(await readPlan(planFilePath), "# Edited Plan\n\nUse the reviewed approach.");
+    assert.equal("document" in result.plan, false);
+    assert.equal(await readPlan(planFilePath), "# Plan\n\nOriginal draft.\n");
   });
 
   it("accepts tui-code style AskUserQuestion input", async () => {
@@ -763,6 +862,7 @@ describe("RuntimeTurnExecutor", () => {
   it("returns Plan Mode write denials as tool results and continues to plan approval", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-write-deny-"));
     const planFilePath = getPlanFilePath("session-plan-write-deny", cwd);
+    await writePlan(planFilePath, "# Plan\n\nRemove the edges node after approval.\n");
     let calls = 0;
     let executions = 0;
     const provider: ModelProvider = {
@@ -773,7 +873,7 @@ describe("RuntimeTurnExecutor", () => {
           assert.match(String(request.messages.at(-1)?.content), /Permission denied for Write: Plan Mode writes are limited to the current plan file/);
           return {
             content: "Ready for approval.",
-            tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: { plan: "# Plan\n\nRemove the edges node after approval." } }]
+            tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: {} }]
           };
         }
         return { content: "writing", tool_calls: [{ id: "call-1", name: "Write", input: { file_path: "src/index.ts", content: "x" } }] };
@@ -804,7 +904,91 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(result.status, "waiting_plan_approval");
     assert.equal(calls, 2);
     assert.equal(executions, 0);
-    assert.match(result.status === "waiting_plan_approval" ? result.plan.document : "", /Remove the edges node/);
+    assert.equal(result.status === "waiting_plan_approval" ? "document" in result.plan : false, false);
+    assert.match((await readPlan(planFilePath)) ?? "", /Remove the edges node/);
+  });
+
+
+  it("normalizes Plan Mode Write calls to the current plan file after empty ExitPlanMode is blocked", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-normalize-write-"));
+    const planFilePath = getPlanFilePath("session-plan-normalize-write", cwd);
+    const truncatedPlanFilePath = planFilePath.slice(0, Math.max(3, Math.floor(planFilePath.length / 3)));
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return { content: "Requesting approval too early.", tool_calls: [{ id: "call-empty-exit", name: "ExitPlanMode", input: {} }] };
+        }
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Please write your plan to this file before calling ExitPlanMode/);
+          return { content: "Writing the missing plan.", tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: truncatedPlanFilePath, content: "# Plan\n\nRemove workflows.delivery.edges after approval.\n" } }] };
+        }
+        return { content: "Requesting approval.", tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: {} }] };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.add(localWriteTool);
+    tools.add(exitPlanModeTool);
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "remove edges" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
+      cwd,
+      sessionId: "session-plan-normalize-write",
+      planState: {
+        mode: "planning",
+        sessionId: "session-plan-normalize-write",
+        planFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "remove edges" },
+        feedbackMessages: []
+      }
+    });
+
+    assert.equal(result.status, "waiting_plan_approval");
+    assert.equal(calls, 3);
+    assert.equal(await readPlan(planFilePath), "# Plan\n\nRemove workflows.delivery.edges after approval.\n");
+    const writeCall = result.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []).find((call) => call.id === "call-write-plan");
+    assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, planFilePath);
+  });
+
+  it("stops Plan Mode plain-text repair after two reminders instead of looping until max iterations", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-repair-limit-"));
+    const planFilePath = getPlanFilePath("session-plan-repair-limit", cwd);
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        return { content: "当前处于 Plan Mode，我不能修改源码文件，请你手动删除这段代码。" };
+      }
+    };
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "remove edges" }],
+      model: "test-model",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
+      cwd,
+      sessionId: "session-plan-repair-limit",
+      planState: {
+        mode: "planning",
+        sessionId: "session-plan-repair-limit",
+        planFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "remove edges" },
+        feedbackMessages: []
+      }
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 3);
+    assert.equal(result.messages.filter((message) => message.role === "system" && String(message.content).includes("Plan Mode is still active")).length, 2);
   });
 
 });

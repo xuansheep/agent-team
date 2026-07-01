@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { checkToolPermission } from "../../src/permissions/checkToolPermission.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
-import { approvePlan, buildApprovedPlanHandoff, enterPlanMode, exitPlanMode, planModeExitHandoffMarker, planModeExitPlanExistsMarker, readPlanOrRecoverFromTranscript, recoverPlanFromTranscript, resolvePlanApproval, runWorkflowAfterPlanApproval } from "../../src/plans/planSession.js";
+import { approvePlan, buildApprovedPlanHandoff, enterPlanMode, exitPlanMode, readPlanOrRecoverFromTranscript, recoverPlanFromTranscript, resolvePlanApproval, runWorkflowAfterPlanApproval } from "../../src/plans/planSession.js";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 import { PlanSessionState } from "../../src/plans/planSession.js";
 
@@ -135,7 +135,7 @@ describe("Plan Mode V2", () => {
     assert.equal((await checkToolPermission(tools.get("Write"), { file_path: ".session/plans/not-current.md", content: "x" }, { ...permissions, cwd })).decision, "deny");
   });
 
-  it("requests a simplified approval when exiting without a written plan", async () => {
+  it("rejects ExitPlanMode when no plan has been written", async () => {
     const cwd = await workspace();
     const { state } = enterPlanMode({
       sessionId: "session-1",
@@ -144,16 +144,7 @@ describe("Plan Mode V2", () => {
       permissions: { mode: "default", allow: [], ask: [], deny: [] }
     });
 
-    const result = await exitPlanMode(state);
-    const approved = approvePlan(result.state, result.plan.document);
-    const resolved = resolvePlanApproval(approved, "continue");
-
-    assert.equal(result.state.mode, "waiting_approval");
-    assert.equal(result.plan.document, "");
-    assert.equal(result.plan.empty, true);
-    assert.equal(result.event.type, "plan_approval_requested");
-    assert.equal(result.event.empty, true);
-    assert.deepEqual(buildApprovedPlanHandoff(resolved.state), { request: "build", [planModeExitHandoffMarker]: true, [planModeExitPlanExistsMarker]: false });
+    await assert.rejects(() => exitPlanMode(state), /Please write your plan to this file before calling ExitPlanMode/);
   });
 
   it("requests approval when exiting with a plan draft", async () => {
@@ -170,9 +161,10 @@ describe("Plan Mode V2", () => {
 
     assert.equal(result.state.mode, "waiting_approval");
     assert.equal(result.plan.sessionId, "session-1");
-    assert.equal(result.plan.document, "# Plan\n\nDo it.");
+    assert.equal("document" in result.plan, false);
+    assert.equal(await readPlan(state.planFilePath), "# Plan\n\nDo it.\n");
     assert.equal(result.plan.planFilePath, state.planFilePath);
-    assert.deepEqual(result.event, { type: "plan_approval_requested", session_id: "session-1", document: "# Plan\n\nDo it.", plan_file_path: state.planFilePath });
+    assert.deepEqual(result.event, { type: "plan_approval_requested", session_id: "session-1", plan_file_path: state.planFilePath });
   });
 
   it("carries ExitPlanMode requested permissions into approval and handoff metadata", async () => {
@@ -187,7 +179,7 @@ describe("Plan Mode V2", () => {
 
     const requestedPermissions = [{ tool: "Bash", prompt: "run tests" }];
     const result = await exitPlanMode(state, { requestedPermissions });
-    const approved = approvePlan(result.state, result.plan.document);
+    const approved = approvePlan(result.state, ((await readPlan(state.planFilePath)) ?? "").trim());
 
     assert.deepEqual(result.state.requestedPermissions, requestedPermissions);
     assert.deepEqual(result.plan.requestedPermissions, requestedPermissions);
@@ -285,10 +277,11 @@ describe("Plan Mode V2", () => {
 
     await writePlan(enteredData.state.planFilePath, "# Plan\nTool path.\n");
     const exited = await tools.get("ExitPlanMode").execute({ state: enteredData.state }, { cwd });
-    const exitedData = exited.data as { state: PlanSessionState; plan: { document: string } };
+    const exitedData = exited.data as { state: PlanSessionState; plan: { planFilePath: string } };
 
     assert.equal(exitedData.state.mode, "waiting_approval");
-    assert.match(exitedData.plan.document, /Tool path/);
+    assert.equal("document" in exitedData.plan, false);
+    assert.match((await readPlan(exitedData.plan.planFilePath)) ?? "", /Tool path/);
     assert.equal((exited.data as { event: { type: string } }).event.type, "plan_approval_requested");
   });
 
@@ -310,9 +303,10 @@ describe("Plan Mode V2", () => {
 
     await writePlan(state.planFilePath, "# Plan\n\nUse the plan file only.\n");
     const exited = await tools.get("ExitPlanMode").execute({ state }, { cwd });
-    const exitedData = exited.data as { plan: { document: string } };
+    const exitedData = exited.data as { plan: { planFilePath: string } };
 
-    assert.equal(exitedData.plan.document, "# Plan\n\nUse the plan file only.");
+    assert.equal("document" in exitedData.plan, false);
+    assert.equal(await readPlan(exitedData.plan.planFilePath), "# Plan\n\nUse the plan file only.\n");
   });
 
   it("accepts tui-code style no-argument EnterPlanMode calls", async () => {
@@ -456,6 +450,8 @@ describe("Plan Mode V2", () => {
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /What Happens in Plan Mode/);
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /Pure research\/exploration tasks \(use the Agent tool with explore agent instead\)/);
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /This tool REQUIRES user approval/);
+    assert.match(toolPrompt(tools.get("EnterPlanMode")), /only the current plan file is editable/i);
+    assert.match(toolPrompt(tools.get("EnterPlanMode")), /source files are forbidden/i);
 
     assert.equal(tools.get("ExitPlanMode").isConcurrencySafe?.(), true);
     assert.equal(await tools.get("ExitPlanMode").requiresUserInteraction?.({}), true);

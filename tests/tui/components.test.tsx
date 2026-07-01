@@ -8420,7 +8420,7 @@ describe("InteractionArea", () => {
     output.cleanup();
   });
 
-  it("keeps choices and prompt together in the bottom interaction area", () => {
+  it("hides the prompt while a choice is active in the bottom interaction area", () => {
 
 
 
@@ -8804,7 +8804,7 @@ describe("InteractionArea", () => {
 
 
 
-    assert.match(frame, /> 1\. Allow once/);
+    assert.match(frame, /1\. Allow once\s+✓/);
 
 
 
@@ -8836,7 +8836,7 @@ describe("InteractionArea", () => {
 
 
 
-    assert.match(frame, /Type a request or \/help/);
+    assert.doesNotMatch(frame, /Type a request or \/help/);
 
 
 

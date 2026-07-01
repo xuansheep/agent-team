@@ -138,7 +138,7 @@ describe("runtime context attachments", () => {
     assert.match(system, /Execute immediately/);
   });
 
-  it("injects full Plan Mode instructions and the current draft on the first planning turn", async () => {
+  it("injects full Plan Mode instructions without exposing the current draft on the first planning turn", async () => {
     const cwd = await workspace();
     const planFilePath = join(cwd, ".session", "plans", "session-1.md");
     await mkdir(join(cwd, ".session", "plans"), { recursive: true });
@@ -172,10 +172,17 @@ describe("runtime context attachments", () => {
     assert.match(systemContent, /First Turn/);
     assert.match(systemContent, /Plan File Structure/);
     assert.match(systemContent, /When to Converge/);
+    assert.match(systemContent, /Plan mode is active/i);
+    assert.match(systemContent, /Current plan file:/);
+    assert.match(systemContent, /only file you are allowed to edit/i);
     assert.match(systemContent, /AskUserQuestion/);
+    assert.match(systemContent, /ExitPlanMode/);
     assert.match(systemContent, /call ExitPlanMode/);
     assert.match(systemContent, /Do NOT ask about plan approval via text or AskUserQuestion/);
-    assert.match(systemContent, /# Draft/);
+    assert.doesNotMatch(systemContent, /ExitPlanMode\.plan/);
+    assert.doesNotMatch(systemContent, /Pass the complete plan/);
+    assert.doesNotMatch(systemContent, /# Draft/);
+    assert.doesNotMatch(systemContent, /Read first\./);
   });
 
   it("tells the model to create the plan file when no plan exists yet", () => {
@@ -183,8 +190,12 @@ describe("runtime context attachments", () => {
 
     assert.match(attachment.content, /No plan has been saved yet/);
     assert.match(attachment.content, /Create your plan at \.session\/plans\/session-1\.md using Write/);
-    assert.match(attachment.content, /only file you are allowed to edit/);
-    assert.match(attachment.content, /ExitPlanMode\.plan/);
+    assert.match(attachment.content, /Current plan file:/);
+    assert.match(attachment.content, /only file you are allowed to edit/i);
+    assert.match(attachment.content, /AskUserQuestion/);
+    assert.match(attachment.content, /ExitPlanMode/);
+    assert.doesNotMatch(attachment.content, /ExitPlanMode\.plan/);
+    assert.doesNotMatch(attachment.content, /Pass the complete plan/);
   });
 
   it("keeps Auto Mode instructions visible during Plan Mode when entered from auto", async () => {
@@ -272,7 +283,9 @@ describe("runtime context attachments", () => {
     assert.match(attachment.content, /Read the existing plan file/);
     assert.match(attachment.content, /Different task/);
     assert.match(attachment.content, /Same task, continuing/);
-    assert.match(attachment.content, /ExitPlanMode\.plan/);
+    assert.match(attachment.content, /edit the current plan file with the revised complete plan/);
+    assert.match(attachment.content, /call ExitPlanMode with no plan text/);
+    assert.doesNotMatch(attachment.content, /ExitPlanMode\.plan/);
     assert.match(attachment.content, /Do not assume the existing plan is relevant/);
   });
 
@@ -404,7 +417,10 @@ describe("runtime context attachments", () => {
     assert.ok(systemMessages.some((content) => /Follow the iterative workflow/i.test(content)));
     assert.ok(systemMessages.some((content) => /AskUserQuestion/i.test(content)));
     assert.ok(systemMessages.some((content) => /ExitPlanMode for plan approval/i.test(content)));
+    assert.ok(systemMessages.some((content) => /Call ExitPlanMode only after the current plan file contains the complete plan/i.test(content)));
     assert.ok(systemMessages.some((content) => /Never ask about plan approval via plain text or AskUserQuestion/i.test(content)));
+    assert.ok(systemMessages.every((content) => !/ExitPlanMode\.plan/.test(content)));
+    assert.ok(systemMessages.every((content) => !/Pass the complete plan/.test(content)));
   });
 
   it("does not repeat Plan Mode reminders one human turn after a reminder", async () => {

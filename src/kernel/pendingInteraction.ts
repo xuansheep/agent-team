@@ -4,7 +4,6 @@ import type { PendingInteraction } from "./session.js";
 
 export type PlanApprovalPendingInput = {
   sessionId: string;
-  document: string;
   planFilePath: string;
   planHash: string;
   requestedPermissions?: PlanRequestedPermission[];
@@ -16,7 +15,7 @@ export function createPlanApprovalPending(input: PlanApprovalPendingInput): Extr
     type: "plan_approval",
     id: randomUUID(),
     sessionId: input.sessionId,
-    document: input.document,
+
     planFilePath: input.planFilePath,
     planHash: input.planHash,
     empty: input.empty,

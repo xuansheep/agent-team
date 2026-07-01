@@ -16,7 +16,7 @@ export type KernelStatus =
 export type PendingInteraction =
   | { type: "tool_permission"; id: string; sessionId: string; runId?: string; tool: string; input: unknown; reason?: string; rule?: string }
   | { type: "ask_user_question"; id: string; sessionId: string; runId?: string; toolCallId: string; questions: unknown[] }
-  | { type: "plan_approval"; id: string; sessionId: string; document: string; planFilePath: string; planHash?: string; empty?: boolean; requestedPermissions?: PlanRequestedPermission[] }
+  | { type: "plan_approval"; id: string; sessionId: string; planFilePath: string; planHash?: string; empty?: boolean; requestedPermissions?: PlanRequestedPermission[] }
   | { type: "interrupt_confirmation"; id: string; sessionId: string; message: string };
 
 export type WorkflowBinding = {
@@ -25,6 +25,20 @@ export type WorkflowBinding = {
   approvalId?: string;
   planHash?: string;
 };
+
+export type PlanApprovalResolveMetadata = {
+  permissionMode?: Exclude<ToolPermissionContext["mode"], "plan">;
+  clearContext?: boolean;
+  feedback?: unknown;
+};
+
+export type KernelExecutionHandoff = {
+  clearContext: boolean;
+  permissionMode: Exclude<ToolPermissionContext["mode"], "plan">;
+  initialInput?: string;
+  handoff: unknown;
+};
+
 
 export type KernelSession = {
   id: string;
@@ -39,7 +53,7 @@ export type KernelSession = {
 
 export type KernelIntent =
   | { type: "submit_user_message"; content: string }
-  | { type: "resolve_plan_approval"; decision: "continue" | "stay"; feedback?: unknown }
+  | { type: "resolve_plan_approval"; decision: "continue" | "stay"; metadata?: PlanApprovalResolveMetadata }
   | { type: "answer_user_question"; interactionId: string; answer: unknown }
   | { type: "resolve_tool_permission"; interactionId: string; decision: "allow_once" | "deny_once" };
 

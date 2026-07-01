@@ -4,7 +4,9 @@ import { hasModelUsage } from "../model/usage.js";
 import { buildAutoModeAttachment, buildAutoModeExitAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { withRuntimeAttachments } from "../context/messages.js";
 import { readPlan } from "../plans/planFiles.js";
-import type { PlanSessionState } from "../plans/planSession.js";
+import { normalizePlanModeToolCalls } from "../plans/planToolInput.js";
+import { isBlockedPlanModePlainText, isPlanModeRepairToolResult, isSourceEditPermissionQuestion, planModeNoToolReminder, sourceEditPermissionQuestionMessage } from "../plans/planGuards.js";
+import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } from "../plans/planSession.js";
 import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { executeToolCalls } from "../tools/orchestration.js";
@@ -37,6 +39,7 @@ export class RuntimeTurnExecutor {
     const kernelTools = createKernelToolRegistry(input.tools);
     const permissionKernel = new PermissionKernel();
     await emit(input, { type: "runtime_turn_started", session_id: input.sessionId, run_id: input.runId });
+    let planModePlainTextRepairCount = 0;
 
     for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
       const { response } = await this.requestModel({
@@ -63,15 +66,27 @@ export class RuntimeTurnExecutor {
           messages.push({ role: "assistant", content: response.content });
           await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content });
         }
+        if (input.permissions.mode === "plan" && input.planState?.mode === "planning" && (isBlockedPlanModePlainText(response.content) || previousMessageRequiresPlanModeRepair(messages))) {
+          if (planModePlainTextRepairCount < 2) {
+            planModePlainTextRepairCount += 1;
+            messages.push({ role: "system", content: planModeNoToolReminder(input.permissions.planFilePath) });
+            continue;
+          }
+        }
         return { status: "completed", messages };
       }
+      planModePlainTextRepairCount = 0;
 
-      const toolCalls = await executableToolCalls(response.tool_calls, input.tools);
+      const toolCalls = normalizePlanModeToolCalls(
+        await executableToolCalls(response.tool_calls, input.tools),
+        input.permissions.mode === "plan" ? input.permissions.planFilePath : undefined
+      );
       messages.push({ role: "assistant", content: response.content ?? "", tool_calls: toolCalls });
       await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content ?? "" });
 
       const permissionResults: Array<{ call: ModelToolCall; decision: "allow" | "deny"; error?: string }> = [];
       let planModePermissionBlocked = false;
+      let pendingPlanApprovalCall: ModelToolCall | undefined;
 
       for (const call of toolCalls) {
         const tool = input.tools.get(call.name);
@@ -86,6 +101,11 @@ export class RuntimeTurnExecutor {
         });
         if (permission.decision === "ask") {
           if (input.permissions.mode === "plan") {
+            if (call.name === "ExitPlanMode") {
+              pendingPlanApprovalCall = call;
+              permissionResults.push({ call, decision: "allow" });
+              continue;
+            }
             const error = permissionDeniedMessage(call.name, permission.reason ?? permission.rule ?? "interactive permission required");
             permissionResults.push({ call, decision: "deny", error });
             planModePermissionBlocked = true;
@@ -127,8 +147,6 @@ export class RuntimeTurnExecutor {
         for (const result of permissionResults) {
           if (result.decision === "deny") {
             const error = result.error ?? permissionDeniedMessage(result.call.name, "Permission denied");
-            await emit(input, { type: "runtime_tool_invoked", session_id: input.sessionId, run_id: input.runId, tool_call_id: result.call.id, tool: result.call.name, input: result.call.input });
-            await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: result.call.id, tool: result.call.name, error });
             messages.push(permissionDeniedToolMessage(result.call.id, error));
             continue;
           }
@@ -137,7 +155,10 @@ export class RuntimeTurnExecutor {
         continue;
       }
 
-      const executions = await executeToolCalls(toolCalls, input.tools, {
+      const callsToExecute = pendingPlanApprovalCall
+        ? toolCalls.slice(0, toolCalls.indexOf(pendingPlanApprovalCall))
+        : toolCalls;
+      const executions = await executeToolCalls(callsToExecute, input.tools, {
         cwd: input.cwd,
         sessionId: input.sessionId,
         runId: input.runId,
@@ -153,6 +174,10 @@ export class RuntimeTurnExecutor {
       for (const execution of executions) {
         const userInput = userInputFromToolResult(execution.call.id, execution.result, input);
         if (userInput) {
+          if (input.permissions.mode === "plan" && execution.call.name === "AskUserQuestion" && isSourceEditPermissionQuestion(execution.call.input)) {
+            messages.push({ role: "tool", tool_call_id: execution.call.id, content: sourceEditPermissionQuestionMessage(input.permissions.planFilePath) });
+            continue;
+          }
           await emit(input, { type: "runtime_user_input_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: userInput.toolCallId, questions: userInput.questions });
           return { status: "waiting_user_input", messages, request: userInput };
         }
@@ -162,6 +187,18 @@ export class RuntimeTurnExecutor {
         if (planApproval) {
           await emit(input, planApproval.event);
           return { status: "waiting_plan_approval", messages, plan: planApproval.plan, planState: planApproval.state, usage: response.usage };
+        }
+      }
+
+      if (pendingPlanApprovalCall) {
+        try {
+          const planApproval = await requestPlanApprovalFromRuntime(input, pendingPlanApprovalCall.input);
+          messages.push(planApproval.toolMessage(pendingPlanApprovalCall.id));
+          await emit(input, planApproval.event);
+          return { status: "waiting_plan_approval", messages, plan: planApproval.plan, planState: planApproval.state, usage: response.usage };
+        } catch (error) {
+          messages.push({ role: "tool", tool_call_id: pendingPlanApprovalCall.id, content: planApprovalBlockedMessage(error, input.permissions.planFilePath) });
+          continue;
         }
       }
     }
@@ -175,12 +212,16 @@ function modelVisibleTools(input: RuntimeTurnInput): Tool[] {
 }
 
 async function executableToolCalls(calls: ModelToolCall[], tools: RuntimeTurnInput["tools"]): Promise<ModelToolCall[]> {
-  for (let index = 0; index < calls.length; index += 1) {
-    if (await tools.get(calls[index].name).requiresUserInteraction?.(calls[index].input)) {
-      return calls.slice(0, index + 1);
-    }
+  const interactionCall = await firstUserInteractionTool(calls, tools);
+  if (!interactionCall) return calls;
+  return interactionCall.name === "ExitPlanMode" ? calls.slice(0, calls.indexOf(interactionCall) + 1) : [interactionCall];
+}
+
+async function firstUserInteractionTool(calls: ModelToolCall[], tools: RuntimeTurnInput["tools"]): Promise<ModelToolCall | undefined> {
+  for (const call of calls) {
+    if (await tools.get(call.name).requiresUserInteraction?.(call.input)) return call;
   }
-  return calls;
+  return undefined;
 }
 
 async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[]> {
@@ -386,6 +427,47 @@ function skippedPlanModeToolMessage(toolCallId: string, toolName: string): Model
       reason: `Skipped ${toolName} because another Plan Mode tool call was denied. Re-plan using only read-only tools or the current plan file.`
     })
   };
+}
+
+function previousMessageRequiresPlanModeRepair(messages: ModelMessage[]): boolean {
+  const previous = messages.at(-2);
+  return previous?.role === "tool" && isPlanModeRepairToolResult(previous.content);
+}
+
+function planApprovalBlockedMessage(error: unknown, planFilePath?: string): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  const path = planFilePath ? ` Current plan file: ${planFilePath}.` : "";
+  return `${detail}${path} Stay in Plan Mode, write the plan file, then call ExitPlanMode again.`;
+}
+
+async function requestPlanApprovalFromRuntime(input: RuntimeTurnInput, toolInput: unknown): Promise<{
+  state: PlanSessionState;
+  plan: PlanApprovalRequest;
+  event: Extract<RuntimeEvent, { type: "plan_approval_requested" }>;
+  toolMessage: (toolCallId: string) => ModelMessage;
+}> {
+  if (!input.planState) throw new Error("Plan Mode is not active");
+  const result = await exitPlanMode(input.planState, exitPlanRequest(toolInput));
+  return {
+    state: result.state,
+    plan: result.plan,
+    event: result.event as Extract<RuntimeEvent, { type: "plan_approval_requested" }>,
+    toolMessage: (toolCallId) => toolMessage(toolCallId, { output: `Plan approval requested for ${result.plan.sessionId}`, data: result }, input.tools.get("ExitPlanMode"))
+  };
+}
+
+function exitPlanRequest(input: unknown): { requestedPermissions?: PlanRequestedPermission[] } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const value = input as { allowedPrompts?: unknown };
+  return {
+    requestedPermissions: Array.isArray(value.allowedPrompts) ? value.allowedPrompts.filter(isRequestedPermission) : undefined
+  };
+}
+
+function isRequestedPermission(value: unknown): value is PlanRequestedPermission {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as { tool?: unknown; prompt?: unknown };
+  return item.tool === "Bash" && typeof item.prompt === "string";
 }
 
 function planApprovalFromToolResult(result: ToolResult | undefined): { state: PlanSessionState; plan: PlanApprovalRequest; event: Extract<RuntimeEvent, { type: "plan_approval_requested" }> } | undefined {

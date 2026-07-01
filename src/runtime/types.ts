@@ -10,7 +10,7 @@ export type { PermissionMode } from "../permissions/PermissionMode.js";
 
 export type PlanApprovalRequest = {
   sessionId: string;
-  document: string;
+
   planFilePath: string;
   empty?: boolean;
   requestedPermissions?: PlanRequestedPermission[];
@@ -37,7 +37,7 @@ export type RuntimePermissionDecision = "allow" | "deny";
 export type PlanModeEvent =
   | { type: "plan_mode_entered"; session_id: string; plan_file_path: string }
   | { type: "plan_draft_updated"; session_id: string; plan_file_path: string }
-  | { type: "plan_approval_requested"; session_id: string; document: string; plan_file_path: string; empty?: boolean; requested_permissions?: PlanRequestedPermission[] }
+  | { type: "plan_approval_requested"; session_id: string; plan_file_path: string; empty?: boolean; requested_permissions?: PlanRequestedPermission[] }
   | { type: "plan_approval_resolved"; session_id: string; decision: "continue" | "stay" };
 
 export type RuntimeEvent =

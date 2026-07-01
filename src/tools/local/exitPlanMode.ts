@@ -88,12 +88,12 @@ export const exitPlanModeTool: Tool = {
 
 function exitPlanModePendingApprovalMessage(result: { output?: string; error?: string; data?: unknown }): string | undefined {
   if (result.error) return result.error;
-  const data = result.data as { plan?: { document?: unknown; planFilePath?: unknown; empty?: unknown } } | undefined;
+  const data = result.data as { plan?: { planFilePath?: unknown; empty?: unknown } } | undefined;
   const plan = data?.plan;
   if (!plan) return result.output;
   const planFilePath = typeof plan.planFilePath === "string" && plan.planFilePath.trim() ? plan.planFilePath.trim() : undefined;
   const savedLine = planFilePath ? ` The plan file is saved at: ${planFilePath}.` : "";
-  if (plan.empty === true || (typeof plan.document === "string" && !plan.document.trim())) {
+  if (plan.empty === true) {
     return `Exit Plan Mode has requested user approval without a written plan.${savedLine} Wait for the user's approval or feedback before proceeding.`;
   }
   return `Plan approval has been requested from the user.${savedLine} Wait for the user's approval or feedback before proceeding.`;

@@ -26,7 +26,12 @@ function planFileWriteDecision(input: unknown, context: ToolPermissionCheckConte
   const cwd = context.cwd ?? process.cwd();
   const target = isAbsolute(filePath) ? resolve(filePath) : resolve(cwd, filePath);
   const plan = isAbsolute(planFilePath) ? resolve(planFilePath) : resolve(cwd, planFilePath);
-  if (target !== plan) return { decision: "deny", reason: "Plan Mode writes are limited to the current plan file" };
+  if (target !== plan) {
+    return {
+      decision: "deny",
+      reason: `Plan Mode writes are limited to the current plan file. Use Write/Edit/MultiEdit only with file_path exactly ${planFilePath}; do not edit ${filePath}. Write the implementation plan to the plan file, then call ExitPlanMode.`
+    };
+  }
   return { decision: "allow", reason: "Plan Mode plan file write" };
 }
 
