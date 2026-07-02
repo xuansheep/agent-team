@@ -266,8 +266,7 @@ describe("WorkflowEngine", () => {
       plan_approval_feedback: "Also update README."
     }, { permissionMode: "acceptEdits", clearContext: true });
 
-    const firstUser = requests[0]?.messages.find((message) => message.role === "user");
-    const firstUserText = String(firstUser?.content ?? "");
+    const firstUserText = nonRuntimeUserText(requests[0]);
 
     assert.match(firstUserText, /"request": "Implement the following plan:\\n\\n# Plan\\nBuild it\.\\n\\nUser feedback on this plan: Also update README\."/);
     assert.match(firstUserText, /"clear_context": true/);
@@ -279,9 +278,9 @@ describe("WorkflowEngine", () => {
       approved_plan: "# Plan\nBuild it."
     }, { permissionMode: "acceptEdits" });
 
-    const keepContextUser = requests[0]?.messages.find((message) => message.role === "user");
-    assert.doesNotMatch(String(keepContextUser?.content ?? ""), /Implement the following plan/);
-    assert.doesNotMatch(String(keepContextUser?.content ?? ""), /"clear_context": true/);
+    const keepContextUserText = nonRuntimeUserText(requests[0]);
+    assert.doesNotMatch(keepContextUserText, /Implement the following plan/);
+    assert.doesNotMatch(keepContextUserText, /"clear_context": true/);
   });
 
   it("does not persist internal Plan Mode handoff markers in run start metadata", async () => {
@@ -311,11 +310,8 @@ describe("WorkflowEngine", () => {
     const summaries = await new RunStore(runRoot).listRuns();
     assert.equal(summaries[0]?.inputPreview, "Ready empty exit.");
 
-    const system = requests[0]?.messages
-      .filter((message) => message.role === "system")
-      .map((message) => String(message.content))
-      .join("\n\n") ?? "";
-    const user = String(requests[0]?.messages.find((message) => message.role === "user")?.content ?? "");
+    const system = allRequestText(requests[0]);
+    const user = nonRuntimeUserText(requests[0]);
     assert.match(system, /ATTACHMENT plan_mode_exit/);
     assert.doesNotMatch(user, new RegExp(planModeExitHandoffMarker));
     assert.doesNotMatch(user, new RegExp(planModeExitPlanExistsMarker));
@@ -681,6 +677,22 @@ describe("WorkflowEngine", () => {
   });
 
 });
+
+function requestMessageText(message: ModelRequest["messages"][number]): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n");
+}
+
+function allRequestText(request: ModelRequest | undefined): string {
+  return request?.messages.map(requestMessageText).join("\n\n") ?? "";
+}
+
+function nonRuntimeUserText(request: ModelRequest | undefined): string {
+  return request?.messages
+    .filter((message) => message.role === "user" && !message.metadata?.runtimeAttachment)
+    .map(requestMessageText)
+    .join("\n\n") ?? "";
+}
 
 async function latestRunId(root: string): Promise<string> {
   const runs = await readdir(root, { withFileTypes: true });

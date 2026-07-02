@@ -39,6 +39,7 @@ type ResponsesStreamChunk = {
   type?: string;
   delta?: string;
   item?: ResponsesOutputItem;
+  response?: ResponsesBody;
 };
 
 export class ResponsesApiProvider implements ModelProvider {
@@ -53,6 +54,7 @@ export class ResponsesApiProvider implements ModelProvider {
     const response = await fetchProvider(endpoint, {
       method: "POST",
       headers: this.headers(request),
+      signal: request.signal,
       body: JSON.stringify(toResponsesRequestBody(request, this.options))
     });
 
@@ -68,6 +70,7 @@ export class ResponsesApiProvider implements ModelProvider {
     const response = await fetchProvider(endpoint, {
       method: "POST",
       headers: this.headers(request, { accept: "text/event-stream" }),
+      signal: request.signal,
       body: JSON.stringify({ ...toResponsesRequestBody(request, this.options), stream: true })
     });
 
@@ -79,6 +82,7 @@ export class ResponsesApiProvider implements ModelProvider {
     const content: string[] = [];
     const thinking: string[] = [];
     const toolCalls: ModelToolCall[] = [];
+    let completedBody: ResponsesBody | undefined;
 
     await consumeSseBlocks(response.body, (data) => {
       const chunk = JSON.parse(data) as ResponsesStreamChunk;
@@ -93,13 +97,27 @@ export class ResponsesApiProvider implements ModelProvider {
       if (chunk.type === "response.output_item.done" && chunk.item?.type === "function_call") {
         toolCalls.push(toModelToolCall(chunk.item));
       }
+      if (chunk.type === "response.output_item.done" && chunk.item?.type === "message" && content.length === 0) {
+        const text = textFromOutputItem(chunk.item);
+        if (text) {
+          content.push(text);
+          onEvent({ type: "content_delta", text });
+        }
+      }
+      if ((chunk.type === "response.completed" || chunk.type === "response.incomplete") && chunk.response) {
+        completedBody = chunk.response;
+      }
       return false;
     });
+    const completed = completedBody ? fromResponsesBody(completedBody) : undefined;
+    const mergedToolCalls = mergeToolCalls(toolCalls, completed?.tool_calls);
 
     return {
-      content: content.length ? content.join("") : undefined,
-      thinking: thinking.length ? thinking.join("") : undefined,
-      tool_calls: toolCalls.length ? toolCalls : undefined
+      content: content.length ? content.join("") : completed?.content,
+      thinking: thinking.length ? thinking.join("") : completed?.thinking,
+      tool_calls: mergedToolCalls.length ? mergedToolCalls : undefined,
+      usage: completed?.usage,
+      stopReason: completed?.stopReason
     };
   }
 
@@ -237,6 +255,20 @@ function fromResponsesBody(body: ResponsesBody): ModelResponse {
     usage: responsesUsage(body.usage),
     stopReason: responsesStopReason(body, toolCalls)
   };
+}
+
+function textFromOutputItem(item: ResponsesOutputItem): string | undefined {
+  const parts = (item.content ?? []).flatMap((part) =>
+    (part.type === "output_text" || part.type === "text") && part.text ? [part.text] : []
+  );
+  return parts.length ? parts.join("") : undefined;
+}
+
+function mergeToolCalls(first: ModelToolCall[], second: ModelToolCall[] | undefined): ModelToolCall[] {
+  if (!second?.length) return first;
+  const byId = new Map<string, ModelToolCall>();
+  for (const call of [...first, ...second]) byId.set(call.id, call);
+  return [...byId.values()];
 }
 
 function responsesUsage(usage: ResponsesBody["usage"]): ModelUsage | undefined {

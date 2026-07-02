@@ -1,8 +1,6 @@
 import { buildPlanModeAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, type RuntimeAttachment } from "../context/attachments.js";
 import { withRuntimeAttachments } from "../context/messages.js";
 import { readPlan } from "../plans/planFiles.js";
-import { normalizePlanModeToolCalls } from "../plans/planToolInput.js";
-import { isBlockedPlanModePlainText, isPlanModeRepairToolResult, isSourceEditPermissionQuestion, planModeNoToolReminder, sourceEditPermissionQuestionMessage } from "../plans/planGuards.js";
 import type { ModelMessage, ModelProvider, ModelToolCall } from "../providers/types.js";
 import { PermissionKernel } from "./permissions/permissionKernel.js";
 import { PlanModeController } from "./plan/planModeController.js";
@@ -33,8 +31,6 @@ export class QueryEngine {
       status: input.session.toolPermissionContext.mode === "plan" ? "planning" : "running_query"
     });
     const messages = await buildQueryMessages(session, input.tools);
-    let planModePlainTextRepairCount = 0;
-
     for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
       const response = await input.provider.generate({
         model: input.model,
@@ -53,21 +49,9 @@ export class QueryEngine {
 
       if (!response.tool_calls?.length) {
         if (response.content !== undefined) messages.push({ role: "assistant", content: response.content });
-        if (session.toolPermissionContext.mode === "plan" && session.planState?.mode === "planning" && (isBlockedPlanModePlainText(response.content) || previousMessageRequiresPlanModeRepair(messages))) {
-          if (planModePlainTextRepairCount < 2) {
-            planModePlainTextRepairCount += 1;
-            messages.push({ role: "system", content: planModeNoToolReminder(session.toolPermissionContext.planFilePath) });
-            continue;
-          }
-        }
         return { session: { ...session, messages, status: "idle_input" } };
       }
-      planModePlainTextRepairCount = 0;
-
-      const calls = normalizePlanModeToolCalls(
-        await callsUntilUserInteraction(response.tool_calls, input.tools, session),
-        session.toolPermissionContext.mode === "plan" ? session.toolPermissionContext.planFilePath : undefined
-      );
+      const calls = await callsUntilUserInteraction(response.tool_calls, input.tools, session);
       messages.push({ role: "assistant", content: response.content ?? "", tool_calls: calls });
 
       let pendingPlanApprovalCall: ModelToolCall | undefined;
@@ -115,10 +99,6 @@ export class QueryEngine {
         const interaction = await tool.requiresUserInteraction(call.input, context);
         if (interaction?.type === "ask_user_question") {
           const result = await tool.execute(call.input, context);
-          if (session.toolPermissionContext.mode === "plan" && call.name === "AskUserQuestion" && isSourceEditPermissionQuestion(call.input)) {
-            messages.push({ role: "tool", tool_call_id: call.id, content: sourceEditPermissionQuestionMessage(session.toolPermissionContext.planFilePath) });
-            continue;
-          }
           return {
             session: reduceKernelSession({ ...session, messages }, {
               type: "pending_interaction_set",
@@ -187,11 +167,6 @@ async function callsUntilUserInteraction(calls: ModelToolCall[], tools: KernelTo
     return call.name === "ExitPlanMode" ? calls.slice(0, index + 1) : [call];
   }
   return calls;
-}
-
-function previousMessageRequiresPlanModeRepair(messages: ModelMessage[]): boolean {
-  const previous = messages.at(-2);
-  return previous?.role === "tool" && isPlanModeRepairToolResult(previous.content);
 }
 
 function planApprovalBlockedMessage(error: unknown, planFilePath?: string): string {

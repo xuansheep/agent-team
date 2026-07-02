@@ -56,6 +56,26 @@ describe("SessionStore", () => {
     assert.deepEqual(restored, planState);
   });
 
+  it("preserves Plan Mode metadata when transcript appends happen concurrently", async () => {
+    const root = await workspace();
+    const store = new SessionStore(root);
+    const planState: PlanSessionState = {
+      mode: "planning",
+      sessionId: "session-plan-race",
+      planFilePath: getPlanFilePath("session-plan-race", root),
+      prePlanMode: "default",
+      originalInput: { request: "build" },
+      feedbackMessages: []
+    };
+
+    await Promise.all([
+      store.savePlanState("session-plan-race", planState),
+      store.appendTranscript("session-plan-race", { role: "user", content: "hello" })
+    ]);
+
+    assert.deepEqual(await store.loadPlanState("session-plan-race"), planState);
+  });
+
   it("keeps plan files recoverable with restored Plan Mode metadata", async () => {
     const root = await workspace();
     const store = new SessionStore(root);

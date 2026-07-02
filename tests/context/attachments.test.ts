@@ -14,12 +14,40 @@ async function workspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agent-team-context-"));
 }
 
+function messageText(message: ModelMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n");
+}
+
+function allMessageText(messages: ModelMessage[]): string {
+  return messages.map(messageText).join("\n\n");
+}
+
+function attachmentTexts(messages: ModelMessage[], type: string): string[] {
+  return messages.map(messageText).filter((content) => hasAttachment(content, type));
+}
+
+function hasAttachment(content: string, type: string): boolean {
+  return new RegExp(`(?:^|\n)ATTACHMENT ${type}\\b`).test(content);
+}
+
+function nonRuntimeUserText(messages: ModelMessage[]): string {
+  return messages
+    .filter((message) => message.role === "user" && !message.metadata?.runtimeAttachment)
+    .map(messageText)
+    .join("\n\n");
+}
+
+function nonRuntimeUserMessage(messages: ModelMessage[]): ModelMessage | undefined {
+  return messages.find((message) => message.role === "user" && !message.metadata?.runtimeAttachment);
+}
+
 describe("runtime context attachments", () => {
   it("injects full Auto Mode instructions on the first auto turn", async () => {
     let systemContent = "";
     const provider: ModelProvider = {
       async generate(request) {
-        systemContent = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        systemContent = allMessageText(request.messages);
         return { content: "working" };
       }
     };
@@ -59,7 +87,7 @@ describe("runtime context attachments", () => {
     let systemMessages: string[] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        systemMessages = request.messages.filter((message) => message.role === "system").map((message) => String(message.content));
+        systemMessages = request.messages.map(messageText);
         return { content: "working" };
       }
     };
@@ -74,8 +102,8 @@ describe("runtime context attachments", () => {
       sessionId: "session-auto"
     });
 
-    assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT auto_mode").length, 1);
-    assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT auto_mode_reminder").length, 1);
+    assert.equal(systemMessages.filter((content) => hasAttachment(content, "auto_mode")).length, 1);
+    assert.equal(systemMessages.filter((content) => hasAttachment(content, "auto_mode_reminder")).length, 1);
     assert.ok(systemMessages.some((content) => /Auto mode still active/.test(content)));
   });
 
@@ -90,7 +118,7 @@ describe("runtime context attachments", () => {
     let secondSystemMessages: string[] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        const systemMessages = request.messages.filter((message) => message.role === "system").map((message) => String(message.content));
+        const systemMessages = request.messages.map(messageText);
         if (!firstSystemMessages.length) firstSystemMessages = systemMessages;
         else secondSystemMessages = systemMessages;
         return { content: "manual mode" };
@@ -108,7 +136,7 @@ describe("runtime context attachments", () => {
     });
 
     assert.equal(first.status, "completed");
-    assert.equal(firstSystemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT auto_mode_exit").length, 1);
+    assert.equal(firstSystemMessages.filter((content) => hasAttachment(content, "auto_mode_exit")).length, 1);
     assert.ok(firstSystemMessages.some((content) => /Auto mode is no longer active/.test(content)));
 
     await new RuntimeTurnExecutor().execute({
@@ -121,7 +149,7 @@ describe("runtime context attachments", () => {
       sessionId: "session-auto-exit"
     });
 
-    assert.equal(secondSystemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT auto_mode_exit").length, 1);
+    assert.equal(secondSystemMessages.filter((content) => hasAttachment(content, "auto_mode_exit")).length, 1);
   });
 
   it("injects Auto Mode instructions into workflow node messages when the run uses auto mode", async () => {
@@ -146,7 +174,7 @@ describe("runtime context attachments", () => {
     let systemContent = "";
     const provider: ModelProvider = {
       async generate(request) {
-        systemContent = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        systemContent = allMessageText(request.messages);
         return { content: "planning" };
       }
     };
@@ -164,24 +192,23 @@ describe("runtime context attachments", () => {
     assert.equal(result.status, "completed");
     assert.match(systemContent, /ATTACHMENT plan_mode/);
     assert.match(systemContent, /Plan File Info/);
-    assert.match(systemContent, /previous plan exists/i);
+    assert.match(systemContent, /plan file already exists/i);
     assert.match(systemContent, /Edit or MultiEdit/);
-    assert.match(systemContent, /MUST NOT make edits/);
-    assert.match(systemContent, /sole exception of the current plan file/);
-    assert.match(systemContent, /5-Phase Plan Workflow/);
+    assert.match(systemContent, /MUST NOT make any edits/);
+    assert.match(systemContent, /exception of the plan file mentioned below/);
+    assert.match(systemContent, /Plan Workflow/);
     assert.match(systemContent, /Phase 1: Initial Understanding/);
     assert.match(systemContent, /Phase 2: Design/);
     assert.match(systemContent, /Phase 3: Review/);
     assert.match(systemContent, /Phase 4: Final Plan/);
     assert.match(systemContent, /Phase 5: Call ExitPlanMode/);
-    assert.match(systemContent, /verification steps for testing end-to-end/);
+    assert.match(systemContent, /Include verification describing how to test the changes end-to-end/);
     assert.match(systemContent, /Plan mode is active/i);
-    assert.match(systemContent, /Current plan file:/);
     assert.match(systemContent, /only file you are allowed to edit/i);
     assert.match(systemContent, /AskUserQuestion/);
     assert.match(systemContent, /ExitPlanMode/);
     assert.match(systemContent, /call ExitPlanMode/);
-    assert.match(systemContent, /Do NOT ask about plan approval via text or AskUserQuestion/);
+    assert.match(systemContent, /Do NOT ask about plan approval in any other way/);
     assert.doesNotMatch(systemContent, /ExitPlanMode\.plan/);
     assert.doesNotMatch(systemContent, /Pass the complete plan/);
     assert.doesNotMatch(systemContent, /# Draft/);
@@ -191,9 +218,8 @@ describe("runtime context attachments", () => {
   it("tells the model to create the plan file when no plan exists yet", () => {
     const attachment = buildPlanModeAttachment({ sessionId: "session-1", planFilePath: ".session/plans/session-1.md" });
 
-    assert.match(attachment.content, /No plan has been saved yet/);
-    assert.match(attachment.content, /Create your plan at \.session\/plans\/session-1\.md using Write/);
-    assert.match(attachment.content, /Current plan file:/);
+    assert.match(attachment.content, /No plan file exists yet/);
+    assert.match(attachment.content, /create your plan at \.session\/plans\/session-1\.md using Write/i);
     assert.match(attachment.content, /only file you are allowed to edit/i);
     assert.match(attachment.content, /AskUserQuestion/);
     assert.match(attachment.content, /ExitPlanMode/);
@@ -207,7 +233,7 @@ describe("runtime context attachments", () => {
     let systemContent = "";
     const provider: ModelProvider = {
       async generate(request) {
-        systemContent = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        systemContent = allMessageText(request.messages);
         return { content: "planning under auto" };
       }
     };
@@ -235,7 +261,7 @@ describe("runtime context attachments", () => {
     let systemContent = "";
     const provider: ModelProvider = {
       async generate(request) {
-        systemContent = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        systemContent = allMessageText(request.messages);
         return { content: "planning without auto semantics" };
       }
     };
@@ -286,8 +312,7 @@ describe("runtime context attachments", () => {
     assert.match(attachment.content, /Read the existing plan file/);
     assert.match(attachment.content, /Different task/);
     assert.match(attachment.content, /Same task, continuing/);
-    assert.match(attachment.content, /edit the current plan file with the revised complete plan/);
-    assert.match(attachment.content, /call ExitPlanMode with no plan text/);
+    assert.match(attachment.content, /always edit the plan file one way or the other before calling ExitPlanMode/);
     assert.doesNotMatch(attachment.content, /ExitPlanMode\.plan/);
     assert.match(attachment.content, /Do not assume the existing plan is relevant/);
   });
@@ -301,7 +326,7 @@ describe("runtime context attachments", () => {
     let secondSystemMessages: string[] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        const systemMessages = request.messages.filter((message) => message.role === "system").map((message) => String(message.content));
+        const systemMessages = request.messages.map(messageText);
         if (!firstSystemMessages.length) firstSystemMessages = systemMessages;
         else secondSystemMessages = systemMessages;
         return { content: "planning" };
@@ -363,7 +388,7 @@ describe("runtime context attachments", () => {
     let systemMessages: string[] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        systemMessages = request.messages.filter((message) => message.role === "system").map((message) => String(message.content));
+        systemMessages = request.messages.map(messageText);
         return { content: "revised" };
       }
     };
@@ -378,8 +403,8 @@ describe("runtime context attachments", () => {
       sessionId: "session-1"
     });
 
-    assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode").length, 1);
-    assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode_reminder").length, 0);
+    assert.equal(systemMessages.filter((content) => hasAttachment(content, "plan_mode")).length, 1);
+    assert.equal(systemMessages.filter((content) => hasAttachment(content, "plan_mode_reminder")).length, 0);
   });
 
   it("injects a sparse Plan Mode reminder after five human turns", async () => {
@@ -399,7 +424,7 @@ describe("runtime context attachments", () => {
     let systemMessages: string[] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        systemMessages = request.messages.filter((message) => message.role === "system").map((message) => String(message.content));
+        systemMessages = request.messages.map(messageText);
         return { content: "revised" };
       }
     };
@@ -414,14 +439,13 @@ describe("runtime context attachments", () => {
       sessionId: "session-1"
     });
 
-    assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode").length, 1);
-    assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode_reminder").length, 1);
+    assert.equal(systemMessages.filter((content) => hasAttachment(content, "plan_mode")).length, 1);
+    assert.equal(systemMessages.filter((content) => hasAttachment(content, "plan_mode_reminder")).length, 1);
     assert.ok(systemMessages.some((content) => /Plan mode still active/i.test(content)));
     assert.ok(systemMessages.some((content) => /Follow the 5-phase workflow/i.test(content)));
     assert.ok(systemMessages.some((content) => /AskUserQuestion/i.test(content)));
-    assert.ok(systemMessages.some((content) => /ExitPlanMode for plan approval/i.test(content)));
-    assert.ok(systemMessages.some((content) => /Call ExitPlanMode only after the current plan file contains the complete plan/i.test(content)));
-    assert.ok(systemMessages.some((content) => /Never ask about plan approval via plain text or AskUserQuestion/i.test(content)));
+    assert.ok(systemMessages.some((content) => /ExitPlanMode \(for plan approval\)/i.test(content)));
+    assert.ok(systemMessages.some((content) => /Never ask about plan approval via text or AskUserQuestion/i.test(content)));
     assert.ok(systemMessages.every((content) => !/ExitPlanMode\.plan/.test(content)));
     assert.ok(systemMessages.every((content) => !/Pass the complete plan/.test(content)));
   });
@@ -432,7 +456,7 @@ describe("runtime context attachments", () => {
     const capturedSystemMessages: string[][] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        capturedSystemMessages.push(request.messages.filter((message) => message.role === "system").map((message) => String(message.content)));
+        capturedSystemMessages.push(request.messages.map(messageText));
         return { content: "planning" };
       }
     };
@@ -453,8 +477,8 @@ describe("runtime context attachments", () => {
 
     const fifthTurnSystem = capturedSystemMessages[4] ?? [];
     const sixthTurnSystem = capturedSystemMessages[5] ?? [];
-    assert.equal(fifthTurnSystem.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode_reminder").length, 1);
-    assert.equal(sixthTurnSystem.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode_reminder").length, 1);
+    assert.equal(fifthTurnSystem.filter((content) => hasAttachment(content, "plan_mode_reminder")).length, 1);
+    assert.equal(sixthTurnSystem.filter((content) => hasAttachment(content, "plan_mode_reminder")).length, 1);
   });
 
   it("injects a full Plan Mode reminder on the sixth Plan Mode attachment", async () => {
@@ -463,7 +487,7 @@ describe("runtime context attachments", () => {
     const capturedSystemMessages: string[][] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        capturedSystemMessages.push(request.messages.filter((message) => message.role === "system").map((message) => String(message.content)));
+        capturedSystemMessages.push(request.messages.map(messageText));
         return { content: "planning" };
       }
     };
@@ -483,8 +507,8 @@ describe("runtime context attachments", () => {
     }
 
     const twentyFirstTurnSystem = capturedSystemMessages[20] ?? [];
-    assert.equal(twentyFirstTurnSystem.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode").length, 2);
-    assert.ok(twentyFirstTurnSystem.some((content) => /5-Phase Plan Workflow/.test(content)));
+    assert.equal(twentyFirstTurnSystem.filter((content) => hasAttachment(content, "plan_mode")).length, 2);
+    assert.ok(twentyFirstTurnSystem.some((content) => /Plan Workflow/.test(content)));
   });
 
   it("resets the Plan Mode full reminder cycle after a plan mode exit attachment", async () => {
@@ -508,7 +532,7 @@ describe("runtime context attachments", () => {
     let systemMessages: string[] = [];
     const provider: ModelProvider = {
       async generate(request) {
-        systemMessages = request.messages.filter((message) => message.role === "system").map((message) => String(message.content));
+        systemMessages = request.messages.map(messageText);
         return { content: "planning" };
       }
     };
@@ -523,8 +547,8 @@ describe("runtime context attachments", () => {
       sessionId: "session-1"
     });
 
-    assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode").length, 2);
-    assert.ok(systemMessages.some((content) => /5-Phase Plan Workflow/.test(content)));
+    assert.equal(systemMessages.filter((content) => hasAttachment(content, "plan_mode")).length, 2);
+    assert.ok(systemMessages.some((content) => /Plan Workflow/.test(content)));
   });
 
   it("injects a plan mode exit attachment once for approved plan workflow handoff", async () => {
@@ -534,13 +558,13 @@ describe("runtime context attachments", () => {
       { original_input: { request: "build" }, approved_plan: "# Plan\nBuild it.", plan_file_path: ".session/plans/session-1.md" }
     );
 
-    const system = String(messages.find((message) => message.role === "system")?.content ?? "");
+    const system = allMessageText(messages);
     const secondPass = await buildNodeMessages(
       { id: "next", role: "developer", provider: "default", permission_mode: "default" },
       "System prompt",
       { previous_handoff: { instruction: "continue" } }
     );
-    const secondSystem = String(secondPass.find((message) => message.role === "system")?.content ?? "");
+    const secondSystem = allMessageText(secondPass);
 
     assert.match(system, /ATTACHMENT plan_mode_exit/);
     assert.match(system, /## Exited Plan Mode/);
@@ -558,8 +582,8 @@ describe("runtime context attachments", () => {
       { request: "build", [planModeExitHandoffMarker]: true, [planModeExitPlanExistsMarker]: false }
     );
 
-    const system = String(messages.find((message) => message.role === "system")?.content ?? "");
-    const user = String(messages.find((message) => message.role === "user")?.content ?? "");
+    const system = allMessageText(messages);
+    const user = nonRuntimeUserText(messages);
 
     assert.match(system, /ATTACHMENT plan_mode_exit/);
     assert.match(system, /You have exited plan mode\. You can now make edits, run tools, and take actions\./);
@@ -575,13 +599,13 @@ describe("runtime context attachments", () => {
       "System prompt",
       { original_input: { request: "build" }, approved_plan: "# Plan\nBuild it.", plan_approval_feedback: "Also update the README." }
     );
-    const system = String(messages.find((message) => message.role === "system")?.content ?? "");
-    const user = messages.find((message) => message.role === "user");
+    const system = attachmentTexts(messages, "plan_mode_exit").join("\n\n");
+    const user = nonRuntimeUserText(messages);
 
     assert.match(system, /ATTACHMENT plan_mode_exit/);
     assert.doesNotMatch(system, /Also update the README\./);
-    assert.match(String(user?.content), /plan_approval_feedback/);
-    assert.match(String(user?.content), /Also update the README\./);
+    assert.match(user, /plan_approval_feedback/);
+    assert.match(user, /Also update the README\./);
   });
 
   it("keeps approved plan and original input in the workflow handoff payload", async () => {
@@ -590,10 +614,10 @@ describe("runtime context attachments", () => {
       "System prompt",
       { original_input: { request: "build" }, approved_plan: "# Plan\nBuild it." }
     );
-    const user = messages.find((message) => message.role === "user");
+    const user = nonRuntimeUserText(messages);
 
-    assert.match(String(user?.content), /approved_plan/);
-    assert.match(String(user?.content), /original_input/);
+    assert.match(user, /approved_plan/);
+    assert.match(user, /original_input/);
     assert.equal(hasRuntimeAttachment(messages, "plan_mode_exit"), true);
   });
 
@@ -612,8 +636,8 @@ describe("runtime context attachments", () => {
         images: [{ artifact_id: "img-1", path: imagePath, media_type: "image/png" }]
       }
     );
-    const system = String(messages.find((message) => message.role === "system")?.content ?? "");
-    const user = messages.find((message) => message.role === "user");
+    const system = attachmentTexts(messages, "plan_mode_exit").join("\n\n");
+    const user = nonRuntimeUserMessage(messages);
 
     assert.match(system, /ATTACHMENT plan_mode_exit/);
     assert.ok(Array.isArray(user?.content));

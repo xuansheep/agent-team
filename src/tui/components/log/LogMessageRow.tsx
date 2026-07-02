@@ -16,7 +16,7 @@ export function LogMessageRow({ item, detailMode }: { item: TuiLogMessage; detai
     case "assistant":
       return <DotLogMessage color="green" text={item.text} detailText={item.detailText} detailVisible={item.detailVisible} detailMode={detailMode} />;
     case "status":
-      return <DotLogMessage color="yellow" text={item.text} detailText={item.detailText} detailVisible={item.detailVisible} detailMode={detailMode} />;
+      return <StatusLogMessage item={item} detailMode={detailMode} />;
   }
 }
 function UserLogMessage({ item }: { item: TuiLogMessage & { kind: "user" } }) {
@@ -107,6 +107,18 @@ function PlanDocumentBlock({ text, path }: { text: string; path?: string }) {
         <SimpleMarkdown text={text} />
       </Box>
     </MessageResponse>
+  );
+}
+function StatusLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "status" }; detailMode: boolean }) {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text dimColor wrap="wrap">{item.text}</Text>
+      {(detailMode || item.detailVisible) && item.detailText ? (
+        <MessageResponse>
+          <Text dimColor wrap="wrap">{item.detailText}</Text>
+        </MessageResponse>
+      ) : null}
+    </Box>
   );
 }
 function SimpleMarkdown({ text }: { text: string }) {

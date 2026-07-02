@@ -13,13 +13,12 @@ export function buildPlanModeAttachment(session: KernelSession): KernelPlanModeA
     type: "plan_mode",
     planFilePath,
     content: [
-      "Plan Mode is active. Do not implement code or start workflow execution yet.",
+      "Plan Mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools, or otherwise make any changes to the system.",
       `Plan file: ${planFilePath}`,
-      "Use read-only tools to explore the project.",
-      "The current plan file is the only file you may write or edit.",
-      "Use AskUserQuestion when clarification is required.",
-      "Use ExitPlanMode when the plan is ready for approval.",
-      "Do not ask for plan approval in plain text."
+      "This is the only file you may write or edit. All other actions must be read-only.",
+      "Use AskUserQuestion only to clarify requirements or choose between approaches.",
+      "Use ExitPlanMode to request plan approval when the plan file is ready.",
+      "Do not ask for plan approval via plain text or AskUserQuestion."
     ].join("\n")
   };
 }

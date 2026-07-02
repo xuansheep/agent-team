@@ -4,8 +4,6 @@ import { hasModelUsage } from "../model/usage.js";
 import { buildAutoModeAttachment, buildAutoModeExitAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { withRuntimeAttachments } from "../context/messages.js";
 import { readPlan } from "../plans/planFiles.js";
-import { normalizePlanModeToolCalls } from "../plans/planToolInput.js";
-import { isBlockedPlanModePlainText, isPlanModeRepairToolResult, isSourceEditPermissionQuestion, planModeNoToolReminder, sourceEditPermissionQuestionMessage } from "../plans/planGuards.js";
 import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } from "../plans/planSession.js";
 import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
@@ -39,10 +37,10 @@ export class RuntimeTurnExecutor {
     const kernelTools = createKernelToolRegistry(input.tools);
     const permissionKernel = new PermissionKernel();
     await emit(input, { type: "runtime_turn_started", session_id: input.sessionId, run_id: input.runId });
-    let planModePlainTextRepairCount = 0;
-
-    for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
-      const { response } = await this.requestModel({
+    try {
+      for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
+        throwIfAborted(input.abortSignal);
+        const { response } = await this.requestModel({
         provider: input.provider,
         request: {
           model: input.model,
@@ -56,9 +54,11 @@ export class RuntimeTurnExecutor {
             threadId: input.sessionId,
             turnId: `${input.sessionId}:${iteration + 1}`,
             promptCacheKey: input.sessionId
-          }
+          },
+          signal: input.abortSignal
         }
       });
+      throwIfAborted(input.abortSignal);
 
       await emitModelUsage(input, input.model, response);
       if (!response.tool_calls?.length) {
@@ -66,21 +66,9 @@ export class RuntimeTurnExecutor {
           messages.push({ role: "assistant", content: response.content });
           await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content });
         }
-        if (input.permissions.mode === "plan" && input.planState?.mode === "planning" && (isBlockedPlanModePlainText(response.content) || previousMessageRequiresPlanModeRepair(messages))) {
-          if (planModePlainTextRepairCount < 2) {
-            planModePlainTextRepairCount += 1;
-            messages.push({ role: "system", content: planModeNoToolReminder(input.permissions.planFilePath) });
-            continue;
-          }
-        }
         return { status: "completed", messages };
       }
-      planModePlainTextRepairCount = 0;
-
-      const toolCalls = normalizePlanModeToolCalls(
-        await executableToolCalls(response.tool_calls, input.tools),
-        input.permissions.mode === "plan" ? input.permissions.planFilePath : undefined
-      );
+      const toolCalls = await executableToolCalls(response.tool_calls, input.tools);
       messages.push({ role: "assistant", content: response.content ?? "", tool_calls: toolCalls });
       await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content ?? "" });
 
@@ -89,6 +77,7 @@ export class RuntimeTurnExecutor {
       let pendingPlanApprovalCall: ModelToolCall | undefined;
 
       for (const call of toolCalls) {
+        throwIfAborted(input.abortSignal);
         const permission = await permissionKernel.check(kernelTools.get(call.name), call.input, { ...input.permissions, cwd: input.cwd });
         await audit(input, {
           type: "permission_decision",
@@ -162,6 +151,7 @@ export class RuntimeTurnExecutor {
         sessionId: input.sessionId,
         runId: input.runId,
         planState: input.planState,
+        abortSignal: input.abortSignal,
         nodeId: "runtime",
         attempt: iteration + 1,
         auditSink: input.auditSink
@@ -170,13 +160,11 @@ export class RuntimeTurnExecutor {
         onToolComplete: (call, result) => emit(input, { type: "runtime_tool_completed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, result }),
         onToolError: (call, error) => emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error })
       });
+      throwIfAborted(input.abortSignal);
       for (const execution of executions) {
+        throwIfAborted(input.abortSignal);
         const userInput = userInputFromToolResult(execution.call.id, execution.result, input);
         if (userInput) {
-          if (input.permissions.mode === "plan" && execution.call.name === "AskUserQuestion" && isSourceEditPermissionQuestion(execution.call.input)) {
-            messages.push({ role: "tool", tool_call_id: execution.call.id, content: sourceEditPermissionQuestionMessage(input.permissions.planFilePath) });
-            continue;
-          }
           await emit(input, { type: "runtime_user_input_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: userInput.toolCallId, questions: userInput.questions });
           return { status: "waiting_user_input", messages, request: userInput };
         }
@@ -202,8 +190,25 @@ export class RuntimeTurnExecutor {
       }
     }
 
-    return { status: "failed", error: `Exceeded ${maxToolIterations} tool iterations`, messages };
+      return { status: "failed", error: `Exceeded ${maxToolIterations} tool iterations`, messages };
+    } catch (error) {
+      if (isAbortLikeError(error) || input.abortSignal?.aborted) return { status: "aborted", messages };
+      throw error;
+    }
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  const error = new Error("Runtime turn aborted");
+  error.name = "AbortError";
+  throw error;
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  if (error instanceof Error && error.name === "AbortError") return true;
+  return Boolean(error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError");
 }
 
 function modelVisibleTools(input: RuntimeTurnInput): Tool[] {
@@ -340,7 +345,7 @@ function annotatedPlanModeAttachmentTiming(messages: ModelMessage[]): { hasPlanA
 
 function runtimeAttachmentMarker(message: ModelMessage): "plan_mode" | "plan_mode_reminder" | "plan_mode_reentry" | "plan_mode_exit" | undefined {
   if (typeof message.content !== "string") return undefined;
-  const match = /^ATTACHMENT (plan_mode|plan_mode_reminder|plan_mode_reentry|plan_mode_exit)\b/.exec(message.content);
+  const match = /(?:^|\n)ATTACHMENT (plan_mode|plan_mode_reminder|plan_mode_reentry|plan_mode_exit)\b/.exec(message.content);
   return match?.[1] as ReturnType<typeof runtimeAttachmentMarker>;
 }
 
@@ -395,13 +400,13 @@ function runtimeAttachmentInfo(message: ModelMessage): { type: string; humanTurn
   const annotated = message.metadata?.runtimeAttachment;
   if (annotated) return annotated;
   if (typeof message.content !== "string") return undefined;
-  const match = /^ATTACHMENT (auto_mode|auto_mode_reminder|auto_mode_exit)\b/.exec(message.content);
+  const match = /(?:^|\n)ATTACHMENT (auto_mode|auto_mode_reminder|auto_mode_exit)\b/.exec(message.content);
   if (!match) return undefined;
   return { type: match[1] ?? "", humanTurnCount: 0 };
 }
 
 function isHumanTurn(message: ModelMessage): boolean {
-  return message.role === "user";
+  return message.role === "user" && !message.metadata?.runtimeAttachment;
 }
 
 function toolMessage(toolCallId: string, result: ToolResult, tool: Tool): ModelMessage {
@@ -426,11 +431,6 @@ function skippedPlanModeToolMessage(toolCallId: string, toolName: string): Model
       reason: `Skipped ${toolName} because another Plan Mode tool call was denied. Re-plan using only read-only tools or the current plan file.`
     })
   };
-}
-
-function previousMessageRequiresPlanModeRepair(messages: ModelMessage[]): boolean {
-  const previous = messages.at(-2);
-  return previous?.role === "tool" && isPlanModeRepairToolResult(previous.content);
 }
 
 function planApprovalBlockedMessage(error: unknown, planFilePath?: string): string {

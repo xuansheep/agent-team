@@ -193,6 +193,51 @@ describe("ResponsesApiProvider", () => {
     assert.equal(server.requestBody.stream, true);
   });
 
+  it("uses response.completed as the streaming fallback for completed tool calls", async () => {
+    const server = await startSseServer([
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output: [
+            { type: "function_call", call_id: "call-exit", name: "ExitPlanMode", arguments: "{}" }
+          ],
+          usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+        }
+      },
+      "[DONE]"
+    ]);
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
+
+    const result = await provider.stream?.(
+      { model: "gpt-test", messages: [{ role: "user", content: "approve" }], tools: [] },
+      () => undefined
+    );
+
+    assert.deepEqual(result?.tool_calls, [{ id: "call-exit", name: "ExitPlanMode", input: {} }]);
+    assert.deepEqual(result?.usage, { inputTokens: 10, outputTokens: 2, totalTokens: 12 });
+    assert.equal(result?.stopReason, "tool_call");
+  });
+
+  it("streams message text from output_item.done when no delta was emitted", async () => {
+    const server = await startSseServer([
+      { type: "response.output_item.done", item: { type: "message", content: [{ type: "output_text", text: "done" }] } },
+      "[DONE]"
+    ]);
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
+    const deltas: string[] = [];
+
+    const result = await provider.stream?.(
+      { model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] },
+      (event) => {
+        if (event.type === "content_delta") deltas.push(event.text);
+      }
+    );
+
+    assert.deepEqual(deltas, ["done"]);
+    assert.equal(result?.content, "done");
+  });
+
   it("streams reasoning summary deltas as normalized thinking events", async () => {
     const server = await startSseServer([
       { type: "response.reasoning_summary_text.delta", delta: "Checked " },

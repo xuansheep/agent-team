@@ -9,6 +9,7 @@ export type ToolContext = {
   sessionId?: string;
   runId?: string;
   planState?: PlanSessionState;
+  abortSignal?: AbortSignal;
   auditSink?: AuditSink;
 };
 

@@ -24,6 +24,8 @@ export type SessionMetadata = {
 export type SaveSessionMetadataInput = Omit<Partial<SessionMetadata>, "sessionId" | "createdAt" | "updatedAt">;
 
 export class SessionStore {
+  private readonly metadataWriteQueues = new Map<string, Promise<SessionMetadata>>();
+
   constructor(private readonly rootDir = ".session") {}
 
   sessionDir(sessionId: string): string {
@@ -49,6 +51,17 @@ export class SessionStore {
   }
 
   async saveMetadata(sessionId: string, input: SaveSessionMetadataInput): Promise<SessionMetadata> {
+    const previous = this.metadataWriteQueues.get(sessionId) ?? Promise.resolve(undefined as unknown as SessionMetadata);
+    const next = previous.catch(() => undefined).then(() => this.writeMetadata(sessionId, input));
+    this.metadataWriteQueues.set(sessionId, next);
+    try {
+      return await next;
+    } finally {
+      if (this.metadataWriteQueues.get(sessionId) === next) this.metadataWriteQueues.delete(sessionId);
+    }
+  }
+
+  private async writeMetadata(sessionId: string, input: SaveSessionMetadataInput): Promise<SessionMetadata> {
     const now = new Date().toISOString();
     const existing = await this.loadMetadata(sessionId);
     const metadata: SessionMetadata = {

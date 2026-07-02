@@ -10,7 +10,7 @@ import { ensureRefableStdin } from "../inkStdin.js";
 export type InteractionChoice = {
   title: string;
   detail?: string;
-  documentBlock?: { title?: string; text: string; maxLines?: number };
+  documentBlock?: { title?: string; text: string; maxLines?: number; scrollable?: boolean };
   questionNavigation?: QuestionNavigation;
   options: OptionWithDescription<string>[];
   footerActions?: Array<{ label: string; value: string }>;
@@ -86,6 +86,7 @@ export function InteractionArea({
   const [footerIndex, setFooterIndex] = useState(0);
   const [previewNotesActive, setPreviewNotesActive] = useState(false);
   const [choicePromptText, setChoicePromptText] = useState("");
+  const [documentScrollOffset, setDocumentScrollOffset] = useState(0);
   const choicePromptTextRef = useRef("");
   const updateChoicePromptText = (text: string) => {
     choicePromptTextRef.current = text;
@@ -96,8 +97,9 @@ export function InteractionArea({
     setFooterFocused(false);
     setFooterIndex(0);
     setPreviewNotesActive(false);
+    setDocumentScrollOffset(0);
     updateChoicePromptText("");
-  }, [choice?.selectedValue, choice?.title]);
+  }, [choice?.selectedValue, choice?.title, choice?.documentBlock?.text, choice?.documentBlock?.maxLines]);
   const footerActions = choice?.footerActions ?? [];
   const renderedOptions = useMemo(() => {
     if (!choice) return [];
@@ -110,6 +112,15 @@ export function InteractionArea({
     return typeof option?.preview === "string" && option.preview.trim() ? option.preview : "No preview available";
   }, [choice, focusedChoiceValue, hasPreview]);
   const focusedChoiceOption = choice?.options.find((item) => item.value === focusedChoiceValue);
+  const documentLineCount = choice?.documentBlock?.text.split(/\r?\n/).length ?? 0;
+  const documentMaxLines = choice?.documentBlock?.maxLines ?? 18;
+  const documentCanScroll = choice?.documentBlock?.scrollable === true && documentLineCount > documentMaxLines;
+  const scrollDocumentBlock = (delta: number) => {
+    if (!documentCanScroll) return false;
+    const maxOffset = Math.max(0, documentLineCount - documentMaxLines);
+    setDocumentScrollOffset((current) => Math.max(0, Math.min(maxOffset, current + delta)));
+    return true;
+  };
   const hasChoice = Boolean(choice);
   const choiceInputFocused = focusedChoiceOption?.type === "input";
   const promptInputTakesFocus = choice?.promptInputTakesFocus === true;
@@ -199,6 +210,24 @@ export function InteractionArea({
       }
       return;
     }
+    if (choice && _key.escape) {
+      choice.onCancel?.();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (documentCanScroll && !choiceInputFocused) {
+      const pageSize = Math.max(1, documentMaxLines - 1);
+      if (_key.pageUp || _key.wheelUp || input === "\u001b[5~") {
+        scrollDocumentBlock(_key.wheelUp ? -3 : -pageSize);
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (_key.pageDown || _key.wheelDown || input === "\u001b[6~") {
+        scrollDocumentBlock(_key.wheelDown ? 3 : pageSize);
+        event.stopImmediatePropagation();
+        return;
+      }
+    }
     if (choice?.onNavigate && (input === "\u001b[D" || input === "\u001b[Z" || input === "\u001b[C" || input === "\t" || _key.leftArrow || _key.rightArrow || _key.tab)) {
       choice.onNavigate(input === "\u001b[D" || input === "\u001b[Z" || _key.leftArrow || _key.shift ? "previous" : "next");
       event.stopImmediatePropagation();
@@ -248,7 +277,7 @@ export function InteractionArea({
           <Box flexDirection="column">
             {choice.questionNavigation ? <QuestionNavigationBar navigation={choice.questionNavigation} /> : null}
             <SelectHeader title={choice.title} detail={choice.documentBlock ? undefined : choice.detail} />
-            {choice.documentBlock ? <ChoiceDocumentBlock block={choice.documentBlock} /> : null}
+            {choice.documentBlock ? <ChoiceDocumentBlock block={choice.documentBlock} scrollOffset={documentScrollOffset} /> : null}
             {choice.documentBlock && choice.detail ? <ChoiceDetail detail={choice.detail} /> : null}
             <Box flexDirection={hasPreview ? "row" : "column"} gap={hasPreview ? 2 : 0}>
               <Box flexDirection="column" width={hasPreview ? 30 : undefined}>
@@ -498,19 +527,25 @@ function ChoiceDetail({ detail }: { detail: string }) {
   );
 }
 
-function ChoiceDocumentBlock({ block }: { block: { title?: string; text: string; maxLines?: number } }) {
+function ChoiceDocumentBlock({ block, scrollOffset = 0 }: { block: { title?: string; text: string; maxLines?: number; scrollable?: boolean }; scrollOffset?: number }) {
   const lines = block.text.split(/\r?\n/);
   const maxLines = block.maxLines ?? 18;
-  const visible = lines.slice(0, maxLines);
-  const hidden = Math.max(0, lines.length - visible.length);
+  const canScroll = block.scrollable === true && lines.length > maxLines;
+  const maxOffset = Math.max(0, lines.length - maxLines);
+  const offset = canScroll ? Math.max(0, Math.min(maxOffset, scrollOffset)) : 0;
+  const visible = lines.slice(offset, offset + maxLines);
+  const hiddenBefore = canScroll ? offset : 0;
+  const hiddenAfter = canScroll ? Math.max(0, lines.length - offset - visible.length) : Math.max(0, lines.length - visible.length);
   const separator = "╌".repeat(72);
   return (
     <Box flexDirection="column" marginBottom={1}>
       {block.title ? <Text wrap="wrap">{block.title}</Text> : null}
       <Box flexDirection="column" paddingX={1} overflow="hidden">
         <Text dimColor>{separator}</Text>
-        {visible.map((line, index) => <ChoiceDocumentLine key={index} line={line} />)}
-        {hidden ? <Text dimColor>{`... ${hidden} lines hidden`}</Text> : null}
+        {canScroll ? <Text dimColor>{`Lines ${offset + 1}-${offset + visible.length}/${lines.length} · PageUp/PageDown or mouse wheel`}</Text> : null}
+        {hiddenBefore ? <Text dimColor>{`... ${hiddenBefore} lines above`}</Text> : null}
+        {visible.map((line, index) => <ChoiceDocumentLine key={`${offset}:${index}`} line={line} />)}
+        {hiddenAfter ? <Text dimColor>{`... ${hiddenAfter} lines below`}</Text> : null}
         <Text dimColor>{separator}</Text>
       </Box>
     </Box>

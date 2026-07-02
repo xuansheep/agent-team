@@ -75,65 +75,51 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
       type: "plan_mode_reminder",
       content: [
         attachmentMarker("plan_mode_reminder"),
-        "Plan mode still active. Stay read-only except for the current plan file.",
-        "Follow the 5-phase workflow: Initial Understanding, Design, Review, Final Plan, then Call ExitPlanMode.",
-        "End turns only with AskUserQuestion for clarifications or ExitPlanMode for plan approval.",
-        "Call ExitPlanMode only after the current plan file contains the complete plan.",
-        "Never ask about plan approval via plain text or AskUserQuestion."
+        `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${input.planFilePath}). Follow the 5-phase workflow. End turns with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). Never ask about plan approval via text or AskUserQuestion.`
       ].join("\n")
     };
   }
 
   const planFileInfo = input.draft === undefined
-    ? `No plan has been saved yet. Create your plan at ${input.planFilePath} using Write.`
-    : `A previous plan exists at ${input.planFilePath}. Read it and make incremental edits using Edit or MultiEdit.`;
+    ? `No plan file exists yet. You should create your plan at ${input.planFilePath} using Write.`
+    : `A plan file already exists at ${input.planFilePath}. You can read it and make incremental edits using Edit or MultiEdit.`;
   const lines = [
     attachmentMarker("plan_mode"),
     `Session: ${input.sessionId}`,
-    "Plan mode is active. The user indicated that they do not want execution yet.",
-    "If the user asks you to modify, edit, implement, delete, or otherwise change files while Plan Mode is active, treat that as a request to plan the change, not to perform it.",
-    "You MUST NOT make edits, run non-readonly tools, change configs, make commits, start workflow execution, or otherwise change the system before approval, with the sole exception of the current plan file listed below.",
-    "This supersedes any conflicting instruction.",
+    "Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.",
     "",
-    "## Plan File Info",
-    `Current plan file: ${input.planFilePath}`,
+    "## Plan File Info:",
     planFileInfo,
-    "This is the only file you are allowed to edit while plan mode is active. All other actions must be read-only.",
-    "In Plan Mode, call Write/Edit/MultiEdit with the plan content or edits; the runtime automatically targets the current plan file.",
+    "You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.",
     "",
-    "## 5-Phase Plan Workflow",
-    "You are pair-planning with the user. Work through these phases in order, using read-only exploration plus edits to the current plan file only.",
-    "Do not write source files while planning. Keep the complete plan in the current plan file.",
+    "## Plan Workflow",
     "",
     "### Phase 1: Initial Understanding",
-    "Understand the user's request and quickly inspect the relevant code, configs, tests, and docs with read-only tools.",
-    "Identify existing functions, utilities, architecture, and local patterns that the implementation should reuse.",
-    "Do not ask the user anything that can be discovered from the repository or environment.",
+    "Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions.",
+    "1. Focus on understanding the user's request and the code associated with their request. Actively search for existing functions, utilities, and patterns that can be reused - avoid proposing new code when suitable implementations already exist.",
     "",
     "### Phase 2: Design",
-    "Design the implementation approach from the discovered context.",
-    "Consider important alternatives and tradeoffs internally, then converge on one recommended approach rather than presenting a menu of options.",
-    "Keep the plan scoped to the requested change and compatible with existing code boundaries.",
+    "Goal: Design an implementation approach based on the user's intent and your exploration results from Phase 1.",
     "",
     "### Phase 3: Review",
-    "Review the key files and your proposed approach against the user's intent before finalizing.",
-    "Use AskUserQuestion only for requirements, preferences, tradeoffs, or edge case priorities that cannot be resolved from code.",
-    "If you ask questions, incorporate the answers into the plan file before moving on.",
+    "Goal: Review the plan and ensure alignment with the user's intentions.",
+    "1. Read the critical files identified during exploration to deepen your understanding.",
+    "2. Ensure that the plan aligns with the user's original request.",
+    "3. Use AskUserQuestion to clarify any remaining questions with the user.",
     "",
     "### Phase 4: Final Plan",
-    "Write the final plan to the current plan file using concise markdown headers that fit the request.",
-    "The plan must include context, the recommended approach, critical file paths, existing functions/utilities/patterns to reuse, risks or edge cases, and verification steps for testing end-to-end.",
-    "The plan should be decision-complete: another engineer or agent should be able to implement it without choosing the approach.",
+    "Goal: Write your final plan to the plan file (the only file you can edit).",
+    "- List the paths of files to be modified and what changes in each.",
+    "- Reference existing functions and utilities to reuse, with their file paths.",
+    "- Include verification describing how to test the changes end-to-end.",
     "",
     "### Phase 5: Call ExitPlanMode",
-    "When the current plan file contains the complete final plan, call ExitPlanMode with no plan text to request approval instead of executing it.",
+    "At the very end of your turn, once you have asked the user questions and are happy with your final plan file - you should always call ExitPlanMode to indicate to the user that you are done planning.",
+    "This is critical - your turn should only end with either using the AskUserQuestion tool OR calling ExitPlanMode. Do not stop unless it's for these 2 reasons.",
     "",
-    "### Ending Your Turn",
-    "Your turn should only end by either:",
-    "- Using AskUserQuestion to gather more information.",
-    "- Calling ExitPlanMode after the current plan file contains the complete plan and is ready for approval.",
+    "Important: Use AskUserQuestion ONLY to clarify requirements or choose between approaches. Use ExitPlanMode to request plan approval. Do NOT ask about plan approval in any other way - no text questions, no AskUserQuestion. Phrases like \"Is this plan okay?\", \"Should I proceed?\", \"How does this plan look?\", \"Any changes before we start?\", or similar MUST use ExitPlanMode.",
     "",
-    "Important: Use ExitPlanMode to request plan approval. Do NOT ask about plan approval via text or AskUserQuestion. Phrases like \"should I proceed\", \"does this plan look good\", or \"any changes before we start\" must use ExitPlanMode."
+    "NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using the AskUserQuestion tool. Don't make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins."
   ];
 
   return { type: "plan_mode", content: lines.join("\n") };
@@ -170,7 +156,7 @@ export function buildPlanModeReentryAttachment(input: PlanModeReentryAttachmentI
       "3. Decide how to proceed:",
       "   - Different task: if the user's request is for a different task, start fresh by overwriting the existing plan.",
       "   - Same task, continuing: if this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections.",
-      "4. Continue the plan process, edit the current plan file with the revised complete plan, then call ExitPlanMode with no plan text before requesting approval.",
+      "4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ExitPlanMode.",
       "",
       "Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first."
     ].join("\n")

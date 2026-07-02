@@ -1,5 +1,4 @@
 import type { ToolPermissionContext } from "../../permissions/context.js";
-import type { Tool } from "../../tools/types.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import { adaptToolToKernelTool, type KernelTool } from "./protocol.js";
 
@@ -59,12 +58,10 @@ function planModeModelVisibleTool(tool: KernelTool, context: ToolPermissionConte
     ...tool,
     description: `${tool.description}. In Plan Mode this tool may ONLY write the current plan file: ${planFilePath}. Do not use it to edit source code.`,
     prompt: planModeWritePrompt(tool, planFilePath),
-    input_schema: planModeWriteSchema(tool.legacyTool, planFilePath),
     legacyTool: {
       ...tool.legacyTool,
       description: `${tool.legacyTool.description}. In Plan Mode this tool may ONLY write the current plan file: ${planFilePath}. Do not use it to edit source code.`,
-      prompt: planModeWritePrompt(tool, planFilePath),
-      input_schema: planModeWriteSchema(tool.legacyTool, planFilePath)
+      prompt: planModeWritePrompt(tool, planFilePath)
     }
   };
 }
@@ -73,23 +70,8 @@ function planModeWritePrompt(tool: KernelTool, planFilePath: string): string {
   const base = typeof tool.prompt === "function" ? tool.prompt() : tool.prompt;
   return [
     `Plan Mode restriction: ${tool.name} is available only for maintaining the current plan file: ${planFilePath}.`,
-    "Do not provide file_path in Plan Mode; the runtime will target the current plan file automatically.",
+    `Set file_path exactly to ${planFilePath}.`,
     "Never use this tool to modify source files, configs, tests, generated artifacts, or any non-plan file while Plan Mode is active.",
     base?.trim() ? base.trim() : undefined
   ].filter(Boolean).join("\n\n");
-}
-
-function planModeWriteSchema(tool: Tool, planFilePath: string): Record<string, unknown> {
-  const schema = JSON.parse(JSON.stringify(tool.input_schema ?? {})) as Record<string, unknown>;
-  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
-    ? schema.properties as Record<string, unknown>
-    : undefined;
-  if (properties?.file_path) delete properties.file_path;
-  if (Array.isArray(schema.required)) {
-    const required = schema.required.filter((item): item is string => typeof item === "string" && item !== "file_path");
-    if (required.length) schema.required = required;
-    else delete schema.required;
-  }
-  schema.description = `${typeof schema.description === "string" ? `${schema.description} ` : ""}In Plan Mode, file_path is omitted and automatically set to the current plan file: ${planFilePath}`;
-  return schema;
 }

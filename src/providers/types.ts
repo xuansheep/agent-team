@@ -40,6 +40,7 @@ export type ModelRequest = {
   tools: Tool[];
   response_schema?: unknown;
   context?: ModelRequestContext;
+  signal?: AbortSignal;
 };
 
 export type ModelStopReason = "stop" | "tool_call" | "length" | "content_filter" | "error" | "unknown";

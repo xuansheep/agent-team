@@ -38,6 +38,35 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(result.messages.at(-1)?.content, "ready");
   });
 
+  it("returns aborted when the active model request is cancelled", async () => {
+    const abortController = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const provider: ModelProvider = {
+      async generate(request) {
+        capturedSignal = request.signal;
+        abortController.abort();
+        const error = new Error("request aborted");
+        error.name = "AbortError";
+        throw error;
+      }
+    };
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "hello" }],
+      model: "test-model",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { mode: "default", allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-1",
+      abortSignal: abortController.signal
+    });
+
+    assert.equal(result.status, "aborted");
+    assert.equal(capturedSignal, abortController.signal);
+    assert.deepEqual(result.messages.map((message) => message.role), ["user"]);
+  });
+
   it("executes tool calls and appends tool results before the final assistant message", async () => {
     let calls = 0;
     const provider: ModelProvider = {
@@ -909,22 +938,21 @@ describe("RuntimeTurnExecutor", () => {
   });
 
 
-  it("normalizes Plan Mode Write calls to the current plan file after empty ExitPlanMode is blocked", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-normalize-write-"));
-    const planFilePath = getPlanFilePath("session-plan-normalize-write", cwd);
-    const truncatedPlanFilePath = planFilePath.slice(0, Math.max(3, Math.floor(planFilePath.length / 3)));
+  it("continues streamed Plan Mode turns from plan writes to ExitPlanMode approval", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-stream-exit-"));
+    const planFilePath = getPlanFilePath("session-plan-stream-exit", cwd);
     let calls = 0;
     const provider: ModelProvider = {
-      async generate(request) {
+      async generate() {
+        throw new Error("streaming provider should be used");
+      },
+      async stream(request) {
         calls += 1;
         if (calls === 1) {
-          return { content: "Requesting approval too early.", tool_calls: [{ id: "call-empty-exit", name: "ExitPlanMode", input: {} }] };
+          return { content: "Writing plan.", tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: planFilePath, content: "# Plan\n\nRemove workflows.delivery.edges after approval.\n" } }] };
         }
-        if (calls === 2) {
-          assert.equal(request.messages.at(-1)?.role, "tool");
-          assert.match(String(request.messages.at(-1)?.content), /Please write your plan to this file before calling ExitPlanMode/);
-          return { content: "Writing the missing plan.", tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: truncatedPlanFilePath, content: "# Plan\n\nRemove workflows.delivery.edges after approval.\n" } }] };
-        }
+        assert.equal(request.messages.at(-1)?.role, "tool");
+        assert.match(String(request.messages.at(-1)?.content), /Wrote/);
         return { content: "Requesting approval.", tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: {} }] };
       }
     };
@@ -939,10 +967,10 @@ describe("RuntimeTurnExecutor", () => {
       tools,
       permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
       cwd,
-      sessionId: "session-plan-normalize-write",
+      sessionId: "session-plan-stream-exit",
       planState: {
         mode: "planning",
-        sessionId: "session-plan-normalize-write",
+        sessionId: "session-plan-stream-exit",
         planFilePath,
         prePlanMode: "default",
         originalInput: { request: "remove edges" },
@@ -951,15 +979,63 @@ describe("RuntimeTurnExecutor", () => {
     });
 
     assert.equal(result.status, "waiting_plan_approval");
-    assert.equal(calls, 3);
+    assert.equal(calls, 2);
     assert.equal(await readPlan(planFilePath), "# Plan\n\nRemove workflows.delivery.edges after approval.\n");
-    const writeCall = result.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []).find((call) => call.id === "call-write-plan");
-    assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, planFilePath);
   });
 
-  it("stops Plan Mode plain-text repair after two reminders instead of looping until max iterations", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-repair-limit-"));
-    const planFilePath = getPlanFilePath("session-plan-repair-limit", cwd);
+  it("does not normalize Plan Mode Write calls away from the model-provided file path", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-no-normalize-write-"));
+    const planFilePath = getPlanFilePath("session-plan-no-normalize-write", cwd);
+    const truncatedPlanFilePath = planFilePath.slice(0, Math.max(3, Math.floor(planFilePath.length / 3)));
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return { content: "Requesting approval too early.", tool_calls: [{ id: "call-empty-exit", name: "ExitPlanMode", input: {} }] };
+        }
+        if (calls === 2) {
+          assert.equal(request.messages.at(-1)?.role, "tool");
+          assert.match(String(request.messages.at(-1)?.content), /Please write your plan to this file before calling ExitPlanMode/);
+          return { content: "Writing the missing plan.", tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: truncatedPlanFilePath, content: "# Plan\n\nRemove workflows.delivery.edges after approval.\n" } }] };
+        }
+        assert.equal(request.messages.at(-1)?.role, "tool");
+        assert.match(String(request.messages.at(-1)?.content), /Permission denied for Write: Plan Mode writes are limited to the current plan file/);
+        return { content: "I need to write the exact plan file path." };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.add(localWriteTool);
+    tools.add(exitPlanModeTool);
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "remove edges" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
+      cwd,
+      sessionId: "session-plan-no-normalize-write",
+      planState: {
+        mode: "planning",
+        sessionId: "session-plan-no-normalize-write",
+        planFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "remove edges" },
+        feedbackMessages: []
+      }
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 3);
+    assert.equal(await readPlan(planFilePath), undefined);
+    const writeCall = result.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []).find((call) => call.id === "call-write-plan");
+    assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, truncatedPlanFilePath);
+  });
+
+  it("does not run custom Plan Mode plain-text repair loops", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-no-repair-loop-"));
+    const planFilePath = getPlanFilePath("session-plan-no-repair-loop", cwd);
     let calls = 0;
     const provider: ModelProvider = {
       async generate() {
@@ -975,10 +1051,10 @@ describe("RuntimeTurnExecutor", () => {
       tools: new ToolRegistry(),
       permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
       cwd,
-      sessionId: "session-plan-repair-limit",
+      sessionId: "session-plan-no-repair-loop",
       planState: {
         mode: "planning",
-        sessionId: "session-plan-repair-limit",
+        sessionId: "session-plan-no-repair-loop",
         planFilePath,
         prePlanMode: "default",
         originalInput: { request: "remove edges" },
@@ -987,8 +1063,8 @@ describe("RuntimeTurnExecutor", () => {
     });
 
     assert.equal(result.status, "completed");
-    assert.equal(calls, 3);
-    assert.equal(result.messages.filter((message) => message.role === "system" && String(message.content).includes("Plan Mode is still active")).length, 2);
+    assert.equal(calls, 1);
+    assert.equal(result.messages.filter((message) => String(message.content).includes("Plan Mode is still active")).length, 0);
   });
 
 });

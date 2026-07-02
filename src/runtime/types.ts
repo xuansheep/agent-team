@@ -63,6 +63,7 @@ export type RuntimeTurnInput = {
   runId?: string;
   eventSink?: (event: RuntimeEvent) => void | Promise<void>;
   auditSink?: AuditSink;
+  abortSignal?: AbortSignal;
   permissionCallback?: (request: RuntimePermissionRequest) => RuntimePermissionDecision | Promise<RuntimePermissionDecision>;
   planState?: PlanSessionState;
 };
@@ -72,4 +73,5 @@ export type RuntimeTurnResult =
   | { status: "waiting_permission"; messages: ModelMessage[]; request?: RuntimePermissionRequest }
   | { status: "waiting_user_input"; messages: ModelMessage[]; request: RuntimeUserInputRequest }
   | { status: "waiting_plan_approval"; messages: ModelMessage[]; plan: PlanApprovalRequest; planState: PlanSessionState; usage?: ModelUsage }
+  | { status: "aborted"; messages: ModelMessage[] }
   | { status: "failed"; error: string; messages: ModelMessage[] };

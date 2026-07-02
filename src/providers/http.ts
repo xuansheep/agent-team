@@ -15,14 +15,17 @@ export function buildApiKeyHeaders(apiKey: string, mode: ApiKeyMode): Record<str
 }
 
 export async function fetchProvider(endpoint: string, init: Parameters<typeof fetch>[1]): Promise<Awaited<ReturnType<typeof fetch>>> {
+  const signal = init?.signal;
   let lastError: unknown;
   for (let attempt = 1; attempt <= providerNetworkAttempts; attempt += 1) {
+    throwIfAborted(signal);
     try {
       return await fetch(endpoint, init);
     } catch (error) {
+      if (isAbortError(error) || signal?.aborted) throw error;
       lastError = error;
       if (attempt === providerNetworkAttempts) break;
-      await delay(attempt * 25);
+      await delay(attempt * 25, signal);
     }
   }
 
@@ -131,6 +134,38 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function isAbortError(error: unknown): boolean {
+  if (error instanceof Error && error.name === "AbortError") return true;
+  if (error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError") return true;
+  return false;
+}
+
+function throwIfAborted(signal: AbortSignal | null | undefined): void {
+  if (!signal?.aborted) return;
+  throw abortError(signal);
+}
+
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error("Provider request aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function delay(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal ? abortError(signal) : new Error("Provider request aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

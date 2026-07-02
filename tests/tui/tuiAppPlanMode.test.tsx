@@ -244,7 +244,7 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Draft the migration first.");
 
     assert.equal(starts, 0);
-    assert.match(output.lastFrame() ?? "", /Plan Mode/);
+    assert.match(output.lastFrame() ?? "", /mode Plan/);
     assert.match(output.lastFrame() ?? "", /Draft the migration first\./);
     assert.doesNotMatch(output.lastFrame() ?? "", /Plan draft updated/);
 
@@ -264,6 +264,46 @@ describe("TuiApp global Plan Mode", () => {
 
     assert.equal(starts, 0);
     assert.match(output.lastFrame() ?? "", /Plan Mode/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("aborts an active Plan Mode turn on Escape and ignores late provider output", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    let capturedSignal: AbortSignal | undefined;
+    let resolveLate: ((value: { content: string }) => void) | undefined;
+    const provider: ModelProvider = {
+      async generate(request) {
+        capturedSignal = request.signal;
+        return new Promise((resolve, reject) => {
+          resolveLate = resolve;
+          request.signal?.addEventListener("abort", () => {
+            const error = new Error("aborted by test");
+            error.name = "AbortError";
+            reject(error);
+          }, { once: true });
+        });
+      }
+    };
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Draft the migration while provider is pending.");
+    await waitForFrame(output, /Draft the migration while provider is pending\./);
+
+    output.stdin.write("");
+    await settleTerminalEscape();
+    await waitForFrame(output, /Plan Mode interrupted; waiting for your input/);
+    resolveLate?.({ content: "Late plan output must not render." });
+    await settleTuiWork();
+
+    assert.equal(starts, 0);
+    assert.equal(capturedSignal?.aborted, true);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Late plan output must not render/);
+    assert.match(output.lastFrame() ?? "", /> Type a request or \/help/);
 
     output.unmount();
     output.cleanup();
@@ -289,6 +329,81 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("renders each Plan Mode assistant response only once", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        return { content: "Unique assistant response." };
+      }
+    };
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Show one assistant response.");
+    await waitForFrame(output, /Unique assistant response\./);
+
+    const frame = output.lastFrame() ?? "";
+    assert.equal((frame.match(/Unique assistant response\./g) ?? []).length, 1);
+    assert.equal(starts, 0);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("keeps earlier Plan Mode logs visible while waiting for approval", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        const last = request.messages.at(-1);
+        if (last?.role === "tool") return { content: "First tool finished." };
+        const text = requestText(request);
+        if (/Ready for approval now/.test(text)) {
+          return { content: "Requesting approval now.", tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: {} }] };
+        }
+        return {
+          content: "First planning response stays visible.",
+          tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePathFromRequest(request), content: "# Plan\n\nKeep earlier logs visible.\n" } }]
+        };
+      }
+    };
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Start with an earlier plan log.");
+    await waitForFrame(output, /First tool finished\./);
+    await sendTuiLine(output, "Ready for approval now.");
+    await waitForFrame(output, /Ready to code\?/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /First planning response stays visible\./);
+    assert.equal(starts, 0);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("shows Plan Mode thinking in the activity status instead of the log", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={hangingPlanProviderFactory} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Keep thinking in status.");
+    await waitForFrame(output, /- Working[.][.][.] [0-9]+s \(Plan Mode is thinking\) -+/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.doesNotMatch(frame, /● Plan Mode is thinking/);
+    assert.equal(starts, 0);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("accepts another prompt after a Plan Mode text turn completes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
@@ -308,6 +423,7 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Second plan turn.");
     await waitForFrame(output, /Second plan turn\./);
     await waitForFrame(output, /Plan response 2\./);
+    await waitForFrame(output, /- Worked for [0-9]+s -+/);
 
     assert.equal(starts, 0);
     assert.equal(calls, 2);
@@ -818,7 +934,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(output.lastFrame() ?? "", /Bash\(prompt: run tests\)/);
 
     output.stdin.write("\r");
-    await settleTuiWork();
+    await waitForArrayItem(inputs, 0);
 
     assertApprovedPlanHandoff(inputs[0], {
       original_input: { request: "Draft the migration first." },
@@ -1009,30 +1125,6 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("rejects a pending plan approval on Escape and continues Plan Mode", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
-    const requests: ModelRequest[] = [];
-    let starts = 0;
-    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);
-
-    await sendTuiLine(output, "/plan");
-    await sendTuiLine(output, "Draft the migration first.");
-    await sendTuiLine(output, "Ready for approval.");
-    await waitForFrame(output, /Ready to code\?/);
-
-    output.stdin.write("\u001b");
-    await settleTerminalEscape();
-    await waitForFrame(output, /Plan Review \(needs revision\)/);
-
-    assert.equal(starts, 0);
-    assert.match(output.lastFrame() ?? "", /> Type a request or \/help/);
-    await waitForRequestContaining(requests, /The agent proposed a plan that was rejected by the user/);
-
-    output.unmount();
-    output.cleanup();
-  });
-
   it("re-enters Plan Mode with the previous approved plan file and re-entry guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const inputs: unknown[] = [];
@@ -1075,7 +1167,7 @@ describe("TuiApp global Plan Mode", () => {
         if (calls === 1) return { content: "Requesting empty exit.", tool_calls: [{ id: "tool-empty-exit", name: "ExitPlanMode", input: {} }] };
         if (calls === 2) {
           assert.match(String(request.messages.at(-1)?.content), /Please write your plan to this file before calling ExitPlanMode/);
-          return { content: "Writing missing plan.", tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePath.slice(0, Math.max(3, Math.floor(planFilePath.length / 3))), content: "# Plan\n\nRemove edges after approval.\n" } }] };
+          return { content: "Writing missing plan.", tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePath, content: "# Plan\n\nRemove edges after approval.\n" } }] };
         }
         return { content: "Requesting approval.", tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: {} }] };
       }
@@ -1294,7 +1386,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(answerText, /"Which rollout path\?"="Staged"/);
     assert.match(answerText, /"Which verification steps\?"="Unit tests"/);
     assert.match(answerText, /You can now continue with the user's answers in mind\./);
-    await waitForFrame(output, /Planning multi-question answer/);
+    await waitForFrame(output, /> Type a request or \/help/);
 
     output.unmount();
     output.cleanup();
@@ -1964,7 +2056,6 @@ describe("TuiApp global Plan Mode", () => {
 
     assert.equal(starts, 0);
     assert.match(frame, /Plan Mode/);
-    assert.match(frame, /User feedback: Split the migration into two smaller phases\./);
     assert.match(frame, /> Type a request or \/help/);
     assert.doesNotMatch(frame, /Type a request or \/help[^\n]*smaller phases/);
     assert.doesNotMatch(frame, /Ctrl\+C stop[^\n]*smaller phases/);
@@ -2137,7 +2228,7 @@ describe("TuiApp global Plan Mode", () => {
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Here is Claude's plan:/);
     assert.match(frame, /Step 01: verify the migration guardrail before executing\./);
-    assert.match(frame, /lines hidden/);
+    assert.match(frame, /lines below/);
     assert.match(frame, /Claude has written up a plan and is ready to execute/);
     assert.match(frame, /Yes, auto-accept edits/);
     assert.match(frame, /Yes, manually approve edits/);
@@ -2215,6 +2306,36 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(output.lastFrame() ?? "", /Claude has written up a plan and is ready to execute/);
     assert.doesNotMatch(output.lastFrame() ?? "", /without a written plan/);
     assert.equal(await readPlan(planFilePath), "# Recovered Plan\n\nUse transcript.\n");
+    assert.equal(starts, 0);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("recovers missing Plan Mode metadata as planning when no ExitPlanMode was recorded", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const sessionId = "session-missing-plan-metadata";
+    const planFilePath = getPlanFilePath(sessionId, cwd);
+    const store = new SessionStore(join(cwd, ".session"));
+    await writePlan(planFilePath, "# Plan\n\nKeep planning before approval.\n");
+    await store.appendTranscript(sessionId, { role: "user", content: "Recover metadata" });
+    await store.appendTranscript(sessionId, { role: "assistant", content: "Plan draft saved." });
+    let starts = 0;
+    const engine = {
+      async listRuns() { return []; },
+      async startInteractive() { starts += 1; return fakeSession(); },
+      async resumeInteractive() { throw new Error("workflow resume must not run for plan session"); }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
+
+    await sendTuiLine(output, "/resume");
+    await waitForFrame(output, /Resume workflow run/);
+    output.stdin.write("\r");
+    await settleTuiWork();
+
+    await waitForFrame(output, /Plan Mode restored/);
+    assert.match(output.lastFrame() ?? "", /Plan draft saved\./);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Ready to code\?/);
     assert.equal(starts, 0);
 
     output.unmount();
@@ -2464,7 +2585,7 @@ function planProvider(requests?: ModelRequest[]): ModelProvider {
 
 function planFilePathFromRequest(request: ModelRequest): string {
   const text = request.messages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content)).join("\n");
-  const match = /Current plan file: (.+)/.exec(text);
+  const match = /(?:Current plan file:|create your plan at|plan file already exists at)\s+(.+?)(?: using Write|\. You can read|$)/i.exec(text);
   if (!match?.[1]) throw new Error("Plan file attachment missing");
   return match[1].trim();
 }
@@ -2488,6 +2609,14 @@ async function makeProjectTmpCwd(prefix: string): Promise<string> {
   const root = resolve(".tmp");
   await mkdir(root, { recursive: true });
   return mkdtemp(join(root, prefix));
+}
+
+async function waitForArrayItem(items: unknown[], index: number): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (items.length > index) return;
+    await settleTuiWork();
+  }
+  assert.ok(items.length > index);
 }
 
 async function waitForRequest(requests: ModelRequest[], text: string): Promise<ModelRequest> {

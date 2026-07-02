@@ -87,6 +87,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     const response = await fetchProvider(endpoint, {
       method: "POST",
       headers: this.headers(),
+      signal: request.signal,
       body: JSON.stringify(toRequestBody(request, this.options))
     });
 
@@ -118,6 +119,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     const response = await fetchProvider(endpoint, {
       method: "POST",
       headers: this.headers({ accept: "text/event-stream" }),
+      signal: request.signal,
       body: JSON.stringify({ ...toRequestBody(request, this.options), stream: true })
     });
 

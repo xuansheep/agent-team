@@ -6,6 +6,22 @@ import { RunLogPanel } from "../../src/tui/components/RunLogPanel.js";
 const transcriptHint = "ctrl + o to view transcript";
 
 describe("RunLogPanel compact tool output", () => {
+  it("renders system status logs without execution dots", () => {
+    const output = render(
+      <RunLogPanel
+        detailMode={false}
+        items={[{ id: "status-1", kind: "status", text: "Plan Mode restored", detailText: "hidden detail" }]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Plan Mode restored/);
+    assert.doesNotMatch(frame, /● Plan Mode restored/);
+    assert.doesNotMatch(frame, /hidden detail/);
+    output.unmount();
+    output.cleanup();
+  });
+
   it("keeps the transcript hint visible for long completed tool output", () => {
     const longLine = "x".repeat(260);
     const detailText = [

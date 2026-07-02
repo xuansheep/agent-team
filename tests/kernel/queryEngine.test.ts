@@ -145,7 +145,7 @@ describe("QueryEngine", () => {
     assert.equal(result.session.status, "waiting_plan_approval");
   });
 
-  it("normalizes Plan Mode write tool paths before permission checks and approval", async () => {
+  it("does not normalize Plan Mode write tool paths before permission checks", async () => {
     const cwd = await workspace();
     let calls = 0;
     const legacy = new ToolRegistry();
@@ -162,11 +162,13 @@ describe("QueryEngine", () => {
     assert.ok(planning.planState);
     const truncatedPlanFilePath = planning.planState.planFilePath.slice(0, Math.max(3, Math.floor(planning.planState.planFilePath.length / 3)));
     const provider: ModelProvider = {
-      async generate() {
+      async generate(request) {
         calls += 1;
         if (calls === 1) return { content: "too early", tool_calls: [{ id: "call-empty-exit", name: "ExitPlanMode", input: {} }] };
-        if (calls === 2) return { content: "write plan", tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: truncatedPlanFilePath, content: "# Plan\n\nKernel normalized this path.\n" } }] };
-        return { content: "approve", tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: {} }] };
+        if (calls === 2) return { content: "write plan", tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: truncatedPlanFilePath, content: "# Plan\n\nKernel should not normalize this path.\n" } }] };
+        assert.equal(request.messages.at(-1)?.role, "tool");
+        assert.match(String(request.messages.at(-1)?.content), /Plan Mode writes are limited to the current plan file/);
+        return { content: "I need to write the exact plan file path." };
       }
     };
 
@@ -177,14 +179,14 @@ describe("QueryEngine", () => {
       tools: createKernelToolRegistry(legacy)
     });
 
-    assert.equal(result.session.status, "waiting_plan_approval");
+    assert.equal(result.session.status, "idle_input");
     assert.equal(calls, 3);
-    assert.equal(await readPlan(planning.planState.planFilePath), "# Plan\n\nKernel normalized this path.\n");
+    assert.equal(await readPlan(planning.planState.planFilePath), undefined);
     const writeCall = result.session.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []).find((call) => call.id === "call-write-plan");
-    assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, planning.planState.planFilePath);
+    assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, truncatedPlanFilePath);
   });
 
-  it("limits Plan Mode plain-text repair reminders", async () => {
+  it("does not run custom Plan Mode plain-text repair reminders", async () => {
     const cwd = await workspace();
     let calls = 0;
     const controller = new PlanModeController();
@@ -204,8 +206,8 @@ describe("QueryEngine", () => {
     });
 
     assert.equal(result.session.status, "idle_input");
-    assert.equal(calls, 3);
-    assert.equal(result.session.messages.filter((message) => message.role === "system" && String(message.content).includes("Plan Mode is still active")).length, 2);
+    assert.equal(calls, 1);
+    assert.equal(result.session.messages.filter((message) => String(message.content).includes("Plan Mode is still active")).length, 0);
   });
 
 });

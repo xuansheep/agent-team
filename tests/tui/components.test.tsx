@@ -2140,7 +2140,7 @@ describe("PromptInput component", () => {
 
 
 
-    assert.deepEqual(resolveActiveChoiceCancel({ mode: "waiting_plan_approval", pendingReview: { nodeId: "product", attempt: 1 } }), { type: "stay_plan", key: "plan:product:1" });
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "waiting_plan_approval", pendingReview: { nodeId: "product", attempt: 1 } }), { type: "cancel_plan_approval", key: "plan:product:1" });
 
 
 
@@ -6912,6 +6912,8 @@ describe("RunLogPanel", () => {
 
     assert.match(compactFrame, /Thinking/);
 
+    assert.doesNotMatch(compactFrame, /● Thinking/);
+
     assert.doesNotMatch(compactFrame, /正在|生成|处理/);
 
 
@@ -6961,6 +6963,8 @@ describe("RunLogPanel", () => {
 
 
     assert.match(detailedFrame, /Thinking/);
+
+    assert.doesNotMatch(detailedFrame, /● Thinking/);
 
     assert.doesNotMatch(detailedFrame, /正在|生成|处理/);
 
@@ -8227,6 +8231,46 @@ describe("InteractionArea", () => {
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Ready to code\?/);
     assert.doesNotMatch(frame, /- Working[.][.][.] 12s -+/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("scrolls long choice document blocks while keeping options visible", async () => {
+    const output = render(
+      <InteractionArea
+        mode="waiting_plan_review"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onPromptEvent={() => undefined}
+        choice={{
+          title: "Ready to code?",
+          documentBlock: {
+            title: "Here is Claude's plan:",
+            text: Array.from({ length: 20 }, (_, index) => `Step ${String(index + 1).padStart(2, "0")}`).join("\n"),
+            maxLines: 5,
+            scrollable: true
+          },
+          selectedValue: "yes",
+          options: [
+            { label: "Yes", value: "yes" },
+            { label: "No, keep planning", value: "stay" }
+          ],
+          hidePromptInput: true,
+          onSubmit: () => undefined
+        }}
+      />
+    );
+
+    assert.match(output.lastFrame() ?? "", /Step 01/);
+    assert.match(output.lastFrame() ?? "", /lines below/);
+    assert.match(output.lastFrame() ?? "", /No, keep planning/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /PageUp\/PageDown or mouse wheel/);
+    assert.match(frame, /No, keep planning/);
 
     output.unmount();
     output.cleanup();

@@ -69,6 +69,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     const response = await fetchProvider(endpoint, {
       method: "POST",
       headers: this.headers(),
+      signal: request.signal,
       body: JSON.stringify(toAnthropicRequestBody(request, this.options))
     });
 
@@ -84,6 +85,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     const response = await fetchProvider(endpoint, {
       method: "POST",
       headers: this.headers({ accept: "text/event-stream" }),
+      signal: request.signal,
       body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options), stream: true })
     });
 
@@ -238,6 +240,11 @@ function toAnthropicMessages(messages: ModelMessage[], promptCache: boolean): Ar
     const previous = anthropicMessages.at(-1);
     if (message.role === "tool" && previous?.fromTool) {
       previous.content.push(...content);
+      continue;
+    }
+    if (role === "user" && previous?.role === "user") {
+      previous.content.push(...content);
+      previous.fromTool = previous.fromTool && message.role === "tool";
       continue;
     }
     anthropicMessages.push({ role, content, fromTool: message.role === "tool" });
