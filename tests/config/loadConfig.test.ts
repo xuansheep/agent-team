@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../../src/config/loadConfig.js";
@@ -277,10 +277,73 @@ workflows:
     edges: []
 `, "utf8");
 
-    const config = await loadConfig(configFile);
+    const homeDir = await mkdtemp(join(tmpdir(), "agent-team-empty-home-"));
+    const config = await loadConfig(configFile, { cwd: dir, homeDir });
 
     assert.equal(config.global_prompt_file, "GLOBAL.md");
     assert.equal(config.global_prompt, "Global safety rules.\nApply to every node.");
+  });
+
+  it("loads user and project AGENTS prompts before configured global prompt", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-team-agents-prompt-"));
+    const homeDir = await mkdtemp(join(tmpdir(), "agent-team-agents-home-"));
+    await mkdir(join(homeDir, ".einsteins"), { recursive: true });
+    await mkdir(join(dir, ".agents"), { recursive: true });
+    await writeFile(join(homeDir, ".einsteins", "AGENTS.md"), "User instructions.\n", "utf8");
+    await writeFile(join(dir, ".agents", "AGENTS.md"), "Project instructions.\n", "utf8");
+    await writeFile(join(dir, "GLOBAL.md"), "Configured instructions.\n", "utf8");
+    const configFile = join(dir, "agent-team.yaml");
+    await writeFile(configFile, `
+global_prompt_file: GLOBAL.md
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: gpt-test
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`, "utf8");
+
+    const config = await loadConfig(configFile, { cwd: dir, homeDir });
+
+    assert.equal(config.global_prompt, "User instructions.\n\nProject instructions.\n\nConfigured instructions.");
+  });
+
+  it("ignores missing AGENTS prompt files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-team-missing-agents-prompt-"));
+    const homeDir = await mkdtemp(join(tmpdir(), "agent-team-missing-agents-home-"));
+    const configFile = join(dir, "agent-team.yaml");
+    await writeFile(configFile, `
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: gpt-test
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`, "utf8");
+
+    const config = await loadConfig(configFile, { cwd: dir, homeDir });
+
+    assert.equal(config.global_prompt, undefined);
   });
 
   it("rejects nodes that reference missing roles", async () => {

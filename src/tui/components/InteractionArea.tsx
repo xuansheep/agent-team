@@ -10,6 +10,7 @@ import { ensureRefableStdin } from "../inkStdin.js";
 export type InteractionChoice = {
   title: string;
   detail?: string;
+  hideTitle?: boolean;
   documentBlock?: { title?: string; text: string; maxLines?: number; scrollable?: boolean };
   questionNavigation?: QuestionNavigation;
   options: OptionWithDescription<string>[];
@@ -276,7 +277,7 @@ export function InteractionArea({
         <Box borderStyle="single" paddingX={1} flexShrink={0} opaque>
           <Box flexDirection="column">
             {choice.questionNavigation ? <QuestionNavigationBar navigation={choice.questionNavigation} /> : null}
-            <SelectHeader title={choice.title} detail={choice.documentBlock ? undefined : choice.detail} />
+            {choice.hideTitle ? null : <SelectHeader title={choice.title} detail={choice.documentBlock ? undefined : choice.detail} />}
             {choice.documentBlock ? <ChoiceDocumentBlock block={choice.documentBlock} scrollOffset={documentScrollOffset} /> : null}
             {choice.documentBlock && choice.detail ? <ChoiceDetail detail={choice.detail} /> : null}
             <Box flexDirection={hasPreview ? "row" : "column"} gap={hasPreview ? 2 : 0}>

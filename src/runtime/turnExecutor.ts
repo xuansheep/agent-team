@@ -1,7 +1,7 @@
 import type { AuditEvent } from "../audit/auditEvent.js";
 import { ModelMessage, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import { hasModelUsage } from "../model/usage.js";
-import { buildAutoModeAttachment, buildAutoModeExitAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
+import { buildAutoModeAttachment, buildAutoModeExitAttachment, buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { withRuntimeAttachments } from "../context/messages.js";
 import { readPlan } from "../plans/planFiles.js";
 import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } from "../plans/planSession.js";
@@ -230,11 +230,15 @@ async function firstUserInteractionTool(calls: ModelToolCall[], tools: RuntimeTu
 
 async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[]> {
   const messages = input.messages.slice();
+  const globalPromptAttachment = hasRuntimeAttachment(messages, "global_prompt")
+    ? undefined
+    : buildGlobalPromptAttachment(input.globalPrompt);
   const toolPromptAttachment = hasRuntimeAttachment(messages, "tool_prompts")
     ? undefined
     : buildToolPromptsAttachment({ tools: modelVisibleTools(input) });
   if (input.permissions.mode !== "plan" || !input.permissions.planFilePath) {
     const attachments: RuntimeAttachment[] = [];
+    if (globalPromptAttachment) attachments.push(globalPromptAttachment);
     if (toolPromptAttachment) attachments.push(toolPromptAttachment);
     if (input.permissions.mode === "auto") {
       const autoTiming = autoModeAttachmentTiming(messages);
@@ -248,6 +252,7 @@ async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[
   const attachmentTiming = planModeAttachmentTiming(messages);
   const draft = attachmentTiming.hasPlanAttachment ? undefined : await readPlan(input.permissions.planFilePath);
   const attachments: RuntimeAttachment[] = [];
+  if (globalPromptAttachment) attachments.push(globalPromptAttachment);
   if (toolPromptAttachment) attachments.push(toolPromptAttachment);
   if (input.planState?.reentry && !hasRuntimeAttachment(messages, "plan_mode_reentry") && draft !== undefined) {
     attachments.push(buildPlanModeReentryAttachment({ planFilePath: input.permissions.planFilePath }));

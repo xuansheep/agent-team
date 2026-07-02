@@ -61,6 +61,7 @@ export type RuntimeTurnInput = {
   cwd: string;
   sessionId: string;
   runId?: string;
+  globalPrompt?: string;
   eventSink?: (event: RuntimeEvent) => void | Promise<void>;
   auditSink?: AuditSink;
   abortSignal?: AbortSignal;

@@ -8236,6 +8236,38 @@ describe("InteractionArea", () => {
     output.cleanup();
   });
 
+  it("can hide an active choice title while keeping actions visible", () => {
+    const output = render(
+      <InteractionArea
+        mode="waiting_plan_review"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onPromptEvent={() => undefined}
+        choice={{
+          title: "Ready to code?",
+          hideTitle: true,
+          selectedValue: "yes",
+          options: [
+            { label: "Yes", value: "yes" },
+            { label: "No, keep planning", value: "stay" }
+          ],
+          hidePromptInput: true,
+          onSubmit: () => undefined
+        }}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.doesNotMatch(frame, /Ready to code\?/);
+    assert.match(frame, /Yes/);
+    assert.match(frame, /No, keep planning/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("scrolls long choice document blocks while keeping options visible", async () => {
     const output = render(
       <InteractionArea

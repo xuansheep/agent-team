@@ -378,8 +378,23 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Ready for approval now.");
     await waitForFrame(output, /Ready to code\?/);
 
-    const frame = output.lastFrame() ?? "";
-    assert.match(frame, /First planning response stays visible\./);
+    const expandedFrame = output.lastFrame() ?? "";
+    assert.match(expandedFrame, /Here is Claude's plan:/);
+    assert.match(expandedFrame, /Keep earlier logs visible\./);
+    assert.doesNotMatch(expandedFrame, /First planning response stays visible\./);
+
+    output.stdin.write("`");
+    await settleTuiWork();
+    const collapsedFrame = output.lastFrame() ?? "";
+    assert.match(collapsedFrame, /First planning response stays visible\./);
+    assert.match(collapsedFrame, /No, keep planning/);
+    assert.doesNotMatch(collapsedFrame, /Here is Claude's plan:/);
+
+    output.stdin.write("`");
+    await settleTuiWork();
+    const restoredFrame = output.lastFrame() ?? "";
+    assert.match(restoredFrame, /Here is Claude's plan:/);
+    assert.doesNotMatch(restoredFrame, /First planning response stays visible\./);
     assert.equal(starts, 0);
 
     output.unmount();
@@ -2200,7 +2215,7 @@ describe("TuiApp global Plan Mode", () => {
   });
 
 
-  it("renders long Plan approval documents in the approval dialog with choices visible", async () => {
+  it("renders long Plan approval documents in the approval dialog with choices visible", async (t) => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-long-plan", cwd);
     const longPlan = Array.from({ length: 80 }, (_, index) => `Step ${String(index + 1).padStart(2, "0")}: verify the migration guardrail before executing.`).join(String.fromCharCode(10));
@@ -2217,6 +2232,12 @@ describe("TuiApp global Plan Mode", () => {
       async startInteractive() { throw new Error("workflow must not start before approval"); },
       async resumeInteractive() { throw new Error("workflow resume must not run for plan session"); }
     };
+    const stdoutRows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+    Object.defineProperty(process.stdout, "rows", { value: 48, configurable: true });
+    t.after(() => {
+      if (stdoutRows) Object.defineProperty(process.stdout, "rows", stdoutRows);
+      else Reflect.deleteProperty(process.stdout, "rows");
+    });
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
 
     await sendTuiLine(output, "/resume");
@@ -2228,7 +2249,9 @@ describe("TuiApp global Plan Mode", () => {
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Here is Claude's plan:/);
     assert.match(frame, /Step 01: verify the migration guardrail before executing\./);
-    assert.match(frame, /lines below/);
+    assert.match(frame, /Lines 1-\d+\/80/);
+    assert.match(frame, /Step 19: verify the migration guardrail before executing\./);
+    assert.match(frame, /Step 20: verify the migration guardrail before executing\./);
     assert.match(frame, /Claude has written up a plan and is ready to execute/);
     assert.match(frame, /Yes, auto-accept edits/);
     assert.match(frame, /Yes, manually approve edits/);

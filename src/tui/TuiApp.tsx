@@ -89,6 +89,8 @@ export function TuiApp({
   const [workStartedAtMs, setWorkStartedAtMs] = useState<number>();
   const [lastWorkDurationMs, setLastWorkDurationMs] = useState<number>();
   const [workStatusDetail, setWorkStatusDetail] = useState<string>();
+  const [planApprovalCollapsed, setPlanApprovalCollapsed] = useState(false);
+  const [planApprovalDocumentOffset, setPlanApprovalDocumentOffset] = useState(0);
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [transcriptMode, setTranscriptMode] = useState(false);
   const [choiceKey, setChoiceKey] = useState("");
@@ -210,6 +212,10 @@ export function TuiApp({
     scrollMainAfterRenderRef.current = false;
     mainScrollRef.current?.scrollToBottom();
   }, [state.logMessages.length, state.mode]);
+  useEffect(() => {
+    setPlanApprovalCollapsed(false);
+    setPlanApprovalDocumentOffset(0);
+  }, [state.pendingReview?.nodeId, state.pendingReview?.attempt, state.pendingReview?.planFilePath, state.pendingReview?.document]);
   useEffect(() => {
     const review = state.pendingReview;
     if (!review?.savedMessage) return;
@@ -475,6 +481,7 @@ export function TuiApp({
         },
         cwd,
         sessionId: currentPlan.sessionId,
+        globalPrompt: config?.global_prompt,
         planState: currentPlan,
         abortSignal: abortController.signal,
         eventSink: (event) => {
@@ -1247,6 +1254,9 @@ ${message.detailText}` : ""}` }
     : undefined;
   const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
   const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : hasPlanQuestion ? "question" : state.mode;
+  const planApprovalActive = interactionMode === "waiting_plan_approval" && Boolean(state.pendingReview);
+  const planApprovalOverlayVisible = planApprovalActive && !planApprovalCollapsed;
+  const planApprovalPlanFilePath = state.pendingReview?.planFilePath ? displayPlanFilePath(state.pendingReview.planFilePath, cwd) : undefined;
   const logMessages = planInteractionLogMessages(state, hasPlanQuestion);
   const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: workStatusDetail });
   const activityStatus = hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus;
@@ -1258,7 +1268,8 @@ ${message.detailText}` : ""}` }
     questions: state.questions,
     isPlanQuestion: Boolean(planQuestionRef.current),
     planFilePath: planQuestionRef.current && planSessionRef.current?.planFilePath ? displayPlanFilePath(planSessionRef.current.planFilePath, cwd) : undefined,
-    planApprovalPlanFilePath: state.pendingReview?.planFilePath ? displayPlanFilePath(state.pendingReview.planFilePath, cwd) : undefined,
+    planApprovalPlanFilePath,
+    planApprovalChoiceOnly: planApprovalActive,
     planApprovalEditorName: state.pendingReview ? externalEditorDisplayName() : undefined,
     showClearContextOnPlanAccept: settings?.showClearContextOnPlanAccept === true,
     contextUsedPercent: state.pendingReview?.contextUsedPercent,
@@ -1401,7 +1412,30 @@ ${message.detailText}` : ""}` }
     };
   }, [stdin, cancelCurrentInteraction, transcriptMode]);
   const layout = layoutMetrics({ terminalRows, choice: activeChoice, activityStatusVisible: Boolean(activityStatus && !activeChoice) });
+  const planApprovalDocumentMaxLines = state.pendingReview ? planApprovalOverlayMaxDocumentLines(state.pendingReview, layout.mainHeight) : 0;
+  const scrollPlanApprovalDocument = (delta: number): boolean => {
+    const review = state.pendingReview;
+    if (!review || !planApprovalOverlayVisible) return false;
+    const lineCount = planApprovalOverlayDocument(review).split(/\r?\n/).length;
+    const maxOffset = Math.max(0, lineCount - planApprovalDocumentMaxLines);
+    if (maxOffset <= 0) return false;
+    setPlanApprovalDocumentOffset((current) => Math.max(0, Math.min(maxOffset, current + delta)));
+    return true;
+  };
+  useEffect(() => {
+    if (planApprovalOverlayVisible) mainScrollRef.current?.scrollTo(0);
+  }, [planApprovalOverlayVisible, state.pendingReview?.document, state.pendingReview?.planFilePath]);
   useInput((input, key, event) => {
+    if (planApprovalActive && input === "`" && !key.ctrl && !key.meta) {
+      setPlanApprovalCollapsed((current) => !current);
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (planApprovalActive && (input === "\u0007" || (key.ctrl && input === "g"))) {
+      void refreshPendingPlanReview({ openEditor: true });
+      event.stopImmediatePropagation();
+      return;
+    }
     if ((input === "o" && key.ctrl) || input === "\u000f") {
       setTranscriptMode((current) => !current);
       event.stopImmediatePropagation();
@@ -1429,6 +1463,16 @@ ${message.detailText}` : ""}` }
       return;
     }
     const mainScroll = mainScrollRef.current;
+    if (planApprovalOverlayVisible && (key.wheelUp || key.pageUp)) {
+      scrollPlanApprovalDocument(key.wheelUp ? -3 : -Math.max(1, planApprovalDocumentMaxLines - 1));
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (planApprovalOverlayVisible && (key.wheelDown || key.pageDown)) {
+      scrollPlanApprovalDocument(key.wheelDown ? 3 : Math.max(1, planApprovalDocumentMaxLines - 1));
+      event.stopImmediatePropagation();
+      return;
+    }
     if (mainScroll && key.wheelUp) {
       scrollMainUp(mainScroll, 3);
       return;
@@ -1437,7 +1481,7 @@ ${message.detailText}` : ""}` }
       scrollMainDown(mainScroll, 3);
       return;
     }
-    if (activeChoice && (key.pageUp || key.pageDown || key.upArrow || key.downArrow || key.return)) return;
+    if (activeChoice && (key.upArrow || key.downArrow || key.return || (!planApprovalOverlayVisible && (key.pageUp || key.pageDown)))) return;
     if (mainScroll && key.pageUp) {
       jumpMainScrollBy(mainScroll, -Math.max(1, Math.floor(mainScroll.getViewportHeight() / 2)));
       return;
@@ -1473,13 +1517,19 @@ ${message.detailText}` : ""}` }
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
       <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} />
-      <ScrollBox ref={mainScrollRef} flexDirection="column" height={layout.mainHeight} stickyScroll>
-        {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
-        <RunLogPanel
-          items={logMessages}
-          detailMode={transcriptMode}
-        />
-        <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
+      <ScrollBox ref={mainScrollRef} flexDirection="column" height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
+        {planApprovalOverlayVisible && state.pendingReview ? (
+          <PlanApprovalOverlay review={state.pendingReview} planFilePath={planApprovalPlanFilePath} editorName={externalEditorDisplayName()} maxDocumentLines={planApprovalDocumentMaxLines} scrollOffset={planApprovalDocumentOffset} />
+        ) : (
+          <>
+            {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
+            <RunLogPanel
+              items={logMessages}
+              detailMode={transcriptMode}
+            />
+            <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
+          </>
+        )}
       </ScrollBox>
       <InteractionArea
         choice={activeChoice}
@@ -2151,6 +2201,7 @@ function buildActiveChoice(input: {
   planFilePath?: string;
   planApprovalPlanFilePath?: string;
   planApprovalEditorName?: string;
+  planApprovalChoiceOnly?: boolean;
   showClearContextOnPlanAccept?: boolean;
   contextUsedPercent?: number;
   isAutoModeAvailable?: boolean;
@@ -2277,8 +2328,9 @@ function buildActiveChoice(input: {
       ];
       return {
         title: "Exit plan mode?",
-        detail: "Claude wants to exit plan mode",
-        documentBlock: {
+        hideTitle: input.planApprovalChoiceOnly === true,
+        detail: input.planApprovalChoiceOnly === true ? undefined : "Claude wants to exit plan mode",
+        documentBlock: input.planApprovalChoiceOnly === true ? undefined : {
           title: "Plan file:",
           text: planApprovalDocument(input.review.document || "No plan found. Please write your plan to the plan file first.", input.planApprovalPlanFilePath),
           maxLines: 6,
@@ -2307,16 +2359,17 @@ function buildActiveChoice(input: {
     );
     return {
       title: "Ready to code?",
-      detail: planApprovalDetail({
+      hideTitle: input.planApprovalChoiceOnly === true,
+      detail: input.planApprovalChoiceOnly === true ? undefined : planApprovalDetail({
         requestedPermissions: input.review.requestedPermissions,
         savedMessage: input.review.savedMessage,
         planFilePath: input.planApprovalPlanFilePath,
         editorName: input.planApprovalEditorName
       }),
-      documentBlock: {
+      documentBlock: input.planApprovalChoiceOnly === true ? undefined : {
         title: "Here is Claude's plan:",
         text: planApprovalDocument(input.review.document, input.planApprovalPlanFilePath),
-        maxLines: 4,
+        maxLines: 20,
         scrollable: true
       },
       options,
@@ -2397,6 +2450,90 @@ function parseStatuslineArgs(args: string[], current: StatusLineElement[]): { el
     text: "Statusline updated",
     detailText: `Current: ${elements.join(", ") || "none"}`
   };
+}
+
+
+function PlanApprovalOverlay({
+  review,
+  planFilePath,
+  editorName,
+  maxDocumentLines,
+  scrollOffset
+}: {
+  review: NonNullable<TuiState["pendingReview"]>;
+  planFilePath?: string;
+  editorName?: string;
+  maxDocumentLines: number;
+  scrollOffset: number;
+}) {
+  const empty = review.empty === true || !review.document.trim();
+  const title = empty ? "Exit plan mode?" : "Ready to code?";
+  const detail = empty
+    ? "Claude wants to exit plan mode"
+    : planApprovalDetail({
+        requestedPermissions: review.requestedPermissions,
+        savedMessage: review.savedMessage,
+        planFilePath,
+        editorName
+      });
+  const documentTitle = empty ? "Plan file:" : "Here is Claude's plan:";
+  const document = planApprovalOverlayDocument(review);
+  const lines = document.split(/\r?\n/);
+  const maxLines = Math.max(1, maxDocumentLines);
+  const canScroll = lines.length > maxLines;
+  const maxOffset = Math.max(0, lines.length - maxLines);
+  const offset = canScroll ? Math.max(0, Math.min(maxOffset, scrollOffset)) : 0;
+  const visible = lines.slice(offset, offset + maxLines);
+  const hiddenBefore = canScroll ? offset : 0;
+  const hiddenAfter = canScroll ? Math.max(0, lines.length - offset - visible.length) : Math.max(0, lines.length - visible.length);
+  const separator = "╌".repeat(72);
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1} flexDirection="column">
+        <Text color="yellow">{title}</Text>
+        {detail.split(/\r?\n/).map((line, index) => (
+          <Text key={index} dimColor wrap="wrap">{line || " "}</Text>
+        ))}
+      </Box>
+      <Text wrap="wrap">{documentTitle}</Text>
+      {planFilePath ? <Text dimColor wrap="wrap">{`Plan saved to: ${planFilePath} · /plan to edit`}</Text> : null}
+      <Box flexDirection="column" paddingX={1} overflow="hidden">
+        <Text dimColor>{separator}</Text>
+        {canScroll ? <Text dimColor>{`Lines ${offset + 1}-${offset + visible.length}/${lines.length} · PageUp/PageDown or mouse wheel`}</Text> : null}
+        {hiddenBefore ? <Text dimColor>{`... ${hiddenBefore} lines above`}</Text> : null}
+        {visible.map((line, index) => <PlanApprovalOverlayLine key={`${offset}:${index}`} line={line} />)}
+        {hiddenAfter ? <Text dimColor>{`... ${hiddenAfter} lines below`}</Text> : null}
+        <Text dimColor>{separator}</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function planApprovalOverlayMaxDocumentLines(review: NonNullable<TuiState["pendingReview"]>, height: number): number {
+  const empty = review.empty === true || !review.document.trim();
+  const detail = empty
+    ? "Claude wants to exit plan mode"
+    : planApprovalDetail({
+        requestedPermissions: review.requestedPermissions,
+        savedMessage: review.savedMessage,
+        planFilePath: review.planFilePath
+      });
+  const document = planApprovalOverlayDocument(review);
+  const documentLines = document.split(/\r?\n/).length;
+  const fixedRows = 1 + detail.split(/\r?\n/).length + 1 + 1 + (review.planFilePath ? 1 : 0) + 2;
+  const available = Math.max(1, height - fixedRows);
+  if (documentLines <= available) return documentLines;
+  return Math.max(1, available - 3);
+}
+
+function planApprovalOverlayDocument(review: NonNullable<TuiState["pendingReview"]>): string {
+  return review.document || "No plan found. Please write your plan to the plan file first.";
+}
+
+function PlanApprovalOverlayLine({ line }: { line: string }) {
+  const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+  if (heading) return <Text bold wrap="wrap">{line}</Text>;
+  return <Text wrap="wrap">{line || " "}</Text>;
 }
 
 function isStatusLineElement(value: string): value is StatusLineElement {
@@ -2495,8 +2632,8 @@ function planApprovalDetail(input: {
     );
   }
   lines.push("Claude has written up a plan and is ready to execute. Would you like to proceed?");
-  if (input.editorName) lines.push(`ctrl-g to edit in ${input.editorName}`);
   if (input.savedMessage) lines.push(input.savedMessage);
+  if (input.editorName) lines.push(`ctrl-g to edit in ${input.editorName}`);
   return lines.join("\n");
 }
 function displayPlanFilePath(planFilePath: string, cwd: string): string {
@@ -2770,7 +2907,7 @@ function questionIsMultiSelect(question: unknown): boolean {
 function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string }; activityStatusVisible?: boolean }): { mainHeight: number; planReviewHeight: number } {
   const headerRows = 3;
   const flowRows = 4;
-  const promptRows = input.activityStatusVisible ? 8 : 6;
+  const promptRows = input.choice ? 0 : input.activityStatusVisible ? 8 : 6;
   const choiceRows = input.choice ? estimateChoiceRows(input.choice) : 0;
   const available = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
   const planReviewHeight = input.planReview ? Math.max(0, Math.min(12, available - 1)) : 0;
@@ -2780,9 +2917,9 @@ function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice
 
 function estimateChoiceRows(choice: InteractionChoice): number {
   const borderRows = 2;
-  const titleRows = 1;
+  const titleRows = choice.hideTitle ? 0 : 1;
   const navigationRows = choice.questionNavigation ? 1 : 0;
-  const detailRows = choice.detail ? choice.detail.split(/\r?\n/).length : 0;
+  const detailRows = choice.hideTitle ? 0 : choice.detail ? choice.detail.split(/\r?\n/).length : 0;
   const documentRows = choice.documentBlock
     ? (choice.documentBlock.title ? 1 : 0) +
       2 +

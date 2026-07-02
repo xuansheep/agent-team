@@ -2,7 +2,7 @@ import { ModelMessage } from "../providers/types.js";
 
 import { Tool } from "../tools/types.js";
 
-export type RuntimeAttachmentType = "plan_mode" | "plan_mode_reminder" | "plan_mode_reentry" | "plan_mode_exit" | "auto_mode" | "auto_mode_reminder" | "auto_mode_exit" | "tool_prompts";
+export type RuntimeAttachmentType = "global_prompt" | "plan_mode" | "plan_mode_reminder" | "plan_mode_reentry" | "plan_mode_exit" | "auto_mode" | "auto_mode_reminder" | "auto_mode_exit" | "tool_prompts";
 
 export type RuntimeAttachment = {
   type: RuntimeAttachmentType;
@@ -27,6 +27,20 @@ export type PlanModeReentryAttachmentInput = {
 export type ToolPromptsAttachmentInput = {
   tools: Tool[];
 };
+
+export function buildGlobalPromptAttachment(prompt: string | undefined): RuntimeAttachment | undefined {
+  const content = prompt?.trim();
+  if (!content) return undefined;
+  return {
+    type: "global_prompt",
+    content: [
+      attachmentMarker("global_prompt"),
+      "## Global Instructions",
+      "",
+      content
+    ].join("\n")
+  };
+}
 
 export function buildAutoModeAttachment(input: { sparse?: boolean } = {}): RuntimeAttachment {
   if (input.sparse) {

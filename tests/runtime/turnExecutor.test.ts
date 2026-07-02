@@ -138,6 +138,43 @@ describe("RuntimeTurnExecutor", () => {
     assert.doesNotMatch(capturedSystem, /Short provider description/);
   });
 
+  it("injects global prompt into plan mode runtime messages once", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-global-prompt-"));
+    const planFilePath = getPlanFilePath("session-global-prompt", cwd);
+    const capturedSystemMessages: string[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        capturedSystemMessages.push(request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n"));
+        return { content: `ready ${capturedSystemMessages.length}` };
+      }
+    };
+    const executor = new RuntimeTurnExecutor();
+    const common = {
+      model: "test-model",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { mode: "plan" as const, allow: [], ask: [], deny: [], planFilePath },
+      cwd,
+      sessionId: "session-global-prompt",
+      globalPrompt: "Custom AGENT instructions."
+    };
+
+    const first = await executor.execute({
+      ...common,
+      messages: [{ role: "user", content: "plan this" }]
+    });
+    const second = await executor.execute({
+      ...common,
+      messages: [...first.messages, { role: "user", content: "continue planning" }]
+    });
+
+    assert.equal(first.status, "completed");
+    assert.equal(second.status, "completed");
+    assert.match(capturedSystemMessages[0] ?? "", /ATTACHMENT global_prompt/);
+    assert.match(capturedSystemMessages[0] ?? "", /Custom AGENT instructions\./);
+    assert.equal((capturedSystemMessages[1]?.match(/ATTACHMENT global_prompt/g) ?? []).length, 1);
+  });
+
   it("runs a plan mode conversation turn without a workflow runner", async () => {
     let workflowRuns = 0;
     const provider: ModelProvider = {
