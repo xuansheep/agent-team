@@ -168,10 +168,13 @@ describe("runtime context attachments", () => {
     assert.match(systemContent, /Edit or MultiEdit/);
     assert.match(systemContent, /MUST NOT make edits/);
     assert.match(systemContent, /sole exception of the current plan file/);
-    assert.match(systemContent, /Iterative Planning Workflow/);
-    assert.match(systemContent, /First Turn/);
-    assert.match(systemContent, /Plan File Structure/);
-    assert.match(systemContent, /When to Converge/);
+    assert.match(systemContent, /5-Phase Plan Workflow/);
+    assert.match(systemContent, /Phase 1: Initial Understanding/);
+    assert.match(systemContent, /Phase 2: Design/);
+    assert.match(systemContent, /Phase 3: Review/);
+    assert.match(systemContent, /Phase 4: Final Plan/);
+    assert.match(systemContent, /Phase 5: Call ExitPlanMode/);
+    assert.match(systemContent, /verification steps for testing end-to-end/);
     assert.match(systemContent, /Plan mode is active/i);
     assert.match(systemContent, /Current plan file:/);
     assert.match(systemContent, /only file you are allowed to edit/i);
@@ -414,7 +417,7 @@ describe("runtime context attachments", () => {
     assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode").length, 1);
     assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode_reminder").length, 1);
     assert.ok(systemMessages.some((content) => /Plan mode still active/i.test(content)));
-    assert.ok(systemMessages.some((content) => /Follow the iterative workflow/i.test(content)));
+    assert.ok(systemMessages.some((content) => /Follow the 5-phase workflow/i.test(content)));
     assert.ok(systemMessages.some((content) => /AskUserQuestion/i.test(content)));
     assert.ok(systemMessages.some((content) => /ExitPlanMode for plan approval/i.test(content)));
     assert.ok(systemMessages.some((content) => /Call ExitPlanMode only after the current plan file contains the complete plan/i.test(content)));
@@ -481,7 +484,7 @@ describe("runtime context attachments", () => {
 
     const twentyFirstTurnSystem = capturedSystemMessages[20] ?? [];
     assert.equal(twentyFirstTurnSystem.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode").length, 2);
-    assert.ok(twentyFirstTurnSystem.some((content) => /Iterative Planning Workflow/.test(content)));
+    assert.ok(twentyFirstTurnSystem.some((content) => /5-Phase Plan Workflow/.test(content)));
   });
 
   it("resets the Plan Mode full reminder cycle after a plan mode exit attachment", async () => {
@@ -521,7 +524,7 @@ describe("runtime context attachments", () => {
     });
 
     assert.equal(systemMessages.filter((content) => content.split("\n")[0] === "ATTACHMENT plan_mode").length, 2);
-    assert.ok(systemMessages.some((content) => /Iterative Planning Workflow/.test(content)));
+    assert.ok(systemMessages.some((content) => /5-Phase Plan Workflow/.test(content)));
   });
 
   it("injects a plan mode exit attachment once for approved plan workflow handoff", async () => {

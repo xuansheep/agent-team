@@ -102,18 +102,18 @@ Only skip EnterPlanMode for simple tasks:
 - Single-line or few-line fixes (typos, obvious bugs, small tweaks)
 - Adding a single function with clear requirements
 - Tasks where the user has given very specific, detailed instructions
-- Pure research/exploration tasks (use the Agent tool with explore agent instead)
+- Pure research/exploration tasks (perform read-only exploration instead)
 
 ## What Happens in Plan Mode
 
-In plan mode, you'll:
-1. Thoroughly explore the codebase using Glob, Grep, and Read tools
-2. Understand existing patterns and architecture
-3. Design an implementation approach
-4. Present your plan to the user for approval
-5. Use AskUserQuestion if you need to clarify approaches
-6. Exit plan mode with ExitPlanMode when ready to implement
-7. Keep all planning edits in the current plan file; source files are forbidden and only the current plan file is editable
+In plan mode, you'll follow the default 5-phase workflow:
+1. Phase 1: Initial Understanding - inspect relevant code, configs, tests, and docs with read-only tools
+2. Phase 2: Design - form one recommended implementation approach from the discovered context
+3. Phase 3: Review - verify the approach against the user's intent and ask clarifying questions only when needed
+4. Phase 4: Final Plan - write a decision-complete markdown plan to the current plan file
+5. Phase 5: Call ExitPlanMode - request approval only after the current plan file contains the complete plan
+
+Keep all planning edits in the current plan file; source files are forbidden and only the current plan file is editable
 
 ## Examples
 
@@ -155,13 +155,12 @@ function enterPlanModeInstructions(message = "Entered plan mode. You should now 
   return [
     message,
     "",
-    "In plan mode, you should:",
-    "1. Thoroughly explore the codebase to understand existing patterns",
-    "2. Identify similar features and architectural approaches",
-    "3. Consider multiple approaches and their trade-offs",
-    "4. Use AskUserQuestion if you need to clarify the approach",
-    "5. Design a concrete implementation strategy",
-    "6. When ready, use ExitPlanMode to present your plan for approval",
+    "In plan mode, follow the default 5-phase workflow:",
+    "1. Phase 1: Initial Understanding - inspect relevant code, configs, tests, and docs with read-only tools",
+    "2. Phase 2: Design - form one recommended implementation approach from the discovered context",
+    "3. Phase 3: Review - verify the approach against the user's intent and use AskUserQuestion only when clarification is needed",
+    "4. Phase 4: Final Plan - write a decision-complete markdown plan to the current plan file",
+    "5. Phase 5: Call ExitPlanMode - request approval only after the current plan file contains the complete plan",
     "",
     "Remember: source files are forbidden in plan mode; only the current plan file is editable. All other exploration must be read-only."
   ].join("\n");

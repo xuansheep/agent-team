@@ -448,7 +448,10 @@ describe("Plan Mode V2", () => {
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /Use this tool proactively/);
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /When to Use This Tool/);
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /What Happens in Plan Mode/);
-    assert.match(toolPrompt(tools.get("EnterPlanMode")), /Pure research\/exploration tasks \(use the Agent tool with explore agent instead\)/);
+    assert.match(toolPrompt(tools.get("EnterPlanMode")), /default 5-phase workflow/);
+    assert.match(toolPrompt(tools.get("EnterPlanMode")), /Phase 1: Initial Understanding/);
+    assert.match(toolPrompt(tools.get("EnterPlanMode")), /Phase 5: Call ExitPlanMode/);
+    assert.match(toolPrompt(tools.get("EnterPlanMode")), /Pure research\/exploration tasks \(perform read-only exploration instead\)/);
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /This tool REQUIRES user approval/);
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /only the current plan file is editable/i);
     assert.match(toolPrompt(tools.get("EnterPlanMode")), /source files are forbidden/i);
