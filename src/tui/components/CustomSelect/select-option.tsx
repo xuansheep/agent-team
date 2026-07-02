@@ -1,4 +1,4 @@
-import React, { ReactNode } from "react";
+import { type ReactNode } from "react";
 import { ListItem } from "./ListItem.js";
 
 export function SelectOption({

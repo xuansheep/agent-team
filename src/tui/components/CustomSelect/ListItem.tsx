@@ -1,4 +1,4 @@
-import React, { ReactNode } from "react";
+import { type ReactNode } from "react";
 import { Box, Text, useDeclaredCursor } from "../../ink.js";
 
 export function ListItem({

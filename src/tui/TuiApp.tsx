@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, relative } from "node:path";
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Box, ScrollBox, Text, useApp, useHasSelection, useInput, useSelection, useStdin, useStdout } from "./ink.js";
 import type { ScrollBoxHandle } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
@@ -89,7 +89,6 @@ export function TuiApp({
   const [workStartedAtMs, setWorkStartedAtMs] = useState<number>();
   const [lastWorkDurationMs, setLastWorkDurationMs] = useState<number>();
   const [clockMs, setClockMs] = useState(() => Date.now());
-  const [planReviewOffset, setPlanReviewOffset] = useState(0);
   const [transcriptMode, setTranscriptMode] = useState(false);
   const [choiceKey, setChoiceKey] = useState("");
   const mainScrollRef = useRef<ScrollBoxHandle>(null);
@@ -1175,7 +1174,6 @@ ${message.detailText}` : ""}` }
     }
     void startRun(event.text);
   };
-  const currentAttempt = currentNodeAttempt(state);
   const workflowNodes = selectedWorkflowId
     ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => ({ id: node.id, role: node.role, model: node.model ?? config.roles[node.role]?.default_model ?? config.providers[node.provider]?.default_model }))
     : undefined;
@@ -1395,8 +1393,6 @@ ${message.detailText}` : ""}` }
         {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
         <RunLogPanel
           items={logMessages}
-          currentNodeId={state.currentNodeId}
-          currentAttempt={currentAttempt}
           detailMode={transcriptMode}
         />
         <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
@@ -2051,14 +2047,6 @@ function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiStat
   if (status === "pending") return "question";
   return "paused";
 }
-function currentNodeAttempt(state: TuiState): number | undefined {
-  if (!state.currentNodeId) return undefined;
-  for (let index = state.nodes.length - 1; index >= 0; index -= 1) {
-    const node = state.nodes[index];
-    if (node.nodeId === state.currentNodeId) return node.attempt;
-  }
-  return undefined;
-}
 function buildActiveChoice(input: {
   mode: TuiState["mode"];
   workflows: string[];
@@ -2685,61 +2673,6 @@ function estimateChoiceRows(choice: InteractionChoice): number {
   return borderRows + navigationRows + titleRows + detailRows + documentRows + Math.max(visibleOptionRows + footerRows, previewRows);
 }
 
-function ActivePlanReviewPanel({ document, height, offset }: { document: string; height: number; offset: number }) {
-  const lines = document.split(/\r?\n/);
-  const maxOffset = maxPlanReviewOffset(document, height);
-  const start = Math.max(0, Math.min(offset, maxOffset));
-  if (height <= 3) {
-    const line = lines[start] ?? "";
-    const hidden = Math.max(0, lines.length - start - (line ? 1 : 0));
-    return (
-      <Box flexDirection="column" height={height} flexShrink={0} overflow="hidden" opaque>
-        <Text wrap="truncate-end">Here is Claude's plan: {line}</Text>
-        {height > 1 && hidden ? <Text dimColor>{`... ${hidden} lines hidden`}</Text> : null}
-      </Box>
-    );
-  }
-  const visibleLines = planReviewVisibleLineCount(height);
-  const visible = lines.slice(start, start + visibleLines);
-  const hidden = Math.max(0, lines.length - start - visible.length);
-  const before = start > 0 ? `${start} previous line${start === 1 ? "" : "s"}` : "";
-  const after = hidden ? `${hidden} lines hidden` : "";
-  const hiddenText = [before, after].filter(Boolean).join(", ");
-  const separator = "╌".repeat(72);
-  return (
-    <Box flexDirection="column" height={height} flexShrink={0} overflow="hidden" opaque>
-      <Text>Here is Claude's plan:</Text>
-      <Text dimColor>{separator}</Text>
-      {visible.map((line, index) => <PlanReviewLine key={index} line={line} />)}
-      {hiddenText ? <Text dimColor>{`... ${hiddenText}`}</Text> : null}
-      {planReviewShowsBottomSeparator(height, hiddenText.length > 0) ? <Text dimColor>{separator}</Text> : null}
-    </Box>
-  );
-}
-
-function planReviewVisibleLineCount(height: number): number {
-  if (height <= 3) return 1;
-  const reservedRows = 2;
-  const hiddenRows = 1;
-  const bottomSeparatorRows = height - reservedRows - hiddenRows >= 2 ? 1 : 0;
-  return Math.max(1, height - reservedRows - hiddenRows - bottomSeparatorRows);
-}
-
-function planReviewShowsBottomSeparator(height: number, hasHiddenText: boolean): boolean {
-  if (height <= 3) return false;
-  const hiddenRows = hasHiddenText ? 1 : 0;
-  return height - 2 - hiddenRows - planReviewVisibleLineCount(height) >= 1;
-}
-
-function maxPlanReviewOffset(document: string, height: number): number {
-  const lineCount = document.split(/\r?\n/).length;
-  return Math.max(0, lineCount - planReviewVisibleLineCount(height));
-}
-
-function PlanReviewLine({ line }: { line: string }) {
-  if (/^(#{1,6})\s+/.test(line)) return <Text bold wrap="wrap">{line}</Text>;
-  return <Text wrap="wrap">{line || " "}</Text>;
-}
 export function jumpMainScrollBy(scroll: Pick<ScrollBoxHandle, "getScrollHeight" | "getViewportHeight" | "getScrollTop" | "getPendingDelta" | "scrollTo" | "scrollToBottom">, delta: number): boolean {
   const max = Math.max(0, scroll.getScrollHeight() - scroll.getViewportHeight());
   const target = scroll.getScrollTop() + scroll.getPendingDelta() + delta;

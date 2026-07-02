@@ -453,8 +453,7 @@ const reconciler = createReconciler<
     node: DOMElement,
     updatePayloadOrType: UpdatePayload | ElementNames,
     typeOrOldProps: ElementNames | Props,
-    oldPropsOrNewProps: Props,
-    newProps?: Props,
+    oldPropsOrNewProps: Props
   ): void {
     const payload =
       typeof updatePayloadOrType === 'string'

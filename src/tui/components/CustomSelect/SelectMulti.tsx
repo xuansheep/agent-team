@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { Box, Text, useInput } from "../../ink.js";
 import type { OptionWithDescription, SelectImageAttachment } from "./select.js";
 import { Select } from "./select.js";

@@ -1,4 +1,3 @@
-import React from "react";
 import { Box, Text } from "../ink.js";
 import { visibleAssistantTextBeforeNodeResult } from "../../team/nodeResult.js";
 import { TuiModelStreamState } from "../state.js";

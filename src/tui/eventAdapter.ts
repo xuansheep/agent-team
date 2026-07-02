@@ -3,7 +3,7 @@ import { StoredEvent } from "../harness/events.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { TuiLogMessage, TuiToolLogMessage } from "./logTypes.js";
 import { TuiConversationItem, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
-import { getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue, truncate } from "./toolDisplay.js";
+import { getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue } from "./toolDisplay.js";
 export function initialTuiState(input: { cwd: string; inputPermissionMode?: PermissionMode }): TuiState {
   return {
     cwd: input.cwd,
@@ -107,14 +107,10 @@ reason：${event.reason}`
       const parentLogId = findToolParentAssistantLog(withTool, event.node_id, attempt);
       return appendToolLog(withTool, event, attempt, toolCallId, parentLogId);
     }
-    case "tool_completed": {
-      const attempt = event.attempt ?? findAttempt(next, event.node_id);
+    case "tool_completed":
       return updateToolLog(updateTool(next, event.tool_call_id, "completed", event.result), event.tool_call_id, "completed", getToolResultDetail(event.result));
-    }
-    case "tool_failed": {
-      const attempt = event.attempt ?? findAttempt(next, event.node_id);
+    case "tool_failed":
       return updateToolLog(updateTool(next, event.tool_call_id, "failed", undefined, event.error), event.tool_call_id, "failed", `错误：${event.error}`);
-    }
     case "permission_requested":
       return appendPermissionLog({
         ...next,

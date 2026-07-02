@@ -1,4 +1,3 @@
-import React from "react";
 import type { BorderStyle } from "../../ink/render-border.js";
 import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.js";
 import { Box, Text } from "../ink.js";

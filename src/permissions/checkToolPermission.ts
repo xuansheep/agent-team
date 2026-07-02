@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { decidePermission } from "../harness/permissions.js";
 import { Tool } from "../tools/types.js";
 import { ToolPermissionCheckContext, ToolPermissionDecision } from "./context.js";

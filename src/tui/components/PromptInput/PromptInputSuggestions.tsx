@@ -1,4 +1,3 @@
-import React from "react";
 import { Box, Text } from "../../ink.js";
 import { SlashCommandSuggestion } from "../../commandCompletion.js";
 

@@ -1,4 +1,3 @@
-import React from "react";
 import { Box, Text } from "../ink.js";
 import { TuiToolState } from "../state.js";
 import { getToolInputDetail, getToolResultDetail } from "../toolDisplay.js";

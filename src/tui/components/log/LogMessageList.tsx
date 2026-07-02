@@ -1,19 +1,14 @@
-import React from "react";
 import { Box } from "../../ink.js";
 import type { TuiLogMessage } from "../../logTypes.js";
 import { LogMessageRow } from "./LogMessageRow.js";
 
 export function LogMessageList({
   items,
-  currentNodeId,
-  currentAttempt,
   detailMode,
   offset = 0,
   visibleRows
 }: {
   items: TuiLogMessage[];
-  currentNodeId?: string;
-  currentAttempt?: number;
   detailMode: boolean;
   offset?: number;
   visibleRows?: number;

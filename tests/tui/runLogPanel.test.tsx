@@ -1,4 +1,3 @@
-import React from "react";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
@@ -21,8 +20,6 @@ describe("RunLogPanel compact tool output", () => {
     const output = render(
       <RunLogPanel
         detailMode={false}
-        currentNodeId="product"
-        currentAttempt={1}
         items={[{
           id: "tool-1",
           kind: "tool",
@@ -50,8 +47,6 @@ describe("RunLogPanel compact tool output", () => {
     const compact = render(
       <RunLogPanel
         detailMode={false}
-        currentNodeId="product"
-        currentAttempt={1}
         items={[
           { id: "assistant-1", kind: "assistant", nodeId: "product", attempt: 1, text: "我先检查项目结构，再确认关键配置。" },
           {
@@ -84,8 +79,6 @@ describe("RunLogPanel compact tool output", () => {
     const transcript = render(
       <RunLogPanel
         detailMode
-        currentNodeId="product"
-        currentAttempt={1}
         items={[{
           id: "tool-1",
           kind: "tool",
@@ -116,8 +109,6 @@ describe("RunLogPanel compact tool output", () => {
     const output = render(
       <RunLogPanel
         detailMode={false}
-        currentNodeId="global-plan"
-        currentAttempt={1}
         items={[{
           id: "plan-1",
           kind: "plan",

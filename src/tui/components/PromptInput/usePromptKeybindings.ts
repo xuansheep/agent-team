@@ -12,7 +12,6 @@ import {
   deletePreviousWord,
   deleteToEndOfLine,
   deleteToStartOfLine,
-  insertNewline,
   insertText,
   moveEnd,
   moveHome,

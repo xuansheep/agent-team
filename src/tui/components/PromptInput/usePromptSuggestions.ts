@@ -1,4 +1,4 @@
-export function slashCommandSuggestions(input: string, workflows: string[]): string[] {
+export function slashCommandSuggestions(input: string, _workflows: string[]): string[] {
   const trimmed = input.trim();
   if (trimmed === "/" || trimmed.startsWith("/h")) return ["/help"];
   if (trimmed.startsWith("/r")) return ["/resume"];

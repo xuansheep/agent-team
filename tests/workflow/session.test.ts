@@ -839,12 +839,6 @@ async function promiseSettlesSoon<T>(promise: Promise<T>): Promise<T | undefined
   ]);
 }
 
-async function promiseWithTimeout<T>(promise: Promise<T>): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for session result")), 250))
-  ]);
-}
 
 async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
 

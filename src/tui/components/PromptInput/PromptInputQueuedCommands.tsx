@@ -1,4 +1,3 @@
-import React from "react";
 import { Box, Text } from "../../ink.js";
 
 export function PromptInputQueuedCommands({ queued }: { queued: string[] }) {

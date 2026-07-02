@@ -1,4 +1,4 @@
-import React, { ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Box, Text } from "../../ink.js";
 import { SelectInputOption } from "./select-input-option.js";
 import { SelectOption } from "./select-option.js";

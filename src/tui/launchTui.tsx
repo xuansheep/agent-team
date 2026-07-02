@@ -1,4 +1,3 @@
-import React from "react";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { AlternateScreen, render } from "./ink.js";

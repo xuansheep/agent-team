@@ -2494,22 +2494,6 @@ describe("Workflow node status component", () => {
 
 
 
-        currentNodeId="product"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       />
 
 
@@ -2751,22 +2735,6 @@ describe("Workflow node status component", () => {
 
 
         nodes={[{ nodeId: "dev", attempt: 1, status: "running" }, { nodeId: "product", attempt: 1, status: "success" }]}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        currentNodeId="dev"
 
 
 
@@ -5967,38 +5935,6 @@ describe("RunConversationPanel", () => {
 
 
 
-        currentNodeId="product"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        currentAttempt={1}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         items={[
 
 
@@ -6333,10 +6269,6 @@ describe("RunLogPanel", () => {
 
         detailMode={false}
 
-        currentNodeId="dev"
-
-        currentAttempt={1}
-
         items={[
 
           { id: "product-1", kind: "status", nodeId: "product", attempt: 1, text: "product 已完成" },
@@ -6467,38 +6399,6 @@ describe("RunLogPanel", () => {
 
 
         detailMode={false}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        currentNodeId="dev"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        currentAttempt={1}
 
 
 
@@ -6994,14 +6894,6 @@ describe("RunLogPanel", () => {
 
 
 
-        currentNodeId="product"
-
-
-
-        currentAttempt={1}
-
-
-
         items={[{ id: "thinking-1", kind: "status", nodeId: "product", attempt: 1, text: "Thinking", detailText: "Checked constraints." }]}
 
 
@@ -7049,14 +6941,6 @@ describe("RunLogPanel", () => {
 
 
         detailMode={true}
-
-
-
-        currentNodeId="product"
-
-
-
-        currentAttempt={1}
 
 
 
@@ -7151,38 +7035,6 @@ describe("RunLogPanel", () => {
 
 
         detailMode={true}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        currentNodeId="dev"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        currentAttempt={1}
 
 
 
@@ -7656,10 +7508,6 @@ describe("RunLogPanel", () => {
 
         detailMode={false}
 
-        currentNodeId="product"
-
-        currentAttempt={1}
-
         items={[
 
           { id: "assistant-1", kind: "assistant", nodeId: "product", attempt: 1, text: "我先运行测试。" },
@@ -7697,10 +7545,6 @@ describe("RunLogPanel", () => {
       <RunLogPanel
 
         detailMode={false}
-
-        currentNodeId="dev"
-
-        currentAttempt={1}
 
         items={[{ id: "tool-failed", kind: "tool", nodeId: "dev", attempt: 1, toolCallId: "tool-1", tool: "Bash", status: "failed", text: "Bash", summary: "npm test", detailText: "错误：exit 1\n输出：failed tests" }]}
 
@@ -7883,38 +7727,6 @@ describe("InteractionArea", () => {
 
 
           detailMode={false}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-          currentNodeId="dev"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-          currentAttempt={1}
 
 
 
@@ -13985,99 +13797,5 @@ function createScrollHandle(input: { top: number; pending: number; height: numbe
 
 
 
-
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-async function waitForTuiFrame(output: { lastFrame(): string | undefined }, pattern: RegExp): Promise<void> {
-
-
-
-
-
-
-
-  for (let index = 0; index < 10; index += 1) {
-
-
-
-
-
-
-
-    if (pattern.test(output.lastFrame() ?? "")) return;
-
-
-
-
-
-
-
-    await settleTuiWork();
-
-
-
-
-
-
-
-  }
-
-
-
-
-
-
-
-  assert.fail(`Timed out waiting for ${pattern}`);
-
-
-
-
-
-
-
-}
-
-
-
-
-
-
-
-
-
-async function waitForCondition(condition: () => boolean): Promise<void> {
-
-  for (let index = 0; index < 10; index += 1) {
-
-    if (condition()) return;
-
-    await settleTuiWork();
-
-  }
-
-  assert.fail("Timed out waiting for condition");
 
 }

@@ -1,4 +1,3 @@
-import React from "react";
 import { Box, Text } from "../ink.js";
 
 export function ResultPanel({ mode, error }: { mode: string; error?: string; runId?: string }) {

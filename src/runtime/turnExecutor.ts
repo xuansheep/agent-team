@@ -89,7 +89,6 @@ export class RuntimeTurnExecutor {
       let pendingPlanApprovalCall: ModelToolCall | undefined;
 
       for (const call of toolCalls) {
-        const tool = input.tools.get(call.name);
         const permission = await permissionKernel.check(kernelTools.get(call.name), call.input, { ...input.permissions, cwd: input.cwd });
         await audit(input, {
           type: "permission_decision",

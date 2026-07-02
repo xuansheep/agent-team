@@ -1,4 +1,3 @@
-import React from "react";
 import { TuiPermissionRequestState } from "../state.js";
 import { ChoicePrompt } from "./ChoicePrompt.js";
 

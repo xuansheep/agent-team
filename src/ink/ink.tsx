@@ -6,7 +6,7 @@ import {
   readSync,
   writeSync,
 } from 'fs'
-import React, { type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import type { FiberRoot } from 'react-reconciler'
 import { ConcurrentRoot } from 'react-reconciler/constants.js'
 import onExit from 'signal-exit'

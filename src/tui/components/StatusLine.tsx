@@ -1,4 +1,3 @@
-import React from "react";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
 import type { TuiMode } from "../state.js";
 import { Box, Text } from "../ink.js";

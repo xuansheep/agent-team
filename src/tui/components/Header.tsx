@@ -1,4 +1,3 @@
-import React from "react";
 import { Box, Text } from "../ink.js";
 
 export function Header({ cwd, workflowId, runId }: { cwd: string; workflowId?: string; runId?: string }) {

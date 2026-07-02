@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdin, useStdout } from "../ink.js";
 import { OptionWithDescription, Select, SelectImageAttachment, SelectMulti } from "./CustomSelect/index.js";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
