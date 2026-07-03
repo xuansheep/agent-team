@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildAutoModeAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment } from "../../src/context/attachments.js";
+import { buildAutoModeAttachment, buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment } from "../../src/context/attachments.js";
 import { buildNodeMessages } from "../../src/harness/context.js";
 import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
 import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
@@ -43,6 +43,17 @@ function nonRuntimeUserMessage(messages: ModelMessage[]): ModelMessage | undefin
 }
 
 describe("runtime context attachments", () => {
+  it("wraps global prompts with tui-code style instruction priority", () => {
+    const attachment = buildGlobalPromptAttachment("Always reply in Chinese.");
+
+    assert.equal(attachment?.type, "global_prompt");
+    assert.match(attachment?.content ?? "", /ATTACHMENT global_prompt/);
+    assert.match(attachment?.content ?? "", /Codebase and user instructions are shown below/);
+    assert.match(attachment?.content ?? "", /OVERRIDE any default behavior/);
+    assert.match(attachment?.content ?? "", /MUST follow them exactly as written/);
+    assert.match(attachment?.content ?? "", /Always reply in Chinese\./);
+  });
+
   it("injects full Auto Mode instructions on the first auto turn", async () => {
     let systemContent = "";
     const provider: ModelProvider = {
@@ -201,14 +212,13 @@ describe("runtime context attachments", () => {
     assert.match(systemContent, /Phase 2: Design/);
     assert.match(systemContent, /Phase 3: Review/);
     assert.match(systemContent, /Phase 4: Final Plan/);
-    assert.match(systemContent, /Phase 5: Call ExitPlanMode/);
     assert.match(systemContent, /Include verification describing how to test the changes end-to-end/);
     assert.match(systemContent, /Plan mode is active/i);
     assert.match(systemContent, /only file you are allowed to edit/i);
     assert.match(systemContent, /AskUserQuestion/);
-    assert.match(systemContent, /ExitPlanMode/);
-    assert.match(systemContent, /call ExitPlanMode/);
-    assert.match(systemContent, /Do NOT ask about plan approval in any other way/);
+    assert.doesNotMatch(systemContent, /Phase 5: Call ExitPlanMode/);
+    assert.match(systemContent, /If you write or edit the plan file in this turn, you must call ExitPlanMode before ending the turn\./);
+    assert.doesNotMatch(systemContent, /Do NOT ask about plan approval in any other way/);
     assert.doesNotMatch(systemContent, /ExitPlanMode\.plan/);
     assert.doesNotMatch(systemContent, /Pass the complete plan/);
     assert.doesNotMatch(systemContent, /# Draft/);
@@ -222,7 +232,7 @@ describe("runtime context attachments", () => {
     assert.match(attachment.content, /create your plan at \.session\/plans\/session-1\.md using Write/i);
     assert.match(attachment.content, /only file you are allowed to edit/i);
     assert.match(attachment.content, /AskUserQuestion/);
-    assert.match(attachment.content, /ExitPlanMode/);
+    assert.match(attachment.content, /If you write or edit the plan file in this turn, you must call ExitPlanMode before ending the turn\./);
     assert.doesNotMatch(attachment.content, /ExitPlanMode\.plan/);
     assert.doesNotMatch(attachment.content, /Pass the complete plan/);
   });
@@ -312,7 +322,7 @@ describe("runtime context attachments", () => {
     assert.match(attachment.content, /Read the existing plan file/);
     assert.match(attachment.content, /Different task/);
     assert.match(attachment.content, /Same task, continuing/);
-    assert.match(attachment.content, /always edit the plan file one way or the other before calling ExitPlanMode/);
+    assert.doesNotMatch(attachment.content, /always edit the plan file one way or the other before calling ExitPlanMode/);
     assert.doesNotMatch(attachment.content, /ExitPlanMode\.plan/);
     assert.match(attachment.content, /Do not assume the existing plan is relevant/);
   });
@@ -442,10 +452,10 @@ describe("runtime context attachments", () => {
     assert.equal(systemMessages.filter((content) => hasAttachment(content, "plan_mode")).length, 1);
     assert.equal(systemMessages.filter((content) => hasAttachment(content, "plan_mode_reminder")).length, 1);
     assert.ok(systemMessages.some((content) => /Plan mode still active/i.test(content)));
-    assert.ok(systemMessages.some((content) => /Follow the 5-phase workflow/i.test(content)));
-    assert.ok(systemMessages.some((content) => /AskUserQuestion/i.test(content)));
-    assert.ok(systemMessages.some((content) => /ExitPlanMode \(for plan approval\)/i.test(content)));
-    assert.ok(systemMessages.some((content) => /Never ask about plan approval via text or AskUserQuestion/i.test(content)));
+    assert.ok(systemMessages.some((content) => /Follow the Plan Workflow/i.test(content)));
+    assert.ok(systemMessages.some((content) => /If you write or edit the plan file in this turn, you must call ExitPlanMode before ending the turn\./.test(content)));
+    assert.ok(systemMessages.every((content) => !/ExitPlanMode \(for plan approval\)/i.test(content)));
+    assert.ok(systemMessages.every((content) => !/Never ask about plan approval via text or AskUserQuestion/i.test(content)));
     assert.ok(systemMessages.every((content) => !/ExitPlanMode\.plan/.test(content)));
     assert.ok(systemMessages.every((content) => !/Pass the complete plan/.test(content)));
   });

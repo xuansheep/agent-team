@@ -117,8 +117,26 @@ type ProviderConfig = ParsedProviderConfig extends infer Provider
     : Provider
   : never;
 
+export type GlobalPromptSourceKind = "user_agents" | "project_agents" | "configured_file" | "configured_inline";
+export type GlobalPromptSourceMetadata = {
+  kind: GlobalPromptSourceKind;
+  path?: string;
+  sha256: string;
+  chars: number;
+  lines: number;
+};
+export type GlobalPromptMetadata = {
+  sha256: string;
+  chars: number;
+  lines: number;
+  sources: GlobalPromptSourceMetadata[];
+};
 export type WorkflowNodeMode = "task" | "complete";
 export type WorkflowNodeConfig = Omit<ParsedWorkflowNodeConfig, "mode"> & { mode?: WorkflowNodeMode };
 export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes"> & { nodes: WorkflowNodeConfig[] };
-export type AgentTeamConfig = Omit<ParsedAgentTeamConfig, "providers" | "workflows"> & { providers: Record<string, ProviderConfig>; workflows: Record<string, WorkflowConfig> };
+export type AgentTeamConfig = Omit<ParsedAgentTeamConfig, "providers" | "workflows"> & {
+  providers: Record<string, ProviderConfig>;
+  workflows: Record<string, WorkflowConfig>;
+  global_prompt_metadata?: GlobalPromptMetadata;
+};
 export type PermissionSet = z.infer<typeof permissionSetSchema>;

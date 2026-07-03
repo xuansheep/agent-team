@@ -1,9 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
+import type { RuntimeEvent } from "../../src/runtime/types.js";
+import { loadConfig } from "../../src/config/loadConfig.js";
 import { ModelProvider } from "../../src/providers/types.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
@@ -148,6 +150,7 @@ describe("RuntimeTurnExecutor", () => {
         return { content: `ready ${capturedSystemMessages.length}` };
       }
     };
+    const events: RuntimeEvent[] = [];
     const executor = new RuntimeTurnExecutor();
     const common = {
       model: "test-model",
@@ -156,7 +159,16 @@ describe("RuntimeTurnExecutor", () => {
       permissions: { mode: "plan" as const, allow: [], ask: [], deny: [], planFilePath },
       cwd,
       sessionId: "session-global-prompt",
-      globalPrompt: "Custom AGENT instructions."
+      globalPrompt: "Custom AGENT instructions.",
+      globalPromptMetadata: {
+        sha256: "global-hash",
+        chars: "Custom AGENT instructions.".length,
+        lines: 1,
+        sources: [{ kind: "configured_inline" as const, sha256: "source-hash", chars: "Custom AGENT instructions.".length, lines: 1 }]
+      },
+      eventSink: (event: RuntimeEvent) => {
+        events.push(event);
+      }
     };
 
     const first = await executor.execute({
@@ -173,6 +185,65 @@ describe("RuntimeTurnExecutor", () => {
     assert.match(capturedSystemMessages[0] ?? "", /ATTACHMENT global_prompt/);
     assert.match(capturedSystemMessages[0] ?? "", /Custom AGENT instructions\./);
     assert.equal((capturedSystemMessages[1]?.match(/ATTACHMENT global_prompt/g) ?? []).length, 1);
+    const injectionEvents = events.filter((event): event is Extract<RuntimeEvent, { type: "runtime_prompt_injection" }> => event.type === "runtime_prompt_injection");
+    assert.equal(injectionEvents.length, 2);
+    assert.equal(injectionEvents[0]?.record.available, true);
+    assert.equal(injectionEvents[0]?.record.presentInRequest, true);
+    assert.equal(injectionEvents[0]?.record.injectedThisTurn, true);
+    assert.equal(injectionEvents[0]?.record.sha256, "global-hash");
+    assert.equal(injectionEvents[1]?.record.injectedThisTurn, false);
+    assert.equal(JSON.stringify(injectionEvents[0]?.record).includes("Custom AGENT instructions"), false);
+  });
+
+  it("injects project AGENTS instructions loaded from config into plan mode runtime messages", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-project-agents-"));
+    const homeDir = await mkdtemp(join(tmpdir(), "agent-team-runtime-project-agents-home-"));
+    await mkdir(join(cwd, ".agents"), { recursive: true });
+    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Project AGENTS instructions.\n", "utf8");
+    const configFile = join(cwd, "agent-team.yaml");
+    await writeFile(configFile, `
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: gpt-test
+roles:
+  dev:
+    system_prompt: Build safely.
+workflows:
+  delivery:
+    nodes:
+      - id: dev
+        role: dev
+        provider: default
+    edges: []
+`, "utf8");
+    const config = await loadConfig(configFile, { cwd, homeDir });
+    const planFilePath = getPlanFilePath("session-project-agents", cwd);
+    let capturedSystem = "";
+    const provider: ModelProvider = {
+      async generate(request) {
+        capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        return { content: "ready" };
+      }
+    };
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "plan this" }],
+      model: "test-model",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath },
+      cwd,
+      sessionId: "session-project-agents",
+      globalPrompt: config.global_prompt,
+      globalPromptMetadata: config.global_prompt_metadata
+    });
+
+    assert.equal(result.status, "completed");
+    assert.match(capturedSystem, /ATTACHMENT global_prompt/);
+    assert.match(capturedSystem, /Project AGENTS instructions\./);
   });
 
   it("runs a plan mode conversation turn without a workflow runner", async () => {

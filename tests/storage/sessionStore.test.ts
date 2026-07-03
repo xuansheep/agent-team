@@ -94,6 +94,33 @@ describe("SessionStore", () => {
     assert.equal((await store.loadPlanState("session-plan"))?.planFilePath, planFilePath);
     assert.equal(await readPlan(planFilePath), "# Plan\nDo it.\n");
   });
+
+  it("records prompt injection metadata without storing prompt text", async () => {
+    const root = await workspace();
+    const store = new SessionStore(root);
+
+    await store.saveMetadata("session-prompt", {
+      promptInjection: {
+        globalPrompt: {
+          type: "global_prompt",
+          recordedAt: "2026-07-03T00:00:00.000Z",
+          available: true,
+          presentInRequest: true,
+          injectedThisTurn: true,
+          sha256: "global-hash",
+          chars: 23,
+          lines: 1,
+          sources: [{ kind: "project_agents", path: join(root, ".agents", "AGENTS.md"), sha256: "source-hash", chars: 23, lines: 1 }]
+        }
+      }
+    });
+
+    const metadata = await store.loadMetadata("session-prompt");
+
+    assert.equal(metadata?.promptInjection?.globalPrompt?.presentInRequest, true);
+    assert.equal(metadata?.promptInjection?.globalPrompt?.sources?.[0]?.kind, "project_agents");
+    assert.equal(JSON.stringify(metadata?.promptInjection).includes("Secret prompt"), false);
+  });
 });
 
 describe("RunStore index compatibility", () => {

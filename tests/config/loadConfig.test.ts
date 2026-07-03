@@ -316,6 +316,10 @@ workflows:
     const config = await loadConfig(configFile, { cwd: dir, homeDir });
 
     assert.equal(config.global_prompt, "User instructions.\n\nProject instructions.\n\nConfigured instructions.");
+    assert.deepEqual(config.global_prompt_metadata?.sources.map((source) => source.kind), ["user_agents", "project_agents", "configured_file"]);
+    assert.equal(config.global_prompt_metadata?.sources[1]?.path, join(dir, ".agents", "AGENTS.md"));
+    assert.match(config.global_prompt_metadata?.sha256 ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(config.global_prompt_metadata).includes("Project instructions"), false);
   });
 
   it("ignores missing AGENTS prompt files", async () => {

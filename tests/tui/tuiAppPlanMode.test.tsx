@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
@@ -21,6 +21,17 @@ const configWithContextWindow = {
 };
 
 describe("TuiApp global Plan Mode", () => {
+  const stdoutRows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+
+  before(() => {
+    Object.defineProperty(process.stdout, "rows", { value: 48, configurable: true });
+  });
+
+  after(() => {
+    if (stdoutRows) Object.defineProperty(process.stdout, "rows", stdoutRows);
+    else Reflect.deleteProperty(process.stdout, "rows");
+  });
+
   it("starts in Plan Mode when settings default to plan", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
@@ -247,6 +258,42 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(output.lastFrame() ?? "", /mode Plan/);
     assert.match(output.lastFrame() ?? "", /Draft the migration first\./);
     assert.doesNotMatch(output.lastFrame() ?? "", /Plan draft updated/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("records Plan Mode global prompt injection metadata without transcript prompt text", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const projectPrompt = "Project AGENTS instructions.";
+    const requests: ModelRequest[] = [];
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const configWithGlobalPrompt = {
+      ...config,
+      global_prompt: projectPrompt,
+      global_prompt_metadata: {
+        sha256: "global-hash",
+        chars: projectPrompt.length,
+        lines: 1,
+        sources: [{ kind: "project_agents" as const, path: join(cwd, ".agents", "AGENTS.md"), sha256: "source-hash", chars: projectPrompt.length, lines: 1 }]
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={configWithGlobalPrompt} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Check prompt metadata.");
+    const request = await waitForRequest(requests, "Check prompt metadata.");
+    const sessionId = request.context?.sessionId;
+    assert.equal(typeof sessionId, "string");
+    const store = new SessionStore(join(cwd, ".session"));
+    const metadata = await waitForPromptInjectionMetadata(store, sessionId as string);
+    const transcript = await store.loadTranscript(sessionId as string);
+
+    assert.equal(metadata.promptInjection?.globalPrompt?.presentInRequest, true);
+    assert.equal(metadata.promptInjection?.globalPrompt?.injectedThisTurn, true);
+    assert.equal(metadata.promptInjection?.globalPrompt?.sources?.[0]?.kind, "project_agents");
+    assert.equal(JSON.stringify(metadata.promptInjection).includes(projectPrompt), false);
+    assert.equal(JSON.stringify(transcript).includes(projectPrompt), false);
 
     output.unmount();
     output.cleanup();
@@ -2640,6 +2687,17 @@ async function waitForArrayItem(items: unknown[], index: number): Promise<void> 
     await settleTuiWork();
   }
   assert.ok(items.length > index);
+}
+
+async function waitForPromptInjectionMetadata(store: SessionStore, sessionId: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const metadata = await store.loadMetadata(sessionId);
+    if (metadata?.promptInjection?.globalPrompt) return metadata;
+    await settleTuiWork();
+  }
+  const metadata = await store.loadMetadata(sessionId);
+  assert.ok(metadata?.promptInjection?.globalPrompt);
+  return metadata;
 }
 
 async function waitForRequest(requests: ModelRequest[], text: string): Promise<ModelRequest> {

@@ -12,7 +12,12 @@ export const globTool: Tool = {
   isConcurrencySafe: () => true,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
-    const matches = await fg(parsed.pattern, { cwd: context.cwd, dot: true, onlyFiles: false });
+    const pattern = normalizeGlobPatternForFastGlob(parsed.pattern);
+    const matches = await fg(pattern, { cwd: context.cwd, dot: true, onlyFiles: false });
     return { output: matches.join("\n") };
   }
 };
+
+export function normalizeGlobPatternForFastGlob(pattern: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? pattern.replace(/\\/g, "/") : pattern;
+}

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AuditEvent } from "../audit/auditEvent.js";
 import { ModelMessage, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import { hasModelUsage } from "../model/usage.js";
@@ -9,7 +10,7 @@ import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { executeToolCalls } from "../tools/orchestration.js";
 import { Tool, ToolResult } from "../tools/types.js";
-import { PlanApprovalRequest, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
+import { PlanApprovalRequest, PromptInjectionRecord, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
 
 const maxToolIterations = 20;
 const planModeAttachmentConfig = {
@@ -36,6 +37,8 @@ export class RuntimeTurnExecutor {
     const messages = await buildTurnMessages(input);
     const kernelTools = createKernelToolRegistry(input.tools);
     const permissionKernel = new PermissionKernel();
+    const promptInjection = promptInjectionRecord(input, messages);
+    if (promptInjection) await emit(input, { type: "runtime_prompt_injection", session_id: input.sessionId, run_id: input.runId, record: promptInjection });
     await emit(input, { type: "runtime_turn_started", session_id: input.sessionId, run_id: input.runId });
     try {
       for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
@@ -213,6 +216,33 @@ function isAbortLikeError(error: unknown): boolean {
 
 function modelVisibleTools(input: RuntimeTurnInput): Tool[] {
   return createKernelToolRegistry(input.tools).visibleTools(input.permissions).map((tool) => tool.legacyTool);
+}
+
+function promptInjectionRecord(input: RuntimeTurnInput, requestMessages: ModelMessage[]): PromptInjectionRecord | undefined {
+  const available = Boolean(input.globalPrompt?.trim());
+  const presentInRequest = hasRuntimeAttachment(requestMessages, "global_prompt");
+  if (!available && !presentInRequest) return undefined;
+  const originalHadPrompt = hasRuntimeAttachment(input.messages, "global_prompt");
+  const metadata = input.globalPromptMetadata ?? (input.globalPrompt ? promptTextSummary(input.globalPrompt.trim()) : undefined);
+  return {
+    type: "global_prompt",
+    recordedAt: new Date().toISOString(),
+    available,
+    presentInRequest,
+    injectedThisTurn: !originalHadPrompt && presentInRequest,
+    ...(metadata?.sha256 ? { sha256: metadata.sha256 } : {}),
+    ...(metadata?.chars !== undefined ? { chars: metadata.chars } : {}),
+    ...(metadata?.lines !== undefined ? { lines: metadata.lines } : {}),
+    ...(input.globalPromptMetadata?.sources ? { sources: input.globalPromptMetadata.sources } : {})
+  };
+}
+
+function promptTextSummary(content: string): { sha256: string; chars: number; lines: number } {
+  return {
+    sha256: createHash("sha256").update(content).digest("hex"),
+    chars: content.length,
+    lines: content ? content.split(/\r?\n/).length : 0
+  };
 }
 
 async function executableToolCalls(calls: ModelToolCall[], tools: RuntimeTurnInput["tools"]): Promise<ModelToolCall[]> {

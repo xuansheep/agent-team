@@ -5,6 +5,7 @@ import { getPlanSlug } from "../plans/planFiles.js";
 import { PlanSessionState } from "../plans/planSession.js";
 import { addModelUsage, ModelUsage, ModelUsageTotals } from "../model/usage.js";
 import { SessionIndex } from "./sessionIndex.js";
+import type { PromptInjectionRecord } from "../runtime/types.js";
 
 export type TranscriptEntry = {
   ts: string;
@@ -19,6 +20,9 @@ export type SessionMetadata = {
   workflowRunId?: string;
   plan?: PlanSessionState;
   usage?: ModelUsageTotals;
+  promptInjection?: {
+    globalPrompt?: PromptInjectionRecord;
+  };
 };
 
 export type SaveSessionMetadataInput = Omit<Partial<SessionMetadata>, "sessionId" | "createdAt" | "updatedAt">;

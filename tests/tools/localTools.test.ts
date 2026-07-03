@@ -1,9 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
+import { normalizeGlobPatternForFastGlob } from "../../src/tools/local/glob.js";
 
 async function workspace() {
   return mkdtemp(join(tmpdir(), "agent-team-tools-"));
@@ -47,6 +48,22 @@ describe("local tools", () => {
 
     assert.equal(tools.get("Bash").name, "Bash");
     assert.equal(tools.get("PowerShell").name, "PowerShell");
+  });
+
+  it("finds hidden AGENTS files with absolute platform paths", async () => {
+    const cwd = await workspace();
+    await mkdir(join(cwd, ".agents"), { recursive: true });
+    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Project instructions.\n", "utf8");
+    const tools = createLocalToolRegistry();
+
+    const result = await tools.get("Glob").execute({ pattern: join(cwd, "**", "AGENTS.md") }, { cwd });
+
+    assert.match(result.output ?? "", /[.]agents[\\/]AGENTS[.]md/);
+  });
+
+  it("normalizes glob backslashes only for Windows patterns", () => {
+    assert.equal(normalizeGlobPatternForFastGlob("C:\\repo\\**\\AGENTS.md", "win32"), "C:/repo/**/AGENTS.md");
+    assert.equal(normalizeGlobPatternForFastGlob("dir\\*.ts", "linux"), "dir\\*.ts");
   });
 
   it("marks local tools with safety metadata", async () => {

@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import yaml from "js-yaml";
-import { AgentTeamConfig, configSchema } from "./schema.js";
+import { configSchema } from "./schema.js";
+import type { AgentTeamConfig, GlobalPromptMetadata, GlobalPromptSourceKind, GlobalPromptSourceMetadata } from "./schema.js";
 import { resolveConfig } from "./resolveConfig.js";
 import { AgentTeamSettings, ResolvedAgentTeamSettings } from "../settings/types.js";
 import { resolveSettings } from "../settings/resolveSettings.js";
@@ -13,37 +15,83 @@ export type LoadConfigOptions = {
   settings?: AgentTeamSettings | ResolvedAgentTeamSettings;
 };
 
+type PromptPart = {
+  kind: GlobalPromptSourceKind;
+  path?: string;
+  content: string;
+};
+
 export async function loadConfig(path: string, options: LoadConfigOptions = {}): Promise<AgentTeamConfig> {
   const raw = await readFile(path, "utf8");
   const parsed = yaml.load(raw);
-  const config = configSchema.parse(parsed);
+  const config = configSchema.parse(parsed) as AgentTeamConfig;
   const configDir = dirname(path);
   const cwd = options.cwd ?? configDir;
-  const configuredPrompt = config.global_prompt_file
-    ? await readFile(resolve(configDir, config.global_prompt_file), "utf8")
-    : config.global_prompt;
-  const globalPrompt = joinPromptParts([
-    await readOptionalPrompt(resolve(options.homeDir ?? homedir(), ".einsteins", "AGENTS.md")),
-    await readOptionalPrompt(resolve(cwd, ".agents", "AGENTS.md")),
-    configuredPrompt
-  ]);
-  if (globalPrompt) config.global_prompt = globalPrompt;
-  else delete config.global_prompt;
+  const promptParts = [
+    await readOptionalPromptPart("user_agents", resolve(options.homeDir ?? homedir(), ".einsteins", "AGENTS.md")),
+    await readOptionalPromptPart("project_agents", resolve(cwd, ".agents", "AGENTS.md")),
+    await configuredPromptPart(config, configDir)
+  ].filter((part): part is PromptPart => Boolean(part));
+  const globalPrompt = joinPromptParts(promptParts.map((part) => part.content));
+  if (globalPrompt) {
+    config.global_prompt = globalPrompt;
+    config.global_prompt_metadata = buildGlobalPromptMetadata(globalPrompt, promptParts);
+  } else {
+    delete config.global_prompt;
+    delete config.global_prompt_metadata;
+  }
   return resolveConfig(applySettings(config, options.settings, cwd));
 }
 
-async function readOptionalPrompt(path: string): Promise<string | undefined> {
+async function configuredPromptPart(config: AgentTeamConfig, configDir: string): Promise<PromptPart | undefined> {
+  if (config.global_prompt_file) {
+    const path = resolve(configDir, config.global_prompt_file);
+    return promptPart("configured_file", path, await readFile(path, "utf8"));
+  }
+  return promptPart("configured_inline", undefined, config.global_prompt);
+}
+
+async function readOptionalPromptPart(kind: GlobalPromptSourceKind, path: string): Promise<PromptPart | undefined> {
   try {
-    return await readFile(path, "utf8");
+    return promptPart(kind, path, await readFile(path, "utf8"));
   } catch (error) {
     if (isErrno(error, "ENOENT")) return undefined;
     throw error;
   }
 }
 
-function joinPromptParts(parts: Array<string | undefined>): string | undefined {
-  const joined = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part)).join("\n\n");
+function promptPart(kind: GlobalPromptSourceKind, path: string | undefined, content: string | undefined): PromptPart | undefined {
+  const trimmed = content?.trim();
+  if (!trimmed) return undefined;
+  return { kind, path, content: trimmed };
+}
+
+function joinPromptParts(parts: string[]): string | undefined {
+  const joined = parts.map((part) => part.trim()).filter(Boolean).join("\n\n");
   return joined || undefined;
+}
+
+function buildGlobalPromptMetadata(globalPrompt: string, parts: PromptPart[]): GlobalPromptMetadata {
+  return {
+    ...promptTextSummary(globalPrompt),
+    sources: parts.map(promptSourceMetadata)
+  };
+}
+
+function promptSourceMetadata(part: PromptPart): GlobalPromptSourceMetadata {
+  return {
+    kind: part.kind,
+    ...(part.path ? { path: part.path } : {}),
+    ...promptTextSummary(part.content)
+  };
+}
+
+function promptTextSummary(content: string): { sha256: string; chars: number; lines: number } {
+  return {
+    sha256: createHash("sha256").update(content).digest("hex"),
+    chars: content.length,
+    lines: content ? content.split(/\r?\n/).length : 0
+  };
 }
 
 function isErrno(error: unknown, code: string): boolean {

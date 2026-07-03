@@ -28,6 +28,9 @@ export type ToolPromptsAttachmentInput = {
   tools: Tool[];
 };
 
+const globalPromptInstruction =
+  "Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
+
 export function buildGlobalPromptAttachment(prompt: string | undefined): RuntimeAttachment | undefined {
   const content = prompt?.trim();
   if (!content) return undefined;
@@ -36,6 +39,8 @@ export function buildGlobalPromptAttachment(prompt: string | undefined): Runtime
     content: [
       attachmentMarker("global_prompt"),
       "## Global Instructions",
+      "",
+      globalPromptInstruction,
       "",
       content
     ].join("\n")
@@ -89,7 +94,7 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
       type: "plan_mode_reminder",
       content: [
         attachmentMarker("plan_mode_reminder"),
-        `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${input.planFilePath}). Follow the 5-phase workflow. End turns with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). Never ask about plan approval via text or AskUserQuestion.`
+        `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${input.planFilePath}). Follow the Plan Workflow. If you write or edit the plan file in this turn, you must call ExitPlanMode before ending the turn.`
       ].join("\n")
     };
   }
@@ -105,6 +110,7 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
     "## Plan File Info:",
     planFileInfo,
     "You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.",
+    "If you write or edit the plan file in this turn, you must call ExitPlanMode before ending the turn.",
     "",
     "## Plan Workflow",
     "",
@@ -126,12 +132,6 @@ export function buildPlanModeAttachment(input: PlanModeAttachmentInput): Runtime
     "- List the paths of files to be modified and what changes in each.",
     "- Reference existing functions and utilities to reuse, with their file paths.",
     "- Include verification describing how to test the changes end-to-end.",
-    "",
-    "### Phase 5: Call ExitPlanMode",
-    "At the very end of your turn, once you have asked the user questions and are happy with your final plan file - you should always call ExitPlanMode to indicate to the user that you are done planning.",
-    "This is critical - your turn should only end with either using the AskUserQuestion tool OR calling ExitPlanMode. Do not stop unless it's for these 2 reasons.",
-    "",
-    "Important: Use AskUserQuestion ONLY to clarify requirements or choose between approaches. Use ExitPlanMode to request plan approval. Do NOT ask about plan approval in any other way - no text questions, no AskUserQuestion. Phrases like \"Is this plan okay?\", \"Should I proceed?\", \"How does this plan look?\", \"Any changes before we start?\", or similar MUST use ExitPlanMode.",
     "",
     "NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using the AskUserQuestion tool. Don't make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins."
   ];
@@ -170,7 +170,6 @@ export function buildPlanModeReentryAttachment(input: PlanModeReentryAttachmentI
       "3. Decide how to proceed:",
       "   - Different task: if the user's request is for a different task, start fresh by overwriting the existing plan.",
       "   - Same task, continuing: if this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections.",
-      "4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ExitPlanMode.",
       "",
       "Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first."
     ].join("\n")

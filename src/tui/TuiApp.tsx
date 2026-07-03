@@ -482,10 +482,14 @@ export function TuiApp({
         cwd,
         sessionId: currentPlan.sessionId,
         globalPrompt: config?.global_prompt,
+        globalPromptMetadata: config?.global_prompt_metadata,
         planState: currentPlan,
         abortSignal: abortController.signal,
         eventSink: (event) => {
           if (planTurnGenerationRef.current !== turnGeneration || abortController.signal.aborted) return;
+          if (event.type === "runtime_prompt_injection") {
+            void sessionStore.saveMetadata(currentPlan.sessionId, { promptInjection: { globalPrompt: event.record } }).catch((error) => failUi(error));
+          }
           const detail = runtimeWorkStatusDetail(event);
           if (detail !== undefined) setWorkStatusDetail(detail);
           setState((current) => reducePlanRuntimeEvent(current, event));
