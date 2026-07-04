@@ -111,6 +111,7 @@ import type { ScrollBoxHandle } from "../../src/tui/ink.js";
 
 
 import instances from "../../src/ink/instances.js";
+import CursorDeclarationContext, { type CursorDeclaration } from "../../src/ink/components/CursorDeclarationContext.js";
 import { ensureRefableStdin } from "../../src/tui/inkStdin.js";
 
 
@@ -5255,6 +5256,46 @@ it("keeps CustomSelect input cursor position across typed updates", async () => 
   output.cleanup();
 });
 
+it("declares the native cursor on the CustomSelect input text row", async () => {
+  const declarations: CursorDeclaration[] = [];
+  const output = render(
+    <CursorDeclarationContext.Provider value={(declaration) => {
+      if (declaration) declarations.push(declaration);
+    }}>
+      <RefableStdinSelectProbe
+        options={[
+          {
+            type: "input",
+            label: "Other",
+            value: "other",
+            placeholder: "Other",
+            onChange: () => undefined
+          }
+        ]}
+        defaultValue="other"
+        onChange={() => undefined}
+      />
+    </CursorDeclarationContext.Provider>
+  );
+
+  output.stdin.write("ab");
+  await settleInkInput();
+
+  const afterType = declarations.at(-1);
+  assert.equal(afterType?.relativeY, 0);
+  assert.equal(afterType?.relativeX, 5);
+
+  output.stdin.write("\u001b[D");
+  await settleInkInput();
+
+  const afterLeft = declarations.at(-1);
+  assert.equal(afterLeft?.relativeY, 0);
+  assert.equal(afterLeft?.relativeX, 4);
+
+  output.unmount();
+  output.cleanup();
+});
+
 function SelectImageRemovalProbe({ removed }: { removed: number[] }) {
   const [images, setImages] = React.useState<SelectImageAttachment[]>([
     { id: 1, type: "image", media_type: "image/png", data: "one" },
@@ -8692,7 +8733,8 @@ describe("InteractionArea", () => {
 
 
 
-    assert.match(frame, /1\. Allow once\s+✓/);
+    assert.match(frame, /1\. Allow once/);
+    assert.doesNotMatch(frame, /1\. Allow once\s+✓/);
 
 
 

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "../../ink.js";
+import { useDeclaredCursor } from "../../../ink/hooks/use-declared-cursor.js";
+import { stringWidth } from "../../../ink/stringWidth.js";
 import type { OptionWithDescription, SelectImageAttachment } from "./select.js";
 import { SelectOption } from "./select-option.js";
 
@@ -154,6 +156,13 @@ export function SelectInputOption<T>({
 
   const label = showLabel || option.showLabelWithValue ? `${option.label}${option.labelValueSeparator ?? ", "}` : "";
   const placeholder = inputValue ? "" : option.placeholder ?? String(option.label);
+  const indexText = `${index}.`.padEnd(maxIndexWidth + 2);
+  const cursorColumn = inputCursorColumn({ indexText, prefix, label, inputValue, cursor });
+  const cursorRef = useDeclaredCursor({
+    line: 0,
+    column: cursorColumn,
+    active: isFocused && !imagesSelected && !inputTextDisabled
+  });
   const imageHint = imageAttachments.length
     ? imagesSelected
       ? ` image ${selectedImageIndex + 1}/${imageAttachments.length} selected (←/→ switch, backspace remove, esc cancel)`
@@ -162,8 +171,8 @@ export function SelectInputOption<T>({
   return (
     <SelectOption isFocused={isFocused} isSelected={isSelected} shouldShowDownArrow={shouldShowDownArrow} shouldShowUpArrow={shouldShowUpArrow} declareCursor={false}>
       <Box flexDirection="column" flexShrink={0}>
-        <Box flexDirection="row" flexShrink={0}>
-          <Text dimColor>{`${index}.`.padEnd(maxIndexWidth + 2)}</Text>
+        <Box ref={cursorRef} flexDirection="row" flexShrink={0}>
+          <Text dimColor>{indexText}</Text>
           {prefix ? <Text>{prefix} </Text> : null}
           {label ? <Text>{label}</Text> : null}
           <Text color={inputValue ? undefined : "ansi256(244)"}>{inputValue || placeholder}</Text>
@@ -177,6 +186,25 @@ export function SelectInputOption<T>({
       </Box>
     </SelectOption>
   );
+}
+
+function inputCursorColumn(input: {
+  indexText: string;
+  prefix?: React.ReactNode;
+  label: string;
+  inputValue: string;
+  cursor: number;
+}): number {
+  const prefix = primitiveText(input.prefix);
+  return stringWidth(input.indexText)
+    + (prefix ? stringWidth(`${prefix} `) : 0)
+    + stringWidth(input.label)
+    + stringWidth(input.inputValue.slice(0, input.cursor));
+}
+
+function primitiveText(value: React.ReactNode): string {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  return "";
 }
 
 async function handlePaste(

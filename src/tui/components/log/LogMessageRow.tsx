@@ -39,7 +39,7 @@ function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "t
       </Box>
       {showDetail ? (
         <MessageResponse>
-          <Text dimColor wrap="wrap">{truncateToolDetail(detailText ?? "", detailMode ? 6000 : 400)}</Text>
+          <Text dimColor wrap="wrap">{detailMode ? detailText : truncateToolDetail(detailText ?? "", 400)}</Text>
         </MessageResponse>
       ) : null}
     </Box>
@@ -47,6 +47,7 @@ function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "t
   return item.parentLogId ? <MessageResponse>{content}</MessageResponse> : content;
 }
 function compactToolDetail(item: TuiLogMessage & { kind: "tool" }): string | undefined {
+  if (item.compactDetailText) return item.compactDetailText;
   if (!item.detailText) return undefined;
   const lines = item.detailText.split(/\r?\n/).filter(Boolean);
   const hint = lines.find((line) => line.includes("ctrl + o to view transcript"));

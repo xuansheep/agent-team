@@ -45,6 +45,37 @@ workflows:
     assert.equal(config.workflows.delivery.nodes[0].mode, "task");
   });
 
+  it("defaults omitted workflow edges to an empty array", async () => {
+    const file = await tempFile("agent-team.yaml", `
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: gpt-test
+roles:
+  product:
+    system_prompt: Product plan.
+  final_delivery:
+    system_prompt: Complete summary.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+      - id: final_delivery
+        role: final_delivery
+        provider: default
+        mode: complete
+`);
+
+    const config = await loadConfig(file);
+
+    assert.deepEqual(config.workflows.delivery.edges, []);
+    assert.equal(config.workflows.delivery.nodes[1]?.id, "final_delivery");
+  });
+
   it("loads Responses API provider defaults", async () => {
     const file = await tempFile("agent-team.yaml", `
 providers:
@@ -223,6 +254,7 @@ workflows:
     assert.equal(workflow.nodes.some((node) => node.id === "user_acceptance" || node.role === "user_acceptance"), false);
     assert.equal(workflow.nodes.some((node) => node.id === "product"), false);
     assert.equal(workflow.nodes.find((node) => node.id === "final_delivery")?.mode, "complete");
+    assert.equal(workflow.edges.length, 0);
     assert.equal(workflow.edges.some((edge) => edge.from === "user_acceptance" || edge.to === "user_acceptance"), false);
   });
 

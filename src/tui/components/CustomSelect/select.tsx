@@ -45,6 +45,7 @@ export function Select<T>({
   options,
   defaultValue,
   defaultFocusValue,
+  selectedValues,
   onCancel,
   onChange,
   onFocus,
@@ -69,6 +70,7 @@ export function Select<T>({
   options: OptionWithDescription<T>[];
   defaultValue?: T;
   defaultFocusValue?: T;
+  selectedValues?: T[];
   onCancel?: () => void;
   onChange?: (value: T) => void;
   onFocus?: (value: T) => void;
@@ -108,7 +110,7 @@ export function Select<T>({
     <Box flexDirection="column" flexShrink={0}>
       {state.visibleOptions.map((option, index) => {
         const isFocused = !isDisabled && option.value === state.focusedValue;
-        const isSelected = option.value === state.value;
+        const isSelected = selectedValues?.includes(option.value) ?? false;
         const isFirstVisible = option.index === state.visibleFromIndex;
         const isLastVisible = option.index === state.visibleToIndex - 1;
         const showUp = state.visibleFromIndex > 0 && isFirstVisible;
@@ -153,7 +155,7 @@ export function Select<T>({
               <Box flexDirection="row" flexShrink={0}>
                 {!hideIndexes ? <Text dimColor>{`${ordinal}.`.padEnd(maxIndexWidth + 2)}</Text> : null}
                 {option.prefix ? <Text>{option.prefix} </Text> : null}
-                <Text color={option.disabled ? undefined : isSelected ? "green" : isFocused ? "cyan" : undefined} dimColor={option.disabled}>{option.label}</Text>
+                <Text color={option.disabled ? undefined : isFocused ? "cyan" : isSelected ? "green" : undefined} dimColor={option.disabled}>{option.label}</Text>
                 {inlineDescriptions && option.description ? <Text dimColor> {option.description}</Text> : null}
               </Box>
               {!inlineDescriptions && option.description ? (

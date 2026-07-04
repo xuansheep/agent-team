@@ -94,6 +94,8 @@ export const nodeResultOutputInstructions = [
   "The final NodeResult must be only JSON that matches the NodeResult schema, or a SubmitNodeResult tool call when tools are available.",
   "Do not include Markdown fences, explanations, or natural-language text around the final NodeResult JSON object.",
   "Use status success for completed work, failure for rejected work, and needs_user_input only when user input is required and questions contains at least one concrete question.",
+  "Use status failure when the previous workflow node should rework the task; include concrete defects/change_requests in feedback and clear rework instructions in handoff.",
+  "Use status needs_user_input when progress requires a user decision, missing information, or manual intervention; include concrete questions for the user.",
   "When a question has clear mutually-exclusive answers, include them in questions[].options with label and value. Set allow_freeform to false only when the user must choose one of those options.",
   "Return exactly one final NodeResult JSON object. Do not return multiple JSON objects or revisions in one response.",
   "If repository inspection is needed, call tools instead of asking the user for permission to inspect.",

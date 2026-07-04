@@ -90,6 +90,7 @@ export function SelectMulti<T>({
         isDisabled={isDisabled || submitFocused}
         options={selectOptions}
         defaultFocusValue={focusedValue}
+        selectedValues={selected}
         onFocus={setFocusedValue}
         onChange={(value) => {
           if (value === doneValue) onSubmit(selected);

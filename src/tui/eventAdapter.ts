@@ -3,7 +3,7 @@ import { StoredEvent } from "../harness/events.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { TuiLogMessage, TuiToolLogMessage } from "./logTypes.js";
 import { TuiConversationItem, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
-import { getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue } from "./toolDisplay.js";
+import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue } from "./toolDisplay.js";
 export function initialTuiState(input: { cwd: string; inputPermissionMode?: PermissionMode }): TuiState {
   return {
     cwd: input.cwd,
@@ -20,12 +20,19 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
     resumeRuns: []
   };
 }
-export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string }): TuiState {
-  return {
+export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; preserveLogs?: boolean }): TuiState {
+  const reset: TuiState = {
     ...initialTuiState({ cwd: state.cwd, inputPermissionMode: state.inputPermissionMode }),
     workflowId: input.workflowId,
     runId: input.runId,
     mode: "running"
+  };
+  if (!input.preserveLogs) return reset;
+  return {
+    ...reset,
+    planSession: state.planSession,
+    conversation: state.conversation,
+    logMessages: state.logMessages
   };
 }
 export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState {
@@ -108,7 +115,7 @@ reason：${event.reason}`
       return appendToolLog(withTool, event, attempt, toolCallId, parentLogId);
     }
     case "tool_completed":
-      return updateToolLog(updateTool(next, event.tool_call_id, "completed", event.result), event.tool_call_id, "completed", getToolResultDetail(event.result));
+      return updateToolLog(updateTool(next, event.tool_call_id, "completed", event.result), event.tool_call_id, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result));
     case "tool_failed":
       return updateToolLog(updateTool(next, event.tool_call_id, "failed", undefined, event.error), event.tool_call_id, "failed", `错误：${event.error}`);
     case "permission_requested":
@@ -307,11 +314,11 @@ function appendToolLog(state: TuiState, event: Extract<StoredEvent, { type: "too
   };
   return { ...state, logMessages: [...state.logMessages, tool] };
 }
-function updateToolLog(state: TuiState, toolCallId: string | undefined, status: TuiToolLogMessage["status"], detailText: string): TuiState {
+function updateToolLog(state: TuiState, toolCallId: string | undefined, status: TuiToolLogMessage["status"], detailText: string, compactDetailText?: string): TuiState {
   if (!toolCallId) return state;
   return {
     ...state,
-    logMessages: state.logMessages.map((item) => (item.kind === "tool" && item.toolCallId === toolCallId ? { ...item, status, detailText } : item))
+    logMessages: state.logMessages.map((item) => (item.kind === "tool" && item.toolCallId === toolCallId ? { ...item, status, detailText, compactDetailText } : item))
   };
 }
 function appendPermissionLog(state: TuiState, event: Extract<StoredEvent, { type: "permission_requested" }>): TuiState {

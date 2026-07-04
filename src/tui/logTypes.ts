@@ -48,6 +48,7 @@ export type TuiToolLogMessage = BaseLogMessage & {
   tool: string;
   status: "running" | "completed" | "failed";
   summary: string;
+  compactDetailText?: string;
 };
 
 export type TuiPermissionLogMessage = BaseLogMessage & {

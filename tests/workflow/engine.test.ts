@@ -27,6 +27,119 @@ describe("WorkflowEngine", () => {
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b"]);
   });
 
+  it("runs successful nodes in node order without edges", async () => {
+    const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: `.tmp/ordered-runs-${Date.now()}` });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
+        b: { description: "", system_prompt: "B", requires: { tool_calling: false, vision: false } },
+        c: { description: "", system_prompt: "C", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }, { id: "c", role: "c", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "completed");
+    assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b", "c"]);
+  });
+
+  it("returns to the previous node on ordered routing failure", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 2) return { content: JSON.stringify({ status: "failure", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+        return { content: JSON.stringify({ status: "success", summary: "ok", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-failure-runs-${Date.now()}` });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
+        test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } },
+        final: { description: "", system_prompt: "F", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }, { id: "final", role: "final", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "completed");
+    assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["dev", "test", "dev", "test", "final"]);
+  });
+
+  it("pauses for user input instead of returning to the previous node", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 2) return { content: JSON.stringify({ status: "needs_user_input", summary: "need decision", questions: [{ id: "q1", text: "Proceed?", required: true }] }) };
+        return { content: JSON.stringify({ status: "success", summary: "ok", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-user-input-runs-${Date.now()}` });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
+        test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "pending");
+    assert.deepEqual(result.attempts.map((attempt) => `${attempt.node_id}:${attempt.status}`), ["dev:success", "test:waiting_user"]);
+    assert.equal(calls, 2);
+  });
+
+  it("pauses when the first ordered node fails", async () => {
+    const provider: ModelProvider = {
+      async generate() {
+        return { content: JSON.stringify({ status: "failure", summary: "blocked", feedback: { defects: ["missing input"], change_requests: [] }, handoff: { instruction: "ask user" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-first-failure-runs-${Date.now()}` });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
+        test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "pending");
+    assert.deepEqual(result.attempts.map((attempt) => `${attempt.node_id}:${attempt.status}`), ["dev:failure"]);
+  });
+
+  it("does not infer failure fallback for explicit success-edge workflows", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 2) return { content: JSON.stringify({ status: "failure", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+        return { content: JSON.stringify({ status: "success", summary: "ok", handoff: { instruction: "next" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/explicit-success-runs-${Date.now()}` });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
+        b: { description: "", system_prompt: "B", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "pending");
+    assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b"]);
+    assert.equal(calls, 2);
+  });
+
   it("records model usage as workflow run events", async () => {
     const runRoot = `.tmp/model-usage-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const provider: ModelProvider = {

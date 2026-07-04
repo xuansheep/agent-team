@@ -39,14 +39,25 @@ export function getToolResultDetail(result: unknown): string {
   if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
   const value = result as Record<string, unknown>;
   const lines: string[] = [];
-  if (typeof value.output === "string") lines.push(`输出：${value.output ? summarizeToolOutput(value.output) : "(no output)"}`);
+  if (typeof value.output === "string") lines.push(`输出：${value.output || "(no output)"}`);
+  if (typeof value.error === "string" && value.error) lines.push(`错误：${value.error}`);
+  if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
+  if (typeof value.path === "string") lines.push(`路径：${value.path}`);
+  return lines.length ? lines.join("\n") : readableRecord(value);
+}
+
+export function getCompactToolResultDetail(result: unknown): string {
+  if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
+  const value = result as Record<string, unknown>;
+  const lines: string[] = [];
+  if (typeof value.output === "string") lines.push(`输出：${value.output ? compactToolOutput(value.output) : "(no output)"}`);
   if (typeof value.error === "string" && value.error) lines.push(`错误：${truncate(value.error, 500)}`);
   if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
   if (typeof value.path === "string") lines.push(`路径：${value.path}`);
   return lines.length ? lines.join("\n") : readableRecord(value);
 }
 
-function summarizeToolOutput(output: string): string {
+function compactToolOutput(output: string): string {
   const lines = output.split(/\r?\n/);
   if (output.endsWith("\n") && lines.at(-1) === "") lines.pop();
   if (lines.length <= 5) return truncate(output, 500);

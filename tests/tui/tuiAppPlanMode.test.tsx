@@ -435,7 +435,7 @@ describe("TuiApp global Plan Mode", () => {
     const collapsedFrame = output.lastFrame() ?? "";
     assert.match(collapsedFrame, /First planning response stays visible\./);
     assert.match(collapsedFrame, /No, keep planning/);
-    assert.doesNotMatch(collapsedFrame, /Here is Claude's plan:/);
+    assert.match(collapsedFrame, /Here is Claude's plan:/);
 
     output.stdin.write("`");
     await settleTuiWork();
@@ -1003,6 +1003,34 @@ describe("TuiApp global Plan Mode", () => {
       approved_plan: "Draft the migration first.",
       plan_requested_permissions: [{ tool: "Bash", prompt: "run tests" }]
     });
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("keeps Plan Mode logs visible after approved plan starts workflow", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const engine = {
+      async startInteractive() {
+        return fakeSession([
+          { type: "run_started", workflow_id: "delivery", input: { request: "workflow from approved plan" }, ts: "2026-07-04T00:00:00.000Z", seq: 1 }
+        ]);
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Draft the migration first.");
+    await sendTuiLine(output, "Ready for approval.");
+    await waitForFrame(output, /Ready to code\?/);
+
+    output.stdin.write("\r");
+    await waitForFrame(output, /workflow from approved plan/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Draft the migration first\./);
+    assert.match(frame, /Plan Review/);
+    assert.match(frame, /workflow from approved plan/);
 
     output.unmount();
     output.cleanup();
@@ -2484,12 +2512,14 @@ function workflowState(status: "pending" | "completed") {
   return { status, workflow_id: "delivery", attempts: [], handoff: undefined };
 }
 
-function fakeSession() {
+function fakeSession(events: unknown[] = []) {
   const state = { status: "completed" as const, workflow_id: "delivery", attempts: [], handoff: undefined };
   return {
     runId: "run-approved-plan",
     state,
-    events: (async function* () {})(),
+    events: (async function* () {
+      for (const event of events) yield event;
+    })(),
     permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
     interrupt: async () => undefined,
     resumeWithUserInput: async () => undefined,

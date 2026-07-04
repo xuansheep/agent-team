@@ -38,7 +38,7 @@ import type { StatusLineElement } from "./components/StatusLine.js";
 import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
 import { editFileInExternalEditor, editTextInExternalEditor, externalEditorDisplayName, ExternalEditor, ExternalTextEditor } from "./externalEditor.js";
 import { resolveImagePaste } from "./imagePaste.js";
-import { getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail } from "./toolDisplay.js";
+import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail } from "./toolDisplay.js";
 export function TuiApp({
   cwd,
   initialError,
@@ -305,10 +305,10 @@ export function TuiApp({
       }
     })();
   };
-  const attachSession = (session: WorkflowSession, nextWorkflowId: string) => {
+  const attachSession = (session: WorkflowSession, nextWorkflowId: string, options: { preserveLogs?: boolean } = {}) => {
     sessionRef.current = session;
     mainScrollRef.current?.scrollToBottom();
-    setState((current) => resetTuiRunState(current, { workflowId: nextWorkflowId, runId: session.runId }));
+    setState((current) => resetTuiRunState(current, { workflowId: nextWorkflowId, runId: session.runId, preserveLogs: options.preserveLogs === true }));
     listenSession(session, nextWorkflowId);
     void session.result
       .then((result) => {
@@ -326,7 +326,7 @@ export function TuiApp({
       });
   };
 
-  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean } = {}) => {
+  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean; preserveLogs?: boolean } = {}) => {
     if (!config || !engine) {
       failUi("TUI is missing workflow configuration");
       return;
@@ -340,7 +340,7 @@ export function TuiApp({
         permissionMode: options.permissionMode ?? workflowPermissionMode(state.inputPermissionMode),
         ...(options.clearContext === true ? { clearContext: true } : {})
       });
-      attachSession(session, selectedWorkflowId);
+      attachSession(session, selectedWorkflowId, { preserveLogs: options.preserveLogs === true });
     } catch (error) {
       failUi(error);
     }
@@ -1003,7 +1003,7 @@ ${message.detailText}` : ""}` }
     if (!execution) return true;
     const handoff = execution.handoff as { legacyHandoff?: unknown };
     const workflowInput = execution.clearContext ? execution.initialInput : handoff.legacyHandoff;
-    void startWorkflowInput(workflowInput, { permissionMode: execution.permissionMode, ...(execution.clearContext ? { clearContext: true } : {}) });
+    void startWorkflowInput(workflowInput, { permissionMode: execution.permissionMode, preserveLogs: true, ...(execution.clearContext ? { clearContext: true } : {}) });
     return true;
   };
   const clearTuiContext = () => {
@@ -1261,7 +1261,7 @@ ${message.detailText}` : ""}` }
   const planApprovalActive = interactionMode === "waiting_plan_approval" && Boolean(state.pendingReview);
   const planApprovalOverlayVisible = planApprovalActive && !planApprovalCollapsed;
   const planApprovalPlanFilePath = state.pendingReview?.planFilePath ? displayPlanFilePath(state.pendingReview.planFilePath, cwd) : undefined;
-  const logMessages = planInteractionLogMessages(state, hasPlanQuestion);
+  const logMessages = state.logMessages;
   const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: workStatusDetail });
   const activityStatus = hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus;
   const activeChoice = buildActiveChoice({
@@ -1617,7 +1617,7 @@ function reducePlanRuntimeEvent(state: TuiState, event: RuntimeEvent): TuiState 
       return appendPlanToolLog(state, event.tool_call_id, event.tool, event.input);
     case "runtime_tool_completed":
       if (event.tool === "AskUserQuestion") return state;
-      return updatePlanToolLog(state, event.tool_call_id, event.tool, "completed", getToolResultDetail(event.result));
+      return updatePlanToolLog(state, event.tool_call_id, event.tool, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result));
     case "runtime_tool_failed":
       if (event.tool === "AskUserQuestion") return state;
       return updatePlanToolLog(state, event.tool_call_id, event.tool, "failed", `错误：${event.error}`);
@@ -1692,7 +1692,7 @@ function appendPlanToolLog(state: TuiState, toolCallId: string, tool: string, in
     ]
   };
 }
-function updatePlanToolLog(state: TuiState, toolCallId: string, tool: string, status: "completed" | "failed", detailText: string): TuiState {
+function updatePlanToolLog(state: TuiState, toolCallId: string, tool: string, status: "completed" | "failed", detailText: string, compactDetailText?: string): TuiState {
   const hasLog = state.logMessages.some((message) => message.kind === "tool" && message.toolCallId === toolCallId);
   const tools = state.tools.some((item) => item.toolCallId === toolCallId)
     ? state.tools.map((item) => item.toolCallId === toolCallId ? { ...item, status } : item)
@@ -1723,7 +1723,8 @@ function updatePlanToolLog(state: TuiState, toolCallId: string, tool: string, st
           status,
           text: getToolDisplayName(tool),
           summary: "",
-          detailText
+          detailText,
+          compactDetailText
         }
       ]
     };
@@ -1733,7 +1734,7 @@ function updatePlanToolLog(state: TuiState, toolCallId: string, tool: string, st
     tools,
     logMessages: state.logMessages.map((message) => (
       message.kind === "tool" && message.toolCallId === toolCallId
-        ? { ...message, status, detailText }
+        ? { ...message, status, detailText, compactDetailText }
         : message
     ))
   };
@@ -1750,12 +1751,6 @@ function findPlanToolParentAssistantLog(state: TuiState): string | undefined {
 }
 const planRuntimeNodeId = "global-plan";
 const planRuntimeAttempt = 1;
-function planInteractionLogMessages(state: TuiState, hasPlanQuestion: boolean): TuiLogMessage[] {
-  const isPendingPlanReview = Boolean(state.pendingReview);
-  const isPlanQuestion = state.mode === "question" && hasPlanQuestion;
-  if (!isPendingPlanReview && !isPlanQuestion) return state.logMessages;
-  return withoutActivePendingPlanLog(state.logMessages, state.pendingReview);
-}
 function compactActiveInteractionLogs(messages: TuiLogMessage[], maxMessages: number): TuiLogMessage[] {
   if (messages.length <= maxMessages) return messages;
   let lastUserIndex = -1;
@@ -1816,15 +1811,6 @@ function planApprovalKernelSession(input: {
   };
 }
 
-function withoutActivePendingPlanLog(messages: TuiLogMessage[], pendingReview: TuiState["pendingReview"]): TuiLogMessage[] {
-  if (!pendingReview) return messages;
-  return messages.filter((message) => !(
-    message.kind === "plan" &&
-    message.status === "pending" &&
-    message.nodeId === pendingReview.nodeId &&
-    message.attempt === pendingReview.attempt
-  ));
-}
 function globalPlanLog(document: string, path?: string, requestedPermissions?: PlanRequestedPermission[], empty?: boolean): TuiLogMessage {
   const displayDocument = document || "Claude wants to exit plan mode";
   return {

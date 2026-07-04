@@ -23,7 +23,7 @@ export function ListItem({
   declareCursor?: boolean;
 }) {
   const cursorRef = useDeclaredCursor({ line: 0, column: 0, active: isFocused && !disabled && declareCursor });
-  const color = disabled ? undefined : isSelected ? "green" : isFocused ? "cyan" : undefined;
+  const color = disabled ? undefined : isFocused ? "cyan" : isSelected ? "green" : undefined;
   return (
     <Box ref={cursorRef} flexDirection="column" flexShrink={0}>
       <Box flexDirection="row" gap={1}>
@@ -31,7 +31,6 @@ export function ListItem({
           {indicator(isFocused, disabled, showScrollDown, showScrollUp)}
         </Text>
         {styled ? <Text color={color} dimColor={disabled}>{children}</Text> : children}
-        {isSelected && !disabled ? <Text color="green">✓</Text> : null}
       </Box>
       {description ? (
         <Box paddingLeft={2}>

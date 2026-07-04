@@ -24,10 +24,18 @@ describe("RunLogPanel compact tool output", () => {
 
   it("keeps the transcript hint visible for long completed tool output", () => {
     const longLine = "x".repeat(260);
-    const detailText = [
+    const compactDetailText = [
       `输出：${longLine}`,
       longLine,
       `… +8 lines (${transcriptHint})`,
+      "tail-line-1",
+      "tail-line-2",
+      "退出码：0"
+    ].join("\n");
+    const detailText = [
+      `输出：${longLine}`,
+      longLine,
+      "middle-line",
       "tail-line-1",
       "tail-line-2",
       "退出码：0"
@@ -46,7 +54,8 @@ describe("RunLogPanel compact tool output", () => {
           status: "completed",
           text: "Bash",
           summary: "npm test",
-          detailText
+          detailText,
+          compactDetailText
         }]}
       />
     );
@@ -54,7 +63,8 @@ describe("RunLogPanel compact tool output", () => {
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Ran npm test/);
     assert.match(frame, /ctrl \+ o to view transcript/);
-    assert.doesNotMatch(frame, /tail-line-2/);
+    assert.doesNotMatch(frame, /middle-line/);
+    assert.match(frame, /tail-line-2/);
     output.unmount();
     output.cleanup();
   });
@@ -114,6 +124,35 @@ describe("RunLogPanel compact tool output", () => {
     assert.match(frame, /Ran List \./);
     assert.match(frame, /输出：package\.json/);
     assert.match(frame, /退出码：0/);
+    transcript.unmount();
+    transcript.cleanup();
+  });
+
+  it("shows untruncated completed tool output in transcript mode", () => {
+    const detailText = `输出：${"x".repeat(6500)}\nFULL_DETAIL_SENTINEL_AFTER_6500_CHARS\n退出码：0`;
+    const transcript = render(
+      <RunLogPanel
+        detailMode
+        items={[{
+          id: "tool-1",
+          kind: "tool",
+          nodeId: "product",
+          attempt: 1,
+          toolCallId: "tool-1",
+          tool: "Bash",
+          status: "completed",
+          text: "Bash",
+          summary: "npm test",
+          detailText,
+          compactDetailText: `输出：xx\n… +10 lines (${transcriptHint})\n退出码：0`
+        }]}
+      />
+    );
+
+    const frame = transcript.lastFrame() ?? "";
+    assert.match(frame, /Ran npm test/);
+    assert.match(frame, /FULL_DETAIL_SENTINEL_AFTER_6500_CHARS/);
+    assert.doesNotMatch(frame, /ctrl \+ o to view transcript/);
     transcript.unmount();
     transcript.cleanup();
   });

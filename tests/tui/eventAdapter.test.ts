@@ -745,6 +745,31 @@ describe("TUI event adapter", () => {
 
   });
 
+  it("preserves logs when resetting into a workflow from Plan Mode", () => {
+    const state = {
+      ...initialTuiState({ cwd: "D:\\CodeAI\\agent-team" }),
+      mode: "waiting_plan_approval" as const,
+      workflowId: "delivery",
+      conversation: [{ kind: "status" as const, text: "Plan approval requested" }],
+      logMessages: [{ id: "plan", kind: "plan" as const, nodeId: "global-plan", attempt: 1, status: "pending" as const, text: "Plan Review", document: "Do the work." }],
+      nodes: [{ nodeId: "global-plan", attempt: 1, status: "success" as const }],
+      tools: [{ nodeId: "global-plan", attempt: 1, toolCallId: "tool-1", tool: "Write", status: "completed" as const, expanded: false }],
+      questions: [{ id: "q1" }],
+      timeline: ["plan"]
+    };
+
+    const reset = resetTuiRunState(state, { workflowId: "delivery", runId: "workflow-run", preserveLogs: true });
+
+    assert.equal(reset.runId, "workflow-run");
+    assert.equal(reset.mode, "running");
+    assert.deepEqual(reset.nodes, []);
+    assert.deepEqual(reset.tools, []);
+    assert.deepEqual(reset.questions, []);
+    assert.deepEqual(reset.timeline, []);
+    assert.deepEqual(reset.conversation, state.conversation);
+    assert.deepEqual(reset.logMessages, state.logMessages);
+  });
+
 
 
 
@@ -949,7 +974,7 @@ describe("TUI event adapter", () => {
 
       tool: "LS",
 
-      result: { output: "package.json\nsrc", exit_code: 0 },
+      result: { output: "package.json\nsrc\nmiddle-file\nanother-file\nfixture-a\nfixture-b\nlast-file", exit_code: 0 },
 
       ts: "2026-06-23T00:00:02.000Z",
 
@@ -974,6 +999,10 @@ describe("TUI event adapter", () => {
     assert.equal((toolLog as any)?.status, "completed");
 
     assert.match((toolLog as any)?.detailText ?? "", /输出：package.json/);
+    assert.match((toolLog as any)?.detailText ?? "", /middle-file/);
+    assert.match((toolLog as any)?.compactDetailText ?? "", /输出：package.json/);
+    assert.match((toolLog as any)?.compactDetailText ?? "", /ctrl \+ o to view transcript/);
+    assert.doesNotMatch((toolLog as any)?.compactDetailText ?? "", /middle-file/);
 
     assert.doesNotMatch((toolLog as any)?.detailText ?? "", /\{"output"/);
 
@@ -986,6 +1015,10 @@ describe("TUI event adapter", () => {
     assert.equal((toolLogs[0] as any)?.summary, ".");
 
     assert.match((toolLogs[0] as any)?.detailText ?? "", /输出：package.json/);
+    assert.match((toolLogs[0] as any)?.detailText ?? "", /middle-file/);
+    assert.match((toolLogs[0] as any)?.compactDetailText ?? "", /输出：package.json/);
+    assert.match((toolLogs[0] as any)?.compactDetailText ?? "", /ctrl \+ o to view transcript/);
+    assert.doesNotMatch((toolLogs[0] as any)?.compactDetailText ?? "", /middle-file/);
 
     assert.doesNotMatch((toolLogs[0] as any)?.detailText ?? "", /\{"output"/);
 
