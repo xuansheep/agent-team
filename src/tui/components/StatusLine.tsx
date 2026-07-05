@@ -67,8 +67,8 @@ function statusLinePart(element: StatusLineElement, input: {
 }
 
 function effectiveModeLabel(mode: TuiMode, permissionMode: PermissionMode): string {
-  if (mode === "planning" || permissionMode === "plan") return "Plan";
   if (mode === "waiting_plan_approval") return "Plan Review";
+  if (mode === "planning" || (mode === "input" && permissionMode === "plan")) return "Plan";
   if (mode === "input" && permissionMode === "acceptEdits") return "Edit";
   if (mode === "input" && permissionMode === "bypassPermissions") return "Bypass";
   if (mode === "input" && permissionMode === "auto") return "Auto";

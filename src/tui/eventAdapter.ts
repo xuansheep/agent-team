@@ -20,9 +20,9 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
     resumeRuns: []
   };
 }
-export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; preserveLogs?: boolean }): TuiState {
+export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
   const reset: TuiState = {
-    ...initialTuiState({ cwd: state.cwd, inputPermissionMode: state.inputPermissionMode }),
+    ...initialTuiState({ cwd: state.cwd, inputPermissionMode: input.inputPermissionMode ?? state.inputPermissionMode }),
     workflowId: input.workflowId,
     runId: input.runId,
     mode: "running"

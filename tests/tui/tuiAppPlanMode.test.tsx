@@ -1010,8 +1010,10 @@ describe("TuiApp global Plan Mode", () => {
 
   it("keeps Plan Mode logs visible after approved plan starts workflow", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const options: unknown[] = [];
     const engine = {
-      async startInteractive() {
+      async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) {
+        options.push(option);
         return fakeSession([
           { type: "run_started", workflow_id: "delivery", input: { request: "workflow from approved plan" }, ts: "2026-07-04T00:00:00.000Z", seq: 1 }
         ]);
@@ -1019,6 +1021,8 @@ describe("TuiApp global Plan Mode", () => {
     };
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
 
+    await sendTuiLine(output, "/statusline mode,permission,workflow");
+    await waitForFrame(output, /Statusline updated/);
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Draft the migration first.");
     await sendTuiLine(output, "Ready for approval.");
@@ -1031,6 +1035,10 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(frame, /Draft the migration first\./);
     assert.match(frame, /Plan Review/);
     assert.match(frame, /workflow from approved plan/);
+    assert.match(frame, /mode (running|completed)/);
+    assert.match(frame, /permission Accept Edits/);
+    assert.doesNotMatch(frame, /mode Plan(?:\s|\|)/);
+    assert.deepEqual(options[0], { permissionMode: "acceptEdits" });
 
     output.unmount();
     output.cleanup();

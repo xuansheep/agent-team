@@ -305,10 +305,10 @@ export function TuiApp({
       }
     })();
   };
-  const attachSession = (session: WorkflowSession, nextWorkflowId: string, options: { preserveLogs?: boolean } = {}) => {
+  const attachSession = (session: WorkflowSession, nextWorkflowId: string, options: { preserveLogs?: boolean; inputPermissionMode?: PermissionMode } = {}) => {
     sessionRef.current = session;
     mainScrollRef.current?.scrollToBottom();
-    setState((current) => resetTuiRunState(current, { workflowId: nextWorkflowId, runId: session.runId, preserveLogs: options.preserveLogs === true }));
+    setState((current) => resetTuiRunState(current, { workflowId: nextWorkflowId, runId: session.runId, preserveLogs: options.preserveLogs === true, inputPermissionMode: options.inputPermissionMode }));
     listenSession(session, nextWorkflowId);
     void session.result
       .then((result) => {
@@ -326,7 +326,7 @@ export function TuiApp({
       });
   };
 
-  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean; preserveLogs?: boolean } = {}) => {
+  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean; preserveLogs?: boolean; inputPermissionMode?: PermissionMode } = {}) => {
     if (!config || !engine) {
       failUi("TUI is missing workflow configuration");
       return;
@@ -340,7 +340,7 @@ export function TuiApp({
         permissionMode: options.permissionMode ?? workflowPermissionMode(state.inputPermissionMode),
         ...(options.clearContext === true ? { clearContext: true } : {})
       });
-      attachSession(session, selectedWorkflowId, { preserveLogs: options.preserveLogs === true });
+      attachSession(session, selectedWorkflowId, { preserveLogs: options.preserveLogs === true, inputPermissionMode: options.inputPermissionMode });
     } catch (error) {
       failUi(error);
     }
@@ -998,12 +998,12 @@ ${message.detailText}` : ""}` }
     planSessionRef.current = nextPlan;
     savePlanSession(nextPlan);
     resetPlanApprovalFeedback();
-    setState((current) => ({ ...current, mode: "running", planSession: nextPlan, pendingReview: undefined, error: undefined }));
     const execution = resolved.execution;
+    setState((current) => ({ ...current, mode: "running", inputPermissionMode: execution?.permissionMode ?? current.inputPermissionMode, planSession: nextPlan, pendingReview: undefined, error: undefined }));
     if (!execution) return true;
     const handoff = execution.handoff as { legacyHandoff?: unknown };
     const workflowInput = execution.clearContext ? execution.initialInput : handoff.legacyHandoff;
-    void startWorkflowInput(workflowInput, { permissionMode: execution.permissionMode, preserveLogs: true, ...(execution.clearContext ? { clearContext: true } : {}) });
+    void startWorkflowInput(workflowInput, { permissionMode: execution.permissionMode, inputPermissionMode: execution.permissionMode, preserveLogs: true, ...(execution.clearContext ? { clearContext: true } : {}) });
     return true;
   };
   const clearTuiContext = () => {

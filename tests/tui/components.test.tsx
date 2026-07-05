@@ -405,6 +405,57 @@ describe("PromptInput component", () => {
     output.cleanup();
   });
 
+  it("does not show Plan as the mode after workflow execution has started", () => {
+    const running = render(
+      <StatusLine
+        mode="running"
+        permissionMode="plan"
+        workflowId="delivery"
+        isLoading
+        hasSelection={false}
+        elements={["mode", "workflow"]}
+      />
+    );
+
+    const runningFrame = running.lastFrame() ?? "";
+    assert.match(runningFrame, /mode running/);
+    assert.doesNotMatch(runningFrame, /mode Plan/);
+    running.unmount();
+    running.cleanup();
+
+    const input = render(
+      <StatusLine
+        mode="input"
+        permissionMode="plan"
+        workflowId="delivery"
+        isLoading={false}
+        hasSelection={false}
+        elements={["mode", "workflow"]}
+      />
+    );
+
+    const inputFrame = input.lastFrame() ?? "";
+    assert.match(inputFrame, /mode Plan/);
+    input.unmount();
+    input.cleanup();
+
+    const review = render(
+      <StatusLine
+        mode="waiting_plan_approval"
+        permissionMode="plan"
+        workflowId="delivery"
+        isLoading={false}
+        hasSelection={false}
+        elements={["mode", "workflow"]}
+      />
+    );
+
+    const reviewFrame = review.lastFrame() ?? "";
+    assert.match(reviewFrame, /mode Plan Review/);
+    review.unmount();
+    review.cleanup();
+  });
+
 
 
   it("renders an empty shell prompt with placeholder text", () => {

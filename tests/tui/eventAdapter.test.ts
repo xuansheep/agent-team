@@ -749,6 +749,7 @@ describe("TUI event adapter", () => {
     const state = {
       ...initialTuiState({ cwd: "D:\\CodeAI\\agent-team" }),
       mode: "waiting_plan_approval" as const,
+      inputPermissionMode: "plan" as const,
       workflowId: "delivery",
       conversation: [{ kind: "status" as const, text: "Plan approval requested" }],
       logMessages: [{ id: "plan", kind: "plan" as const, nodeId: "global-plan", attempt: 1, status: "pending" as const, text: "Plan Review", document: "Do the work." }],
@@ -758,10 +759,11 @@ describe("TUI event adapter", () => {
       timeline: ["plan"]
     };
 
-    const reset = resetTuiRunState(state, { workflowId: "delivery", runId: "workflow-run", preserveLogs: true });
+    const reset = resetTuiRunState(state, { workflowId: "delivery", runId: "workflow-run", preserveLogs: true, inputPermissionMode: "default" });
 
     assert.equal(reset.runId, "workflow-run");
     assert.equal(reset.mode, "running");
+    assert.equal(reset.inputPermissionMode, "default");
     assert.deepEqual(reset.nodes, []);
     assert.deepEqual(reset.tools, []);
     assert.deepEqual(reset.questions, []);
