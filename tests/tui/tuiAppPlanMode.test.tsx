@@ -66,6 +66,26 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("creates default Plan Mode sessions without the plan prefix", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const requests: ModelRequest[] = [];
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Check generated session id.");
+    const request = await waitForRequest(requests, "Check generated session id.");
+    const sessionId = request.context?.sessionId;
+    const planFilePath = planFilePathFromRequest(request);
+
+    assert.equal(typeof sessionId, "string");
+    assert.doesNotMatch(sessionId as string, /^plan-/);
+    assert.doesNotMatch(planFilePath, new RegExp(String.raw`[\\/]\d{2}T\d{6}-plan-`));
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("shows /help shortcuts without the old footer status bar", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const engine = { async startInteractive() { return fakeSession(); } };
@@ -426,7 +446,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     const expandedFrame = output.lastFrame() ?? "";
-    assert.match(expandedFrame, /Here is Claude's plan:/);
+    assert.match(expandedFrame, /Here is Einstein's plan:/);
     assert.match(expandedFrame, /Keep earlier logs visible\./);
     assert.doesNotMatch(expandedFrame, /First planning response stays visible\./);
 
@@ -435,13 +455,25 @@ describe("TuiApp global Plan Mode", () => {
     const collapsedFrame = output.lastFrame() ?? "";
     assert.match(collapsedFrame, /First planning response stays visible\./);
     assert.match(collapsedFrame, /No, keep planning/);
-    assert.match(collapsedFrame, /Here is Claude's plan:/);
+    assert.match(collapsedFrame, /Here is Einstein's plan:/);
 
     output.stdin.write("`");
     await settleTuiWork();
     const restoredFrame = output.lastFrame() ?? "";
-    assert.match(restoredFrame, /Here is Claude's plan:/);
+    assert.match(restoredFrame, /Here is Einstein's plan:/);
     assert.doesNotMatch(restoredFrame, /First planning response stays visible\./);
+
+    output.stdin.write("·");
+    await settleTuiWork();
+    const chineseCollapsedFrame = output.lastFrame() ?? "";
+    assert.match(chineseCollapsedFrame, /First planning response stays visible\./);
+    assert.match(chineseCollapsedFrame, /Here is Einstein's plan:/);
+
+    output.stdin.write("｀");
+    await settleTuiWork();
+    const chineseRestoredFrame = output.lastFrame() ?? "";
+    assert.match(chineseRestoredFrame, /Here is Einstein's plan:/);
+    assert.doesNotMatch(chineseRestoredFrame, /First planning response stays visible\./);
     assert.equal(starts, 0);
 
     output.unmount();
@@ -522,7 +554,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.equal(calls, 2);
     assert.match(frame, /Trying shell\./);
     assert.match(frame, /Planning without running tests\./);
-    assert.doesNotMatch(frame, /Permission denied for Bash: Plan Mode blocks shell execution/);
+    assert.match(frame, /Permission denied for Bash: Plan Mode blocks shell execution/);
     assert.match(frame, /> Type a request or \/help/);
 
     output.unmount();
@@ -740,7 +772,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     assert.equal(inputs.length, 0);
-    assert.match(output.lastFrame() ?? "", /Here is Claude's plan:/);
+    assert.match(output.lastFrame() ?? "", /Here is Einstein's plan:/);
     assert.match(output.lastFrame() ?? "", /Plan saved to:/);
     assert.match(output.lastFrame() ?? "", /Draft the migration first\./);
     output.stdin.write("\r");
@@ -1081,7 +1113,7 @@ describe("TuiApp global Plan Mode", () => {
     const planFilePath = planFilePathFromRequest(draftRequest);
     await sendTuiLine(output, "Ready for approval.");
     await waitForFrame(output, /Ready to code\?/);
-    assert.match(output.lastFrame() ?? "", /Here is Claude's plan:/);
+    assert.match(output.lastFrame() ?? "", /Here is Einstein's plan:/);
     assert.match(output.lastFrame() ?? "", /ctrl-g to edit in VS Code/);
     assert.ok((output.lastFrame() ?? "").includes(relative(cwd, planFilePath)));
 
@@ -1509,7 +1541,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(output.lastFrame() ?? "", /Ready to submit your answers\?/);
     assert.match(output.lastFrame() ?? "", /Submit answers/);
     assert.match(output.lastFrame() ?? "", /Cancel/);
-    assert.doesNotMatch(output.lastFrame() ?? "", /Respond to Claude/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Respond to Einstein/);
     assert.doesNotMatch(output.lastFrame() ?? "", /Finish plan interview/);
     assert.doesNotMatch(output.lastFrame() ?? "", /Back to questions/);
 
@@ -2133,7 +2165,7 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Ready for approval.");
     await waitForFrame(output, /Ready to code\?/);
     const approvalFrame = output.lastFrame() ?? "";
-    assert.match(approvalFrame, /Tell Claude what to change/);
+    assert.match(approvalFrame, /Tell Einstein what to change/);
     assert.match(approvalFrame, /shift\+tab to approve with this feedback/);
     assert.doesNotMatch(approvalFrame, /> Type a request or \/help/);
 
@@ -2193,7 +2225,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(frame, /Ready to code\?/);
     assert.doesNotMatch(frame, /> Type a request or \/help/);
     assert.match(frame, /No, keep planning/);
-    assert.match(frame, /Tell Claude what to change/);
+    assert.match(frame, /Tell Einstein what to change/);
     assert.doesNotMatch(frame, /needs revision/);
 
     output.unmount();
@@ -2330,12 +2362,12 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Here is Claude's plan:/);
+    assert.match(frame, /Here is Einstein's plan:/);
     assert.match(frame, /Step 01: verify the migration guardrail before executing\./);
     assert.match(frame, /Lines 1-\d+\/80/);
     assert.match(frame, /Step 19: verify the migration guardrail before executing\./);
     assert.match(frame, /Step 20: verify the migration guardrail before executing\./);
-    assert.match(frame, /Claude has written up a plan and is ready to execute/);
+    assert.match(frame, /Einstein has written up a plan and is ready to execute/);
     assert.match(frame, /Yes, auto-accept edits/);
     assert.match(frame, /Yes, manually approve edits/);
     assert.doesNotMatch(frame, /Yes, bypass permissions/);
@@ -2409,7 +2441,7 @@ describe("TuiApp global Plan Mode", () => {
     await settleTuiWork();
 
     await waitForFrame(output, /Ready to code\?/);
-    assert.match(output.lastFrame() ?? "", /Claude has written up a plan and is ready to execute/);
+    assert.match(output.lastFrame() ?? "", /Einstein has written up a plan and is ready to execute/);
     assert.doesNotMatch(output.lastFrame() ?? "", /without a written plan/);
     assert.equal(await readPlan(planFilePath), "# Recovered Plan\n\nUse transcript.\n");
     assert.equal(starts, 0);

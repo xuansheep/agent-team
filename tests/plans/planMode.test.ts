@@ -22,7 +22,9 @@ describe("Plan Mode V2", () => {
 
     assert.equal(first, again);
     assert.notEqual(first, other);
-    assert.match(first, /[.]session[\\/]plans[\\/].+[.]md$/);
+    assert.match(first, /[.]session/);
+    assert.match(first, /\d{6}/);
+    assert.match(first, new RegExp(String.raw`[\\/]plans[\\/]plan[.]md$`));
   });
 
   it("writes and reads plan drafts", async () => {

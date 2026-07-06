@@ -58,6 +58,26 @@ describe("PlanModeController", () => {
     assert.equal(rejected.toolPermissionContext.mode, "plan");
     assert.equal(rejected.planState?.feedbackMessages?.length, 1);
   });
+
+  it("closes the ExitPlanMode tool call when plan approval is rejected", async () => {
+    const cwd = await workspace();
+    const controller = new PlanModeController();
+    const session = createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } });
+    const planning = controller.enterPlanMode({
+      ...session,
+      messages: [{ role: "assistant", content: "", tool_calls: [{ id: "exit-plan", name: "ExitPlanMode", input: {} }] }]
+    }, { request: "build" });
+    await writePlan(planning.planState!.planFilePath, "# Plan");
+    const waiting = await controller.requestPlanApproval(planning, { toolCallId: "exit-plan" });
+    const rejected = (await controller.resolvePlanApproval(waiting, { decision: "stay", feedback: "add tests" })).session;
+
+    assert.equal(rejected.pendingInteraction, null);
+    assert.deepEqual(rejected.messages.at(-1), {
+      role: "tool",
+      tool_call_id: "exit-plan",
+      content: "Plan approval was rejected by the user. Stay in Plan Mode, incorporate the feedback, update the plan file, then call ExitPlanMode again.\nUser feedback: add tests"
+    });
+  });
   it("requests plan approval from the plan file without accepting request plan text", async () => {
     const cwd = await workspace();
     const controller = new PlanModeController();

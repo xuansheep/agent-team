@@ -9,7 +9,7 @@ describe("RunStore", () => {
   it("uses .session as the default storage root", () => {
     const store = new RunStore();
 
-    assert.equal(store.runDir("session-1"), join(".session", "session-1"));
+    assert.match(store.runDir("session-1"), new RegExp(String.raw`[.]session[\\/]\d{6}[\\/]\d{2}T\d{6}-session-1-[a-f0-9]{12}$`));
   });
 
   it("creates a run directory and appends ndjson events", async () => {

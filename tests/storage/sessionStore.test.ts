@@ -40,7 +40,7 @@ describe("SessionStore", () => {
 
   it("recovers Plan Mode state from session metadata", async () => {
     const root = await workspace();
-    const store = new SessionStore(root);
+    const store = new SessionStore(join(root, ".session"));
     const planState: PlanSessionState = {
       mode: "planning",
       sessionId: "session-plan",
@@ -58,7 +58,7 @@ describe("SessionStore", () => {
 
   it("preserves Plan Mode metadata when transcript appends happen concurrently", async () => {
     const root = await workspace();
-    const store = new SessionStore(root);
+    const store = new SessionStore(join(root, ".session"));
     const planState: PlanSessionState = {
       mode: "planning",
       sessionId: "session-plan-race",
@@ -78,7 +78,7 @@ describe("SessionStore", () => {
 
   it("keeps plan files recoverable with restored Plan Mode metadata", async () => {
     const root = await workspace();
-    const store = new SessionStore(root);
+    const store = new SessionStore(join(root, ".session"));
     const planFilePath = getPlanFilePath("session-plan", root);
     const planState: PlanSessionState = {
       mode: "waiting_approval",
@@ -123,8 +123,8 @@ describe("SessionStore", () => {
   });
 });
 
-describe("RunStore index compatibility", () => {
-  it("lists runs from the root index before scanning legacy run directories", async () => {
+describe("RunStore index", () => {
+  it("lists runs from the root index before scanning session directories", async () => {
     const root = await workspace();
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "indexed request" });
@@ -139,10 +139,10 @@ describe("RunStore index compatibility", () => {
     assert.match(runs[0]?.inputPreview ?? "", /indexed request/);
   });
 
-  it("falls back to scanning legacy run directories when no run index exists", async () => {
+  it("falls back to scanning session directories when no run index exists", async () => {
     const root = await workspace();
     const store = new RunStore(root);
-    const run = await store.createRun("delivery", { request: "legacy request" });
+    const run = await store.createRun("delivery", { request: "scanned request" });
     await store.saveState(run.runId, { status: "pending", workflow_id: "delivery", current_node_id: "product", attempts: [] });
     await writeFile(join(root, "index.json"), JSON.stringify({ version: 1, sessions: [] }, null, 2), "utf8");
 

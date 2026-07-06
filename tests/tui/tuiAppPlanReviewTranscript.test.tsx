@@ -34,7 +34,7 @@ describe("TuiApp plan review transcript", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Ready to code\?/);
-    assert.match(frame, /Here is Claude's plan:/);
+    assert.match(frame, /Here is Einstein's plan:/);
     assert.match(frame, /review from restored session/);
     assert.doesNotMatch(frame, /Ready to code\?.*\.session\/plans/);
     assert.doesNotMatch(frame, /scroll main window with mouse wheel or PageUp\/PageDown/);

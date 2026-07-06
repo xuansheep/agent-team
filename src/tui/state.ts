@@ -64,6 +64,7 @@ export type TuiPlanReviewState = {
   planFilePath?: string;
   empty?: boolean;
   requestedPermissions?: Array<{ tool: string; prompt: string }>;
+  toolCallId?: string;
   savedMessage?: string;
   contextUsedPercent?: number;
 };

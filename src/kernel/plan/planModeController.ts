@@ -11,9 +11,11 @@ import { readPlan } from "../../plans/planFiles.js";
 import type { KernelExecutionHandoff, KernelSession, PlanApprovalResolveMetadata } from "../session.js";
 import { reduceKernelSession } from "../session.js";
 import { createPlanApprovalPending } from "../pendingInteraction.js";
+import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "./planToolCallMessages.js";
 
 export type ExitPlanModeRequest = {
   requestedPermissions?: { tool: string; prompt: string }[];
+  toolCallId?: string;
 };
 
 export type ApprovedPlanHandoff = {
@@ -34,6 +36,7 @@ export type PlanApprovalResolutionResult = {
 type PlanApprovalMetadata = {
   approvalId?: string;
   approvedPlanHash?: string;
+  approvalToolCallId?: string;
 };
 
 export class PlanModeController {
@@ -52,19 +55,21 @@ export class PlanModeController {
       planFilePath: exited.plan.planFilePath,
       planHash,
       empty: exited.plan.empty,
-      requestedPermissions: exited.plan.requestedPermissions
+      requestedPermissions: exited.plan.requestedPermissions,
+      toolCallId: request.toolCallId
     });
-    const planState = withApprovalMetadata(exited.state, { approvalId: interaction.id, approvedPlanHash: planHash });
+    const planState = withApprovalMetadata(exited.state, { approvalId: interaction.id, approvedPlanHash: planHash, approvalToolCallId: request.toolCallId });
     return reduceKernelSession({ ...session, planState }, { type: "pending_interaction_set", interaction });
   }
 
   async resolvePlanApproval(session: KernelSession, input: { decision: "continue" | "stay" } & PlanApprovalResolveMetadata): Promise<PlanApprovalResolutionResult> {
     if (!session.planState) throw new Error("Plan Mode is not active");
     if (input.decision === "continue") {
+      const sessionWithToolResult = closePlanApprovalToolCall(session, "continue", input.feedback);
       const document = (await readPlan(session.planState.planFilePath))?.trim() ?? "";
       const approved = approvePlan(session.planState, document, input.feedback);
       const resolved = resolvePlanApproval(approved, "continue");
-      const nextSession = reduceKernelSession({ ...session, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
+      const nextSession = reduceKernelSession({ ...sessionWithToolResult, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
         type: "pending_interaction_cleared",
         status: "idle_input"
       });
@@ -81,9 +86,10 @@ export class PlanModeController {
         }
       };
     }
+    const sessionWithToolResult = closePlanApprovalToolCall(session, "stay", input.feedback);
     const resolved = resolvePlanApproval(session.planState, "stay", input.feedback);
     return {
-      session: reduceKernelSession({ ...session, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
+      session: reduceKernelSession({ ...sessionWithToolResult, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
         type: "pending_interaction_cleared",
         status: "planning"
       })
@@ -118,6 +124,11 @@ function withApprovalMetadata(state: PlanSessionState, metadata: PlanApprovalMet
 
 function approvalMetadata(state: PlanSessionState): PlanApprovalMetadata {
   return state as PlanSessionState & PlanApprovalMetadata;
+}
+
+function closePlanApprovalToolCall(session: KernelSession, decision: "continue" | "stay", feedback: unknown): KernelSession {
+  const content = planApprovalToolResultContent({ decision, feedback });
+  return { ...session, messages: closeDanglingExitPlanModeToolCalls(session.messages, content) };
 }
 
 function hashText(value: string): string {

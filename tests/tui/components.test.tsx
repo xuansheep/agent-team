@@ -6415,7 +6415,7 @@ describe("RunLogPanel", () => {
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Here is Claude's plan:/);
+    assert.match(frame, /Here is Einstein's plan:/);
     assert.match(frame, /⎿  # Plan/);
     assert.match(frame, /Requested permissions:/);
     assert.match(frame, /Bash\(prompt: run tests\)/);
@@ -8372,7 +8372,7 @@ describe("InteractionArea", () => {
         choice={{
           title: "Ready to code?",
           documentBlock: {
-            title: "Here is Claude's plan:",
+            title: "Here is Einstein's plan:",
             text: Array.from({ length: 20 }, (_, index) => `Step ${String(index + 1).padStart(2, "0")}`).join("\n"),
             maxLines: 5,
             scrollable: true

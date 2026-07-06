@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createKernelSession } from "../../src/kernel/session.js";
 import { PlanModeController } from "../../src/kernel/plan/planModeController.js";
@@ -14,6 +14,22 @@ import { writeTool } from "../../src/tools/local/write.js";
 
 function providerWithToolCalls(tool_calls: { id: string; name: string; input: unknown }[]): ModelProvider {
   return { generate: async () => ({ content: "", tool_calls }), stream: undefined } as unknown as ModelProvider;
+}
+
+function assertToolCallsClosed(messages: { role: string; tool_call_id?: string; tool_calls?: { id: string }[] }[]): void {
+  const pending = new Set<string>();
+  for (const message of messages) {
+    if (message.role === "tool") {
+      assert.ok(message.tool_call_id, "tool message must include tool_call_id");
+      assert.equal(pending.delete(message.tool_call_id), true, `unexpected tool result ${message.tool_call_id}`);
+      continue;
+    }
+    assert.equal(pending.size, 0, `missing tool result for ${[...pending].join(", ")}`);
+    if (message.role === "assistant") {
+      for (const call of message.tool_calls ?? []) pending.add(call.id);
+    }
+  }
+  assert.equal(pending.size, 0, `missing tool result for ${[...pending].join(", ")}`);
 }
 
 async function workspace() {
@@ -93,21 +109,78 @@ describe("QueryEngine", () => {
     const controller = new PlanModeController();
     const planning = controller.enterPlanMode(createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } }), { request: "build" });
     assert.ok(planning.planState);
+    const initialPlanFilePath = planning.planState.planFilePath;
+    const planText = "# Plan Dir Create\n\nKernel wrote this first.\n";
 
     const result = await new QueryEngine().run({
       session: planning,
       provider: providerWithToolCalls([
-        { id: "call-write-plan", name: "Write", input: { file_path: planning.planState.planFilePath, content: "# Plan\n\nKernel wrote this first.\n" } },
+        { id: "call-write-plan", name: "Write", input: { file_path: initialPlanFilePath, content: planText } },
         { id: "call-exit-plan", name: "ExitPlanMode", input: {} }
       ]),
       model: "test-model",
       tools: createKernelToolRegistry(legacy)
     });
 
+    const finalPlanFilePath = result.session.planState?.planFilePath ?? "";
     assert.equal(result.session.status, "waiting_plan_approval");
     assert.equal(result.session.pendingInteraction?.type, "plan_approval");
+    assert.equal(result.session.pendingInteraction?.planFilePath, finalPlanFilePath);
     assert.equal(result.session.pendingInteraction?.empty, undefined);
-    assert.equal(await readPlan(planning.planState.planFilePath), "# Plan\n\nKernel wrote this first.\n");
+    assert.match(finalPlanFilePath, /[\\/]plans[\\/]plan-dir-create[.]md$/);
+    assert.equal(await readPlan(finalPlanFilePath), planText);
+    assert.equal(await readPlan(initialPlanFilePath), undefined);
+    const writeCall = result.session.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []).find((call) => call.id === "call-write-plan");
+    assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, finalPlanFilePath);
+  });
+
+  it("names the first plan file from the assistant response when the draft has no heading", async () => {
+    const cwd = await workspace();
+    const legacy = new ToolRegistry();
+    legacy.add(writeTool);
+    const controller = new PlanModeController();
+    const planning = controller.enterPlanMode(createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } }), { request: "build" });
+    assert.ok(planning.planState);
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          content: "Plan Dir Create",
+          tool_calls: [{ id: "call-write-plan", name: "Write", input: { file_path: planning.planState!.planFilePath, content: "No markdown heading here.\n" } }]
+        };
+      }
+    };
+
+    const result = await new QueryEngine().run({
+      session: planning,
+      provider,
+      model: "test-model",
+      tools: createKernelToolRegistry(legacy)
+    });
+
+    const finalPlanFilePath = result.session.planState?.planFilePath ?? "";
+    assert.match(finalPlanFilePath, /[\\/]plans[\\/]plan-dir-create[.]md$/);
+    assert.equal(await readPlan(finalPlanFilePath), "No markdown heading here.\n");
+  });
+
+  it("adds a numeric suffix when a named plan already exists in the session", async () => {
+    const cwd = await workspace();
+    const legacy = new ToolRegistry();
+    legacy.add(writeTool);
+    const controller = new PlanModeController();
+    const planning = controller.enterPlanMode(createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } }), { request: "build" });
+    assert.ok(planning.planState);
+    await writePlan(join(dirname(planning.planState.planFilePath), "plan-dir-create.md"), "# Existing\n");
+
+    const result = await new QueryEngine().run({
+      session: planning,
+      provider: providerWithToolCalls([{ id: "call-write-plan", name: "Write", input: { file_path: planning.planState.planFilePath, content: "# Plan Dir Create\n\nNew plan.\n" } }]),
+      model: "test-model",
+      tools: createKernelToolRegistry(legacy)
+    });
+
+    const finalPlanFilePath = result.session.planState?.planFilePath ?? "";
+    assert.match(finalPlanFilePath, /[\\/]plans[\\/]plan-dir-create-2[.]md$/);
+    assert.equal(await readPlan(finalPlanFilePath), "# Plan Dir Create\n\nNew plan.\n");
   });
 
   it("turns ExitPlanMode into a plan approval interaction even when pre-plan mode was bypassPermissions", async () => {
@@ -184,6 +257,79 @@ describe("QueryEngine", () => {
     assert.equal(await readPlan(planning.planState.planFilePath), undefined);
     const writeCall = result.session.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []).find((call) => call.id === "call-write-plan");
     assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, truncatedPlanFilePath);
+  });
+
+  it("closes rejected ExitPlanMode approval before the next provider request", async () => {
+    const cwd = await workspace();
+    const legacy = new ToolRegistry();
+    legacy.add({
+      name: "ExitPlanMode",
+      description: "exit",
+      input_schema: {},
+      requiresUserInteraction: async () => true,
+      execute: async () => ({ output: "legacy should not own approval" })
+    });
+    const tools = createKernelToolRegistry(legacy);
+    const controller = new PlanModeController();
+    const planning = controller.enterPlanMode(createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } }), { request: "build" });
+    assert.ok(planning.planState);
+    await writePlan(planning.planState.planFilePath, "# Plan\n\nApprove me.\n");
+    const waiting = (await new QueryEngine().run({
+      session: planning,
+      provider: providerWithToolCalls([{ id: "exit-plan", name: "ExitPlanMode", input: {} }]),
+      model: "test-model",
+      tools
+    })).session;
+    const rejected = (await controller.resolvePlanApproval(waiting, { decision: "stay", feedback: "输出中文方案" })).session;
+    const provider: ModelProvider = {
+      async generate(request) {
+        assertToolCallsClosed(request.messages);
+        return { content: "继续规划。" };
+      }
+    };
+
+    const result = await new QueryEngine().run({
+      session: { ...rejected, messages: [...rejected.messages, { role: "user", content: "输出中文方案" }] },
+      provider,
+      model: "test-model",
+      tools
+    });
+
+    assert.equal(result.session.status, "idle_input");
+    assert.ok(result.session.messages.some((message) => message.role === "tool" && message.tool_call_id === "exit-plan"));
+  });
+
+  it("repairs historical ExitPlanMode tool calls that are missing tool output", async () => {
+    const cwd = await workspace();
+    const legacy = new ToolRegistry();
+    const controller = new PlanModeController();
+    const planning = controller.enterPlanMode(createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } }), { request: "build" });
+    assert.ok(planning.planState);
+    await writePlan(planning.planState.planFilePath, "# Plan\n\nApprove me.\n");
+    const broken = {
+      ...planning,
+      messages: [
+        { role: "user" as const, content: "plan this" },
+        { role: "assistant" as const, content: "", tool_calls: [{ id: "exit-plan", name: "ExitPlanMode", input: {} }] },
+        { role: "user" as const, content: "输出中文方案" }
+      ]
+    };
+    const provider: ModelProvider = {
+      async generate(request) {
+        assertToolCallsClosed(request.messages);
+        assert.ok(request.messages.some((message) => message.role === "tool" && message.tool_call_id === "exit-plan"));
+        return { content: "继续规划。" };
+      }
+    };
+
+    const result = await new QueryEngine().run({
+      session: broken,
+      provider,
+      model: "test-model",
+      tools: createKernelToolRegistry(legacy)
+    });
+
+    assert.equal(result.session.status, "idle_input");
   });
 
   it("does not run custom Plan Mode plain-text repair reminders", async () => {

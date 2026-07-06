@@ -16,6 +16,9 @@ export const settingsSchema = z.object({
   planMode: z.object({
     defaultEntry: z.boolean().optional()
   }).strict().optional(),
+  agentsMdExcludes: z.array(z.string().min(1)).optional(),
+  hasAgentsMdExternalIncludesApproved: z.boolean().optional(),
+  hasAgentsMdExternalIncludesWarningShown: z.boolean().optional(),
   useAutoModeDuringPlan: z.boolean().optional(),
   showClearContextOnPlanAccept: z.boolean().optional()
 }).strict();

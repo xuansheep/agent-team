@@ -8,6 +8,7 @@ export type PlanApprovalPendingInput = {
   planHash: string;
   requestedPermissions?: PlanRequestedPermission[];
   empty?: boolean;
+  toolCallId?: string;
 };
 
 export function createPlanApprovalPending(input: PlanApprovalPendingInput): Extract<PendingInteraction, { type: "plan_approval" }> {
@@ -19,6 +20,7 @@ export function createPlanApprovalPending(input: PlanApprovalPendingInput): Extr
     planFilePath: input.planFilePath,
     planHash: input.planHash,
     empty: input.empty,
-    requestedPermissions: input.requestedPermissions ?? []
+    requestedPermissions: input.requestedPermissions ?? [],
+    ...(input.toolCallId ? { toolCallId: input.toolCallId } : {})
   };
 }

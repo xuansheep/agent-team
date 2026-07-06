@@ -93,7 +93,7 @@ function PlanLogMessage({ item }: { item: TuiPlanLogMessage; detailMode: boolean
       ) : null}
       {showPlanApprovalLabel ? (
         <Box paddingLeft={2} marginTop={1}>
-          <Text>Here is Claude's plan:</Text>
+          <Text>Here is Einstein's plan:</Text>
         </Box>
       ) : null}
       <PlanDocumentBlock text={item.document} path={showPlanApprovalLabel ? item.path : undefined} />

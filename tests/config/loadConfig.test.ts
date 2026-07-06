@@ -313,7 +313,9 @@ workflows:
     const config = await loadConfig(configFile, { cwd: dir, homeDir });
 
     assert.equal(config.global_prompt_file, "GLOBAL.md");
-    assert.equal(config.global_prompt, "Global safety rules.\nApply to every node.");
+    assert.match(config.global_prompt ?? "", /Codebase and user instructions are shown below/);
+    assert.match(config.global_prompt ?? "", /Contents of .*GLOBAL[.]md .*configured instructions/);
+    assert.match(config.global_prompt ?? "", /Global safety rules[.]\nApply to every node/);
   });
 
   it("loads user and project AGENTS prompts before configured global prompt", async () => {
@@ -347,7 +349,7 @@ workflows:
 
     const config = await loadConfig(configFile, { cwd: dir, homeDir });
 
-    assert.equal(config.global_prompt, "User instructions.\n\nProject instructions.\n\nConfigured instructions.");
+    assert.match(config.global_prompt ?? "", /User instructions[\s\S]*Project instructions[\s\S]*Configured instructions/);
     assert.deepEqual(config.global_prompt_metadata?.sources.map((source) => source.kind), ["user_agents", "project_agents", "configured_file"]);
     assert.equal(config.global_prompt_metadata?.sources[1]?.path, join(dir, ".agents", "AGENTS.md"));
     assert.match(config.global_prompt_metadata?.sha256 ?? "", /^[a-f0-9]{64}$/);

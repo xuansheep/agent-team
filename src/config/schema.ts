@@ -117,7 +117,7 @@ type ProviderConfig = ParsedProviderConfig extends infer Provider
     : Provider
   : never;
 
-export type GlobalPromptSourceKind = "user_agents" | "project_agents" | "configured_file" | "configured_inline";
+export type GlobalPromptSourceKind = "managed_agents" | "user_agents" | "project_agents" | "local_agents" | "configured_file" | "configured_inline";
 export type GlobalPromptSourceMetadata = {
   kind: GlobalPromptSourceKind;
   path?: string;

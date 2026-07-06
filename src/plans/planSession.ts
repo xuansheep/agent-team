@@ -10,6 +10,7 @@ export type PlanSessionState = {
   mode: "inactive" | "planning" | "waiting_approval";
   sessionId: string;
   planFilePath: string;
+  planFileFinalized?: boolean;
   prePlanMode: PermissionMode;
   originalInput: unknown;
   approvedPlan?: string;
@@ -19,6 +20,7 @@ export type PlanSessionState = {
   useAutoModeDuringPlan?: boolean;
   requestedPermissions?: PlanRequestedPermission[];
   feedbackMessages?: unknown[];
+  approvalToolCallId?: string;
 };
 
 export type PlanRequestedPermission = {
@@ -46,6 +48,7 @@ export function enterPlanMode(input: EnterPlanModeInput): { state: PlanSessionSt
     mode: "planning",
     sessionId: input.sessionId,
     planFilePath,
+    ...(input.permissions.planFilePath ? { planFileFinalized: true } : {}),
     prePlanMode,
     originalInput: input.originalInput,
     ...(input.reentry ? { reentry: true } : {}),

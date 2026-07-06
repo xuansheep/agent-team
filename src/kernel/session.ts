@@ -16,7 +16,7 @@ export type KernelStatus =
 export type PendingInteraction =
   | { type: "tool_permission"; id: string; sessionId: string; runId?: string; tool: string; input: unknown; reason?: string; rule?: string }
   | { type: "ask_user_question"; id: string; sessionId: string; runId?: string; toolCallId: string; questions: unknown[] }
-  | { type: "plan_approval"; id: string; sessionId: string; planFilePath: string; planHash?: string; empty?: boolean; requestedPermissions?: PlanRequestedPermission[] }
+  | { type: "plan_approval"; id: string; sessionId: string; planFilePath: string; planHash?: string; empty?: boolean; requestedPermissions?: PlanRequestedPermission[]; toolCallId?: string }
   | { type: "interrupt_confirmation"; id: string; sessionId: string; message: string };
 
 export type WorkflowBinding = {

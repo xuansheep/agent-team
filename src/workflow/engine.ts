@@ -98,6 +98,8 @@ export type WorkflowRunPermissionMode = Exclude<PermissionMode, "plan">;
 export type WorkflowRunOptions = {
     permissionMode?: WorkflowRunPermissionMode;
     clearContext?: boolean;
+    sessionId?: string;
+    sessionDir?: string;
 };
 
 export class WorkflowEngine {
@@ -116,7 +118,7 @@ export class WorkflowEngine {
 
         const store = new RunStore(this.options.runRoot ?? ".session");
 
-        const run = await store.createRun(workflowId, publicWorkflowInput(input));
+        const run = await store.createRun(workflowId, publicWorkflowInput(input), { sessionId: options.sessionId, sessionDir: options.sessionDir });
 
         const initialHandoff = await this.prepareInitialHandoff(input, run.runDir, options);
         const planRequestedPermissionRules = planRequestedPermissionRulesFromHandoff(initialHandoff);
@@ -673,7 +675,7 @@ export class WorkflowEngine {
 
         const store = new RunStore(this.options.runRoot ?? ".session");
 
-        const run = await store.createRun(workflowId, publicWorkflowInput(input));
+        const run = await store.createRun(workflowId, publicWorkflowInput(input), { sessionId: options.sessionId, sessionDir: options.sessionDir });
 
         const initialHandoff = await this.prepareInitialHandoff(input, run.runDir, options);
         const planRequestedPermissionRules = planRequestedPermissionRulesFromHandoff(initialHandoff);
