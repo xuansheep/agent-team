@@ -156,7 +156,7 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\u001b[Z");
     await waitForFrame(output, /Permission mode: Full access/);
     assert.equal(starts, 0);
-    assert.match(output.lastFrame() ?? "", /mode Bypass/);
+    assert.match(output.lastFrame() ?? "", /mode Full access/);
 
     output.unmount();
     output.cleanup();
@@ -213,6 +213,35 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Start after permissions change.");
     await settleTuiWork();
 
+    assertStartOption(options[0], { permissionMode: "fullAccess" });
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("cycles back to the /permissions-selected full access mode", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const options: unknown[] = [];
+    const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+
+    await sendTuiLine(output, "/permissions");
+    await waitForFrame(output, /Default execution mode/);
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write(String.fromCharCode(13));
+    await waitForFrame(output, /Permission mode: Full access/);
+
+    output.stdin.write("\u001b[Z");
+    await waitForFrame(output, /Permission mode: Plan Mode/);
+    assert.match(output.lastFrame() ?? "", /mode Plan/);
+
+    output.stdin.write("\u001b[Z");
+    await waitForFrame(output, /Permission mode: Full access/);
+    assert.match(output.lastFrame() ?? "", /mode Full access/);
+
+    await sendTuiLine(output, "Start after cycling permissions.");
+    await settleTuiWork();
     assertStartOption(options[0], { permissionMode: "fullAccess" });
 
     output.unmount();

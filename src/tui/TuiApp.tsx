@@ -1197,13 +1197,15 @@ ${message.detailText}` : ""}` }
         );
         void resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
       } else if (state.mode === "input") {
-        const nextMode = nextInputPermissionMode(state.inputPermissionMode, defaultExecutionPermissionMode(settings?.permissions?.defaultMode));
-        setState((current) => ({
-          ...current,
-          inputPermissionMode: nextMode,
-          error: undefined,
-          logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(nextMode)}`)]
-        }));
+        setState((current) => {
+          const nextMode = nextInputPermissionMode(current.inputPermissionMode, current.defaultExecutionMode);
+          return {
+            ...current,
+            inputPermissionMode: nextMode,
+            error: undefined,
+            logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(nextMode)}`)]
+          };
+        });
       }
       else if (state.mode === "planning" || state.mode === "waiting_plan_approval") setState((current) => ({ ...current, error: "Plan Mode is already active" }));
       return;
@@ -2168,10 +2170,6 @@ function questionLogDetail(questions: unknown[]): string {
 }
 function nextInputPermissionMode(mode: PermissionMode, defaultExecutionMode: Exclude<PermissionMode, "plan">): PermissionMode {
   return mode === "plan" ? defaultExecutionMode : "plan";
-}
-
-function defaultExecutionPermissionMode(mode: PermissionMode | undefined): Exclude<PermissionMode, "plan"> {
-  return mode === "fullAccess" ? "fullAccess" : "default";
 }
 
 function workflowPermissionMode(mode: PermissionMode): Exclude<PermissionMode, "plan"> | undefined {
