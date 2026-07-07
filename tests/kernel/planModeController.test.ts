@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createKernelSession } from "../../src/kernel/session.js";
+import { createKernelSession, reduceKernelSession } from "../../src/kernel/session.js";
 import { PlanModeController } from "../../src/kernel/plan/planModeController.js";
 import { readPlan, writePlan } from "../../src/plans/planFiles.js";
 
@@ -43,6 +43,25 @@ describe("PlanModeController", () => {
     assert.equal(approved.toolPermissionContext.mode, "acceptEdits");
     assert.equal(handoff.planText, "# Plan\n\nUpdated after review opened.");
     assert.equal(handoff.approvalId, approvalId);
+  });
+
+  it("continues with the current default execution mode after changing it in Plan Mode", async () => {
+    const cwd = await workspace();
+    const controller = new PlanModeController();
+    const session = createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } });
+    const planning = controller.enterPlanMode(session, { request: "build" });
+    const planningWithFullAccessDefault = reduceKernelSession(planning, {
+      type: "default_execution_mode_set",
+      mode: "bypassPermissions"
+    });
+    await writePlan(planningWithFullAccessDefault.planState!.planFilePath, "# Plan\n\nShip safely.");
+    const waiting = await controller.requestPlanApproval(planningWithFullAccessDefault);
+
+    const resolved = await controller.resolvePlanApproval(waiting, { decision: "continue" });
+
+    assert.equal(resolved.session.defaultExecutionMode, "bypassPermissions");
+    assert.equal(resolved.session.toolPermissionContext.mode, "bypassPermissions");
+    assert.equal(resolved.execution?.permissionMode, "bypassPermissions");
   });
 
   it("stays in plan mode with feedback after rejection", async () => {

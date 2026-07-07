@@ -69,12 +69,13 @@ export class PlanModeController {
       const document = (await readPlan(session.planState.planFilePath))?.trim() ?? "";
       const approved = approvePlan(session.planState, document, input.feedback);
       const resolved = resolvePlanApproval(approved, "continue");
-      const nextSession = reduceKernelSession({ ...sessionWithToolResult, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
+      const restoredPermissions = { ...resolved.permissions, mode: restoredExecutionPermissionMode(session, resolved.permissions.mode) };
+      const nextSession = reduceKernelSession({ ...sessionWithToolResult, planState: resolved.state, toolPermissionContext: restoredPermissions }, {
         type: "pending_interaction_cleared",
         status: "idle_input"
       });
       const handoff = this.buildApprovedPlanHandoff(nextSession);
-      const permissionMode = input.permissionMode ?? nonPlanPermissionMode(resolved.permissions.mode);
+      const permissionMode = input.permissionMode ?? nonPlanPermissionMode(restoredPermissions.mode);
       const clearContext = input.clearContext === true;
       return {
         session: nextSession,
@@ -140,6 +141,17 @@ function freshImplementationInput(planText: string, originalInput: unknown, feed
   parts.push(`\nOriginal input:\n${JSON.stringify(originalInput, null, 2)}`);
   if (typeof feedback === "string" && feedback.trim()) parts.push(`\nApproval feedback:\n${feedback.trim()}`);
   return parts.join("\n");
+}
+
+function restoredExecutionPermissionMode(session: KernelSession, resolvedMode: KernelSession["toolPermissionContext"]["mode"]): KernelSession["toolPermissionContext"]["mode"] {
+  const prePlanMode = session.planState?.prePlanMode ?? resolvedMode;
+  return session.defaultExecutionMode === defaultExecutionModeFrom(prePlanMode)
+    ? resolvedMode
+    : session.defaultExecutionMode;
+}
+
+function defaultExecutionModeFrom(mode: KernelSession["toolPermissionContext"]["mode"]): KernelSession["defaultExecutionMode"] {
+  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
 }
 
 function nonPlanPermissionMode(mode: string): Exclude<PlanApprovalResolveMetadata["permissionMode"], undefined> {
