@@ -69,11 +69,11 @@ function statusLinePart(element: StatusLineElement, input: {
 function effectiveModeLabel(mode: TuiMode, permissionMode: PermissionMode): string {
   if (mode === "waiting_plan_approval") return "Plan Review";
   if (mode === "planning" || (mode === "input" && permissionMode === "plan")) return "Plan";
-  if (mode === "input" && permissionMode === "acceptEdits") return "Edit";
+  if (mode === "input" && permissionMode === "acceptEdits") return "Default";
   if (mode === "input" && permissionMode === "bypassPermissions") return "Bypass";
   if (mode === "input" && permissionMode === "auto") return "Auto";
   if (mode === "input" && permissionMode === "dontAsk") return "Don't Ask";
-  if (mode === "input") return "Input";
+  if (mode === "input") return "Default";
   return mode.replaceAll("_", " ");
 }
 

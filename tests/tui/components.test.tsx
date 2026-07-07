@@ -398,7 +398,7 @@ describe("PromptInput component", () => {
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /mode Edit/);
+    assert.match(frame, /mode Default/);
     assert.match(frame, /workflow delivery/);
     assert.match(frame, /selection active/);
     output.unmount();

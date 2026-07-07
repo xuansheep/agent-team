@@ -113,22 +113,18 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Statusline updated/);
     const frame = output.lastFrame() ?? "";
 
-    assert.match(frame, /mode Input \| permission Default/);
+    assert.match(frame, /mode Default \| permission Default/);
     assert.doesNotMatch(frame.split("\n").at(-2) ?? "", /workflow delivery/);
 
     output.unmount();
     output.cleanup();
   });
 
-  it("cycles permission modes through Plan Mode without entering planning immediately", async () => {
+  it("cycles between the default execution mode and Plan Mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
-
-    output.stdin.write("\u001b[Z");
-    await waitForFrame(output, /Permission mode: Accept Edits/);
-    assert.equal(starts, 0);
 
     output.stdin.write("\u001b[Z");
     await waitForFrame(output, /Permission mode: Plan Mode/);
@@ -138,14 +134,29 @@ describe("TuiApp global Plan Mode", () => {
     assert.doesNotMatch(output.lastFrame() ?? "", /Enabled plan mode/);
 
     output.stdin.write("\u001b[Z");
+    await waitForFrame(output, /Permission mode: Default/);
+    assert.equal(starts, 0);
+    assert.match(output.lastFrame() ?? "", /mode Default/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("cycles back to full access when it is the default execution mode", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    let starts = 0;
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} settings={{ permissions: { defaultMode: "bypassPermissions" } }} />);
+
+    output.stdin.write("\u001b[Z");
+    await waitForFrame(output, /Permission mode: Plan Mode/);
+    assert.equal(starts, 0);
+    assert.match(output.lastFrame() ?? "", /mode Plan/);
+
+    output.stdin.write("\u001b[Z");
     await waitForFrame(output, /Permission mode: Bypass Permissions/);
     assert.equal(starts, 0);
     assert.match(output.lastFrame() ?? "", /mode Bypass/);
-
-    output.stdin.write("\u001b[Z");
-    await waitForFrame(output, /Permission mode: Default/);
-    assert.equal(starts, 0);
-    assert.match(output.lastFrame() ?? "", /mode Input/);
 
     output.unmount();
     output.cleanup();
@@ -181,18 +192,16 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("starts ordinary workflow turns with the selected Shift+Tab permission mode", async () => {
+  it("starts ordinary workflow turns with the selected default execution mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} settings={{ permissions: { defaultMode: "bypassPermissions" } }} />);
 
-    output.stdin.write("\u001b[Z");
-    await waitForFrame(output, /Permission mode: Accept Edits/);
-    await sendTuiLine(output, "Start in accept edits.");
+    await sendTuiLine(output, "Start in full access.");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits" });
+    assert.deepEqual(options[0], { permissionMode: "bypassPermissions" });
 
     output.unmount();
     output.cleanup();

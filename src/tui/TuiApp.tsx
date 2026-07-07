@@ -1199,7 +1199,7 @@ ${message.detailText}` : ""}` }
         );
         void resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
       } else if (state.mode === "input") {
-        const nextMode = nextInputPermissionMode(state.inputPermissionMode);
+        const nextMode = nextInputPermissionMode(state.inputPermissionMode, defaultExecutionPermissionMode(settings?.permissions?.defaultMode));
         setState((current) => ({
           ...current,
           inputPermissionMode: nextMode,
@@ -2156,11 +2156,12 @@ function questionNavigationData(
 function questionLogDetail(questions: unknown[]): string {
   return questions.map((question) => questionText(question)).join("\n");
 }
-function nextInputPermissionMode(mode: PermissionMode): PermissionMode {
-  if (mode === "default") return "acceptEdits";
-  if (mode === "acceptEdits") return "plan";
-  if (mode === "plan") return "bypassPermissions";
-  return "default";
+function nextInputPermissionMode(mode: PermissionMode, defaultExecutionMode: Exclude<PermissionMode, "plan">): PermissionMode {
+  return mode === "plan" ? defaultExecutionMode : "plan";
+}
+
+function defaultExecutionPermissionMode(mode: PermissionMode | undefined): Exclude<PermissionMode, "plan"> {
+  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
 }
 
 function workflowPermissionMode(mode: PermissionMode): Exclude<PermissionMode, "plan"> | undefined {
