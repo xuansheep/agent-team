@@ -28,7 +28,7 @@ import { WorkflowEngine } from "../workflow/engine.js";
 import { WorkflowSession } from "../workflow/session.js";
 import { initialTuiState, reduceStoredEvent, resetTuiRunState } from "./eventAdapter.js";
 import { ensureRefableStdin } from "./inkStdin.js";
-import { TuiState } from "./state.js";
+import { TuiDefaultExecutionMode, TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
@@ -1249,6 +1249,9 @@ ${message.detailText}` : ""}` }
       if (event.name === "clear") {
         clearTuiContext();
       }
+      if (event.name === "permissions") {
+        setState((current) => ({ ...current, mode: "permissions", error: undefined }));
+      }
       if (event.name === "resume") {
         const runId = event.args[0];
         if (isActiveSessionMode(state.mode)) setState((current) => ({ ...current, mode: "confirm_resume", pendingResumeRunId: runId, modeBeforeConfirmation: current.mode }));
@@ -1313,6 +1316,7 @@ ${message.detailText}` : ""}` }
     contextUsedPercent: state.pendingReview?.contextUsedPercent,
     isAutoModeAvailable: planSessionRef.current?.prePlanMode === "auto",
     isBypassPermissionsModeAvailable: planSessionRef.current?.prePlanMode === "bypassPermissions",
+    defaultExecutionMode: state.defaultExecutionMode,
     selectWorkflow,
     resolvePermission: (requestId, decision) => {
       const request = state.permissionRequests.find((item) => item.requestId === requestId);
@@ -1380,6 +1384,16 @@ ${message.detailText}` : ""}` }
       } else {
         setState((current) => ({ ...current, mode: current.modeBeforeConfirmation ?? "running", pendingResumeRunId: undefined, modeBeforeConfirmation: undefined }));
       }
+    },
+    resolveDefaultExecutionMode: (mode) => {
+      setState((current) => ({
+        ...current,
+        mode: "input",
+        defaultExecutionMode: mode,
+        inputPermissionMode: current.inputPermissionMode === "plan" ? "plan" : mode,
+        error: undefined,
+        logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(mode)}`)]
+      }));
     }
   });
   const nextChoiceKey = activeChoice ? `${interactionMode}:${activeChoice.title}:${activeChoice.options.map((option) => option.value).join("|")}` : "";
@@ -2205,6 +2219,7 @@ export function resolveActiveChoiceCancel(state: {
     return { type: "restore_mode", mode: state.modeBeforeConfirmation ?? "running", clearPendingResumeRunId: true, key };
   }
   if (state.mode === "resume_picker") return { type: "restore_mode", mode: "input", clearResumePicker: true, key: "resume_picker" };
+  if (state.mode === "permissions") return { type: "restore_mode", mode: "input", key: "permissions" };
   if (state.mode === "select_workflow") return state.workflowId ? { type: "restore_mode", mode: "input", key: "select_workflow" } : { type: "exit", key: "select_workflow" };
   return { type: "none" };
 }
@@ -2238,6 +2253,7 @@ function buildActiveChoice(input: {
   contextUsedPercent?: number;
   isAutoModeAvailable?: boolean;
   isBypassPermissionsModeAvailable?: boolean;
+  defaultExecutionMode: TuiDefaultExecutionMode;
   resumeRuns: TuiState["resumeRuns"];
   selectWorkflow: (workflow: string) => void;
   resolvePermission: (requestId: string, decision: "allow_once" | "deny_once") => void;
@@ -2261,6 +2277,7 @@ function buildActiveChoice(input: {
   resolveResume: (runId: string) => void;
   resolveNew: (decision: "new" | "stay") => void;
   resolvePendingResume: (decision: "resume" | "stay") => void;
+  resolveDefaultExecutionMode: (mode: TuiDefaultExecutionMode) => void;
 }): InteractionChoice | undefined {
   if (input.mode === "select_workflow" && input.workflows.length) {
     const options = input.workflows.map((workflow) => ({ label: workflow, value: workflow }));
@@ -2290,6 +2307,20 @@ function buildActiveChoice(input: {
     ];
     const selectedValue = options[0].value;
     return { title: "Resume another workflow?", options, selectedValue, onSubmit: (value) => input.resolvePendingResume(value === "resume" ? "resume" : "stay") };
+  }
+  if (input.mode === "permissions") {
+    const options = [
+      { label: "Default", value: "default" },
+      { label: "Full access", value: "bypassPermissions" }
+    ];
+    return {
+      title: "Default execution mode",
+      detail: "Choose the execution mode used outside Plan Mode.",
+      options,
+      selectedValue: input.defaultExecutionMode,
+      onCancel: () => input.resolveDefaultExecutionMode(input.defaultExecutionMode),
+      onSubmit: (value) => input.resolveDefaultExecutionMode(value === "bypassPermissions" ? "bypassPermissions" : "default")
+    };
   }
   if (input.mode === "permission" && input.permission) {
     if (input.permission.tool === "EnterPlanMode") {

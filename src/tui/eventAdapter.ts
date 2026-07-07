@@ -9,6 +9,7 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
     cwd: input.cwd,
     mode: "boot",
     inputPermissionMode: input.inputPermissionMode ?? "default",
+    defaultExecutionMode: defaultExecutionModeFrom(input.inputPermissionMode),
     nodes: [],
     tools: [],
     permissionRequests: [],
@@ -20,9 +21,13 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
     resumeRuns: []
   };
 }
+function defaultExecutionModeFrom(mode: PermissionMode | undefined): TuiState["defaultExecutionMode"] {
+  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
+}
 export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
   const reset: TuiState = {
     ...initialTuiState({ cwd: state.cwd, inputPermissionMode: input.inputPermissionMode ?? state.inputPermissionMode }),
+    defaultExecutionMode: state.defaultExecutionMode,
     workflowId: input.workflowId,
     runId: input.runId,
     mode: "running"

@@ -9,6 +9,7 @@ export type TuiMode =
   | "input"
   | "running"
   | "permission"
+  | "permissions"
   | "question"
   | "planning"
   | "waiting_plan_approval"
@@ -99,10 +100,13 @@ export type TuiResumeEntry =
       planMode?: PlanSessionState["mode"];
     };
 
+export type TuiDefaultExecutionMode = Extract<PermissionMode, "default" | "bypassPermissions">;
+
 export type TuiState = {
   cwd: string;
   mode: TuiMode;
   inputPermissionMode: PermissionMode;
+  defaultExecutionMode: TuiDefaultExecutionMode;
   workflowId?: string;
   runId?: string;
   currentNodeId?: string;

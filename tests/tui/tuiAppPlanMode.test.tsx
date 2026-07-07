@@ -192,6 +192,33 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("changes the default execution mode from /permissions", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const options: unknown[] = [];
+    const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+
+    await sendTuiLine(output, "/permissions");
+    await waitForFrame(output, /Default execution mode/);
+    const menu = output.lastFrame() ?? "";
+    assert.match(menu, /Default/);
+    assert.match(menu, /Full access/);
+    assert.doesNotMatch(menu, /Accept Edits/);
+    assert.doesNotMatch(menu, /Auto/);
+
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write(String.fromCharCode(13));
+    await waitForFrame(output, /Permission mode: Bypass Permissions/);
+    await sendTuiLine(output, "Start after permissions change.");
+    await settleTuiWork();
+
+    assert.deepEqual(options[0], { permissionMode: "bypassPermissions" });
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("starts ordinary workflow turns with the selected default execution mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
