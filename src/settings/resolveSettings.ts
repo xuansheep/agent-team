@@ -30,10 +30,9 @@ export function resolvePlansDirectory(cwd: string, plansDirectory: string): stri
 }
 
 function mergeSettings(userSettings: AgentTeamSettings, projectSettings: AgentTeamSettings): AgentTeamSettings {
-  const { useAutoModeDuringPlan: _projectUseAutoModeDuringPlan, ...trustedProjectSettings } = projectSettings;
   return {
     ...userSettings,
-    ...trustedProjectSettings,
+    ...projectSettings,
     permissions: mergeObject(userSettings.permissions, projectSettings.permissions),
     models: mergeModels(userSettings.models, projectSettings.models),
     planMode: mergeObject(userSettings.planMode, projectSettings.planMode)

@@ -55,11 +55,11 @@ describe("KernelSession", () => {
 
     const next = reduceKernelSession(session, {
       type: "default_execution_mode_set",
-      mode: "bypassPermissions"
+      mode: "fullAccess"
     });
 
-    assert.equal(next.defaultExecutionMode, "bypassPermissions");
-    assert.equal(next.toolPermissionContext.mode, "bypassPermissions");
+    assert.equal(next.defaultExecutionMode, "fullAccess");
+    assert.equal(next.toolPermissionContext.mode, "fullAccess");
   });
 
   it("changes default execution mode during Plan Mode without leaving Plan Mode", () => {
@@ -71,10 +71,10 @@ describe("KernelSession", () => {
 
     const next = reduceKernelSession(session, {
       type: "default_execution_mode_set",
-      mode: "bypassPermissions"
+      mode: "fullAccess"
     });
 
-    assert.equal(next.defaultExecutionMode, "bypassPermissions");
+    assert.equal(next.defaultExecutionMode, "fullAccess");
     assert.equal(next.toolPermissionContext.mode, "plan");
   });
 });

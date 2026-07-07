@@ -151,7 +151,7 @@ function restoredExecutionPermissionMode(session: KernelSession, resolvedMode: K
 }
 
 function defaultExecutionModeFrom(mode: KernelSession["toolPermissionContext"]["mode"]): KernelSession["defaultExecutionMode"] {
-  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
+  return mode === "fullAccess" ? "fullAccess" : "default";
 }
 
 function nonPlanPermissionMode(mode: string): Exclude<PlanApprovalResolveMetadata["permissionMode"], undefined> {

@@ -83,7 +83,7 @@ export const nodeSchema = z.object({
   provider: z.string().default("default"),
   model: z.string().optional(),
   mode: z.enum(["task", "complete"]).default("task"),
-  permission_mode: z.enum(["default", "acceptEdits", "auto", "dontAsk", "bypassPermissions"]).default("default"),
+  permission_mode: z.enum(["default", "fullAccess"]).default("default"),
   permissions: permissionSetSchema.optional()
 });
 

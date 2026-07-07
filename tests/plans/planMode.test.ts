@@ -201,13 +201,13 @@ describe("Plan Mode V2", () => {
       sessionId: "session-1",
       cwd,
       originalInput: { request: "build" },
-      permissions: { mode: "acceptEdits", allow: [], ask: [], deny: [] }
+      permissions: { mode: "fullAccess", allow: [], ask: [], deny: [] }
     });
     const approved = approvePlan(entered.state, "# Plan\nBuild it.");
     const resolved = resolvePlanApproval(approved, "continue");
 
     assert.equal(resolved.state.mode, "inactive");
-    assert.equal(resolved.permissions.mode, "acceptEdits");
+    assert.equal(resolved.permissions.mode, "fullAccess");
     assert.deepEqual(resolved.event, { type: "plan_approval_resolved", session_id: "session-1", decision: "continue" });
     assert.deepEqual(buildApprovedPlanHandoff(resolved.state), {
       original_input: { request: "build" },

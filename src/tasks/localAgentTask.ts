@@ -21,7 +21,6 @@ export function createLocalAgentTask(): TaskHandler {
         deny: input.permissions?.deny ?? [],
         source: input.permissions?.source,
         planFilePath: input.permissions?.planFilePath,
-        planUseAutoMode: input.permissions?.planUseAutoMode
       },
       cwd: input.cwd,
       sessionId,

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { AuditEvent } from "../audit/auditEvent.js";
 import { ModelMessage, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import { hasModelUsage } from "../model/usage.js";
-import { buildAutoModeAttachment, buildAutoModeExitAttachment, buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
+import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { withRuntimeAttachments } from "../context/messages.js";
 import { readPlan } from "../plans/planFiles.js";
 import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } from "../plans/planSession.js";
@@ -17,11 +17,6 @@ const planModeAttachmentConfig = {
   turnsBetweenAttachments: 5,
   fullReminderEveryAttachments: 5
 } as const;
-const autoModeAttachmentConfig = {
-  turnsBetweenAttachments: 5,
-  fullReminderEveryAttachments: 5
-} as const;
-
 export class RuntimeTurnExecutor {
   async requestModel(input: RuntimeModelTurnInput): Promise<RuntimeModelTurnResult> {
     const streamed = Boolean(input.provider.stream);
@@ -270,12 +265,6 @@ async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[
     const attachments: RuntimeAttachment[] = [];
     if (globalPromptAttachment) attachments.push(globalPromptAttachment);
     if (toolPromptAttachment) attachments.push(toolPromptAttachment);
-    if (input.permissions.mode === "auto") {
-      const autoTiming = autoModeAttachmentTiming(messages);
-      if (!autoTiming.skip) attachments.push(buildAutoModeAttachment({ sparse: autoTiming.sparse }));
-    } else if (needsAutoModeExitAttachment(messages)) {
-      attachments.push(buildAutoModeExitAttachment());
-    }
     return attachments.length ? withRuntimeAttachments(messages, attachments) : messages;
   }
 
@@ -287,10 +276,7 @@ async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[
   if (input.planState?.reentry && !hasRuntimeAttachment(messages, "plan_mode_reentry") && draft !== undefined) {
     attachments.push(buildPlanModeReentryAttachment({ planFilePath: input.permissions.planFilePath }));
   }
-  const autoTiming = input.permissions.prePlanMode === "auto" && input.permissions.planUseAutoMode !== false ? autoModeAttachmentTiming(messages) : undefined;
-  const autoAttachment = autoTiming && !autoTiming.skip ? buildAutoModeAttachment({ sparse: autoTiming.sparse }) : undefined;
   if (attachmentTiming.skip) {
-    if (autoAttachment) attachments.push(autoAttachment);
     return attachments.length ? withRuntimeAttachments(messages, attachments) : messages;
   }
   attachments.push(buildPlanModeAttachment({
@@ -299,7 +285,6 @@ async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[
     draft,
     sparse: attachmentTiming.sparse
   }));
-  if (autoAttachment) attachments.push(autoAttachment);
   return withRuntimeAttachments(messages, attachments);
 }
 
@@ -382,62 +367,6 @@ function runtimeAttachmentMarker(message: ModelMessage): "plan_mode" | "plan_mod
   if (typeof message.content !== "string") return undefined;
   const match = /(?:^|\n)ATTACHMENT (plan_mode|plan_mode_reminder|plan_mode_reentry|plan_mode_exit)\b/.exec(message.content);
   return match?.[1] as ReturnType<typeof runtimeAttachmentMarker>;
-}
-
-function autoModeAttachmentTiming(messages: ModelMessage[]): { hasAutoAttachment: boolean; skip: boolean; sparse: boolean } {
-  const latestAttachment = latestRuntimeAttachmentTurn(messages, ["auto_mode", "auto_mode_reminder", "auto_mode_exit"]);
-  if (latestAttachment?.type === "auto_mode_exit") return { hasAutoAttachment: false, skip: false, sparse: false };
-
-  const totalHumanTurns = messages.filter(isHumanTurn).length;
-  const latestAutoTurn = latestAttachment?.humanTurnCount;
-  const foundAutoAttachment = latestAutoTurn !== undefined;
-  const autoAttachmentsSinceExit = runtimeAttachmentCountSinceLastExit(messages, ["auto_mode", "auto_mode_reminder"], "auto_mode_exit");
-
-  if (foundAutoAttachment && totalHumanTurns - latestAutoTurn < autoModeAttachmentConfig.turnsBetweenAttachments) {
-    return { hasAutoAttachment: true, skip: true, sparse: true };
-  }
-  const nextAutoAttachmentCount = autoAttachmentsSinceExit + 1;
-  return {
-    hasAutoAttachment: foundAutoAttachment,
-    skip: false,
-    sparse: nextAutoAttachmentCount % autoModeAttachmentConfig.fullReminderEveryAttachments !== 1
-  };
-}
-
-function needsAutoModeExitAttachment(messages: ModelMessage[]): boolean {
-  const latestAttachment = latestRuntimeAttachmentTurn(messages, ["auto_mode", "auto_mode_reminder", "auto_mode_exit"]);
-  return latestAttachment?.type === "auto_mode" || latestAttachment?.type === "auto_mode_reminder";
-}
-
-function latestRuntimeAttachmentTurn(messages: ModelMessage[], types: string[]): { type: string; humanTurnCount: number } | undefined {
-  let latest: { type: string; humanTurnCount: number } | undefined;
-  for (const message of messages) {
-    const attachment = runtimeAttachmentInfo(message);
-    if (!attachment || !types.includes(attachment.type)) continue;
-    if (!latest || attachment.humanTurnCount >= latest.humanTurnCount) latest = attachment;
-  }
-  return latest;
-}
-
-function runtimeAttachmentCountSinceLastExit(messages: ModelMessage[], countedTypes: string[], exitType: string): number {
-  let lastExitTurn = -1;
-  for (const message of messages) {
-    const attachment = runtimeAttachmentInfo(message);
-    if (attachment?.type === exitType && attachment.humanTurnCount > lastExitTurn) lastExitTurn = attachment.humanTurnCount;
-  }
-  return messages.filter((message) => {
-    const attachment = runtimeAttachmentInfo(message);
-    return attachment !== undefined && attachment.humanTurnCount > lastExitTurn && countedTypes.includes(attachment.type);
-  }).length;
-}
-
-function runtimeAttachmentInfo(message: ModelMessage): { type: string; humanTurnCount: number } | undefined {
-  const annotated = message.metadata?.runtimeAttachment;
-  if (annotated) return annotated;
-  if (typeof message.content !== "string") return undefined;
-  const match = /(?:^|\n)ATTACHMENT (auto_mode|auto_mode_reminder|auto_mode_exit)\b/.exec(message.content);
-  if (!match) return undefined;
-  return { type: match[1] ?? "", humanTurnCount: 0 };
 }
 
 function isHumanTurn(message: ModelMessage): boolean {

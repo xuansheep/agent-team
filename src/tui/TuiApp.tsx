@@ -413,7 +413,6 @@ export function TuiApp({
         source: settings?.permissions?.defaultMode ? "settings" : undefined,
         ...(reentry ? { planFilePath: previousPlan?.planFilePath } : {})
       },
-      useAutoModeDuringPlan: settings?.useAutoModeDuringPlan !== false,
       reentry
     });
     planSessionRef.current = entered.state;
@@ -485,8 +484,7 @@ export function TuiApp({
           allow: [],
           ask: [],
           deny: [],
-          planFilePath: currentPlan.planFilePath,
-          planUseAutoMode: currentPlan.useAutoModeDuringPlan
+          planFilePath: currentPlan.planFilePath
         },
         defaultExecutionMode: defaultExecutionModeFromPlanPreMode(currentPlan.prePlanMode),
         planState: currentPlan,
@@ -1195,7 +1193,7 @@ ${message.detailText}` : ""}` }
         const approval = planApprovalFastAccept(
           state.pendingReview.empty === true || !state.pendingReview.document.trim(),
           settings?.showClearContextOnPlanAccept === true,
-          planSessionRef.current?.prePlanMode === "bypassPermissions"
+          planSessionRef.current?.prePlanMode === "fullAccess"
         );
         void resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
       } else if (state.mode === "input") {
@@ -1314,8 +1312,7 @@ ${message.detailText}` : ""}` }
     planApprovalEditorName: state.pendingReview ? externalEditorDisplayName() : undefined,
     showClearContextOnPlanAccept: settings?.showClearContextOnPlanAccept === true,
     contextUsedPercent: state.pendingReview?.contextUsedPercent,
-    isAutoModeAvailable: planSessionRef.current?.prePlanMode === "auto",
-    isBypassPermissionsModeAvailable: planSessionRef.current?.prePlanMode === "bypassPermissions",
+    isFullAccessModeAvailable: planSessionRef.current?.prePlanMode === "fullAccess",
     defaultExecutionMode: state.defaultExecutionMode,
     selectWorkflow,
     resolvePermission: (requestId, decision) => {
@@ -1856,8 +1853,7 @@ function planApprovalKernelSession(input: {
       allow: [],
       ask: [],
       deny: [],
-      planFilePath: input.plan.planFilePath,
-      planUseAutoMode: input.plan.useAutoModeDuringPlan
+      planFilePath: input.plan.planFilePath
     },
     defaultExecutionMode: defaultExecutionModeFromPlanPreMode(input.plan.prePlanMode),
     planState: input.plan,
@@ -2175,7 +2171,7 @@ function nextInputPermissionMode(mode: PermissionMode, defaultExecutionMode: Exc
 }
 
 function defaultExecutionPermissionMode(mode: PermissionMode | undefined): Exclude<PermissionMode, "plan"> {
-  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
+  return mode === "fullAccess" ? "fullAccess" : "default";
 }
 
 function workflowPermissionMode(mode: PermissionMode): Exclude<PermissionMode, "plan"> | undefined {
@@ -2183,10 +2179,7 @@ function workflowPermissionMode(mode: PermissionMode): Exclude<PermissionMode, "
 }
 
 function permissionModeLabel(mode: PermissionMode): string {
-  if (mode === "acceptEdits") return "Accept Edits";
-  if (mode === "bypassPermissions") return "Bypass Permissions";
-  if (mode === "dontAsk") return "Don't Ask";
-  if (mode === "auto") return "Auto";
+  if (mode === "fullAccess") return "Full access";
   if (mode === "plan") return "Plan Mode";
   return "Default";
 }
@@ -2251,8 +2244,7 @@ function buildActiveChoice(input: {
   planApprovalChoiceOnly?: boolean;
   showClearContextOnPlanAccept?: boolean;
   contextUsedPercent?: number;
-  isAutoModeAvailable?: boolean;
-  isBypassPermissionsModeAvailable?: boolean;
+  isFullAccessModeAvailable?: boolean;
   defaultExecutionMode: TuiDefaultExecutionMode;
   resumeRuns: TuiState["resumeRuns"];
   selectWorkflow: (workflow: string) => void;
@@ -2311,7 +2303,7 @@ function buildActiveChoice(input: {
   if (input.mode === "permissions") {
     const options = [
       { label: "Default", value: "default" },
-      { label: "Full access", value: "bypassPermissions" }
+      { label: "Full access", value: "fullAccess" }
     ];
     return {
       title: "Default execution mode",
@@ -2319,7 +2311,7 @@ function buildActiveChoice(input: {
       options,
       selectedValue: input.defaultExecutionMode,
       onCancel: () => input.resolveDefaultExecutionMode(input.defaultExecutionMode),
-      onSubmit: (value) => input.resolveDefaultExecutionMode(value === "bypassPermissions" ? "bypassPermissions" : "default")
+      onSubmit: (value) => input.resolveDefaultExecutionMode(value === "fullAccess" ? "fullAccess" : "default")
     };
   }
   if (input.mode === "permission" && input.permission) {
@@ -2416,8 +2408,7 @@ function buildActiveChoice(input: {
     const options = buildPlanApprovalOptions(
       input.showClearContextOnPlanAccept === true,
       input.contextUsedPercent ?? null,
-      input.isAutoModeAvailable === true,
-      input.isBypassPermissionsModeAvailable === true,
+      input.isFullAccessModeAvailable === true,
       input.updatePlanApprovalFeedback
     );
     return {
@@ -2448,7 +2439,7 @@ function buildActiveChoice(input: {
           input.resolvePlan("stay");
           return;
         }
-        input.resolvePlan("continue", planApprovalPermissionMode(value, input.isBypassPermissionsModeAvailable === true), input.planApprovalAcceptFeedback(), { clearContext: planApprovalClearsContext(value) });
+        input.resolvePlan("continue", planApprovalPermissionMode(value, input.isFullAccessModeAvailable === true), input.planApprovalAcceptFeedback(), { clearContext: planApprovalClearsContext(value) });
       },
       onPromptSubmit: (text, _focusedValue, images) => {
         input.resolvePlan("stay", "default", input.planApprovalPromptFeedback(text, images));
@@ -2622,46 +2613,36 @@ function compactPlanApprovalPath(planFilePath: string): string {
 }
 
 function defaultExecutionModeFromPlanPreMode(mode: PermissionMode): DefaultExecutionMode {
-  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
+  return mode === "fullAccess" ? "fullAccess" : "default";
 }
 
-function planApprovalPermissionMode(value: string, isBypassPermissionsModeAvailable = false): PermissionMode {
-  if (value === "yes-auto-clear-context" || value === "yes-resume-auto-mode") return "auto";
-  if (value === "yes-bypass-permissions") return "bypassPermissions";
-  if (value === "yes-accept-edits") return "acceptEdits";
-  if (value === "yes-accept-edits-keep-context") return isBypassPermissionsModeAvailable ? "bypassPermissions" : "acceptEdits";
+function planApprovalPermissionMode(value: string, isFullAccessModeAvailable = false): PermissionMode {
+  if (value === "yes-full-access" || value === "yes-full-access-clear-context") return "fullAccess";
+  if (value === "yes-default-keep-context" && isFullAccessModeAvailable) return "fullAccess";
   return "default";
 }
 
 function planApprovalClearsContext(value: string): boolean {
-  return value === "yes-auto-clear-context" || value === "yes-bypass-permissions" || value === "yes-accept-edits";
+  return value === "yes-default-clear-context" || value === "yes-full-access-clear-context";
 }
 
 function buildPlanApprovalOptions(
   showClearContext: boolean,
   usedPercent: number | null,
-  isAutoModeAvailable: boolean,
-  isBypassPermissionsModeAvailable: boolean,
+  isFullAccessModeAvailable: boolean,
   onFeedbackChange: (text: string) => void
 ): InteractionChoice["options"] {
   const options: InteractionChoice["options"] = [];
   const usedLabel = usedPercent !== null ? ` (${usedPercent}% used)` : "";
   if (showClearContext) {
-    if (isAutoModeAvailable) {
-      options.push({ label: `Yes, clear context${usedLabel} and use auto mode`, value: "yes-auto-clear-context" });
-    } else {
-      options.push(isBypassPermissionsModeAvailable
-        ? { label: `Yes, clear context${usedLabel} and bypass permissions`, value: "yes-bypass-permissions" }
-        : { label: `Yes, clear context${usedLabel} and auto-accept edits`, value: "yes-accept-edits" });
-    }
+    options.push(isFullAccessModeAvailable
+      ? { label: `Yes, clear context${usedLabel} and use full access`, value: "yes-full-access-clear-context" }
+      : { label: `Yes, clear context${usedLabel}`, value: "yes-default-clear-context" });
   }
   options.push(
-    isAutoModeAvailable
-      ? { label: "Yes, and use auto mode", value: "yes-resume-auto-mode" }
-      : isBypassPermissionsModeAvailable
-      ? { label: "Yes, and bypass permissions", value: "yes-accept-edits-keep-context" }
-      : { label: "Yes, auto-accept edits", value: "yes-accept-edits-keep-context" },
-    { label: "Yes, manually approve edits", value: "yes-default-keep-context" },
+    isFullAccessModeAvailable
+      ? { label: "Yes, and use full access", value: "yes-full-access" }
+      : { label: "Yes, continue", value: "yes-default-keep-context" },
     {
       type: "input",
       label: "No, keep planning",
@@ -2676,11 +2657,13 @@ function buildPlanApprovalOptions(
   return options;
 }
 
-function planApprovalFastAccept(empty: boolean, showClearContext: boolean, isBypassPermissionsModeAvailable = false): { permissionMode: PermissionMode; clearContext: boolean } {
+function planApprovalFastAccept(empty: boolean, showClearContext: boolean, isFullAccessModeAvailable = false): { permissionMode: PermissionMode; clearContext: boolean } {
   if (empty) return { permissionMode: "default", clearContext: false };
-  const value = showClearContext ? "yes-accept-edits" : "yes-accept-edits-keep-context";
+  const value = showClearContext
+    ? (isFullAccessModeAvailable ? "yes-full-access-clear-context" : "yes-default-clear-context")
+    : (isFullAccessModeAvailable ? "yes-full-access" : "yes-default-keep-context");
   return {
-    permissionMode: planApprovalPermissionMode(value, isBypassPermissionsModeAvailable),
+    permissionMode: planApprovalPermissionMode(value, isFullAccessModeAvailable),
     clearContext: planApprovalClearsContext(value)
   };
 }

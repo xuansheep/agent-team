@@ -7,8 +7,8 @@ const inputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   originalInput: z.any().optional(),
   permissions: z.object({
-    mode: z.enum(["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]),
-    prePlanMode: z.enum(["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]).optional(),
+    mode: z.enum(["default", "fullAccess", "plan"]),
+    prePlanMode: z.enum(["default", "fullAccess", "plan"]).optional(),
     allow: z.array(z.string()).default([]),
     ask: z.array(z.string()).default([]),
     deny: z.array(z.string()).default([]),

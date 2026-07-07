@@ -183,7 +183,7 @@ describe("QueryEngine", () => {
     assert.equal(await readPlan(finalPlanFilePath), "# Plan Dir Create\n\nNew plan.\n");
   });
 
-  it("turns ExitPlanMode into a plan approval interaction even when pre-plan mode was bypassPermissions", async () => {
+  it("turns ExitPlanMode into a plan approval interaction even when pre-plan mode was fullAccess", async () => {
     const cwd = await workspace();
     let executions = 0;
     const legacy = new ToolRegistry();
@@ -199,9 +199,9 @@ describe("QueryEngine", () => {
     });
     const controller = new PlanModeController();
     const planning = controller.enterPlanMode(createKernelSession({
-      id: "kernel-interaction-bypass",
+      id: "kernel-interaction-full-access",
       cwd,
-      permissions: { mode: "bypassPermissions", allow: [], ask: [], deny: [] }
+      permissions: { mode: "fullAccess", allow: [], ask: [], deny: [] }
     }), { request: "build" });
     assert.ok(planning.planState);
     await writePlan(planning.planState.planFilePath, "# Plan\n\nApprove me.\n");

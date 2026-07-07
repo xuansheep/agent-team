@@ -36,12 +36,11 @@ models:
     shared-model: 1000
 planMode:
   defaultEntry: false
-useAutoModeDuringPlan: true
 showClearContextOnPlanAccept: false
 `);
     await writeText(projectSettingsPath, `
 permissions:
-  defaultMode: acceptEdits
+  defaultMode: fullAccess
 plansDirectory: .agent-team/plans
 models:
   planModel: project-plan
@@ -51,41 +50,33 @@ models:
     shared-model: 2000
 planMode:
   defaultEntry: true
-useAutoModeDuringPlan: false
 showClearContextOnPlanAccept: true
 `);
 
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
 
-    assert.equal(settings.permissions?.defaultMode, "acceptEdits");
+    assert.equal(settings.permissions?.defaultMode, "fullAccess");
     assert.equal(settings.plansDirectory, resolve(cwd, ".agent-team", "plans"));
     assert.equal(settings.models?.planModel, "project-plan");
     assert.deepEqual(settings.models?.aliases, { shared: "project-model", "user-only": "user-model" });
     assert.deepEqual(settings.models?.contextWindows, { "shared-model": 2000 });
     assert.equal(settings.planMode?.defaultEntry, true);
-    assert.equal(settings.useAutoModeDuringPlan, true);
     assert.equal(settings.showClearContextOnPlanAccept, true);
-  });
-
-  it("ignores project useAutoModeDuringPlan settings", () => {
-    const cwd = resolve(".");
-
-    assert.equal(resolveSettings({ cwd, projectSettings: { useAutoModeDuringPlan: false } }).useAutoModeDuringPlan, undefined);
-    assert.equal(
-      resolveSettings({
-        cwd,
-        userSettings: { useAutoModeDuringPlan: true },
-        projectSettings: { useAutoModeDuringPlan: false }
-      }).useAutoModeDuringPlan,
-      true
-    );
   });
 
   it("rejects legacy session mode keys but allows Plan Mode defaults", () => {
     assert.throws(() => settingsSchema.parse({ permissionMode: "plan" }), /Unrecognized key/);
     assert.throws(() => settingsSchema.parse({ permissions: { mode: "plan" } }), /Unrecognized key/);
     assert.equal(settingsSchema.parse({ permissions: { defaultMode: "plan" } }).permissions?.defaultMode, "plan");
-    assert.equal(settingsSchema.parse({ useAutoModeDuringPlan: false }).useAutoModeDuringPlan, false);
+  });
+
+  it("accepts only current settings permission defaults", () => {
+    assert.equal(settingsSchema.parse({ permissions: { defaultMode: "default" } }).permissions?.defaultMode, "default");
+    assert.equal(settingsSchema.parse({ permissions: { defaultMode: "fullAccess" } }).permissions?.defaultMode, "fullAccess");
+    assert.equal(settingsSchema.parse({ permissions: { defaultMode: "plan" } }).permissions?.defaultMode, "plan");
+    for (const defaultMode of ["acceptEdits", "auto", "dontAsk", "bypassPermissions"] as const) {
+      assert.throws(() => settingsSchema.parse({ permissions: { defaultMode } }), /Invalid enum value/);
+    }
   });
 
   it("requires plansDirectory to stay within the project root", async () => {

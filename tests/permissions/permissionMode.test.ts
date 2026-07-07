@@ -41,11 +41,11 @@ describe("checkToolPermission", () => {
     })).decision, "ask");
   });
 
-  it("allows non destructive tools in bypassPermissions but still honors deny rules", async () => {
+  it("allows tools in fullAccess mode but still honors deny rules", async () => {
     const cwd = await workspace();
 
     assert.equal((await checkToolPermission(readTool, { file_path: ".env" }, {
-      mode: "bypassPermissions",
+      mode: "fullAccess",
       allow: [],
       ask: [],
       deny: [],
@@ -53,62 +53,12 @@ describe("checkToolPermission", () => {
     })).decision, "allow");
 
     assert.equal((await checkToolPermission(bashTool, { command: "git reset --hard" }, {
-      mode: "bypassPermissions",
+      mode: "fullAccess",
       allow: [],
       ask: [],
       deny: ["Bash(git reset*)"],
       cwd
     })).decision, "deny");
-  });
-
-  it("uses conservative deterministic decisions in auto mode", async () => {
-    const cwd = await workspace();
-
-    assert.equal((await checkToolPermission(writeTool, { file_path: "src/index.ts", content: "x" }, {
-      mode: "auto",
-      allow: [],
-      ask: [],
-      deny: [],
-      cwd
-    })).decision, "allow");
-
-    assert.equal((await checkToolPermission(bashTool, { command: "npm test" }, {
-      mode: "auto",
-      allow: [],
-      ask: [],
-      deny: [],
-      cwd
-    })).decision, "deny");
-
-    assert.equal((await checkToolPermission(bashTool, { command: "node --test --help" }, {
-      mode: "auto",
-      allow: ["Bash(prompt:run tests)"],
-      ask: [],
-      deny: [],
-      cwd
-    })).decision, "allow");
-
-    assert.equal((await checkToolPermission(bashTool, { command: "git reset --hard" }, {
-      mode: "auto",
-      allow: [],
-      ask: [],
-      deny: ["Bash(git reset*)"],
-      cwd
-    })).decision, "deny");
-  });
-
-  it("turns permission prompts into denials in dontAsk mode", async () => {
-    const cwd = await workspace();
-    const decision = await checkToolPermission(bashTool, { command: "npm test" }, {
-      mode: "dontAsk",
-      allow: [],
-      ask: ["Bash(npm test)"],
-      deny: [],
-      cwd
-    });
-
-    assert.equal(decision.decision, "deny");
-    assert.equal(decision.reason, "dontAsk mode blocks permission prompts");
   });
 
   it("allows read-only tools and rejects normal write tools in plan mode", async () => {

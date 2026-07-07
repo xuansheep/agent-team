@@ -1,1 +1,1 @@
-export type PermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions";
+export type PermissionMode = "default" | "fullAccess" | "plan";

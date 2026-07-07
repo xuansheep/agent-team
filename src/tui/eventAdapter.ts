@@ -22,7 +22,7 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
   };
 }
 function defaultExecutionModeFrom(mode: PermissionMode | undefined): TuiState["defaultExecutionMode"] {
-  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
+  return mode === "fullAccess" ? "fullAccess" : "default";
 }
 export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
   const reset: TuiState = {

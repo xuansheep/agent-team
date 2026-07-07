@@ -100,7 +100,7 @@ export type TuiResumeEntry =
       planMode?: PlanSessionState["mode"];
     };
 
-export type TuiDefaultExecutionMode = Extract<PermissionMode, "default" | "bypassPermissions">;
+export type TuiDefaultExecutionMode = Extract<PermissionMode, "default" | "fullAccess">;
 
 export type TuiState = {
   cwd: string;

@@ -389,7 +389,7 @@ describe("PromptInput component", () => {
     const output = render(
       <StatusLine
         mode="input"
-        permissionMode="acceptEdits"
+        permissionMode="fullAccess"
         workflowId="delivery"
         isLoading={false}
         hasSelection
@@ -398,7 +398,7 @@ describe("PromptInput component", () => {
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /mode Default/);
+    assert.match(frame, /mode Full access/);
     assert.match(frame, /workflow delivery/);
     assert.match(frame, /selection active/);
     output.unmount();

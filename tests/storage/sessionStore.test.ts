@@ -45,7 +45,7 @@ describe("SessionStore", () => {
       mode: "planning",
       sessionId: "session-plan",
       planFilePath: getPlanFilePath("session-plan", root),
-      prePlanMode: "acceptEdits",
+      prePlanMode: "fullAccess",
       originalInput: { request: "build" },
       feedbackMessages: [{ answer: "split it" }]
     };

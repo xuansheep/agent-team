@@ -13,7 +13,7 @@ export const sdkQuerySchema = z.object({
     tool_calls: z.array(z.object({ id: z.string(), name: z.string(), input: z.unknown() })).optional()
   }).passthrough()),
   cwd: z.string().min(1),
-  permissionMode: z.enum(["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]).default("default")
+  permissionMode: z.enum(["default", "fullAccess", "plan"]).default("default")
 });
 
 export type SdkPermissionDecision = z.infer<typeof sdkPermissionDecisionSchema>;

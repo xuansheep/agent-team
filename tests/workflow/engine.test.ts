@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
@@ -160,7 +160,7 @@ describe("WorkflowEngine", () => {
     }, "flow", { request: "x" });
 
     const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; node_id?: string; attempt?: number; model?: string; usage?: unknown; stop_reason?: string; ts: string; seq: number });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; node_id?: string; attempt?: number; model?: string; usage?: unknown; stop_reason?: string; ts: string; seq: number });
     const usageEvent = events.find((event) => event.type === "model_usage_recorded");
 
     assert.deepEqual(usageEvent, {
@@ -206,7 +206,7 @@ describe("WorkflowEngine", () => {
     assert.equal(calls, 2);
 
     const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string });
     assert.equal(events.some((event) => event.type === "permission_requested"), false);
     assert.equal(events.some((event) => event.type === "tool_completed" && event.tool === "Bash"), true);
   });
@@ -351,10 +351,10 @@ describe("WorkflowEngine", () => {
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
-    }, "flow", { request: "x" }, { permissionMode: "bypassPermissions" });
+    }, "flow", { request: "x" }, { permissionMode: "fullAccess" });
 
     assert.equal(result.status, "completed");
-    assert.equal(result.run_permission_mode, "bypassPermissions");
+    assert.equal(result.run_permission_mode, "fullAccess");
   });
 
   it("turns clear-context approved plans into a tui-code style implementation request", async () => {
@@ -377,7 +377,7 @@ describe("WorkflowEngine", () => {
       approved_plan: "# Plan\nBuild it.",
       plan_file_path: ".session/plans/session-1.md",
       plan_approval_feedback: "Also update README."
-    }, { permissionMode: "acceptEdits", clearContext: true });
+    }, { permissionMode: "default", clearContext: true });
 
     const firstUserText = nonRuntimeUserText(requests[0]);
 
@@ -389,7 +389,7 @@ describe("WorkflowEngine", () => {
     await engine.run(config, "flow", {
       original_input: { request: "build" },
       approved_plan: "# Plan\nBuild it."
-    }, { permissionMode: "acceptEdits" });
+    }, { permissionMode: "default" });
 
     const keepContextUserText = nonRuntimeUserText(requests[0]);
     assert.doesNotMatch(keepContextUserText, /Implement the following plan/);
@@ -414,7 +414,7 @@ describe("WorkflowEngine", () => {
     }, "flow", { request: "Ready empty exit.", [planModeExitHandoffMarker]: true, [planModeExitPlanExistsMarker]: false });
 
     const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; input?: unknown });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; input?: unknown });
     const started = events.find((event) => event.type === "run_started");
     const startedText = JSON.stringify(started?.input);
     assert.doesNotMatch(startedText, new RegExp(planModeExitHandoffMarker));
@@ -430,36 +430,36 @@ describe("WorkflowEngine", () => {
     assert.doesNotMatch(user, new RegExp(planModeExitPlanExistsMarker));
   });
 
-  it("uses run-level bypass permissions for workflow tool execution", async () => {
+  it("uses run-level fullAccess permissions for workflow tool execution", async () => {
     let calls = 0;
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        if (calls === 1) return { content: "checking", tool_calls: [{ id: "tool-1", name: "Bash", input: { command: "echo workflow-bypass" } }] };
+        if (calls === 1) return { content: "checking", tool_calls: [{ id: "tool-1", name: "Bash", input: { command: "echo workflow-full-access" } }] };
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
-    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/run-bypass-${Date.now()}` });
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/run-full-access-${Date.now()}` });
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
-    }, "flow", { request: "x" }, { permissionMode: "bypassPermissions" });
+    }, "flow", { request: "x" }, { permissionMode: "fullAccess" });
 
     assert.equal(result.status, "completed");
     assert.equal(calls, 2);
   });
 
-  it("uses run-level auto permissions for workflow edit tools", async () => {
+  it("uses run-level fullAccess permissions for workflow edit tools without Auto Mode attachment", async () => {
     let calls = 0;
     const requests: ModelRequest[] = [];
-    const runRoot = `.tmp/run-auto-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const runRoot = `.tmp/run-full-access-artifact-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const provider: ModelProvider = {
       async generate(request) {
         requests.push(request);
         calls += 1;
-        if (calls === 1) return { content: "writing artifact", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "auto.md", content: "# Auto\nDone.", description: "Auto artifact" } }] };
+        if (calls === 1) return { content: "writing artifact", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "full-access.md", content: "# Full access\nDone.", description: "Full access artifact" } }] };
         return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
@@ -469,17 +469,17 @@ describe("WorkflowEngine", () => {
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
-    }, "flow", { request: "x" }, { permissionMode: "auto" });
+    }, "flow", { request: "x" }, { permissionMode: "fullAccess" });
 
     assert.equal(result.status, "completed");
-    assert.equal(result.run_permission_mode, "auto");
+    assert.equal(result.run_permission_mode, "fullAccess");
     assert.equal(calls, 2);
     const firstSystem = requests[0]?.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n") ?? "";
-    assert.match(firstSystem, /ATTACHMENT auto_mode/);
-    assert.match(firstSystem, /## Auto Mode Active/);
+    assert.doesNotMatch(firstSystem, /ATTACHMENT auto_mode/);
+    assert.doesNotMatch(firstSystem, /## Auto Mode Active/);
 
     const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string });
     assert.equal(events.some((event) => event.type === "permission_requested"), false);
     assert.equal(events.some((event) => event.type === "tool_completed" && event.tool === "ArtifactWrite"), true);
   });
@@ -510,10 +510,10 @@ describe("WorkflowEngine", () => {
     assert.match(String(finalResult.document), /Delivery Summary/);
 
     const runId = await latestRunId(runRoot);
-    const artifactPath = join(runRoot, runId, "artifacts", "final_delivery", "node-output-1.md");
+    const artifactPath = join(await runDirForRun(runRoot, runId), "artifacts", "final_delivery", "node-output-1.md");
     assert.match(await readFile(artifactPath, "utf8"), /Delivery Summary/);
     assert.equal(finalResult.deliverables?.some((item) => item.artifact_id === "final_delivery/node-output-1.md"), true);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; artifact_id?: string });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; artifact_id?: string });
     assert.ok(events.some((event) => event.type === "complete_summary_available"));
     assert.equal(events.some((event) => event.type === "artifact_created" && event.artifact_id === "final_delivery/node-output-1.md"), true);
   });
@@ -547,9 +547,9 @@ describe("WorkflowEngine", () => {
     assert.equal(devAttempts.length, 2);
     assert.deepEqual(devAttempts.map((attempt) => (attempt.result as { deliverables?: Array<{ artifact_id: string }> }).deliverables?.[0]?.artifact_id), ["dev/node-output-1.md", "dev/node-output-2.md"]);
     const runId = await latestRunId(runRoot);
-    assert.match(await readFile(join(runRoot, runId, "artifacts", "dev", "node-output-1.md"), "utf8"), /dev attempt 1/);
-    assert.match(await readFile(join(runRoot, runId, "artifacts", "dev", "node-output-2.md"), "utf8"), /dev attempt 3/);
-    assert.match(await readFile(join(runRoot, runId, "artifacts", "test", "node-output-1.md"), "utf8"), /reject/);
+    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "node-output-1.md"), "utf8"), /dev attempt 1/);
+    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "node-output-2.md"), "utf8"), /dev attempt 3/);
+    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "test", "node-output-1.md"), "utf8"), /reject/);
   });
 
   it("stores task deliverables in artifacts and carries them in results", async () => {
@@ -574,7 +574,7 @@ describe("WorkflowEngine", () => {
     const devResult = result.attempts.at(-1)?.result as { deliverables?: Array<{ artifact_id: string; description: string }> };
     assert.deepEqual(devResult.deliverables, [{ artifact_id: "dev/report.md", description: "User report" }]);
     const runId = await latestRunId(runRoot);
-    assert.equal(await readFile(join(runRoot, runId, "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
+    assert.equal(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
   });
   it("marks complete nodes without documents as waiting for user input", async () => {
     const provider: ModelProvider = {
@@ -597,11 +597,11 @@ describe("WorkflowEngine", () => {
     assert.equal(state.resume_checkpoint?.node_id, "final_delivery");
 
     const runId = await latestRunId(runRoot);
-    const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; attempts: Array<{ status: string }> };
+    const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; attempts: Array<{ status: string }> };
     assert.equal(persisted.status, "pending");
     assert.equal(persisted.attempts.at(-1)?.status, "failure");
 
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; status?: string });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; status?: string });
     assert.ok(events.some((event) => event.type === "node_completed" && event.status === "failure"));
     assert.ok(events.some((event) => event.type === "node_waiting_user"));
   });
@@ -631,7 +631,7 @@ describe("WorkflowEngine", () => {
     assert.match(result.questions?.[0]?.text ?? "", /节点无法继续执行|NodeResult|needs_user_input/);
 
     const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(runRoot, runId, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; questions?: unknown[]; status?: string });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; questions?: unknown[]; status?: string });
     const waiting = events.find((event) => event.type === "node_waiting_user");
     assert.ok(waiting);
     assert.notDeepEqual(waiting?.questions, []);
@@ -664,8 +664,9 @@ describe("WorkflowEngine", () => {
     };
     const run = await engine.run(config, "flow", { request: "x" });
     const runId = await latestRunId(runRoot);
+    const runDir = await runDirForRun(runRoot, runId);
 
-    await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runRoot, runId, "state.json"), `${JSON.stringify({ ...run, status: "pending", current_node_id: "dev", resume_checkpoint: { node_id: "dev", handoff: run.handoff } }, null, 2)}\n`, "utf8"));
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runDir, "state.json"), `${JSON.stringify({ ...run, status: "pending", current_node_id: "dev", resume_checkpoint: { node_id: "dev", handoff: run.handoff } }, null, 2)}\n`, "utf8"));
     const resumed = await engine.resume(config, "flow", runId, {});
 
     assert.equal(resumed.status, "completed");
@@ -699,7 +700,7 @@ describe("WorkflowEngine", () => {
     assert.equal(waiting.current_node_id, "dev");
 
     const runId = await latestRunId(runRoot);
-    const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
+    const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
     assert.equal(persisted.status, "pending");
     assert.equal(persisted.resume_checkpoint?.node_id, "dev");
 
@@ -776,7 +777,7 @@ describe("WorkflowEngine", () => {
     assert.equal(waiting.attempts.at(-1)?.status, "failure");
 
     const runId = await latestRunId(runRoot);
-    const persisted = JSON.parse(await readFile(join(runRoot, runId, "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
+    const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
 
     assert.equal(persisted.status, "pending");
     assert.equal(persisted.resume_checkpoint?.node_id, "dev");
@@ -808,6 +809,9 @@ function nonRuntimeUserText(request: ModelRequest | undefined): string {
 }
 
 async function latestRunId(root: string): Promise<string> {
-  const runs = await readdir(root, { withFileTypes: true });
-  return runs.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().at(-1) ?? "";
+  return (await new RunStore(root).listRuns({ limit: 1 }))[0]?.runId ?? "";
+}
+
+async function runDirForRun(root: string, runId: string): Promise<string> {
+  return (await new RunStore(root).listRuns()).find((run) => run.runId === runId)?.runDir ?? join(root, runId);
 }

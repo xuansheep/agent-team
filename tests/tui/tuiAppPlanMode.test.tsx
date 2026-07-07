@@ -113,7 +113,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Statusline updated/);
     const frame = output.lastFrame() ?? "";
 
-    assert.match(frame, /mode Default \| permission Default/);
+    assert.match(frame, /mode Default \| permission default/);
     assert.doesNotMatch(frame.split("\n").at(-2) ?? "", /workflow delivery/);
 
     output.unmount();
@@ -146,7 +146,7 @@ describe("TuiApp global Plan Mode", () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} settings={{ permissions: { defaultMode: "bypassPermissions" } }} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} settings={{ permissions: { defaultMode: "fullAccess" } }} />);
 
     output.stdin.write("\u001b[Z");
     await waitForFrame(output, /Permission mode: Plan Mode/);
@@ -154,7 +154,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(output.lastFrame() ?? "", /mode Plan/);
 
     output.stdin.write("\u001b[Z");
-    await waitForFrame(output, /Permission mode: Bypass Permissions/);
+    await waitForFrame(output, /Permission mode: Full access/);
     assert.equal(starts, 0);
     assert.match(output.lastFrame() ?? "", /mode Bypass/);
 
@@ -209,11 +209,11 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\u001b[B");
     await settleTuiWork();
     output.stdin.write(String.fromCharCode(13));
-    await waitForFrame(output, /Permission mode: Bypass Permissions/);
+    await waitForFrame(output, /Permission mode: Full access/);
     await sendTuiLine(output, "Start after permissions change.");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "bypassPermissions" });
+    assertStartOption(options[0], { permissionMode: "fullAccess" });
 
     output.unmount();
     output.cleanup();
@@ -223,12 +223,12 @@ describe("TuiApp global Plan Mode", () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} settings={{ permissions: { defaultMode: "bypassPermissions" } }} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} settings={{ permissions: { defaultMode: "fullAccess" } }} />);
 
     await sendTuiLine(output, "Start in full access.");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "bypassPermissions" });
+    assertStartOption(options[0], { permissionMode: "fullAccess" });
 
     output.unmount();
     output.cleanup();
@@ -819,7 +819,7 @@ describe("TuiApp global Plan Mode", () => {
       original_input: { request: "Draft the migration first." },
       approved_plan: "Draft the migration first."
     });
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits" });
+    assertStartOption(options[0], { permissionMode: "default" });
 
     output.unmount();
     output.cleanup();
@@ -870,11 +870,11 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Ready for approval.");
     await waitForFrame(output, /Ready to code\?/);
 
-    assert.match(output.lastFrame() ?? "", /Yes, clear context and auto-accept edits/);
+    assert.match(output.lastFrame() ?? "", /Yes, clear context/);
     output.stdin.write("\r");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits", clearContext: true });
+    assertStartOption(options[0], { permissionMode: "default", clearContext: true });
 
     output.unmount();
     output.cleanup();
@@ -898,13 +898,13 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Ready for approval.");
     await waitForFrame(output, /Ready to code\?/);
 
-    assert.match(output.lastFrame() ?? "", /Yes, clear context \(25% used\) and auto-accept edits/);
+    assert.match(output.lastFrame() ?? "", /Yes, clear context \(25% used\)/);
 
     output.unmount();
     output.cleanup();
   });
 
-  it("uses bypass approval options when Plan Mode was entered from bypass permissions", async () => {
+  it("uses full-access approval options when Plan Mode was entered from full access", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
@@ -915,7 +915,7 @@ describe("TuiApp global Plan Mode", () => {
       workflowId="delivery"
       engine={engine as never}
       providerFactory={planProviderFactory}
-      settings={{ permissions: { defaultMode: "bypassPermissions" }, showClearContextOnPlanAccept: true }}
+      settings={{ permissions: { defaultMode: "fullAccess" }, showClearContextOnPlanAccept: true }}
     />);
 
     await sendTuiLine(output, "/plan");
@@ -924,18 +924,18 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Yes, clear context and bypass permissions/);
-    assert.match(frame, /Yes, and bypass permissions/);
+    assert.match(frame, /Yes, clear context and use full access/);
+    assert.match(frame, /Yes, and use full access/);
     output.stdin.write("\r");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "bypassPermissions", clearContext: true });
+    assertStartOption(options[0], { permissionMode: "fullAccess", clearContext: true });
 
     output.unmount();
     output.cleanup();
   });
 
-  it("uses auto approval options when Plan Mode was entered from auto mode", async () => {
+  it("uses full-access approval options when Plan Mode was entered from full access mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
@@ -946,7 +946,7 @@ describe("TuiApp global Plan Mode", () => {
       workflowId="delivery"
       engine={engine as never}
       providerFactory={planProviderFactory}
-      settings={{ permissions: { defaultMode: "auto" }, showClearContextOnPlanAccept: true }}
+      settings={{ permissions: { defaultMode: "fullAccess" }, showClearContextOnPlanAccept: true }}
     />);
 
     await sendTuiLine(output, "/plan");
@@ -955,18 +955,18 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Yes, clear context and use auto mode/);
-    assert.match(frame, /Yes, and use auto mode/);
+    assert.match(frame, /Yes, clear context and use full access/);
+    assert.match(frame, /Yes, and use full access/);
     output.stdin.write("\r");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "auto", clearContext: true });
+    assertStartOption(options[0], { permissionMode: "fullAccess", clearContext: true });
 
     output.unmount();
     output.cleanup();
   });
 
-  it("does not inject Auto Mode instructions during Plan Mode when useAutoModeDuringPlan is disabled", async () => {
+  it("injects only Plan Mode instructions during Plan Mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const requests: ModelRequest[] = [];
     const engine = { async startInteractive() { throw new Error("workflow must not start before approval"); } };
@@ -977,7 +977,7 @@ describe("TuiApp global Plan Mode", () => {
       workflowId="delivery"
       engine={engine as never}
       providerFactory={recordingPlanProviderFactory(requests)}
-      settings={{ permissions: { defaultMode: "auto" }, useAutoModeDuringPlan: false }}
+      settings={{ permissions: { defaultMode: "fullAccess" } }}
     />);
 
     await sendTuiLine(output, "/plan");
@@ -992,7 +992,7 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("approves a non-empty auto-mode plan with auto-accept edits on Shift+Tab", async () => {
+  it("approves a non-empty full-access plan on Shift+Tab", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
@@ -1003,7 +1003,7 @@ describe("TuiApp global Plan Mode", () => {
       workflowId="delivery"
       engine={engine as never}
       providerFactory={planProviderFactory}
-      settings={{ permissions: { defaultMode: "auto" } }}
+      settings={{ permissions: { defaultMode: "fullAccess" } }}
     />);
 
     await sendTuiLine(output, "/plan");
@@ -1014,13 +1014,13 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\u001b[Z");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits" });
+    assertStartOption(options[0], { permissionMode: "fullAccess" });
 
     output.unmount();
     output.cleanup();
   });
 
-  it("approves a non-empty auto-mode plan with clear context and auto-accept edits on Shift+Tab", async () => {
+  it("approves a non-empty full-access plan with clear context on Shift+Tab", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
@@ -1031,7 +1031,7 @@ describe("TuiApp global Plan Mode", () => {
       workflowId="delivery"
       engine={engine as never}
       providerFactory={planProviderFactory}
-      settings={{ permissions: { defaultMode: "auto" }, showClearContextOnPlanAccept: true }}
+      settings={{ permissions: { defaultMode: "fullAccess" }, showClearContextOnPlanAccept: true }}
     />);
 
     await sendTuiLine(output, "/plan");
@@ -1042,7 +1042,7 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\u001b[Z");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits", clearContext: true });
+    assertStartOption(options[0], { permissionMode: "fullAccess", clearContext: true });
 
     output.unmount();
     output.cleanup();
@@ -1104,9 +1104,9 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(frame, /Plan Review/);
     assert.match(frame, /workflow from approved plan/);
     assert.match(frame, /mode (running|completed)/);
-    assert.match(frame, /permission Accept Edits/);
+    assert.match(frame, /permission default/);
     assert.doesNotMatch(frame, /mode Plan(?:\s|\|)/);
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits" });
+    assertStartOption(options[0], { permissionMode: "default" });
 
     output.unmount();
     output.cleanup();
@@ -1172,7 +1172,7 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("approves a non-empty plan with auto-accept edits on Shift+Tab", async () => {
+  it("approves a non-empty plan with default permissions on Shift+Tab", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
@@ -1187,7 +1187,7 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\u001b[Z");
     await settleTuiWork();
 
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits" });
+    assertStartOption(options[0], { permissionMode: "default" });
 
     output.unmount();
     output.cleanup();
@@ -1220,7 +1220,7 @@ describe("TuiApp global Plan Mode", () => {
       approved_plan: "Draft the migration first.",
       plan_approval_feedback: "Also update the README."
     });
-    assert.deepEqual(options[0], { permissionMode: "acceptEdits" });
+    assertStartOption(options[0], { permissionMode: "default" });
 
     output.unmount();
     output.cleanup();
@@ -1254,7 +1254,7 @@ describe("TuiApp global Plan Mode", () => {
       approved_plan: "Draft the migration first.",
       plan_approval_feedback: "Also update the README."
     });
-    assert.deepEqual(options[0], { permissionMode: "default" });
+    assertStartOption(options[0], { permissionMode: "default" });
 
     output.unmount();
     output.cleanup();
@@ -2404,8 +2404,8 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(frame, /Step 19: verify the migration guardrail before executing\./);
     assert.match(frame, /Step 20: verify the migration guardrail before executing\./);
     assert.match(frame, /Einstein has written up a plan and is ready to execute/);
-    assert.match(frame, /Yes, auto-accept edits/);
-    assert.match(frame, /Yes, manually approve edits/);
+    assert.match(frame, /Yes, continue/);
+    assert.doesNotMatch(frame, /manually approve edits/);
     assert.doesNotMatch(frame, /Yes, bypass permissions/);
     assert.match(frame, /No, keep planning/);
 
@@ -2863,6 +2863,22 @@ function assertApprovedPlanHandoff(actual: unknown, expected: Record<string, unk
     ...expected,
     plan_file_path: expected.plan_file_path ?? handoff.plan_file_path
   });
+}
+
+function assertStartOption(actual: unknown, expected: Record<string, unknown>): void {
+  assert.ok(actual && typeof actual === "object");
+  const option = actual as Record<string, unknown>;
+  for (const [key, value] of Object.entries(expected)) {
+    assert.deepEqual(option[key], value);
+  }
+  if ("sessionId" in option) {
+    assert.equal(typeof option.sessionId, "string");
+    assert.ok(String(option.sessionId).trim());
+  }
+  if ("sessionDir" in option) {
+    assert.equal(typeof option.sessionDir, "string");
+    assert.ok(String(option.sessionDir).trim());
+  }
 }
 
 function settleTuiWork(): Promise<void> {

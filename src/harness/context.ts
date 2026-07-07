@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { buildAutoModeAttachment, buildPlanModeExitAttachment, buildToolPromptsAttachment, RuntimeAttachment } from "../context/attachments.js";
+import { buildPlanModeExitAttachment, buildToolPromptsAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { buildRuntimeMessages } from "../context/messages.js";
 import { WorkflowNodeConfig } from "../config/schema.js";
 import { ModelContentPart, ModelMessage } from "../providers/types.js";
@@ -23,7 +23,6 @@ export async function buildNodeMessages(node: WorkflowNodeConfig, systemPrompt: 
   const images = collectImages(handoff);
   const userContent = JSON.stringify({ node_id: node.id, node_mode: node.mode ?? "task", handoff: stripInternalPlanModeHandoffMarkers(handoff) }, null, 2);
   const attachments = runtimeAttachmentsFromHandoff(handoff);
-  if (input.permissionMode === "auto") attachments.push(buildAutoModeAttachment());
   const toolPrompts = input.tools ? buildToolPromptsAttachment({ tools: input.tools }) : undefined;
   if (toolPrompts) attachments.unshift(toolPrompts);
   if (!images.length) {

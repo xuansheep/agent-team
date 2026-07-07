@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildAutoModeAttachment, buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment } from "../../src/context/attachments.js";
+import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment } from "../../src/context/attachments.js";
 import { buildNodeMessages } from "../../src/harness/context.js";
 import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
 import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
@@ -54,127 +54,17 @@ describe("runtime context attachments", () => {
     assert.match(attachment?.content ?? "", /Always reply in Chinese\./);
   });
 
-  it("injects full Auto Mode instructions on the first auto turn", async () => {
-    let systemContent = "";
-    const provider: ModelProvider = {
-      async generate(request) {
-        systemContent = allMessageText(request.messages);
-        return { content: "working" };
-      }
-    };
-
-    const result = await new RuntimeTurnExecutor().execute({
-      messages: [{ role: "user", content: "implement this" }],
-      model: "test-model",
-      provider,
-      tools: new ToolRegistry(),
-      permissions: { mode: "auto", allow: [], ask: [], deny: [] },
-      cwd: process.cwd(),
-      sessionId: "session-auto"
-    });
-
-    assert.equal(result.status, "completed");
-    assert.match(systemContent, /ATTACHMENT auto_mode/);
-    assert.match(systemContent, /## Auto Mode Active/);
-    assert.match(systemContent, /Execute immediately/);
-    assert.match(systemContent, /Minimize interruptions/);
-    assert.match(systemContent, /Auto mode is not a license to destroy/);
-  });
-
-  it("injects sparse Auto Mode reminders only after five human turns", async () => {
-    const attachment = buildAutoModeAttachment({ sparse: false });
-    const priorMessages = [
-      { role: "system" as const, content: attachment.content, metadata: { runtimeAttachment: { type: attachment.type, humanTurnCount: 0 } } },
-      { role: "user" as const, content: "implement this" },
-      { role: "assistant" as const, content: "working" },
-      { role: "user" as const, content: "revise it" },
-      { role: "assistant" as const, content: "revised" },
-      { role: "user" as const, content: "add tests" },
-      { role: "assistant" as const, content: "added" },
-      { role: "user" as const, content: "include risks" },
-      { role: "assistant" as const, content: "included" },
-      { role: "user" as const, content: "final check" }
-    ];
-    let systemMessages: string[] = [];
-    const provider: ModelProvider = {
-      async generate(request) {
-        systemMessages = request.messages.map(messageText);
-        return { content: "working" };
-      }
-    };
-
-    await new RuntimeTurnExecutor().execute({
-      messages: priorMessages,
-      model: "test-model",
-      provider,
-      tools: new ToolRegistry(),
-      permissions: { mode: "auto", allow: [], ask: [], deny: [] },
-      cwd: process.cwd(),
-      sessionId: "session-auto"
-    });
-
-    assert.equal(systemMessages.filter((content) => hasAttachment(content, "auto_mode")).length, 1);
-    assert.equal(systemMessages.filter((content) => hasAttachment(content, "auto_mode_reminder")).length, 1);
-    assert.ok(systemMessages.some((content) => /Auto mode still active/.test(content)));
-  });
-
-  it("injects Auto Mode exit guidance once after leaving auto mode", async () => {
-    const autoAttachment = buildAutoModeAttachment({ sparse: false });
-    const priorMessages: ModelMessage[] = [
-      { role: "system", content: autoAttachment.content, metadata: { runtimeAttachment: { type: autoAttachment.type, humanTurnCount: 0 } } },
-      { role: "user", content: "implement this" },
-      { role: "assistant", content: "working" }
-    ];
-    let firstSystemMessages: string[] = [];
-    let secondSystemMessages: string[] = [];
-    const provider: ModelProvider = {
-      async generate(request) {
-        const systemMessages = request.messages.map(messageText);
-        if (!firstSystemMessages.length) firstSystemMessages = systemMessages;
-        else secondSystemMessages = systemMessages;
-        return { content: "manual mode" };
-      }
-    };
-
-    const first = await new RuntimeTurnExecutor().execute({
-      messages: [...priorMessages, { role: "user", content: "slow down" }],
-      model: "test-model",
-      provider,
-      tools: new ToolRegistry(),
-      permissions: { mode: "default", allow: [], ask: [], deny: [] },
-      cwd: process.cwd(),
-      sessionId: "session-auto-exit"
-    });
-
-    assert.equal(first.status, "completed");
-    assert.equal(firstSystemMessages.filter((content) => hasAttachment(content, "auto_mode_exit")).length, 1);
-    assert.ok(firstSystemMessages.some((content) => /Auto mode is no longer active/.test(content)));
-
-    await new RuntimeTurnExecutor().execute({
-      messages: [...first.messages, { role: "user", content: "continue manually" }],
-      model: "test-model",
-      provider,
-      tools: new ToolRegistry(),
-      permissions: { mode: "default", allow: [], ask: [], deny: [] },
-      cwd: process.cwd(),
-      sessionId: "session-auto-exit"
-    });
-
-    assert.equal(secondSystemMessages.filter((content) => hasAttachment(content, "auto_mode_exit")).length, 1);
-  });
-
-  it("injects Auto Mode instructions into workflow node messages when the run uses auto mode", async () => {
+  it("does not inject Auto Mode instructions for fullAccess workflow node messages", async () => {
     const messages = await buildNodeMessages(
       { id: "dev", role: "developer", provider: "default", permission_mode: "default" },
       "System prompt",
       { request: "build" },
-      { permissionMode: "auto" }
+      { permissionMode: "fullAccess" }
     );
 
     const system = messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
-    assert.match(system, /ATTACHMENT auto_mode/);
-    assert.match(system, /## Auto Mode Active/);
-    assert.match(system, /Execute immediately/);
+    assert.doesNotMatch(system, /ATTACHMENT auto_mode/);
+    assert.doesNotMatch(system, /## Auto Mode Active/);
   });
 
   it("injects full Plan Mode instructions without exposing the current draft on the first planning turn", async () => {
@@ -235,61 +125,6 @@ describe("runtime context attachments", () => {
     assert.match(attachment.content, /If you write or edit the plan file in this turn, you must call ExitPlanMode before ending the turn\./);
     assert.doesNotMatch(attachment.content, /ExitPlanMode\.plan/);
     assert.doesNotMatch(attachment.content, /Pass the complete plan/);
-  });
-
-  it("keeps Auto Mode instructions visible during Plan Mode when entered from auto", async () => {
-    const cwd = await workspace();
-    const planFilePath = join(cwd, ".session", "plans", "session-auto-plan.md");
-    let systemContent = "";
-    const provider: ModelProvider = {
-      async generate(request) {
-        systemContent = allMessageText(request.messages);
-        return { content: "planning under auto" };
-      }
-    };
-
-    const result = await new RuntimeTurnExecutor().execute({
-      messages: [{ role: "user", content: "plan this autonomous task" }],
-      model: "test-model",
-      provider,
-      tools: new ToolRegistry(),
-      permissions: { mode: "plan", prePlanMode: "auto", allow: [], ask: [], deny: [], planFilePath },
-      cwd,
-      sessionId: "session-auto-plan"
-    });
-
-    assert.equal(result.status, "completed");
-    assert.match(systemContent, /ATTACHMENT plan_mode/);
-    assert.match(systemContent, /ATTACHMENT auto_mode/);
-    assert.match(systemContent, /Plan mode is active/);
-    assert.match(systemContent, /Auto mode is active/);
-  });
-
-  it("suppresses Auto Mode instructions during Plan Mode when useAutoModeDuringPlan is disabled", async () => {
-    const cwd = await workspace();
-    const planFilePath = join(cwd, ".session", "plans", "session-auto-plan-disabled.md");
-    let systemContent = "";
-    const provider: ModelProvider = {
-      async generate(request) {
-        systemContent = allMessageText(request.messages);
-        return { content: "planning without auto semantics" };
-      }
-    };
-
-    const result = await new RuntimeTurnExecutor().execute({
-      messages: [{ role: "user", content: "plan this autonomous task" }],
-      model: "test-model",
-      provider,
-      tools: new ToolRegistry(),
-      permissions: { mode: "plan", prePlanMode: "auto", planUseAutoMode: false, allow: [], ask: [], deny: [], planFilePath },
-      cwd,
-      sessionId: "session-auto-plan-disabled"
-    });
-
-    assert.equal(result.status, "completed");
-    assert.match(systemContent, /ATTACHMENT plan_mode/);
-    assert.doesNotMatch(systemContent, /ATTACHMENT auto_mode/);
-    assert.doesNotMatch(systemContent, /Auto mode is active/);
   });
 
   it("builds tool prompt attachments separately from short tool descriptions", () => {

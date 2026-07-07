@@ -30,7 +30,7 @@ describe("PlanModeController", () => {
   it("continues by restoring pre-plan permissions and building approved handoff", async () => {
     const cwd = await workspace();
     const controller = new PlanModeController();
-    const session = createKernelSession({ id: "s1", cwd, permissions: { mode: "acceptEdits", allow: [], ask: [], deny: [] } });
+    const session = createKernelSession({ id: "s1", cwd, permissions: { mode: "fullAccess", allow: [], ask: [], deny: [] } });
     const planning = controller.enterPlanMode(session, { request: "build" });
     await writePlan(planning.planState!.planFilePath, "# Plan\n\nShip safely.");
     const waiting = await controller.requestPlanApproval(planning);
@@ -40,7 +40,7 @@ describe("PlanModeController", () => {
     const handoff = controller.buildApprovedPlanHandoff(approved);
 
     assert.equal(approved.status, "idle_input");
-    assert.equal(approved.toolPermissionContext.mode, "acceptEdits");
+    assert.equal(approved.toolPermissionContext.mode, "fullAccess");
     assert.equal(handoff.planText, "# Plan\n\nUpdated after review opened.");
     assert.equal(handoff.approvalId, approvalId);
   });
@@ -52,16 +52,16 @@ describe("PlanModeController", () => {
     const planning = controller.enterPlanMode(session, { request: "build" });
     const planningWithFullAccessDefault = reduceKernelSession(planning, {
       type: "default_execution_mode_set",
-      mode: "bypassPermissions"
+      mode: "fullAccess"
     });
     await writePlan(planningWithFullAccessDefault.planState!.planFilePath, "# Plan\n\nShip safely.");
     const waiting = await controller.requestPlanApproval(planningWithFullAccessDefault);
 
     const resolved = await controller.resolvePlanApproval(waiting, { decision: "continue" });
 
-    assert.equal(resolved.session.defaultExecutionMode, "bypassPermissions");
-    assert.equal(resolved.session.toolPermissionContext.mode, "bypassPermissions");
-    assert.equal(resolved.execution?.permissionMode, "bypassPermissions");
+    assert.equal(resolved.session.defaultExecutionMode, "fullAccess");
+    assert.equal(resolved.session.toolPermissionContext.mode, "fullAccess");
+    assert.equal(resolved.execution?.permissionMode, "fullAccess");
   });
 
   it("stays in plan mode with feedback after rejection", async () => {
@@ -127,13 +127,13 @@ describe("PlanModeController", () => {
 
     const resolved = await controller.resolvePlanApproval(waiting, {
       decision: "continue",
-      permissionMode: "auto",
+      permissionMode: "fullAccess",
       clearContext: true,
       feedback: "Run focused tests."
     });
 
     assert.equal(resolved.execution?.clearContext, true);
-    assert.equal(resolved.execution?.permissionMode, "auto");
+    assert.equal(resolved.execution?.permissionMode, "fullAccess");
     assert.match(resolved.execution?.initialInput ?? "", /Implement the following plan:/);
     assert.match(resolved.execution?.initialInput ?? "", /Clear context\./);
     assert.match(resolved.execution?.initialInput ?? "", /Run focused tests\./);

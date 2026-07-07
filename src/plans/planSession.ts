@@ -17,7 +17,6 @@ export type PlanSessionState = {
   approvedPlanFeedback?: unknown;
   emptyPlanApproved?: boolean;
   reentry?: boolean;
-  useAutoModeDuringPlan?: boolean;
   requestedPermissions?: PlanRequestedPermission[];
   feedbackMessages?: unknown[];
   approvalToolCallId?: string;
@@ -38,7 +37,6 @@ export type EnterPlanModeInput = {
   originalInput: unknown;
   permissions: ToolPermissionContext;
   reentry?: boolean;
-  useAutoModeDuringPlan?: boolean;
 };
 
 export function enterPlanMode(input: EnterPlanModeInput): { state: PlanSessionState; permissions: ToolPermissionContext; event: PlanModeEvent } {
@@ -52,12 +50,11 @@ export function enterPlanMode(input: EnterPlanModeInput): { state: PlanSessionSt
     prePlanMode,
     originalInput: input.originalInput,
     ...(input.reentry ? { reentry: true } : {}),
-    useAutoModeDuringPlan: input.useAutoModeDuringPlan ?? input.permissions.planUseAutoMode ?? true,
     feedbackMessages: []
   };
   return {
     state,
-    permissions: { ...input.permissions, mode: "plan", prePlanMode, planFilePath, planUseAutoMode: state.useAutoModeDuringPlan },
+    permissions: { ...input.permissions, mode: "plan", prePlanMode, planFilePath },
     event: { type: "plan_mode_entered", session_id: input.sessionId, plan_file_path: planFilePath }
   };
 }
@@ -92,7 +89,7 @@ export function resolvePlanApproval(
       mode: "planning",
       feedbackMessages: feedback === undefined ? state.feedbackMessages ?? [] : [...state.feedbackMessages ?? [], feedback]
     },
-    permissions: { mode: "plan", prePlanMode: state.prePlanMode, allow: [], ask: [], deny: [], planFilePath: state.planFilePath, planUseAutoMode: state.useAutoModeDuringPlan },
+    permissions: { mode: "plan", prePlanMode: state.prePlanMode, allow: [], ask: [], deny: [], planFilePath: state.planFilePath },
     event: { type: "plan_approval_resolved", session_id: state.sessionId, decision: "stay" }
   };
 }

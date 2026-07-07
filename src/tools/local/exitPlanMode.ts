@@ -6,7 +6,7 @@ const stateSchema = z.object({
   mode: z.enum(["inactive", "planning", "waiting_approval"]),
   sessionId: z.string().min(1),
   planFilePath: z.string().min(1),
-  prePlanMode: z.enum(["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]),
+  prePlanMode: z.enum(["default", "fullAccess", "plan"]),
   originalInput: z.any(),
   approvedPlan: z.string().optional(),
   emptyPlanApproved: z.boolean().optional(),

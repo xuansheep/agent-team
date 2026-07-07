@@ -24,10 +24,10 @@ describe("TUI kernel adapter", () => {
       decision: "stay",
       metadata: { feedback: { answer: "more tests" } }
     });
-    assert.deepEqual(adapter.planApprovalIntent("continue", { permissionMode: "acceptEdits", clearContext: true, feedback: "ok" }), {
+    assert.deepEqual(adapter.planApprovalIntent("continue", { permissionMode: "fullAccess", clearContext: true, feedback: "ok" }), {
       type: "resolve_plan_approval",
       decision: "continue",
-      metadata: { permissionMode: "acceptEdits", clearContext: true, feedback: "ok" }
+      metadata: { permissionMode: "fullAccess", clearContext: true, feedback: "ok" }
     });
   });
 });

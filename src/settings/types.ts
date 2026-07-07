@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 
-export const settingsPermissionModeSchema = z.enum(["default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"]);
+export const settingsPermissionModeSchema = z.enum(["default", "fullAccess", "plan"]);
 
 export const settingsSchema = z.object({
   permissions: z.object({
@@ -19,7 +19,6 @@ export const settingsSchema = z.object({
   agentsMdExcludes: z.array(z.string().min(1)).optional(),
   hasAgentsMdExternalIncludesApproved: z.boolean().optional(),
   hasAgentsMdExternalIncludesWarningShown: z.boolean().optional(),
-  useAutoModeDuringPlan: z.boolean().optional(),
   showClearContextOnPlanAccept: z.boolean().optional()
 }).strict();
 

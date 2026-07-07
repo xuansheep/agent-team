@@ -38,7 +38,7 @@ export async function headlessQuery(input: HeadlessQueryInput): Promise<Headless
     provider: input.provider,
     tools: input.tools ?? new ToolRegistry(),
     permissions: input.planState && permissions.mode === "plan" && !permissions.planFilePath
-      ? { ...permissions, planFilePath: input.planState.planFilePath, prePlanMode: input.planState.prePlanMode, planUseAutoMode: input.planState.useAutoModeDuringPlan }
+      ? { ...permissions, planFilePath: input.planState.planFilePath, prePlanMode: input.planState.prePlanMode }
       : permissions,
     cwd: input.cwd,
     sessionId,
@@ -64,7 +64,6 @@ export function normalizePermissions(permissions: Partial<ToolPermissionContext>
     ask: permissions.ask ?? [],
     deny: permissions.deny ?? [],
     source: permissions.source,
-    planFilePath: permissions.planFilePath,
-    planUseAutoMode: permissions.planUseAutoMode
+    planFilePath: permissions.planFilePath
   };
 }

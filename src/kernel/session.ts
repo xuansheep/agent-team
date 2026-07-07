@@ -39,7 +39,7 @@ export type KernelExecutionHandoff = {
   handoff: unknown;
 };
 
-export type DefaultExecutionMode = Extract<ToolPermissionContext["mode"], "default" | "bypassPermissions">;
+export type DefaultExecutionMode = Extract<ToolPermissionContext["mode"], "default" | "fullAccess">;
 
 export type KernelSession = {
   id: string;
@@ -121,7 +121,7 @@ function applyIntent(session: KernelSession, intent: KernelIntent): KernelSessio
 }
 
 function defaultExecutionModeFrom(mode: ToolPermissionContext["mode"]): DefaultExecutionMode {
-  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
+  return mode === "fullAccess" ? "fullAccess" : "default";
 }
 
 function applyDefaultExecutionMode(session: KernelSession, mode: DefaultExecutionMode): KernelSession {

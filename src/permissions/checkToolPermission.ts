@@ -19,47 +19,9 @@ export async function checkToolPermission(
   }
 
   if (context.mode === "plan") return checkPlanModePermission(tool, input, context);
-  if (context.mode === "acceptEdits") return checkAcceptEditsPermission(tool, specifier, context);
-  if (context.mode === "auto") return checkAutoPermission(tool, input, specifier, context);
-  if (context.mode === "dontAsk") return checkDontAskPermission(tool, specifier, context);
-  if (context.mode === "bypassPermissions") return { decision: "allow" };
+  if (context.mode === "fullAccess") return { decision: "allow" };
 
   return decidePermission(tool.name, specifier, context);
-}
-
-function checkAcceptEditsPermission(
-  tool: Tool,
-  specifier: string,
-  context: ToolPermissionCheckContext
-): ToolPermissionDecision {
-  const ruleDecision = decidePermission(tool.name, specifier, context);
-  if (ruleDecision.decision !== "ask") return ruleDecision;
-  if (isEditTool(tool.name)) return { decision: "allow", reason: "acceptEdits mode edit tool" };
-  return ruleDecision;
-}
-
-async function checkAutoPermission(
-  tool: Tool,
-  input: unknown,
-  specifier: string,
-  context: ToolPermissionCheckContext
-): Promise<ToolPermissionDecision> {
-  const ruleDecision = decidePermission(tool.name, specifier, context);
-  if (ruleDecision.decision !== "ask") return ruleDecision;
-  if (tool.isReadOnly?.(input, context)) return { decision: "allow", reason: "auto mode read-only tool" };
-  if (isEditTool(tool.name)) return { decision: "allow", reason: "auto mode edit tool" };
-  if (await tool.isDestructive?.(input)) return { decision: "deny", reason: "Auto mode blocks destructive tool without classifier approval" };
-  return { decision: "deny", reason: "Auto mode requires classifier approval for this tool" };
-}
-
-function checkDontAskPermission(
-  tool: Tool,
-  specifier: string,
-  context: ToolPermissionCheckContext
-): ToolPermissionDecision {
-  const ruleDecision = decidePermission(tool.name, specifier, context);
-  if (ruleDecision.decision !== "ask") return ruleDecision;
-  return { decision: "deny", reason: "dontAsk mode blocks permission prompts" };
 }
 
 async function checkPlanModePermission(
@@ -113,10 +75,6 @@ function firstRuleDecision(
 
 function isWorkflowExecutionTool(toolName: string): boolean {
   return toolName === "WorkflowRun" || toolName === "WorkflowResume" || toolName === "RunWorkflow";
-}
-
-function isEditTool(toolName: string): boolean {
-  return toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit" || toolName === "ArtifactWrite" || toolName === "TodoWrite";
 }
 
 function toolSpecifier(tool: string, input: unknown): string {

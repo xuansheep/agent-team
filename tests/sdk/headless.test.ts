@@ -109,7 +109,6 @@ describe("headless SDK", () => {
         planFilePath,
         prePlanMode: "default",
         originalInput: { request: "plan first" },
-        useAutoModeDuringPlan: true,
         feedbackMessages: []
       },
       cwd
