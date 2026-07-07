@@ -10,7 +10,7 @@ import { PlanModeController } from "../kernel/plan/planModeController.js";
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "../kernel/plan/planToolCallMessages.js";
 import { QueryEngine } from "../kernel/queryEngine.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
-import type { KernelSession, PendingInteraction } from "../kernel/session.js";
+import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { getPlanFilePath, readPlan } from "../plans/planFiles.js";
 import { getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import type { ModelUsage } from "../model/usage.js";
@@ -488,6 +488,7 @@ export function TuiApp({
           planFilePath: currentPlan.planFilePath,
           planUseAutoMode: currentPlan.useAutoModeDuringPlan
         },
+        defaultExecutionMode: defaultExecutionModeFromPlanPreMode(currentPlan.prePlanMode),
         planState: currentPlan,
         workflowBinding: null,
         pendingInteraction: null
@@ -1844,6 +1845,7 @@ function planApprovalKernelSession(input: {
       planFilePath: input.plan.planFilePath,
       planUseAutoMode: input.plan.useAutoModeDuringPlan
     },
+    defaultExecutionMode: defaultExecutionModeFromPlanPreMode(input.plan.prePlanMode),
     planState: input.plan,
     workflowBinding: null,
     pendingInteraction: interaction
@@ -2585,6 +2587,10 @@ function compactPlanApprovalPath(planFilePath: string): string {
   const maxLength = 80;
   if (planFilePath.length <= maxLength) return planFilePath;
   return `${planFilePath.slice(0, 20)}...${planFilePath.slice(-(maxLength - 23))}`;
+}
+
+function defaultExecutionModeFromPlanPreMode(mode: PermissionMode): DefaultExecutionMode {
+  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
 }
 
 function planApprovalPermissionMode(value: string, isBypassPermissionsModeAvailable = false): PermissionMode {

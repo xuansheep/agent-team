@@ -39,6 +39,7 @@ export type KernelExecutionHandoff = {
   handoff: unknown;
 };
 
+export type DefaultExecutionMode = Extract<ToolPermissionContext["mode"], "default" | "bypassPermissions">;
 
 export type KernelSession = {
   id: string;
@@ -46,6 +47,7 @@ export type KernelSession = {
   status: KernelStatus;
   messages: ModelMessage[];
   toolPermissionContext: ToolPermissionContext;
+  defaultExecutionMode: DefaultExecutionMode;
   planState: PlanSessionState | null;
   workflowBinding: WorkflowBinding | null;
   pendingInteraction: PendingInteraction | null;
@@ -61,6 +63,7 @@ export type KernelAction =
   | { type: "status_set"; status: KernelStatus }
   | { type: "messages_set"; messages: ModelMessage[] }
   | { type: "permissions_set"; permissions: ToolPermissionContext }
+  | { type: "default_execution_mode_set"; mode: DefaultExecutionMode }
   | { type: "plan_state_set"; planState: PlanSessionState | null }
   | { type: "workflow_binding_set"; workflowBinding: WorkflowBinding | null }
   | { type: "pending_interaction_set"; interaction: PendingInteraction }
@@ -81,6 +84,7 @@ export function createKernelSession(input: {
     status: "idle_input",
     messages: input.messages?.slice() ?? [],
     toolPermissionContext: { ...input.permissions },
+    defaultExecutionMode: defaultExecutionModeFrom(input.permissions.mode),
     planState: null,
     workflowBinding: null,
     pendingInteraction: null
@@ -91,6 +95,7 @@ export function reduceKernelSession(session: KernelSession, action: KernelAction
   if (action.type === "status_set") return { ...session, status: action.status };
   if (action.type === "messages_set") return { ...session, messages: action.messages.slice() };
   if (action.type === "permissions_set") return { ...session, toolPermissionContext: { ...action.permissions } };
+  if (action.type === "default_execution_mode_set") return applyDefaultExecutionMode(session, action.mode);
   if (action.type === "plan_state_set") return { ...session, planState: action.planState };
   if (action.type === "workflow_binding_set") return { ...session, workflowBinding: action.workflowBinding };
   if (action.type === "pending_interaction_set") return { ...session, pendingInteraction: action.interaction, status: statusFor(action.interaction) };
@@ -113,6 +118,19 @@ export function projectAppState(session: KernelSession) {
 function applyIntent(session: KernelSession, intent: KernelIntent): KernelSession {
   if (intent.type === "submit_user_message") return { ...session, messages: [...session.messages, { role: "user", content: intent.content }] };
   return session;
+}
+
+function defaultExecutionModeFrom(mode: ToolPermissionContext["mode"]): DefaultExecutionMode {
+  return mode === "bypassPermissions" ? "bypassPermissions" : "default";
+}
+
+function applyDefaultExecutionMode(session: KernelSession, mode: DefaultExecutionMode): KernelSession {
+  if (session.toolPermissionContext.mode === "plan") return { ...session, defaultExecutionMode: mode };
+  return {
+    ...session,
+    defaultExecutionMode: mode,
+    toolPermissionContext: { ...session.toolPermissionContext, mode }
+  };
 }
 
 function statusFor(interaction: PendingInteraction): KernelStatus {

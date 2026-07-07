@@ -41,4 +41,40 @@ describe("KernelSession", () => {
     assert.equal(next.messages.at(-1)?.role, "user");
     assert.equal(next.messages.at(-1)?.content, "plan this");
   });
+
+  it("projects default execution mode separately from effective permission mode", () => {
+    const session = createKernelSession({ id: "s1", cwd: process.cwd(), permissions });
+
+    assert.equal(session.defaultExecutionMode, "default");
+    assert.equal(projectKernelAppState(session).defaultExecutionMode, "default");
+    assert.equal(projectKernelAppState(session).permissionMode, "default");
+  });
+
+  it("sets default execution mode and effective mode outside Plan Mode", () => {
+    const session = createKernelSession({ id: "s1", cwd: process.cwd(), permissions });
+
+    const next = reduceKernelSession(session, {
+      type: "default_execution_mode_set",
+      mode: "bypassPermissions"
+    });
+
+    assert.equal(next.defaultExecutionMode, "bypassPermissions");
+    assert.equal(next.toolPermissionContext.mode, "bypassPermissions");
+  });
+
+  it("changes default execution mode during Plan Mode without leaving Plan Mode", () => {
+    const session = createKernelSession({
+      id: "s1",
+      cwd: process.cwd(),
+      permissions: { mode: "plan", allow: [], ask: [], deny: [], planFilePath: ".session/plans/s1.md" }
+    });
+
+    const next = reduceKernelSession(session, {
+      type: "default_execution_mode_set",
+      mode: "bypassPermissions"
+    });
+
+    assert.equal(next.defaultExecutionMode, "bypassPermissions");
+    assert.equal(next.toolPermissionContext.mode, "plan");
+  });
 });

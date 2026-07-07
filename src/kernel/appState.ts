@@ -1,4 +1,4 @@
-import type { KernelSession, PendingInteraction, WorkflowBinding } from "./session.js";
+import type { DefaultExecutionMode, KernelSession, PendingInteraction, WorkflowBinding } from "./session.js";
 import type { PlanSessionState } from "../plans/planSession.js";
 
 export type KernelAppState = {
@@ -9,6 +9,7 @@ export type KernelAppState = {
   workflowBinding: WorkflowBinding | null;
   messageCount: number;
   permissionMode: KernelSession["toolPermissionContext"]["mode"];
+  defaultExecutionMode: DefaultExecutionMode;
 };
 
 export function projectKernelAppState(session: KernelSession): KernelAppState {
@@ -19,6 +20,7 @@ export function projectKernelAppState(session: KernelSession): KernelAppState {
     planState: session.planState,
     workflowBinding: session.workflowBinding,
     messageCount: session.messages.length,
-    permissionMode: session.toolPermissionContext.mode
+    permissionMode: session.toolPermissionContext.mode,
+    defaultExecutionMode: session.defaultExecutionMode
   };
 }
