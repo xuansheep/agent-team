@@ -5,6 +5,7 @@ import type { GlobalPromptMetadata, GlobalPromptSourceMetadata } from "../config
 import { ToolRegistry } from "../tools/registry.js";
 import { ToolPermissionContext } from "../permissions/context.js";
 import { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
+import type { HookRuntime } from "../hooks/runtime.js";
 
 export type { ToolPermissionContext } from "../permissions/context.js";
 export type { PermissionMode } from "../permissions/PermissionMode.js";
@@ -82,6 +83,7 @@ export type RuntimeTurnInput = {
   abortSignal?: AbortSignal;
   permissionCallback?: (request: RuntimePermissionRequest) => RuntimePermissionDecision | Promise<RuntimePermissionDecision>;
   planState?: PlanSessionState;
+  hookRuntime?: HookRuntime;
 };
 
 export type RuntimeTurnResult =

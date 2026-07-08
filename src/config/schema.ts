@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { mcpServersSchema } from "../mcp/schema.js";
 
 export const permissionSetSchema = z.object({
   allow: z.array(z.string()).default([]),
@@ -103,6 +104,7 @@ export const configSchema = z.object({
   global_prompt_file: z.string().min(1).optional(),
   global_prompt: z.string().optional(),
   providers: z.record(providerSchema),
+  mcpServers: mcpServersSchema.optional(),
   roles: z.record(roleSchema),
   workflows: z.record(workflowSchema)
 });

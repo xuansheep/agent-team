@@ -11,7 +11,7 @@ export function mcpToolToTool(client: McpClient, definition: McpToolDefinition):
     isConcurrencySafe: () => definition.readOnly === true,
     isDestructive: () => definition.destructive === true,
     async execute(input) {
-      return mcpResultToToolResult(await client.callTool(definition.name, input));
+      return mcpResultToToolResult(await client.callTool(definition.name, input) as McpToolCallResult);
     }
   };
 }

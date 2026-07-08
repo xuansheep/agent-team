@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { getPlanFilePath } from "../../src/plans/planFiles.js";
-import { loadSettings } from "../../src/settings/loadSettings.js";
+import { defaultUserSettingsPath, legacyUserSettingsPath, loadSettings } from "../../src/settings/loadSettings.js";
 import { resolveSettings } from "../../src/settings/resolveSettings.js";
 import { settingsSchema } from "../../src/settings/types.js";
 
@@ -173,4 +173,10 @@ workflows:
     assert.deepEqual(provider.model_aliases, { legacy: "legacy-model", shared: "settings-shared-model", quick: "settings-model" });
     assert.deepEqual(provider.context_windows, { "legacy-model": 1000, "shared-model": 32000, "settings-model": 128000 });
   });
+
+  it("defaults user settings to ~/.einsteins and exposes the legacy fallback path", () => {
+    assert.match(defaultUserSettingsPath(), /[\\/]\.einsteins[\\/]settings\.yaml$/);
+    assert.match(legacyUserSettingsPath(), /[\\/]\.agent-team[\\/]settings\.yaml$/);
+  });
+
 });

@@ -16,6 +16,10 @@ import { webSearchTool } from "./local/webSearch.js";
 import { enterPlanModeTool } from "./local/enterPlanMode.js";
 import { exitPlanModeTool } from "./local/exitPlanMode.js";
 import { askUserQuestionTool } from "./local/askUserQuestion.js";
+import type { McpRuntime } from "../mcp/runtime.js";
+import { createDeferredMcpTool, createMcpToolSearchTool } from "../mcp/deferredTools.js";
+import { createListMcpResourcesTool, createReadMcpResourceTool } from "../mcp/resourceTools.js";
+import { createGetMcpPromptTool, createListMcpPromptsTool, createRunMcpPromptTool } from "../mcp/promptTools.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
@@ -36,7 +40,7 @@ export class ToolRegistry {
   }
 }
 
-export function createLocalToolRegistry(): ToolRegistry {
+export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime } = {}): ToolRegistry {
   const registry = new ToolRegistry();
   for (const tool of [
     readTool,
@@ -58,6 +62,17 @@ export function createLocalToolRegistry(): ToolRegistry {
     askUserQuestionTool
   ]) {
     registry.add(tool);
+  }
+  if (options.mcpRuntime) {
+    registry.add(createMcpToolSearchTool(options.mcpRuntime));
+    registry.add(createListMcpResourcesTool(options.mcpRuntime));
+    registry.add(createReadMcpResourceTool(options.mcpRuntime));
+    registry.add(createListMcpPromptsTool(options.mcpRuntime));
+    registry.add(createGetMcpPromptTool(options.mcpRuntime));
+    registry.add(createRunMcpPromptTool(options.mcpRuntime));
+    for (const tool of options.mcpRuntime.listTools()) {
+      registry.add(createDeferredMcpTool(tool, options.mcpRuntime));
+    }
   }
   return registry;
 }

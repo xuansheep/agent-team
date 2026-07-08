@@ -437,4 +437,36 @@ workflows:
     assert.deepEqual(config.providers.default.context_windows, { "gpt-default": 128000 });
   });
 
+  it("parses mcpServers from agent-team.yaml", async () => {
+    const file = await tempFile("agent-team.yaml", `
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key_env: TEST_API_KEY
+    default_model: default-model
+mcpServers:
+  local:
+    type: stdio
+    command: node
+    args:
+      - server.mjs
+roles:
+  dev:
+    system_prompt: Build safely.
+workflows:
+  delivery:
+    nodes:
+      - id: dev
+        role: dev
+        provider: default
+    edges: []
+`);
+
+    const config = await loadConfig(file);
+
+    assert.equal(config.mcpServers?.local?.type, "stdio");
+  });
+
+
 });

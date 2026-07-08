@@ -18,6 +18,7 @@ import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RuntimeEvent } from "../runtime/types.js";
+import type { McpRuntime } from "../mcp/runtime.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { SessionIndex } from "../storage/sessionIndex.js";
 import { SessionStore } from "../storage/sessionStore.js";
@@ -54,6 +55,7 @@ export function TuiApp({
   editQuestionText = (text: string) => editTextInExternalEditor(text, cwd),
   planSavedMessageDurationMs = 5000,
   settings,
+  mcpRuntime,
   onExit
 }: {
   cwd: string;
@@ -67,6 +69,7 @@ export function TuiApp({
   editQuestionText?: ExternalTextEditor;
   planSavedMessageDurationMs?: number;
   settings?: ResolvedAgentTeamSettings;
+  mcpRuntime?: McpRuntime;
   onExit?: () => void;
 }) {
   const { exit } = useApp();
@@ -406,11 +409,11 @@ export function TuiApp({
       cwd,
       originalInput: { request: "" },
       permissions: {
-        mode: settings?.permissions?.defaultMode ?? "default",
+        mode: state.defaultExecutionMode,
         allow: [],
         ask: [],
         deny: [],
-        source: settings?.permissions?.defaultMode ? "settings" : undefined,
+        source: settings?.permissions?.defaultMode === state.defaultExecutionMode ? "settings" : "session",
         ...(reentry ? { planFilePath: previousPlan?.planFilePath } : {})
       },
       reentry
@@ -472,7 +475,7 @@ export function TuiApp({
     setPlanWorkCount((current) => current + 1);
     let lastUsage: ModelUsage | undefined;
     try {
-      const legacyTools = createLocalToolRegistry();
+      const legacyTools = createLocalToolRegistry({ mcpRuntime });
       const kernelSession: KernelSession = {
         id: currentPlan.sessionId,
         cwd,
@@ -486,7 +489,7 @@ export function TuiApp({
           deny: [],
           planFilePath: currentPlan.planFilePath
         },
-        defaultExecutionMode: defaultExecutionModeFromPlanPreMode(currentPlan.prePlanMode),
+        defaultExecutionMode: state.defaultExecutionMode,
         planState: currentPlan,
         workflowBinding: null,
         pendingInteraction: null
@@ -957,7 +960,7 @@ export function TuiApp({
       failUi(error);
     }
   };
-  const resolveGlobalPlan = async (decision: "continue" | "stay", mode: PermissionMode = "default", feedback?: unknown, options: { clearContext?: boolean } = {}): Promise<boolean> => {
+  const resolveGlobalPlan = async (decision: "continue" | "stay", mode: PermissionMode = state.defaultExecutionMode, feedback?: unknown, options: { clearContext?: boolean } = {}): Promise<boolean> => {
     const currentPlan = planSessionRef.current;
     const document = state.pendingReview?.document ?? "";
     if (!currentPlan) return false;
@@ -967,7 +970,8 @@ export function TuiApp({
       plan: currentPlan,
       document,
       messages: planMessagesRef.current,
-      review: state.pendingReview
+      review: state.pendingReview,
+      defaultExecutionMode: state.defaultExecutionMode
     });
     if (decision === "stay") {
       const resolved = (await controller.resolvePlanApproval(kernelSession, { decision: "stay", feedback })).session;
@@ -1193,7 +1197,7 @@ ${message.detailText}` : ""}` }
         const approval = planApprovalFastAccept(
           state.pendingReview.empty === true || !state.pendingReview.document.trim(),
           settings?.showClearContextOnPlanAccept === true,
-          planSessionRef.current?.prePlanMode === "fullAccess"
+          state.defaultExecutionMode === "fullAccess"
         );
         void resolveGlobalPlan("continue", approval.permissionMode, planApprovalAcceptFeedback(), { clearContext: approval.clearContext });
       } else if (state.mode === "input") {
@@ -1250,7 +1254,7 @@ ${message.detailText}` : ""}` }
         clearTuiContext();
       }
       if (event.name === "permissions") {
-        setState((current) => ({ ...current, mode: "permissions", error: undefined }));
+        setState((current) => ({ ...current, mode: "permissions", modeBeforeConfirmation: current.mode, error: undefined }));
       }
       if (event.name === "resume") {
         const runId = event.args[0];
@@ -1314,7 +1318,7 @@ ${message.detailText}` : ""}` }
     planApprovalEditorName: state.pendingReview ? externalEditorDisplayName() : undefined,
     showClearContextOnPlanAccept: settings?.showClearContextOnPlanAccept === true,
     contextUsedPercent: state.pendingReview?.contextUsedPercent,
-    isFullAccessModeAvailable: planSessionRef.current?.prePlanMode === "fullAccess",
+    isFullAccessModeAvailable: state.defaultExecutionMode === "fullAccess",
     defaultExecutionMode: state.defaultExecutionMode,
     selectWorkflow,
     resolvePermission: (requestId, decision) => {
@@ -1385,14 +1389,20 @@ ${message.detailText}` : ""}` }
       }
     },
     resolveDefaultExecutionMode: (mode) => {
-      setState((current) => ({
-        ...current,
-        mode: "input",
-        defaultExecutionMode: mode,
-        inputPermissionMode: current.inputPermissionMode === "plan" ? "plan" : mode,
-        error: undefined,
-        logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(mode)}`)]
-      }));
+      setState((current) => {
+        const nextMode = current.modeBeforeConfirmation && current.modeBeforeConfirmation !== "permissions"
+          ? current.modeBeforeConfirmation
+          : "input";
+        return {
+          ...current,
+          mode: nextMode,
+          modeBeforeConfirmation: undefined,
+          defaultExecutionMode: mode,
+          inputPermissionMode: current.inputPermissionMode === "plan" ? "plan" : mode,
+          error: undefined,
+          logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(mode)}`)]
+        };
+      });
     }
   });
   const nextChoiceKey = activeChoice ? `${interactionMode}:${activeChoice.title}:${activeChoice.options.map((option) => option.value).join("|")}` : "";
@@ -1834,6 +1844,7 @@ function planApprovalKernelSession(input: {
   document: string;
   messages?: ModelMessage[];
   review?: TuiState["pendingReview"];
+  defaultExecutionMode: DefaultExecutionMode;
 }): KernelSession {
   const interaction: PendingInteraction = {
     type: "plan_approval",
@@ -1857,7 +1868,7 @@ function planApprovalKernelSession(input: {
       deny: [],
       planFilePath: input.plan.planFilePath
     },
-    defaultExecutionMode: defaultExecutionModeFromPlanPreMode(input.plan.prePlanMode),
+    defaultExecutionMode: input.defaultExecutionMode,
     planState: input.plan,
     workflowBinding: null,
     pendingInteraction: interaction
@@ -2210,7 +2221,7 @@ export function resolveActiveChoiceCancel(state: {
     return { type: "restore_mode", mode: state.modeBeforeConfirmation ?? "running", clearPendingResumeRunId: true, key };
   }
   if (state.mode === "resume_picker") return { type: "restore_mode", mode: "input", clearResumePicker: true, key: "resume_picker" };
-  if (state.mode === "permissions") return { type: "restore_mode", mode: "input", key: "permissions" };
+  if (state.mode === "permissions") return { type: "restore_mode", mode: state.modeBeforeConfirmation ?? "input", key: "permissions" };
   if (state.mode === "select_workflow") return state.workflowId ? { type: "restore_mode", mode: "input", key: "select_workflow" } : { type: "exit", key: "select_workflow" };
   return { type: "none" };
 }
@@ -2397,7 +2408,7 @@ function buildActiveChoice(input: {
         onRemoveImage: input.removePlanApprovalImage,
         resolveImagePaste: input.resolvePlanApprovalImagePaste,
         onCancel: input.cancelPlanApproval,
-        onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue", "default"),
+        onSubmit: (value) => input.resolvePlan(value === "stay" ? "stay" : "continue", input.defaultExecutionMode),
         onPromptSubmit: (text, _focusedValue, images) => {
           input.resolvePlan("stay", "default", input.planApprovalPromptFeedback(text, images));
         }
@@ -2610,10 +2621,6 @@ function compactPlanApprovalPath(planFilePath: string): string {
   return `${planFilePath.slice(0, 20)}...${planFilePath.slice(-(maxLength - 23))}`;
 }
 
-function defaultExecutionModeFromPlanPreMode(mode: PermissionMode): DefaultExecutionMode {
-  return mode === "fullAccess" ? "fullAccess" : "default";
-}
-
 function planApprovalPermissionMode(value: string, isFullAccessModeAvailable = false): PermissionMode {
   if (value === "yes-full-access" || value === "yes-full-access-clear-context") return "fullAccess";
   if (value === "yes-default-keep-context" && isFullAccessModeAvailable) return "fullAccess";
@@ -2656,7 +2663,7 @@ function buildPlanApprovalOptions(
 }
 
 function planApprovalFastAccept(empty: boolean, showClearContext: boolean, isFullAccessModeAvailable = false): { permissionMode: PermissionMode; clearContext: boolean } {
-  if (empty) return { permissionMode: "default", clearContext: false };
+  if (empty) return { permissionMode: isFullAccessModeAvailable ? "fullAccess" : "default", clearContext: false };
   const value = showClearContext
     ? (isFullAccessModeAvailable ? "yes-full-access-clear-context" : "yes-default-clear-context")
     : (isFullAccessModeAvailable ? "yes-full-access" : "yes-default-keep-context");

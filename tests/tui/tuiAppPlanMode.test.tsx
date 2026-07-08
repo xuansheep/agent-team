@@ -219,6 +219,63 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("uses the /permissions-selected full access mode after plan approval", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const options: unknown[] = [];
+    const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+
+    await sendTuiLine(output, "/permissions");
+    await waitForFrame(output, /Default execution mode/);
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write(String.fromCharCode(13));
+    await waitForFrame(output, /Permission mode: Full access/);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Draft the migration first.");
+    await sendTuiLine(output, "Ready for approval.");
+    await waitForFrame(output, /Ready to code\?/);
+    assert.match(output.lastFrame() ?? "", /Yes, and use full access/);
+
+    output.stdin.write("\r");
+    await settleTuiWork();
+
+    assertStartOption(options[0], { permissionMode: "fullAccess" });
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("uses full access when /permissions changes the default during Plan Mode", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const options: unknown[] = [];
+    const engine = { async startInteractive(_config: unknown, _workflowId: string, _input: unknown, option: unknown) { options.push(option); return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+
+    await sendTuiLine(output, "/plan");
+    await waitForFrame(output, /Enabled plan mode/);
+    await sendTuiLine(output, "/permissions");
+    await waitForFrame(output, /Default execution mode/);
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write(String.fromCharCode(13));
+    await waitForFrame(output, /Permission mode: Full access/);
+    assert.match(output.lastFrame() ?? "", /mode Plan/);
+
+    await sendTuiLine(output, "Draft the migration first.");
+    await sendTuiLine(output, "Ready for approval.");
+    await waitForFrame(output, /Ready to code\?/);
+
+    output.stdin.write("\u001b[Z");
+    await settleTuiWork();
+
+    assertStartOption(options[0], { permissionMode: "fullAccess" });
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("cycles back to the /permissions-selected full access mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const options: unknown[] = [];

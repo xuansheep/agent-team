@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { AlternateScreen, render } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loadConfig.js";
+import { loadMergedMcpServers } from "../mcp/config.js";
+import { McpRuntime } from "../mcp/runtime.js";
+import { createMcpClientFactory } from "../mcp/transports.js";
 import { createProvider } from "../providers/registry.js";
 import { loadSettings } from "../settings/loadSettings.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
@@ -23,6 +26,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
   let workflowId: string | undefined;
   let engine: WorkflowEngine | undefined;
   let settings: ResolvedAgentTeamSettings | undefined;
+  let mcpRuntime: McpRuntime | undefined;
 
   try {
     await access(configPath);
@@ -31,7 +35,10 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     config = loadedConfig;
     workflows = Object.keys(config.workflows);
     workflowId = selectDefaultWorkflow(workflows);
-    engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(loadedConfig, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session") });
+    const mcpServers = await loadMergedMcpServers({ cwd: options.cwd, agentTeamServers: loadedConfig.mcpServers });
+    mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory() });
+    await mcpRuntime.connectAll(mcpServers);
+    engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(loadedConfig, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session"), mcpRuntime });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     initialError = message.includes("ENOENT") ? "Missing agent-team.yaml" : message;
@@ -48,6 +55,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         engine={engine}
         providerFactory={config ? (providerId) => createProvider(config!, providerId) : undefined}
         settings={settings}
+        mcpRuntime={mcpRuntime}
       />
     </AlternateScreen>,
     {

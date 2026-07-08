@@ -33,6 +33,7 @@ import { stripInternalPlanModeHandoffMarkers } from "../plans/planSession.js";
 
 import { NodeResult } from "../team/nodeResult.js";
 
+import type { McpRuntime } from "../mcp/runtime.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
 
 import { WorkflowState } from "./state.js";
@@ -48,6 +49,8 @@ export type WorkflowEngineOptions = {
     cwd: string;
 
     runRoot?: string;
+
+    mcpRuntime?: McpRuntime;
 
 };
 
@@ -1151,7 +1154,7 @@ export class WorkflowEngine {
 
     private async continueFrom(options: ContinueOptions): Promise<WorkflowState> {
 
-        const tools = createLocalToolRegistry();
+        const tools = createLocalToolRegistry({ mcpRuntime: this.options.mcpRuntime });
 
         const basePermissions = options.workflow.workflow_permissions ?? permissionSetSchema.parse(undefined);
         const planRequestedPermissionRules = options.planRequestedPermissionRules?.length

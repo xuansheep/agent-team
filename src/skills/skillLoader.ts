@@ -1,13 +1,16 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import yaml from "js-yaml";
+import { hooksSettingsSchema, type HooksSettings } from "../hooks/types.js";
 
 export type LoadedSkill = {
   name: string;
   description?: string;
   prompt: string;
   path: string;
+  root: string;
   source: "local";
+  hooks?: HooksSettings;
 };
 
 export async function loadLocalSkills(root: string): Promise<LoadedSkill[]> {
@@ -25,10 +28,10 @@ export async function loadLocalSkills(root: string): Promise<LoadedSkill[]> {
 export async function loadSkillFile(path: string): Promise<LoadedSkill> {
   const raw = await readFile(path, "utf8");
   const parsed = parseSkillMarkdown(raw, path);
-  return { ...parsed, path, source: "local" };
+  return { ...parsed, path, root: dirname(path), source: "local" };
 }
 
-export function parseSkillMarkdown(raw: string, path = "SKILL.md"): Omit<LoadedSkill, "path" | "source"> {
+export function parseSkillMarkdown(raw: string, path = "SKILL.md"): Omit<LoadedSkill, "path" | "root" | "source"> {
   const frontmatter = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!frontmatter) {
     return { name: basename(path, ".md"), prompt: raw };
@@ -37,7 +40,8 @@ export function parseSkillMarkdown(raw: string, path = "SKILL.md"): Omit<LoadedS
   const prompt = raw.slice(frontmatter[0].length);
   const name = typeof metadata?.name === "string" && metadata.name.trim() ? metadata.name : basename(path, ".md");
   const description = typeof metadata?.description === "string" ? metadata.description : undefined;
-  return { name, description, prompt };
+  const hooks = metadata?.hooks === undefined ? undefined : hooksSettingsSchema.parse(metadata.hooks) as HooksSettings;
+  return { name, description, prompt, hooks };
 }
 
 async function exists(path: string): Promise<boolean> {
