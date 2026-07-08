@@ -3,14 +3,23 @@ import { basename, dirname, join } from "node:path";
 import yaml from "js-yaml";
 import { hooksSettingsSchema, type HooksSettings } from "../hooks/types.js";
 
+export type SkillSource = "local" | "project" | "user" | "bundled" | "mcp";
+export type SkillMode = "inline" | "fork" | "auto";
+
 export type LoadedSkill = {
   name: string;
   description?: string;
+  whenToUse?: string;
+  allowedTools?: string[];
+  model?: string;
+  effort?: string;
+  mode?: SkillMode;
   prompt: string;
   path: string;
   root: string;
-  source: "local";
+  source: SkillSource;
   hooks?: HooksSettings;
+  metadata?: Record<string, unknown>;
 };
 
 export async function loadLocalSkills(root: string): Promise<LoadedSkill[]> {
@@ -40,8 +49,13 @@ export function parseSkillMarkdown(raw: string, path = "SKILL.md"): Omit<LoadedS
   const prompt = raw.slice(frontmatter[0].length);
   const name = typeof metadata?.name === "string" && metadata.name.trim() ? metadata.name : basename(path, ".md");
   const description = typeof metadata?.description === "string" ? metadata.description : undefined;
+  const whenToUse = typeof metadata?.when_to_use === "string" ? metadata.when_to_use : undefined;
+  const allowedTools = stringArray(metadata?.["allowed-tools"] ?? metadata?.allowed_tools);
+  const model = typeof metadata?.model === "string" ? metadata.model : undefined;
+  const effort = typeof metadata?.effort === "string" ? metadata.effort : undefined;
+  const mode = isSkillMode(metadata?.mode) ? metadata.mode : undefined;
   const hooks = metadata?.hooks === undefined ? undefined : hooksSettingsSchema.parse(metadata.hooks) as HooksSettings;
-  return { name, description, prompt, hooks };
+  return { name, description, whenToUse, allowedTools, model, effort, mode, prompt, hooks, metadata: metadata ?? {} };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -51,4 +65,14 @@ async function exists(path: string): Promise<boolean> {
     if ((error as { code?: unknown }).code === "ENOENT") return false;
     throw error;
   }
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  return strings.length ? strings : undefined;
+}
+
+function isSkillMode(value: unknown): value is SkillMode {
+  return value === "inline" || value === "fork" || value === "auto";
 }
