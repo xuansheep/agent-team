@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Box, ScrollBox, Text, useApp, useHasSelection, useInput, useSelection, useStdin, useStdout } from "./ink.js";
 import type { ScrollBoxHandle } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
+import type { RuntimeDiagnostics } from "../diagnostics/runtimeDiagnostics.js";
 import { enterPlanMode, readPlanOrRecoverFromTranscript } from "../plans/planSession.js";
 import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
 import { PlanModeController } from "../kernel/plan/planModeController.js";
@@ -19,6 +20,8 @@ import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RuntimeEvent } from "../runtime/types.js";
 import type { McpRuntime } from "../mcp/runtime.js";
+import type { HookRuntime } from "../hooks/runtime.js";
+import type { SkillRuntime } from "../skills/runtime.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { SessionIndex } from "../storage/sessionIndex.js";
 import { SessionStore } from "../storage/sessionStore.js";
@@ -56,6 +59,10 @@ export function TuiApp({
   planSavedMessageDurationMs = 5000,
   settings,
   mcpRuntime,
+  skillRuntime,
+  hookRuntime,
+  diagnostics,
+  collectDiagnostics,
   onExit
 }: {
   cwd: string;
@@ -70,6 +77,10 @@ export function TuiApp({
   planSavedMessageDurationMs?: number;
   settings?: ResolvedAgentTeamSettings;
   mcpRuntime?: McpRuntime;
+  skillRuntime?: SkillRuntime;
+  hookRuntime?: HookRuntime;
+  diagnostics?: RuntimeDiagnostics;
+  collectDiagnostics?: () => RuntimeDiagnostics;
   onExit?: () => void;
 }) {
   const { exit } = useApp();
@@ -286,6 +297,7 @@ export function TuiApp({
     };
   }, [stdin, state.mode, hasSelection, selection]);
   const resetSession = () => {
+    if (planSessionRef.current) hookRuntime?.clearSessionHooks(planSessionRef.current.sessionId);
     sessionRef.current = undefined;
     planSessionRef.current = undefined;
     resetPlanApprovalFeedback();
@@ -475,7 +487,7 @@ export function TuiApp({
     setPlanWorkCount((current) => current + 1);
     let lastUsage: ModelUsage | undefined;
     try {
-      const legacyTools = createLocalToolRegistry({ mcpRuntime });
+      const legacyTools = createLocalToolRegistry({ mcpRuntime, skillRuntime, hookRuntime });
       const kernelSession: KernelSession = {
         id: currentPlan.sessionId,
         cwd,
@@ -502,6 +514,7 @@ export function TuiApp({
         nodeId: "runtime",
         globalPrompt: config?.global_prompt,
         globalPromptMetadata: config?.global_prompt_metadata,
+        hookRuntime,
         signal: abortController.signal,
         eventSink: (event) => {
           if (planTurnGenerationRef.current !== turnGeneration || abortController.signal.aborted) return;
@@ -673,6 +686,15 @@ export function TuiApp({
       ...current,
       error: undefined,
       logMessages: [...current.logMessages, { ...statusLog(result.text, result.detailText), detailVisible: true }]
+    }));
+    requestMainScrollToBottom();
+  };
+  const showDiagnostics = () => {
+    const currentDiagnostics = collectDiagnostics?.() ?? diagnostics;
+    setState((current) => ({
+      ...current,
+      error: undefined,
+      logMessages: [...current.logMessages, { ...statusLog("Runtime diagnostics", diagnosticsDetailText(currentDiagnostics)), detailVisible: true }]
     }));
     requestMainScrollToBottom();
   };
@@ -1028,6 +1050,7 @@ ${message.detailText}` : ""}` }
     planMessagesRef.current = resolved.session.messages;
     appendPlanTranscriptMessages(nextPlan.sessionId, resolvedMessages);
     savePlanSession(nextPlan);
+    hookRuntime?.clearSessionHooks(nextPlan.sessionId);
     resetPlanApprovalFeedback();
     const execution = resolved.execution;
     setState((current) => ({ ...current, mode: "running", inputPermissionMode: execution?.permissionMode ?? current.inputPermissionMode, planSession: nextPlan, pendingReview: undefined, error: undefined }));
@@ -1228,6 +1251,9 @@ ${message.detailText}` : ""}` }
       }
       if (event.name === "statusline") {
         updateStatusline(event.args);
+      }
+      if (event.name === "diagnostics") {
+        showDiagnostics();
       }
       if (event.name === "new") {
         if (isActiveSessionMode(state.mode)) setState((current) => ({ ...current, mode: "confirm_new", modeBeforeConfirmation: current.mode }));
@@ -2477,9 +2503,45 @@ function helpDetailText(): string {
     "Slash commands:",
     "  /help show this help",
     "  /plan [open|text] Plan Mode, show/open plan, or send plan text",
+    "  /diagnostics show MCP, skill, and hook runtime diagnostics",
     "  /statusline [elements|default] customize the bottom statusline",
     "  /clear clear visible context · /resume [session] resume",
     "  /new new session · /model <model> switch · /permissions permissions"
+  ].join("\n");
+}
+
+function diagnosticsDetailText(diagnostics: RuntimeDiagnostics | undefined): string {
+  const mcp = diagnostics?.mcp ?? [];
+  const skills = diagnostics?.skills ?? [];
+  const hooks = diagnostics?.hooks ?? [];
+  return [
+    `MCP servers: ${mcp.length}`,
+    ...mcp.map((server) => [
+      server.name,
+      server.state,
+      server.source,
+      server.error,
+      `tools=${server.toolCount}`,
+      `resources=${server.resourceCount}`,
+      `prompts=${server.promptCount}`
+    ].filter(Boolean).join(" ")),
+    `Skills: ${skills.length}`,
+    ...skills.map((skill) => [
+      skill.name,
+      skill.source,
+      skill.mode,
+      skill.hasHooks ? "hooks" : "no-hooks"
+    ].join(" ")),
+    `Hooks: ${hooks.length}`,
+    ...hooks.map((hook) => [
+      hook.event,
+      hook.source,
+      hook.type,
+      hook.wired ? "wired" : "not-wired",
+      hook.command,
+      hook.lastExecution ? `last=${hook.lastExecution.outcome}` : undefined,
+      hook.lastExecution?.error
+    ].filter(Boolean).join(" "))
   ].join("\n");
 }
 

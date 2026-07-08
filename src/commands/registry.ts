@@ -1,4 +1,4 @@
-export type CommandName = "clear" | "help" | "model" | "new" | "permissions" | "plan" | "resume" | "statusline";
+export type CommandName = "clear" | "diagnostics" | "help" | "model" | "new" | "permissions" | "plan" | "resume" | "statusline";
 
 export type CommandDefinition = {
   name: CommandName;
@@ -9,6 +9,7 @@ export type CommandDefinition = {
 
 export type CommandAction =
   | { type: "clear"; args: string[] }
+  | { type: "diagnostics"; args: string[] }
   | { type: "help"; args: string[] }
   | { type: "model"; args: string[]; model?: string }
   | { type: "new"; args: string[] }
@@ -19,6 +20,7 @@ export type CommandAction =
 
 const definitions: CommandDefinition[] = [
   { name: "clear", description: "Clear current context", parse: (args) => ({ type: "clear", args }) },
+  { name: "diagnostics", description: "Show runtime diagnostics", parse: (args) => ({ type: "diagnostics", args }) },
   { name: "help", description: "Show help", parse: (args) => ({ type: "help", args }) },
   { name: "model", description: "Switch model", argumentHint: "<model>", parse: (args) => ({ type: "model", args, model: args[0] }) },
   { name: "new", description: "Start a new session", parse: (args) => ({ type: "new", args }) },

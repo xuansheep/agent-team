@@ -1,14 +1,18 @@
 import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { AlternateScreen, render } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loadConfig.js";
+import { collectRuntimeDiagnostics, type RuntimeDiagnostics } from "../diagnostics/runtimeDiagnostics.js";
+import { HookRuntime } from "../hooks/runtime.js";
 import { loadMergedMcpServers } from "../mcp/config.js";
 import { McpRuntime } from "../mcp/runtime.js";
 import { createMcpClientFactory } from "../mcp/transports.js";
 import { createProvider } from "../providers/registry.js";
 import { loadSettings } from "../settings/loadSettings.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
+import { loadMcpPromptSkills } from "../skills/mcpSkills.js";
+import { SkillRuntime } from "../skills/runtime.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { TuiApp } from "./TuiApp.js";
 
@@ -18,8 +22,40 @@ export function selectDefaultWorkflow(workflows: string[]): string | undefined {
   return undefined;
 }
 
-export async function launchTui(options: { cwd: string }): Promise<void> {
+export type PreparedTuiRuntime = {
+  config: AgentTeamConfig;
+  workflows: string[];
+  workflowId: string | undefined;
+  engine: WorkflowEngine;
+  settings: ResolvedAgentTeamSettings;
+  mcpRuntime: McpRuntime;
+  skillRuntime: SkillRuntime;
+  hookRuntime: HookRuntime;
+  diagnostics: RuntimeDiagnostics;
+};
+
+export async function prepareTuiRuntime(options: { cwd: string }): Promise<PreparedTuiRuntime> {
   const configPath = join(options.cwd, "agent-team.yaml");
+  await access(configPath);
+  const settings = await loadSettings({ cwd: options.cwd });
+  const config = await loadConfig(configPath, { cwd: options.cwd, settings });
+  const workflows = Object.keys(config.workflows);
+  const workflowId = selectDefaultWorkflow(workflows);
+  const mcpServers = await loadMergedMcpServers({ cwd: options.cwd, agentTeamServers: config.mcpServers });
+  const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory() });
+  await mcpRuntime.connectAll(mcpServers);
+  const skillRuntime = await SkillRuntime.discover({
+    cwd: options.cwd,
+    explicitProjectSkillPaths: (config.skills?.paths ?? []).map((path) => isAbsolute(path) ? path : join(options.cwd, path)),
+    mcpSkills: () => loadMcpPromptSkills(mcpRuntime)
+  });
+  const hookRuntime = new HookRuntime(settings.hooks);
+  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session"), mcpRuntime, hookRuntime });
+  const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime, hookRuntime });
+  return { config, workflows, workflowId, engine, settings, mcpRuntime, skillRuntime, hookRuntime, diagnostics };
+}
+
+export async function launchTui(options: { cwd: string }): Promise<void> {
   let initialError: string | undefined;
   let config: AgentTeamConfig | undefined;
   let workflows: string[] = [];
@@ -27,18 +63,21 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
   let engine: WorkflowEngine | undefined;
   let settings: ResolvedAgentTeamSettings | undefined;
   let mcpRuntime: McpRuntime | undefined;
+  let skillRuntime: SkillRuntime | undefined;
+  let hookRuntime: HookRuntime | undefined;
+  let diagnostics: RuntimeDiagnostics | undefined;
 
   try {
-    await access(configPath);
-    settings = await loadSettings({ cwd: options.cwd });
-    const loadedConfig = await loadConfig(configPath, { cwd: options.cwd, settings });
-    config = loadedConfig;
-    workflows = Object.keys(config.workflows);
-    workflowId = selectDefaultWorkflow(workflows);
-    const mcpServers = await loadMergedMcpServers({ cwd: options.cwd, agentTeamServers: loadedConfig.mcpServers });
-    mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory() });
-    await mcpRuntime.connectAll(mcpServers);
-    engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(loadedConfig, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session"), mcpRuntime });
+    const prepared = await prepareTuiRuntime(options);
+    config = prepared.config;
+    workflows = prepared.workflows;
+    workflowId = prepared.workflowId;
+    engine = prepared.engine;
+    settings = prepared.settings;
+    mcpRuntime = prepared.mcpRuntime;
+    skillRuntime = prepared.skillRuntime;
+    hookRuntime = prepared.hookRuntime;
+    diagnostics = prepared.diagnostics;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     initialError = message.includes("ENOENT") ? "Missing agent-team.yaml" : message;
@@ -56,10 +95,14 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         providerFactory={config ? (providerId) => createProvider(config!, providerId) : undefined}
         settings={settings}
         mcpRuntime={mcpRuntime}
+        skillRuntime={skillRuntime}
+        hookRuntime={hookRuntime}
+        diagnostics={diagnostics}
+        collectDiagnostics={() => collectRuntimeDiagnostics({ mcpRuntime, skillRuntime, hookRuntime })}
       />
     </AlternateScreen>,
     {
-    exitOnCtrlC: false
+      exitOnCtrlC: false
     }
   );
   await instance.waitUntilExit();

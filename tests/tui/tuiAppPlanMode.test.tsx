@@ -9,6 +9,8 @@ import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { HookRuntime } from "../../src/hooks/runtime.js";
+import { SkillRuntime } from "../../src/skills/runtime.js";
 
 const config = {
   providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
@@ -66,6 +68,85 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("runs hook runtime during global Plan Mode turns", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-hooks-"));
+    const requests: ModelRequest[] = [];
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const hookRuntime = new HookRuntime();
+    hookRuntime.addFunctionHook("UserPromptSubmit", "*", {
+      type: "function",
+      callback: () => ({ hookSpecificOutput: { additionalContext: "Plan hook context" } })
+    });
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={engine as never}
+        providerFactory={recordingPlanProviderFactory(requests)}
+        settings={{ permissions: { defaultMode: "plan" } }}
+        hookRuntime={hookRuntime}
+      />
+    );
+
+    await sendTuiLine(output, "Use hook context.");
+    const request = await waitForRequest(requests, "Use hook context.");
+
+    assert.match(requestText(request), /Plan hook context/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("clears activated skill hooks after approved Plan Mode session starts workflow", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-skill-hooks-"));
+    const hookRuntime = new HookRuntime();
+    const skillRuntime = new SkillRuntime([{
+      name: "reviewer",
+      description: "Review plans",
+      prompt: "Review the plan before execution.",
+      path: "skills/reviewer/SKILL.md",
+      root: "skills/reviewer",
+      source: "project",
+      mode: "inline",
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "verify-review" }] }]
+      },
+      metadata: {}
+    }]);
+    const inputs: unknown[] = [];
+    const engine = { async startInteractive(_config: unknown, _workflowId: string, input: unknown) { inputs.push(input); return fakeSession(); } };
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={engine as never}
+        providerFactory={skillPlanProviderFactory}
+        skillRuntime={skillRuntime}
+        hookRuntime={hookRuntime}
+      />
+    );
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Use reviewer skill.");
+    await waitForFrame(output, /Plan draft saved/);
+    assert.equal(hookRuntime.getDiagnostics().some((hook) => hook.source === "skill" && hook.command === "verify-review"), true);
+
+    await sendTuiLine(output, "Ready for approval.");
+    await waitForFrame(output, /Ready to code\?/);
+    output.stdin.write("\r");
+    await settleTuiWork();
+
+    assert.equal(inputs.length, 1);
+    assert.equal(hookRuntime.getDiagnostics().some((hook) => hook.source === "skill" && hook.command === "verify-review"), false);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("creates default Plan Mode sessions without the plan prefix", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const requests: ModelRequest[] = [];
@@ -99,6 +180,81 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(frame, /Ctrl\+G/);
     assert.doesNotMatch(frame, /workflow delivery \| mode/);
     assert.doesNotMatch(frame, /mode [^\n]*Ctrl\+C stop/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("shows runtime diagnostics from slash command", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-diagnostics-"));
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const output = render(<TuiApp
+      cwd={cwd}
+      config={config}
+      workflows={["delivery"]}
+      workflowId="delivery"
+      engine={engine as never}
+      providerFactory={planProviderFactory}
+      diagnostics={{
+        mcp: [
+          { name: "docs", source: "project", state: "connected", toolCount: 1, resourceCount: 2, promptCount: 3 },
+          { name: "broken", source: "user", state: "failed", error: "boom", toolCount: 0, resourceCount: 0, promptCount: 0 }
+        ],
+        skills: [
+          { name: "reviewer", source: "project", mode: "inline", path: "skills/reviewer/SKILL.md", hasHooks: true }
+        ],
+        hooks: [
+          { id: "hook-1", event: "Stop", matcher: "*", type: "command", source: "settings", command: "verify-stop", wired: true }
+        ]
+      }}
+    />);
+
+    await sendTuiLine(output, "/diagnostics");
+    await waitForFrame(output, /Runtime diagnostics/);
+    const frame = output.lastFrame() ?? "";
+
+    assert.match(frame, /MCP servers: 2/);
+    assert.match(frame, /docs connected project tools=1 resources=2 prompts=3/);
+    assert.match(frame, /broken failed user boom/);
+    assert.match(frame, /Skills: 1/);
+    assert.match(frame, /reviewer project inline hooks/);
+    assert.match(frame, /Hooks: 1/);
+    assert.match(frame, /Stop settings command wired verify-stop/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("refreshes runtime diagnostics when slash command runs", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-diagnostics-live-"));
+    const requests: ModelRequest[] = [];
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const hookRuntime = new HookRuntime();
+    hookRuntime.addFunctionHook("UserPromptSubmit", "*", {
+      type: "function",
+      callback: () => true
+    });
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={engine as never}
+        providerFactory={recordingPlanProviderFactory(requests)}
+        settings={{ permissions: { defaultMode: "plan" } }}
+        hookRuntime={hookRuntime}
+        collectDiagnostics={() => ({ mcp: [], skills: [], hooks: hookRuntime.getDiagnostics() })}
+      />
+    );
+
+    await sendTuiLine(output, "Refresh diagnostics after hook.");
+    await waitForRequest(requests, "Refresh diagnostics after hook.");
+    await sendTuiLine(output, "/diagnostics");
+    await waitForFrame(output, /last=success/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /UserPromptSubmit builtin function wired function last=success/);
 
     output.unmount();
     output.cleanup();
@@ -838,13 +994,12 @@ describe("TuiApp global Plan Mode", () => {
       await waitForFrame(output, /Current Plan/);
       const currentPlanFrame = output.lastFrame() ?? "";
       assert.match(currentPlanFrame, /Draft opened from command\./);
-      assert.match(currentPlanFrame, /[.]session[\\/]plans[\\/]plan/);
-      assert.match(currentPlanFrame, /[.]md/);
+      assert.match(currentPlanFrame.replace(/\s+/g, ""), /[.]session[\\/].+[\\/]plans[\\/].+[.]md/);
       await sendTuiLine(output, "/plan open");
       for (let index = 0; index < 20 && editedFiles.length === 0; index += 1) await settleTuiWork();
 
       assert.equal(editedFiles.length, 1);
-      assert.match(editedFiles[0] ?? "", /[.]session[\\/]plans[\\/].+[.]md$/);
+      assert.match(editedFiles[0] ?? "", /[.]session[\\/].+[\\/]plans[\\/].+[.]md$/);
     } finally {
       if (previousEditor === undefined) delete process.env.EDITOR;
       else process.env.EDITOR = previousEditor;
@@ -1237,7 +1392,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
     assert.match(output.lastFrame() ?? "", /Here is Einstein's plan:/);
     assert.match(output.lastFrame() ?? "", /ctrl-g to edit in VS Code/);
-    assert.ok((output.lastFrame() ?? "").includes(relative(cwd, planFilePath)));
+    assertFrameIncludesPath(output.lastFrame() ?? "", relative(cwd, planFilePath));
 
     output.stdin.write("\u0007");
     await waitForFrame(output, /Plan saved!/);
@@ -2708,6 +2863,30 @@ function recordingPlanProviderFactory(requests: ModelRequest[]): () => ModelProv
   return () => planProvider(requests);
 }
 
+function skillPlanProviderFactory(): ModelProvider {
+  return {
+    async generate(request: ModelRequest) {
+      const userText = [...request.messages].reverse().find((message) => message.role === "user" && typeof message.content === "string" && !message.content.includes("ATTACHMENT plan_mode"))?.content;
+      if (typeof userText === "string" && userText.includes("Use reviewer skill")) {
+        if (!request.messages.some((message) => message.role === "assistant" && message.tool_calls?.some((call) => call.name === "UseSkill"))) {
+          return { content: "Activating reviewer.", tool_calls: [{ id: "tool-use-skill", name: "UseSkill", input: { name: "reviewer" } }] };
+        }
+        if (!request.messages.some((message) => message.role === "assistant" && message.tool_calls?.some((call) => call.name === "Write"))) {
+          return {
+            content: "Writing reviewed plan.",
+            tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePathFromRequest(request), content: "Reviewed plan." } }]
+          };
+        }
+        return { content: "Plan draft saved." };
+      }
+      if (typeof userText === "string" && userText.includes("Ready for approval")) {
+        return { content: "Requesting approval.", tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: {} }] };
+      }
+      return { content: "Waiting for plan input." };
+    }
+  };
+}
+
 function hangingPlanProviderFactory(): ModelProvider {
   return {
     async generate() {
@@ -2938,6 +3117,11 @@ async function waitForToolAnswerRequest(requests: ModelRequest[], pattern: RegEx
 
 function requestText(request: ModelRequest): string {
   return request.messages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content)).join("\n");
+}
+
+function assertFrameIncludesPath(frame: string, path: string): void {
+  const normalize = (value: string) => value.replace(/\s+/g, "");
+  assert.ok(normalize(frame).includes(normalize(path)));
 }
 
 function assertApprovedPlanHandoff(actual: unknown, expected: Record<string, unknown>): void {

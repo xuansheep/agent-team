@@ -12,9 +12,11 @@ import {
 
 class FakeJsonRpcTransport implements JsonRpcTransport {
   readonly calls: Array<{ method: string; params?: unknown }> = [];
+  readonly notifications: Array<{ method: string; params?: unknown }> = [];
 
   async request(method: string, params?: unknown): Promise<unknown> {
     this.calls.push({ method, params });
+    if (method === "initialize") return { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake", version: "1.0.0" } };
     if (method === "tools/list") return { tools: [{ name: "search", description: "Search", inputSchema: { type: "object" } }] };
     if (method === "tools/call") return { content: [{ type: "text", text: "ok" }] };
     if (method === "resources/list") return { resources: [{ uri: "file://readme", name: "Readme" }] };
@@ -23,9 +25,25 @@ class FakeJsonRpcTransport implements JsonRpcTransport {
     if (method === "prompts/get") return { name: "explain", messages: [{ role: "user", content: "Explain MCP" }] };
     throw new Error(`Unexpected method ${method}`);
   }
+
+  async notify(method: string, params?: unknown): Promise<void> {
+    this.notifications.push({ method, params });
+  }
 }
 
 describe("JsonRpcMcpClient", () => {
+  it("performs MCP initialize before protocol calls when requested", async () => {
+    const transport = new FakeJsonRpcTransport();
+    const client = new JsonRpcMcpClient(transport);
+
+    await client.initialize();
+    assert.equal((await client.listTools())[0]?.name, "search");
+
+    assert.equal(transport.calls[0]?.method, "initialize");
+    assert.equal(transport.calls[1]?.method, "tools/list");
+    assert.deepEqual(transport.notifications, [{ method: "notifications/initialized", params: undefined }]);
+  });
+
   it("maps MCP client methods to JSON-RPC protocol methods", async () => {
     const transport = new FakeJsonRpcTransport();
     const client = new JsonRpcMcpClient(transport);
@@ -119,6 +137,46 @@ describe("JsonRpcMcpClient", () => {
       await client.close();
     }
   });
+
+  it("initializes a real stdio MCP server before listing and calling tools", { timeout: 3000 }, async (t) => {
+    let transport: StdioJsonRpcTransport;
+    try {
+      transport = new StdioJsonRpcTransport({
+        name: "stdio",
+        source: "project",
+        type: "stdio",
+        command: process.execPath,
+        args: ["-e", initializingStdioServerSource()]
+      });
+    } catch (error) {
+      if (isSpawnBlocked(error)) {
+        t.skip("child_process.spawn is blocked in this sandbox");
+        return;
+      }
+      throw error;
+    }
+    const client = new JsonRpcMcpClient(transport);
+
+    try {
+      await client.initialize();
+      assert.equal((await client.listTools())[0]?.name, "stdio_tool");
+      const result = await client.callTool("stdio_tool", { value: 7 }) as { echo?: unknown; calls?: string[] };
+
+      assert.deepEqual(result.echo, { value: 7 });
+      assert.equal(result.calls?.[0], "initialize");
+      assert.ok(result.calls?.includes("notifications/initialized"));
+      assert.ok((result.calls?.indexOf("tools/list") ?? -1) > (result.calls?.indexOf("initialize") ?? -1));
+      assert.ok((result.calls?.indexOf("tools/call") ?? -1) > (result.calls?.indexOf("tools/list") ?? -1));
+    } catch (error) {
+      if (isSpawnBlocked(error)) {
+        t.skip("child_process.spawn is blocked in this sandbox");
+        return;
+      }
+      throw error;
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {
@@ -170,6 +228,62 @@ function drain() {
 function resultFor(method, params) {
   if (method === "tools/list") return { tools: [{ name: "stdio_tool" }] };
   if (method === "tools/call") return { echo: params.arguments };
+  return {};
+}
+function send(message) {
+  const body = JSON.stringify(message);
+  process.stdout.write("Content-Length: " + Buffer.byteLength(body, "utf8") + "\\r\\n\\r\\n" + body);
+}
+`;
+}
+
+function initializingStdioServerSource(): string {
+  return `
+let buffer = Buffer.alloc(0);
+let initialized = false;
+const calls = [];
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  drain();
+});
+function drain() {
+  while (true) {
+    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+    if (headerEnd < 0) return;
+    const header = buffer.subarray(0, headerEnd).toString("utf8");
+    const match = /Content-Length:\\s*(\\d+)/i.exec(header);
+    if (!match) throw new Error("missing content length");
+    const length = Number(match[1]);
+    const bodyStart = headerEnd + 4;
+    const bodyEnd = bodyStart + length;
+    if (buffer.length < bodyEnd) return;
+    const request = JSON.parse(buffer.subarray(bodyStart, bodyEnd).toString("utf8"));
+    buffer = buffer.subarray(bodyEnd);
+    calls.push(request.method);
+    if (request.method === "notifications/initialized") {
+      initialized = true;
+      continue;
+    }
+    if (request.method === "initialize") {
+      send({ jsonrpc: "2.0", id: request.id, result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {}, resources: {}, prompts: {} },
+        serverInfo: { name: "fake-stdio", version: "1.0.0" }
+      } });
+      continue;
+    }
+    if (!initialized) {
+      send({ jsonrpc: "2.0", id: request.id, error: { code: -32002, message: "not initialized" } });
+      continue;
+    }
+    send({ jsonrpc: "2.0", id: request.id, result: resultFor(request.method, request.params) });
+  }
+}
+function resultFor(method, params) {
+  if (method === "tools/list") return { tools: [{ name: "stdio_tool", inputSchema: { type: "object" } }] };
+  if (method === "resources/list") return { resources: [{ uri: "file://stdio", name: "stdio" }] };
+  if (method === "prompts/list") return { prompts: [{ name: "stdio_prompt", description: "stdio prompt" }] };
+  if (method === "tools/call") return { echo: params.arguments, calls };
   return {};
 }
 function send(message) {

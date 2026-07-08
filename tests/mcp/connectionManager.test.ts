@@ -64,6 +64,27 @@ describe("McpRuntime", () => {
     assert.equal(runtime.getServerStatus("bad")?.state, "failed");
   });
 
+  it("closes a client when initialization fails", async () => {
+    let closed = false;
+    const runtime = new McpRuntime({
+      clientFactory: async () => ({
+        initialize: async () => { throw new Error("init failed"); },
+        listTools: async () => [],
+        callTool: async () => ({}),
+        listResources: async () => [],
+        readResource: async () => ({}),
+        listPrompts: async () => [],
+        getPrompt: async () => ({}),
+        close: async () => { closed = true; }
+      })
+    });
+
+    await runtime.connectAll([{ name: "bad", source: "project", type: "http", url: "https://bad.example.test" }]);
+
+    assert.equal(runtime.getServerStatus("bad")?.state, "failed");
+    assert.equal(closed, true);
+  });
+
   it("creates a client factory for every phase-one transport type", async () => {
     const created: string[] = [];
     const factory = createMcpClientFactory({

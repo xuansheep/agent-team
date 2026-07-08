@@ -10,6 +10,7 @@ import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { executeToolCalls } from "../tools/orchestration.js";
 import { Tool, ToolResult } from "../tools/types.js";
+import { skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import type { HookEvent, HookRunResult } from "../hooks/types.js";
 import { PlanApprovalRequest, PromptInjectionRecord, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
 
@@ -189,10 +190,12 @@ export class RuntimeTurnExecutor {
         if (userInput) {
           await emit(input, { type: "runtime_user_input_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: userInput.toolCallId, questions: userInput.questions });
           return { status: "waiting_user_input", messages, request: userInput };
-        }
-        const tool = input.tools.get(execution.call.name);
-        messages.push(execution.result ? toolMessage(execution.call.id, execution.result, tool) : { role: "tool", tool_call_id: execution.call.id, content: JSON.stringify({ error: execution.error ?? "Tool failed" }) });
-        const planApproval = planApprovalFromToolResult(execution.result);
+          }
+          const tool = input.tools.get(execution.call.name);
+          messages.push(execution.result ? toolMessage(execution.call.id, execution.result, tool) : { role: "tool", tool_call_id: execution.call.id, content: JSON.stringify({ error: execution.error ?? "Tool failed" }) });
+          const skillMessage = skillSystemMessageFromToolResult(execution.result);
+          if (skillMessage) messages.push(skillMessage);
+          const planApproval = planApprovalFromToolResult(execution.result);
         if (planApproval) {
           await emit(input, planApproval.event);
           return { status: "waiting_plan_approval", messages, plan: planApproval.plan, planState: planApproval.state, usage: response.usage };

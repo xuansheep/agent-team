@@ -9,6 +9,8 @@ const planModeVisibleTools = new Set([
   "Grep",
   "WebFetch",
   "WebSearch",
+  "ListSkills",
+  "UseSkill",
   "Write",
   "Edit",
   "MultiEdit",

@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fetch } from "undici";
-import type { ModelMessage, ModelProvider } from "../providers/types.js";
-import type { Tool } from "../tools/types.js";
+import type { ModelMessage, ModelProvider, ModelToolCall } from "../providers/types.js";
+import type { Tool, ToolContext } from "../tools/types.js";
 import type { FunctionHook, HookCommand, HookEvent, HookInput, HookJSONOutput, HookMatcher, HookRunResult, HooksSettings, RuntimeHook } from "./types.js";
 
 const defaultCommandHookTimeoutMs = 10 * 60 * 1000;
 const defaultModelHookTimeoutMs = 30 * 1000;
+const defaultAgentHookTimeoutMs = 60 * 1000;
+const maxAgentHookIterations = 5;
+const wiredHookEvents = new Set<HookEvent>(["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"]);
 
 export type HookRuntimeContext = {
   cwd: string;
@@ -37,6 +40,24 @@ export type HookRuntimeOptions = {
   commandExecutor?: CommandHookExecutor;
 };
 
+export type HookRuntimeDiagnostic = {
+  id: string;
+  event: HookEvent;
+  matcher: string;
+  type: RuntimeHook["type"];
+  source: HookSource;
+  command: string;
+  wired: boolean;
+  skillRoot?: string;
+  once?: boolean;
+  disabled?: boolean;
+  lastExecution?: {
+    outcome: HookExecution["outcome"];
+    command: string;
+    error?: string;
+  };
+};
+
 type HookSource = "settings" | "session" | "skill" | "builtin";
 
 type HookEntry = {
@@ -45,6 +66,8 @@ type HookEntry = {
   matcher: string;
   hook: RuntimeHook;
   source: HookSource;
+  sessionId?: string;
+  skillName?: string;
   skillRoot?: string;
 };
 
@@ -59,15 +82,34 @@ export class HookRuntime {
   private readonly settingsEntries: HookEntry[];
   private readonly sessionEntries = new Map<string, HookEntry>();
   private readonly disabledOnceHooks = new Set<string>();
+  private readonly lastExecutions = new Map<string, HookExecution>();
 
   constructor(hooks?: HooksSettings, private readonly options: HookRuntimeOptions = {}) {
     this.settingsEntries = flattenHooks(hooks, "settings");
   }
 
-  addSessionHooks(hooks: HooksSettings, options: { source?: HookSource; skillRoot?: string } = {}): string[] {
-    const entries = flattenHooks(hooks, options.source ?? "session", options.skillRoot);
+  addSessionHooks(hooks: HooksSettings, options: { source?: HookSource; sessionId?: string; skillName?: string; skillRoot?: string } = {}): string[] {
+    const entries = flattenHooks(hooks, options.source ?? "session", options);
     for (const entry of entries) this.sessionEntries.set(entry.id, entry);
     return entries.map((entry) => entry.id);
+  }
+
+  removeSkillHooks(sessionId: string, skillName: string): void {
+    for (const [id, entry] of this.sessionEntries) {
+      if (entry.source === "skill" && entry.sessionId === sessionId && entry.skillName === skillName) {
+        this.sessionEntries.delete(id);
+      }
+    }
+  }
+
+  clearSessionHooks(sessionId: string): void {
+    for (const [id, entry] of this.sessionEntries) {
+      if (entry.sessionId === sessionId) {
+        this.sessionEntries.delete(id);
+        this.disabledOnceHooks.delete(id);
+        this.lastExecutions.delete(id);
+      }
+    }
   }
 
   addFunctionHook(event: HookEvent, matcher: string, hook: FunctionHook, options: { source?: HookSource } = {}): string {
@@ -100,6 +142,7 @@ export class HookRuntime {
     for (const entry of this.entriesForEvent(event, hookInput)) {
       if (this.disabledOnceHooks.has(entry.id)) continue;
       const execution = await this.executeEntry(entry, hookInput, context);
+      this.lastExecutions.set(entry.id, execution);
       if (execution.outcome === "cancelled") continue;
       result.executed += 1;
       if (execution.outcome === "non_blocking_error") {
@@ -131,14 +174,43 @@ export class HookRuntime {
     if (hook.type === "http") return executeHttpHook(hook, input, context);
     return executeModelHook(hook, input, context);
   }
+
+  getDiagnostics(): HookRuntimeDiagnostic[] {
+    return [...this.settingsEntries, ...this.sessionEntries.values()].map((entry) => {
+      const lastExecution = this.lastExecutions.get(entry.id);
+      return {
+        id: entry.id,
+        event: entry.event,
+        matcher: entry.matcher,
+        type: entry.hook.type,
+        source: entry.source,
+        command: hookCommandLabel(entry.hook),
+        wired: wiredHookEvents.has(entry.event),
+        skillRoot: entry.skillRoot,
+        once: entry.hook.once,
+        disabled: this.disabledOnceHooks.has(entry.id),
+        lastExecution: lastExecution ? {
+          outcome: lastExecution.outcome,
+          command: lastExecution.command,
+          error: lastExecution.error
+        } : undefined
+      };
+    });
+  }
 }
 
-export function registerSkillHooks(runtime: HookRuntime, hooks: HooksSettings | undefined, skillName: string, skillRoot?: string): string[] {
+export function registerSkillHooks(runtime: HookRuntime, hooks: HooksSettings | undefined, skillName: string, skillRoot?: string, sessionId?: string): string[] {
   if (!hooks || Object.keys(hooks).length === 0) return [];
-  return runtime.addSessionHooks(hooks, { source: "skill", skillRoot });
+  const hookSessionId = sessionId ?? "global";
+  runtime.removeSkillHooks(hookSessionId, skillName);
+  return runtime.addSessionHooks(hooks, { source: "skill", sessionId: hookSessionId, skillName, skillRoot });
 }
 
-function flattenHooks(hooks: HooksSettings | undefined, source: HookSource, skillRoot?: string): HookEntry[] {
+function flattenHooks(
+  hooks: HooksSettings | undefined,
+  source: HookSource,
+  options: { sessionId?: string; skillName?: string; skillRoot?: string } = {}
+): HookEntry[] {
   if (!hooks) return [];
   const entries: HookEntry[] = [];
   for (const [event, matchers] of Object.entries(hooks) as Array<[HookEvent, HookMatcher[] | undefined]>) {
@@ -150,12 +222,21 @@ function flattenHooks(hooks: HooksSettings | undefined, source: HookSource, skil
           matcher: matcher.matcher ?? "",
           hook,
           source,
-          skillRoot
+          sessionId: options.sessionId,
+          skillName: options.skillName,
+          skillRoot: options.skillRoot
         });
       }
     }
   }
   return entries;
+}
+
+function hookCommandLabel(hook: RuntimeHook): string {
+  if (hook.type === "function") return "function";
+  if (hook.type === "http") return hook.url;
+  if (hook.type === "command") return hook.command;
+  return hook.prompt;
 }
 
 function normalizeHookInput(event: HookEvent, input: Record<string, unknown>, context: HookRuntimeContext): HookInput {
@@ -381,42 +462,126 @@ async function executeModelHook(
   if (!context.provider || !context.model) {
     return { outcome: "non_blocking_error", command: hook.prompt, error: `${hook.type} hook requires a model provider` };
   }
-  const timeoutMs = secondsToMs(hook.timeout) ?? (hook.type === "agent" ? 60 * 1000 : defaultModelHookTimeoutMs);
+  if (hook.type === "agent") return executeAgentHook(hook, input, context);
+
+  const timeoutMs = secondsToMs(hook.timeout) ?? defaultModelHookTimeoutMs;
   try {
     const response = await runWithTimeout(async (signal) => {
-      const jsonInput = JSON.stringify(input);
-      const prompt = hook.prompt.includes("$ARGUMENTS") ? hook.prompt.replace(/\$ARGUMENTS/g, jsonInput) : `${hook.prompt}\n\n${jsonInput}`;
       const messages: ModelMessage[] = [
         {
           role: "system",
-          content: "You are evaluating an agent-team hook. Return only JSON: {\"ok\":true} or {\"ok\":false,\"reason\":\"...\"}."
+          content: modelHookSystemMessage()
         },
-        { role: "user", content: prompt }
+        { role: "user", content: hookPrompt(hook.prompt, input) }
       ];
       return context.provider!.generate({
         model: hook.model ?? context.model!,
         messages,
-        tools: hook.type === "agent" ? context.tools ?? [] : [],
-        response_schema: {
-          type: "object",
-          properties: { ok: { type: "boolean" }, reason: { type: "string" } },
-          required: ["ok"],
-          additionalProperties: false
-        },
+        tools: [],
+        response_schema: hookResponseSchema(),
         signal
       });
     }, timeoutMs, context.signal);
     const parsed = parseHookOutput(response.content ?? "");
-    if (!parsed) return { outcome: "non_blocking_error", command: hook.prompt, error: "Model hook returned no JSON" };
-    if (typeof (parsed as { ok?: unknown }).ok === "boolean") {
-      const ok = (parsed as { ok: boolean; reason?: string }).ok;
-      return ok ? { outcome: "success", command: hook.prompt } : { outcome: "blocking", command: hook.prompt, error: (parsed as { reason?: string }).reason ?? "Blocked by model hook" };
-    }
-    return hookOutputToExecution(parsed, hook.prompt);
+    return modelHookOutputToExecution(parsed, hook.prompt);
   } catch (error) {
     if (isAbortLikeError(error)) return { outcome: "cancelled", command: hook.prompt };
     return { outcome: "non_blocking_error", command: hook.prompt, error: errorMessage(error) };
   }
+}
+
+async function executeAgentHook(
+  hook: Extract<HookCommand, { type: "agent" }>,
+  input: HookInput,
+  context: HookRuntimeContext
+): Promise<HookExecution> {
+  const timeoutMs = secondsToMs(hook.timeout) ?? defaultAgentHookTimeoutMs;
+  try {
+    return await runWithTimeout(async (signal) => {
+      const messages: ModelMessage[] = [
+        {
+          role: "system",
+          content: `${modelHookSystemMessage()} You may call only the supplied read-only tools. Do not request user interaction.`
+        },
+        { role: "user", content: hookPrompt(hook.prompt, input) }
+      ];
+      for (let iteration = 0; iteration < maxAgentHookIterations; iteration += 1) {
+        const response = await context.provider!.generate({
+          model: hook.model ?? context.model!,
+          messages,
+          tools: context.tools ?? [],
+          response_schema: hookResponseSchema(),
+          signal
+        });
+        if (!response.tool_calls?.length) {
+          return modelHookOutputToExecution(parseHookOutput(response.content ?? ""), hook.prompt);
+        }
+        messages.push({ role: "assistant", content: response.content ?? "", tool_calls: response.tool_calls });
+        for (const call of response.tool_calls) {
+          messages.push(await executeAgentHookToolCall(call, context));
+        }
+      }
+      return { outcome: "non_blocking_error", command: hook.prompt, error: "Agent hook exceeded tool iterations" };
+    }, timeoutMs, context.signal);
+  } catch (error) {
+    if (isAbortLikeError(error)) return { outcome: "cancelled", command: hook.prompt };
+    return { outcome: "non_blocking_error", command: hook.prompt, error: errorMessage(error) };
+  }
+}
+
+async function executeAgentHookToolCall(call: ModelToolCall, context: HookRuntimeContext): Promise<ModelMessage> {
+  const tool = (context.tools ?? []).find((candidate) => candidate.name === call.name);
+  if (!tool) return toolMessage(call.id, { error: `Unknown hook tool ${call.name}` });
+  const toolContext: ToolContext = {
+    cwd: context.cwd,
+    sessionId: context.sessionId,
+    runId: context.runId,
+    abortSignal: context.signal,
+    nodeId: "hook-agent",
+    attempt: 1
+  };
+  if (await tool.requiresUserInteraction?.(call.input)) {
+    return toolMessage(call.id, { error: `Hook tool ${call.name} requires user interaction and was denied` });
+  }
+  if (tool.isReadOnly?.(call.input, toolContext) !== true) {
+    return toolMessage(call.id, { error: `Hook tool ${call.name} is not read-only and was denied` });
+  }
+  try {
+    return toolMessage(call.id, await tool.execute(call.input, toolContext));
+  } catch (error) {
+    return toolMessage(call.id, { error: errorMessage(error) });
+  }
+}
+
+function toolMessage(toolCallId: string, result: unknown): ModelMessage {
+  return { role: "tool", tool_call_id: toolCallId, content: JSON.stringify(result) };
+}
+
+function hookPrompt(prompt: string, input: HookInput): string {
+  const jsonInput = JSON.stringify(input);
+  return prompt.includes("$ARGUMENTS") ? prompt.replace(/\$ARGUMENTS/g, jsonInput) : `${prompt}\n\n${jsonInput}`;
+}
+
+function modelHookSystemMessage(): string {
+  return "You are evaluating an agent-team hook. Return only JSON: {\"ok\":true} or {\"ok\":false,\"reason\":\"...\"}.";
+}
+
+function hookResponseSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: { ok: { type: "boolean" }, reason: { type: "string" } },
+    required: ["ok"],
+    additionalProperties: false
+  };
+}
+
+function modelHookOutputToExecution(output: HookJSONOutput | undefined, command: string): HookExecution {
+  if (!output) return { outcome: "non_blocking_error", command, error: "Model hook returned no JSON" };
+  if (typeof (output as { ok?: unknown }).ok === "boolean") {
+    const ok = (output as { ok: boolean; reason?: string }).ok;
+    return ok ? { outcome: "success", command } : { outcome: "blocking", command, error: (output as { reason?: string }).reason ?? "Blocked by model hook" };
+  }
+  return hookOutputToExecution(output, command);
 }
 
 function parseHookOutput(output: string): HookJSONOutput | undefined {

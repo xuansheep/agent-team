@@ -110,6 +110,24 @@ Review carefully.
     assert.deepEqual(requests[0]?.tools.map((item) => item.name), ["Read"]);
     assert.equal(result.permissionMode, "default");
   });
+
+  it("reports skill diagnostics for later TUI surfaces", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-skill-diagnostics-"));
+    await writeSkill(join(cwd, ".agents", "skills", "planner"), "planner", "Plan.", {
+      mode: "inline",
+      allowedTools: ["Read"]
+    });
+    const runtime = await SkillRuntime.discover({ cwd });
+
+    assert.deepEqual(runtime.getDiagnostics(), [{
+      name: "planner",
+      source: "project",
+      mode: "inline",
+      path: join(cwd, ".agents", "skills", "planner", "SKILL.md"),
+      allowedTools: ["Read"],
+      hasHooks: false
+    }]);
+  });
 });
 
 async function writeSkill(

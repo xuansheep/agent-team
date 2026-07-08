@@ -7,7 +7,8 @@ import { createKernelSession } from "../../src/kernel/session.js";
 import { PlanModeController } from "../../src/kernel/plan/planModeController.js";
 import { QueryEngine } from "../../src/kernel/queryEngine.js";
 import { createKernelToolRegistry } from "../../src/kernel/tools/registry.js";
-import { ToolRegistry } from "../../src/tools/registry.js";
+import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
+import { SkillRuntime } from "../../src/skills/runtime.js";
 import type { ModelProvider } from "../../src/providers/types.js";
 import { readPlan, writePlan } from "../../src/plans/planFiles.js";
 import { writeTool } from "../../src/tools/local/write.js";
@@ -354,6 +355,88 @@ describe("QueryEngine", () => {
     assert.equal(result.session.status, "idle_input");
     assert.equal(calls, 1);
     assert.equal(result.session.messages.filter((message) => String(message.content).includes("Plan Mode is still active")).length, 0);
+  });
+
+  it("injects activated skill context into subsequent Plan Mode requests", async () => {
+    const cwd = await workspace();
+    let calls = 0;
+    let capturedSystem = "";
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return { content: "loading skill", tool_calls: [{ id: "use-planner", name: "UseSkill", input: { name: "planner" } }] };
+        }
+        capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        return { content: "planned" };
+      }
+    };
+    const skillRuntime = new SkillRuntime([{
+      name: "planner",
+      description: "Planning skill",
+      prompt: "Always produce a Plan Mode implementation plan first.",
+      path: "skills/planner/SKILL.md",
+      root: "skills/planner",
+      source: "project",
+      mode: "inline",
+      metadata: {}
+    }]);
+
+    const result = await new QueryEngine().run({
+      session: createKernelSession({
+        id: "s-skill",
+        cwd,
+        permissions: { mode: "plan", allow: ["UseSkill"], ask: [], deny: [] },
+        messages: [{ role: "user", content: "use planner" }]
+      }),
+      provider,
+      model: "test-model",
+      tools: createKernelToolRegistry(createLocalToolRegistry({ skillRuntime }))
+    });
+
+    assert.equal(result.session.status, "idle_input");
+    assert.equal(calls, 2);
+    assert.match(capturedSystem, /SKILL planner/);
+    assert.match(capturedSystem, /Always produce a Plan Mode implementation plan first/);
+  });
+
+  it("injects skill routing guidance into Plan Mode requests before selection", async () => {
+    const cwd = await workspace();
+    let capturedSystem = "";
+    const provider: ModelProvider = {
+      async generate(request) {
+        capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        return { content: "planned" };
+      }
+    };
+    const skillRuntime = new SkillRuntime([{
+      name: "planner",
+      description: "Planning helper",
+      whenToUse: "Use before implementation planning",
+      prompt: "Plan first.",
+      path: "skills/planner/SKILL.md",
+      root: "skills/planner",
+      source: "project",
+      mode: "inline",
+      metadata: {}
+    }]);
+
+    await new QueryEngine().run({
+      session: createKernelSession({
+        id: "s-skill-routing",
+        cwd,
+        permissions: { mode: "plan", allow: [], ask: [], deny: [] },
+        messages: [{ role: "user", content: "plan implementation" }]
+      }),
+      provider,
+      model: "test-model",
+      tools: createKernelToolRegistry(createLocalToolRegistry({ skillRuntime }))
+    });
+
+    assert.match(capturedSystem, /ATTACHMENT tool_prompts/);
+    assert.match(capturedSystem, /Available skills/);
+    assert.match(capturedSystem, /planner/);
+    assert.match(capturedSystem, /Use before implementation planning/);
   });
 
 });

@@ -20,6 +20,9 @@ import type { McpRuntime } from "../mcp/runtime.js";
 import { createDeferredMcpTool, createMcpToolSearchTool } from "../mcp/deferredTools.js";
 import { createListMcpResourcesTool, createReadMcpResourceTool } from "../mcp/resourceTools.js";
 import { createGetMcpPromptTool, createListMcpPromptsTool, createRunMcpPromptTool } from "../mcp/promptTools.js";
+import type { HookRuntime } from "../hooks/runtime.js";
+import type { SkillRuntime } from "../skills/runtime.js";
+import { createListSkillsTool, createUseSkillTool } from "../skills/skillTools.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
@@ -40,7 +43,7 @@ export class ToolRegistry {
   }
 }
 
-export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime } = {}): ToolRegistry {
+export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skillRuntime?: SkillRuntime; hookRuntime?: HookRuntime } = {}): ToolRegistry {
   const registry = new ToolRegistry();
   for (const tool of [
     readTool,
@@ -73,6 +76,10 @@ export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime } = {
     for (const tool of options.mcpRuntime.listTools()) {
       registry.add(createDeferredMcpTool(tool, options.mcpRuntime));
     }
+  }
+  if (options.skillRuntime) {
+    registry.add(createListSkillsTool(options.skillRuntime));
+    registry.add(createUseSkillTool(options.skillRuntime, { hookRuntime: options.hookRuntime }));
   }
   return registry;
 }

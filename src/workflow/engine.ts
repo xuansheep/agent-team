@@ -34,6 +34,7 @@ import { stripInternalPlanModeHandoffMarkers } from "../plans/planSession.js";
 import { NodeResult } from "../team/nodeResult.js";
 
 import type { McpRuntime } from "../mcp/runtime.js";
+import type { HookRuntime } from "../hooks/runtime.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
 
 import { WorkflowState } from "./state.js";
@@ -51,6 +52,8 @@ export type WorkflowEngineOptions = {
     runRoot?: string;
 
     mcpRuntime?: McpRuntime;
+
+    hookRuntime?: HookRuntime;
 
 };
 
@@ -1291,6 +1294,8 @@ export class WorkflowEngine {
                     interaction: options.interaction,
 
                     eventSink: options.eventSink,
+
+                    hookRuntime: this.options.hookRuntime,
 
                     dialogueMessages,
 

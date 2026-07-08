@@ -100,11 +100,16 @@ export const workflowSchema = z.object({
   workflow_permissions: permissionSetSchema.optional()
 });
 
+export const skillsConfigSchema = z.object({
+  paths: z.array(z.string().min(1)).default([])
+}).strict();
+
 export const configSchema = z.object({
   global_prompt_file: z.string().min(1).optional(),
   global_prompt: z.string().optional(),
   providers: z.record(providerSchema),
   mcpServers: mcpServersSchema.optional(),
+  skills: skillsConfigSchema.optional(),
   roles: z.record(roleSchema),
   workflows: z.record(workflowSchema)
 });

@@ -42,6 +42,7 @@ export type McpPromptMessage = {
 };
 
 export type McpClient = {
+  initialize?(): Promise<void>;
   listTools(): Promise<McpTool[]>;
   callTool(name: string, input: unknown): Promise<unknown>;
   listResources(): Promise<McpResource[]>;

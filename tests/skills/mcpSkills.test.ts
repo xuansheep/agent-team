@@ -18,6 +18,8 @@ describe("MCP skill adapter", () => {
     assert.equal(skills[0]?.name, "mcp__docs__explain");
     assert.equal(skills[0]?.source, "mcp");
     assert.equal(skills[0]?.path, "mcp://docs/prompts/explain");
+    assert.equal(skills[0]?.whenToUse, "Explain code");
+    assert.deepEqual(skills[0]?.allowedTools, ["RunMcpPrompt"]);
     assert.match(skills[0]?.prompt ?? "", /RunMcpPrompt/);
   });
 });

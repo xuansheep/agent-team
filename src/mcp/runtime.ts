@@ -55,8 +55,10 @@ export class McpRuntime {
     this.servers.set(config.name, record);
     if (config.disabled) return;
 
+    let client: McpClient | undefined;
     try {
-      const client = await this.options.clientFactory(config);
+      client = await this.options.clientFactory(config);
+      await client.initialize?.();
       record.client = client;
       record.tools = (await client.listTools()).map((tool) => ({
         ...tool,
@@ -68,6 +70,7 @@ export class McpRuntime {
       record.prompts = await client.listPrompts();
       record.status = { name: config.name, state: "connected" };
     } catch (error) {
+      await client?.close?.().catch(() => undefined);
       record.status = { name: config.name, state: "failed", error: error instanceof Error ? error.message : String(error) };
     }
   }

@@ -10,6 +10,9 @@ export async function loadMcpPromptSkills(runtime: McpPromptSkillRuntime): Promi
   return prompts.map((prompt) => ({
     name: mcpSkillName(prompt.server, prompt.name),
     description: prompt.description,
+    whenToUse: prompt.description,
+    allowedTools: ["RunMcpPrompt"],
+    mode: "inline",
     prompt: mcpSkillPrompt(prompt),
     path: `mcp://${prompt.server}/prompts/${prompt.name}`,
     root: `mcp://${prompt.server}/prompts`,

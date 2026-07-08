@@ -8,7 +8,8 @@ import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { ModelProvider } from "../../src/providers/types.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
-import { ToolRegistry } from "../../src/tools/registry.js";
+import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
+import { SkillRuntime } from "../../src/skills/runtime.js";
 import { bashTool } from "../../src/tools/local/bash.js";
 import { askUserQuestionTool } from "../../src/tools/local/askUserQuestion.js";
 import { enterPlanModeTool } from "../../src/tools/local/enterPlanMode.js";
@@ -99,6 +100,82 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(calls, 2);
     assert.deepEqual(result.messages.map((message) => message.role), ["user", "assistant", "tool", "assistant"]);
     assert.equal(result.messages.at(-1)?.content, "done");
+  });
+
+  it("injects activated skill context into the next model request", async () => {
+    let calls = 0;
+    let capturedSystem = "";
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return { content: "loading skill", tool_calls: [{ id: "use-planner", name: "UseSkill", input: { name: "planner" } }] };
+        }
+        capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        return { content: "planned" };
+      }
+    };
+    const skillRuntime = new SkillRuntime([{
+      name: "planner",
+      description: "Planning skill",
+      prompt: "Always produce a concise implementation plan first.",
+      path: "skills/planner/SKILL.md",
+      root: "skills/planner",
+      source: "project",
+      mode: "inline",
+      metadata: {}
+    }]);
+
+    const result = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "use the planner skill" }],
+      model: "test-model",
+      provider,
+      tools: createLocalToolRegistry({ skillRuntime }),
+      permissions: { mode: "default", allow: ["UseSkill"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-skill-tool"
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.match(capturedSystem, /SKILL planner/);
+    assert.match(capturedSystem, /Always produce a concise implementation plan first/);
+  });
+
+  it("injects skill routing guidance before a skill is selected", async () => {
+    let capturedSystem = "";
+    const provider: ModelProvider = {
+      async generate(request) {
+        capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        return { content: "ready" };
+      }
+    };
+    const skillRuntime = new SkillRuntime([{
+      name: "planner",
+      description: "Planning helper",
+      whenToUse: "Use before implementation",
+      prompt: "Plan first.",
+      path: "skills/planner/SKILL.md",
+      root: "skills/planner",
+      source: "project",
+      mode: "inline",
+      metadata: {}
+    }]);
+
+    await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "implement carefully" }],
+      model: "test-model",
+      provider,
+      tools: createLocalToolRegistry({ skillRuntime }),
+      permissions: { mode: "default", allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-skill-routing"
+    });
+
+    assert.match(capturedSystem, /ATTACHMENT tool_prompts/);
+    assert.match(capturedSystem, /Available skills/);
+    assert.match(capturedSystem, /planner/);
+    assert.match(capturedSystem, /Use before implementation/);
   });
 
   it("injects long tool prompts into system messages while keeping provider tool descriptions short", async () => {

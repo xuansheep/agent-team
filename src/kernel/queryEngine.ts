@@ -10,6 +10,7 @@ import type { HookEvent, HookRunResult } from "../hooks/types.js";
 import type { GlobalPromptMetadata } from "../config/schema.js";
 import type { AuditSink } from "../audit/auditEvent.js";
 import type { PromptInjectionRecord, RuntimeEvent } from "../runtime/types.js";
+import { skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { PermissionKernel } from "./permissions/permissionKernel.js";
 import { PlanModeController } from "./plan/planModeController.js";
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "./plan/planToolCallMessages.js";
@@ -151,7 +152,7 @@ export class QueryEngine {
         : calls;
       for (const call of executableCalls) {
         const tool = input.tools.get(call.name);
-        const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, auditSink: input.auditSink };
+          const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, auditSink: input.auditSink };
         const interaction = await tool.requiresUserInteraction(call.input, context);
         if (interaction?.type === "ask_user_question") {
           const result = await tool.execute(call.input, context);
@@ -178,12 +179,14 @@ export class QueryEngine {
           }
         }
         await emit(input, { type: "runtime_tool_invoked", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, input: call.input });
-        try {
-          const result = await tool.execute(call.input, context);
-          await emit(input, { type: "runtime_tool_completed", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, result });
-          await runToolHook("PostToolUse", input, session, call, result);
-          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(tool.mapToolResultToModelResult(result, context)) });
-        } catch (error) {
+          try {
+            const result = await tool.execute(call.input, context);
+            await emit(input, { type: "runtime_tool_completed", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, result });
+            await runToolHook("PostToolUse", input, session, call, result);
+            messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(tool.mapToolResultToModelResult(result, context)) });
+            const skillMessage = skillSystemMessageFromToolResult(result);
+            if (skillMessage) messages.push(skillMessage);
+          } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await emit(input, { type: "runtime_tool_failed", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, error: message });
           await runToolHook("PostToolUseFailure", input, session, call, undefined, message);

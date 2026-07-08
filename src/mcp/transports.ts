@@ -11,6 +11,7 @@ export type McpTransportFactoryOptions = {
 
 export type JsonRpcTransport = {
   request(method: string, params?: unknown): Promise<unknown>;
+  notify?(method: string, params?: unknown): Promise<void>;
   close?(): Promise<void>;
 };
 
@@ -33,7 +34,20 @@ type PendingRequest = {
 const DEFAULT_MCP_TIMEOUT_MS = 30_000;
 
 export class JsonRpcMcpClient implements McpClient {
+  private initialized = false;
+
   constructor(private readonly transport: JsonRpcTransport) {}
+
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+    await this.transport.request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "agent-team", version: "0.1.0" }
+    });
+    await this.transport.notify?.("notifications/initialized");
+    this.initialized = true;
+  }
 
   async listTools(): Promise<McpTool[]> {
     const result = await this.transport.request("tools/list") as { tools?: McpTool[] };
@@ -111,6 +125,31 @@ export class HttpJsonRpcTransport implements JsonRpcTransport {
       clearTimeout(timer);
     }
   }
+
+  async notify(method: string, params?: unknown): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs(this.server));
+    try {
+      const response = await fetch(this.server.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          ...(this.server.headers ?? {})
+        },
+        body: JSON.stringify(jsonRpcNotification(method, params)),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`MCP ${this.server.name} notification failed ${response.status}: ${text}`);
+      }
+    } catch (error) {
+      throw normalizedTimeoutError(error, this.server);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 export class SseJsonRpcTransport extends HttpJsonRpcTransport {
@@ -175,8 +214,17 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
     });
   }
 
+  async notify(method: string, params?: unknown): Promise<void> {
+    this.writeMessage(jsonRpcNotification(method, params));
+  }
+
   async close(): Promise<void> {
     this.child.kill();
+  }
+
+  private writeMessage(message: Record<string, unknown>): void {
+    const body = JSON.stringify(message);
+    this.child.stdin.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
   }
 
   private readStdout(chunk: Buffer): void {
@@ -263,6 +311,10 @@ export class WebSocketJsonRpcTransport implements JsonRpcTransport {
     });
   }
 
+  async notify(method: string, params?: unknown): Promise<void> {
+    this.socket.send(JSON.stringify(jsonRpcNotification(method, params)));
+  }
+
   async close(): Promise<void> {
     this.socket.close();
   }
@@ -295,6 +347,14 @@ function jsonRpcRequest(id: number, method: string, params?: unknown): Record<st
   return {
     jsonrpc: "2.0",
     id,
+    method,
+    ...(params !== undefined ? { params } : {})
+  };
+}
+
+function jsonRpcNotification(method: string, params?: unknown): Record<string, unknown> {
+  return {
+    jsonrpc: "2.0",
     method,
     ...(params !== undefined ? { params } : {})
   };

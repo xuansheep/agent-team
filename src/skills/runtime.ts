@@ -24,6 +24,7 @@ export type SkillActivationOptions = {
   model?: string;
   tools?: ToolRegistry;
   hookRuntime?: HookRuntime;
+  sessionId?: string;
   parentPermissionMode?: "default" | "fullAccess" | "plan";
   signal?: AbortSignal;
 };
@@ -42,6 +43,15 @@ export type SkillActivationResult =
       hookIds: string[];
       permissionMode?: SkillActivationOptions["parentPermissionMode"];
     };
+
+export type SkillRuntimeDiagnostic = {
+  name: string;
+  source: LoadedSkill["source"];
+  mode: SkillMode;
+  path: string;
+  allowedTools?: string[];
+  hasHooks: boolean;
+};
 
 type SkillSourceRoot = {
   root: string;
@@ -89,10 +99,21 @@ export class SkillRuntime {
     return this.skillByName.get(name);
   }
 
+  getDiagnostics(): SkillRuntimeDiagnostic[] {
+    return this.skills.map((skill) => ({
+      name: skill.name,
+      source: skill.source,
+      mode: skill.mode ?? "inline",
+      path: skill.path,
+      allowedTools: skill.allowedTools,
+      hasHooks: Boolean(skill.hooks && Object.keys(skill.hooks).length > 0)
+    }));
+  }
+
   async activateSkill(name: string, options: SkillActivationOptions = {}): Promise<SkillActivationResult> {
     const skill = this.requireSkill(name);
     const mode = resolveMode(skill, options.mode);
-    const hookIds = registerSkillHooks(options.hookRuntime, skill);
+    const hookIds = registerSkillHooks(options.hookRuntime, skill, options.sessionId);
     if (mode === "inline") {
       return {
         mode,
@@ -180,11 +201,11 @@ function narrowedTools(registry: ToolRegistry | undefined, allowedTools: string[
   return tools.filter((tool) => allowed.has(tool.name));
 }
 
-function registerSkillHooks(runtime: HookRuntime | undefined, skill: LoadedSkill): string[] {
+function registerSkillHooks(runtime: HookRuntime | undefined, skill: LoadedSkill, sessionId?: string): string[] {
   if (!runtime) return [];
-  return registerSkillHooksFromRuntime(runtime, skill.hooks, skill.name, skill.root);
+  return registerSkillHooksFromRuntime(runtime, skill.hooks, skill.name, skill.root, sessionId);
 }
 
-function registerSkillHooksFromRuntime(runtime: HookRuntime, hooks: LoadedSkill["hooks"], skillName: string, skillRoot: string): string[] {
-  return registerHooksFromSkill(runtime, hooks, skillName, skillRoot);
+function registerSkillHooksFromRuntime(runtime: HookRuntime, hooks: LoadedSkill["hooks"], skillName: string, skillRoot: string, sessionId?: string): string[] {
+  return registerHooksFromSkill(runtime, hooks, skillName, skillRoot, sessionId);
 }
