@@ -19,6 +19,8 @@ import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RuntimeEvent } from "../runtime/types.js";
+import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
+import { setMcpServerDisabledState } from "../mcp/configMutations.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 import type { HookRuntime } from "../hooks/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
@@ -36,6 +38,7 @@ import { TuiDefaultExecutionMode, TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
+import { buildHooksEventChoice, buildHooksHookChoice, buildHooksHookDetailChoice, buildHooksMatcherChoice, buildMcpListChoice, buildMcpServerChoice, buildMcpToolDetailChoice, buildMcpToolsChoice, buildSkillsDetailChoice, buildSkillsListChoice, type McpMenuAction } from "./commandMenus/index.js";
 import type { SelectImageAttachment } from "./components/CustomSelect/index.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./components/PromptInput/types.js";
 import { ResultPanel } from "./components/ResultPanel.js";
@@ -46,6 +49,20 @@ import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
 import { editFileInExternalEditor, editTextInExternalEditor, externalEditorDisplayName, ExternalEditor, ExternalTextEditor } from "./externalEditor.js";
 import { resolveImagePaste } from "./imagePaste.js";
 import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail } from "./toolDisplay.js";
+
+export type CommandMenuState =
+  | { kind: "skills:list" }
+  | { kind: "skills:detail"; skillName: string }
+  | { kind: "hooks:events" }
+  | { kind: "hooks:matchers"; event: string }
+  | { kind: "hooks:hooks"; event: string; matcher: string }
+  | { kind: "hooks:detail"; id: string }
+  | { kind: "mcp:list" }
+  | { kind: "mcp:server"; serverName: string }
+  | { kind: "mcp:tools"; serverName: string }
+  | { kind: "mcp:toolDetail"; serverName: string; toolName: string };
+
+type McpActionResult = { title: string; detail: string };
 export function TuiApp({
   cwd,
   initialError,
@@ -63,6 +80,8 @@ export function TuiApp({
   hookRuntime,
   diagnostics,
   collectDiagnostics,
+  mcpConfigOptions,
+  executeMcpActionForTest,
   onExit
 }: {
   cwd: string;
@@ -81,6 +100,8 @@ export function TuiApp({
   hookRuntime?: HookRuntime;
   diagnostics?: RuntimeDiagnostics;
   collectDiagnostics?: () => RuntimeDiagnostics;
+  mcpConfigOptions?: McpConfigSourceOptions;
+  executeMcpActionForTest?: (action: McpMenuAction, serverName?: string) => Promise<McpActionResult>;
   onExit?: () => void;
 }) {
   const { exit } = useApp();
@@ -111,6 +132,7 @@ export function TuiApp({
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [transcriptMode, setTranscriptMode] = useState(false);
   const [choiceKey, setChoiceKey] = useState("");
+  const [commandMenu, setCommandMenu] = useState<CommandMenuState | undefined>();
   const mainScrollRef = useRef<ScrollBoxHandle>(null);
   const sessionRef = useRef<WorkflowSession>();
   const planSessionRef = useRef<PlanSessionState>();
@@ -697,6 +719,63 @@ export function TuiApp({
       logMessages: [...current.logMessages, { ...statusLog("Runtime diagnostics", diagnosticsDetailText(currentDiagnostics)), detailVisible: true }]
     }));
     requestMainScrollToBottom();
+  };
+  const closeCommandMenu = (message: string) => {
+    setCommandMenu(undefined);
+    setState((current) => ({
+      ...current,
+      error: undefined,
+      logMessages: [...current.logMessages, statusLog(message)]
+    }));
+    requestMainScrollToBottom();
+  };
+  const runMcpAction = async (action: McpMenuAction, serverName?: string) => {
+    try {
+      const result = executeMcpActionForTest
+        ? await executeMcpActionForTest(action, serverName)
+        : await executeMcpRuntimeAction(action, serverName);
+      setState((current) => ({
+        ...current,
+        error: undefined,
+        logMessages: [...current.logMessages, { ...statusLog(result.title, result.detail), detailVisible: true }]
+      }));
+      requestMainScrollToBottom();
+    } catch (error) {
+      setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error) }));
+    }
+  };
+  const executeMcpRuntimeAction = async (action: McpMenuAction, serverName?: string): Promise<McpActionResult> => {
+    if (!mcpRuntime) throw new Error("MCP runtime is not available");
+    if (action === "reconnect" && !serverName) throw new Error("Usage: /mcp reconnect <server-name>");
+    const targets = serverName ? [serverName] : (collectDiagnostics?.() ?? diagnostics)?.mcp.map((server) => server.name) ?? [];
+    if (!targets.length) throw new Error("No MCP servers available");
+    const succeeded: string[] = [];
+    const failed: string[] = [];
+    for (const target of targets) {
+      try {
+        if (action === "disable") await setMcpServerDisabledState(requiredMcpConfigOptions(), target, true);
+        if (action === "enable") await setMcpServerDisabledState(requiredMcpConfigOptions(), target, false);
+        const latest = (await loadMergedMcpServersWithSourceDetails(requiredMcpConfigOptions())).find((server) => server.name === target);
+        if (!latest) throw new Error(`Unknown MCP server ${target}`);
+        if (action === "disable") await mcpRuntime.disconnect(target, "disabled");
+        if (action === "enable") await mcpRuntime.reconnect(latest);
+        if (action === "reconnect") {
+          if (latest.disabled) throw new Error(`MCP server ${target} is disabled; enable it first`);
+          await mcpRuntime.reconnect(latest);
+        }
+        succeeded.push(target);
+      } catch (error) {
+        failed.push(`${target}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const title = action === "enable" ? "MCP server enabled" : action === "disable" ? "MCP server disabled" : "MCP server reconnected";
+    const detail = [`Succeeded: ${succeeded.join(", ") || "none"}`, failed.length ? `Failed:\n${failed.join("\n")}` : undefined].filter(Boolean).join("\n");
+    if (!succeeded.length && failed.length) throw new Error(detail);
+    return { title, detail };
+  };
+  const requiredMcpConfigOptions = (): McpConfigSourceOptions => {
+    if (!mcpConfigOptions) throw new Error("MCP config options are not available");
+    return mcpConfigOptions;
   };
   const enqueuePlanTurn = (text: string, images: ModelContentPart[] = [], options: { logUser?: boolean; ensureUserLog?: boolean } = {}) => {
     const turn = preparePlanTurn(text, images, options);
@@ -1331,7 +1410,16 @@ ${message.detailText}` : ""}` }
   const logMessages = state.logMessages;
   const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: workStatusDetail });
   const activityStatus = hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus;
-  const activeChoice = buildActiveChoice({
+  const currentDiagnosticsForMenu = collectDiagnostics?.() ?? diagnostics ?? { mcp: [], skills: [], hooks: [] };
+  const commandMenuChoice = commandMenu ? buildCommandMenuChoice({
+    state: commandMenu,
+    diagnostics: currentDiagnosticsForMenu,
+    mcpRuntime,
+    setCommandMenu,
+    closeCommandMenu,
+    runMcpAction
+  }) : undefined;
+  const activeChoice = commandMenuChoice ?? buildActiveChoice({
     mode: interactionMode,
     workflows,
     permission: state.permissionRequests[0],
@@ -2492,6 +2580,50 @@ function buildActiveChoice(input: {
   return undefined;
 }
 
+
+export function buildCommandMenuChoice(input: {
+  state: CommandMenuState;
+  diagnostics: RuntimeDiagnostics;
+  mcpRuntime?: McpRuntime;
+  setCommandMenu: (state: CommandMenuState | undefined) => void;
+  closeCommandMenu: (message: string) => void;
+  runMcpAction: (action: McpMenuAction, serverName?: string) => Promise<void>;
+}): InteractionChoice | undefined {
+  const state = input.state;
+  if (state.kind === "skills:list") {
+    return buildSkillsListChoice({ skills: input.diagnostics.skills, onSelect: (skillName) => input.setCommandMenu({ kind: "skills:detail", skillName }), onCancel: () => input.closeCommandMenu("Skills dialog dismissed") });
+  }
+  if (state.kind === "skills:detail") {
+    const skill = input.diagnostics.skills.find((candidate) => candidate.name === state.skillName);
+    return skill ? buildSkillsDetailChoice({ skill, onBack: () => input.setCommandMenu({ kind: "skills:list" }), onCancel: () => input.closeCommandMenu("Skills dialog dismissed") }) : undefined;
+  }
+  if (state.kind === "hooks:events") {
+    return buildHooksEventChoice({ hooks: input.diagnostics.hooks, onSelect: (event) => input.setCommandMenu({ kind: "hooks:matchers", event }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") });
+  }
+  if (state.kind === "hooks:matchers") {
+    return buildHooksMatcherChoice({ event: state.event, hooks: input.diagnostics.hooks, onSelect: (matcher) => input.setCommandMenu({ kind: "hooks:hooks", event: state.event, matcher }), onBack: () => input.setCommandMenu({ kind: "hooks:events" }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") });
+  }
+  if (state.kind === "hooks:hooks") {
+    return buildHooksHookChoice({ event: state.event, matcher: state.matcher, hooks: input.diagnostics.hooks, onSelect: (id) => input.setCommandMenu({ kind: "hooks:detail", id }), onBack: () => input.setCommandMenu({ kind: "hooks:matchers", event: state.event }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") });
+  }
+  if (state.kind === "hooks:detail") {
+    const hook = input.diagnostics.hooks.find((candidate) => candidate.id === state.id);
+    return hook ? buildHooksHookDetailChoice({ hook, onBack: () => input.setCommandMenu({ kind: "hooks:events" }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") }) : undefined;
+  }
+  if (state.kind === "mcp:list") {
+    return buildMcpListChoice({ servers: input.diagnostics.mcp, onSelect: (serverName) => input.setCommandMenu({ kind: "mcp:server", serverName }), onAction: (action, serverName) => { void input.runMcpAction(action, serverName); }, onCancel: () => input.closeCommandMenu("MCP dialog dismissed") });
+  }
+  if (state.kind === "mcp:server") {
+    const server = input.diagnostics.mcp.find((candidate) => candidate.name === state.serverName);
+    return server ? buildMcpServerChoice({ server, tools: input.mcpRuntime?.listToolDiagnostics(state.serverName) ?? [], onSelectTools: () => input.setCommandMenu({ kind: "mcp:tools", serverName: state.serverName }), onAction: (action, serverName) => { void input.runMcpAction(action, serverName); }, onBack: () => input.setCommandMenu({ kind: "mcp:list" }), onCancel: () => input.closeCommandMenu("MCP dialog dismissed") }) : undefined;
+  }
+  if (state.kind === "mcp:tools") {
+    return buildMcpToolsChoice({ server: state.serverName, tools: input.mcpRuntime?.listToolDiagnostics(state.serverName) ?? [], onSelect: (toolName) => input.setCommandMenu({ kind: "mcp:toolDetail", serverName: state.serverName, toolName }), onBack: () => input.setCommandMenu({ kind: "mcp:server", serverName: state.serverName }), onCancel: () => input.closeCommandMenu("MCP dialog dismissed") });
+  }
+  const tool = input.mcpRuntime?.listToolDiagnostics(state.serverName).find((candidate) => candidate.name === state.toolName);
+  return tool ? buildMcpToolDetailChoice({ tool, onBack: () => input.setCommandMenu({ kind: "mcp:tools", serverName: state.serverName }), onCancel: () => input.closeCommandMenu("MCP dialog dismissed") }) : undefined;
+}
+
 function helpDetailText(): string {
   return [
     "Keyboard shortcuts:",
@@ -2504,6 +2636,11 @@ function helpDetailText(): string {
     "  /help show this help",
     "  /plan [open|text] Plan Mode, show/open plan, or send plan text",
     "  /diagnostics show MCP, skill, and hook runtime diagnostics",
+    "  /skills list available skills",
+    "  /hooks view hook configurations",
+    "  /mcp manage MCP servers",
+    "  /mcp enable|disable [server-name] toggle MCP servers",
+    "  /mcp reconnect <server-name> reconnect an MCP server",
     "  /statusline [elements|default] customize the bottom statusline",
     "  /clear clear visible context · /resume [session] resume",
     "  /new new session · /model <model> switch · /permissions permissions"

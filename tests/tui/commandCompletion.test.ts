@@ -19,6 +19,15 @@ describe("slash command completion", () => {
     assert.deepEqual(slashCommandSuggestions("/pl", context).map((item) => item.value), ["/plan"]);
   });
 
+  it("suggests skills, hooks, mcp, and mcp subcommands", () => {
+    assert.deepEqual(slashCommandSuggestions("/sk", context).map((item) => item.value), ["/skills"]);
+    assert.deepEqual(slashCommandSuggestions("/ho", context).map((item) => item.value), ["/hooks"]);
+    assert.deepEqual(slashCommandSuggestions("/mc", context).map((item) => item.value), ["/mcp"]);
+    assert.deepEqual(slashCommandSuggestions("/mcp e", context).map((item) => item.value), ["/mcp enable"]);
+    assert.deepEqual(slashCommandSuggestions("/mcp d", context).map((item) => item.value), ["/mcp disable"]);
+    assert.deepEqual(slashCommandSuggestions("/mcp r", context).map((item) => item.value), ["/mcp reconnect"]);
+  });
+
   it("does not suggest removed /run arguments", () => {
     assert.deepEqual(slashCommandSuggestions("/run d", context), []);
     assert.deepEqual(slashCommandSuggestions("/session", context), []);

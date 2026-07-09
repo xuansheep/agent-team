@@ -36,4 +36,6 @@ export type McpServersConfig = z.infer<typeof mcpServersSchema>;
 export type ResolvedMcpServerConfig = McpServerConfig & {
   name: string;
   source: "user" | "project" | "agent-team";
+  sourcePath?: string;
+  sourceFormat?: "json" | "yaml";
 };

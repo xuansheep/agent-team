@@ -49,6 +49,8 @@ export type SkillRuntimeDiagnostic = {
   source: LoadedSkill["source"];
   mode: SkillMode;
   path: string;
+  description?: string;
+  whenToUse?: string;
   allowedTools?: string[];
   hasHooks: boolean;
 };
@@ -105,6 +107,8 @@ export class SkillRuntime {
       source: skill.source,
       mode: skill.mode ?? "inline",
       path: skill.path,
+      description: skill.description,
+      whenToUse: skill.whenToUse,
       allowedTools: skill.allowedTools,
       hasHooks: Boolean(skill.hooks && Object.keys(skill.hooks).length > 0)
     }));

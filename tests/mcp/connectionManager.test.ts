@@ -139,4 +139,61 @@ describe("McpRuntime", () => {
     assert.equal(diagnostics.find((item) => item.name === "ok")?.toolCount, 1);
     assert.equal(diagnostics.find((item) => item.name === "bad")?.error, "boom");
   });
+
+  it("disconnects a server, closes the client, and clears exposed capabilities", async () => {
+    let closed = false;
+    const runtime = new McpRuntime({
+      clientFactory: async () => ({
+        listTools: async () => [{ name: "search" }],
+        callTool: async () => ({}),
+        listResources: async () => [{ uri: "file://readme" }],
+        readResource: async () => ({}),
+        listPrompts: async () => [{ name: "explain" }],
+        getPrompt: async () => ({}),
+        close: async () => { closed = true; }
+      })
+    });
+    await runtime.connectAll([{ name: "docs", source: "project", type: "http", url: "https://mcp.example.test" }]);
+
+    await runtime.disconnect("docs", "disabled");
+
+    assert.equal(closed, true);
+    assert.equal(runtime.getServerStatus("docs")?.state, "disabled");
+    assert.deepEqual(runtime.listTools(), []);
+    await assert.rejects(runtime.callTool("docs", "search", {}), /not connected/);
+  });
+
+  it("reconnects using the supplied latest config", async () => {
+    const created: string[] = [];
+    const runtime = new McpRuntime({
+      clientFactory: async (server) => {
+        created.push(`${server.name}:${server.type}`);
+        return new FakeMcpClient([{ name: "search" }]);
+      }
+    });
+    await runtime.connectAll([{ name: "docs", source: "project", type: "http", url: "https://old.example.test" }]);
+
+    await runtime.reconnect({ name: "docs", source: "project", type: "sse", url: "https://new.example.test/sse" });
+
+    assert.deepEqual(created, ["docs:http", "docs:sse"]);
+    assert.equal(runtime.getServerStatus("docs")?.state, "connected");
+    assert.equal(runtime.getDiagnostics().find((item) => item.name === "docs")?.transport, "sse");
+  });
+
+  it("returns MCP tool diagnostics with original schemas", async () => {
+    const runtime = new McpRuntime({
+      clientFactory: async () => new FakeMcpClient([{ name: "search", description: "Search docs", inputSchema: { type: "object" } }])
+    });
+    await runtime.connectAll([{ name: "docs", source: "project", sourcePath: "D:/repo/.mcp.json", sourceFormat: "json", type: "http", url: "https://mcp.example.test" }]);
+
+    const diagnostic = runtime.getDiagnostics()[0];
+    const tool = runtime.listToolDiagnostics("docs")[0];
+
+    assert.equal(diagnostic?.transport, "http");
+    assert.equal(diagnostic?.sourcePath, "D:/repo/.mcp.json");
+    assert.equal(tool?.name, "mcp__docs__search");
+    assert.equal(tool?.originalName, "search");
+    assert.deepEqual(tool?.inputSchema, { type: "object" });
+  });
+
 });

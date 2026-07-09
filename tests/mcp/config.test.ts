@@ -1,9 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { loadMcpConfigSources, mergeMcpServers } from "../../src/mcp/config.js";
+import { loadMcpConfigSources, loadMergedMcpServersWithSourceDetails, mergeMcpServers } from "../../src/mcp/config.js";
+import { setMcpServerDisabledState } from "../../src/mcp/configMutations.js";
 import { mcpServersSchema } from "../../src/mcp/schema.js";
 
 async function tempWorkspace(): Promise<string> {
@@ -83,4 +84,54 @@ describe("MCP config schema", () => {
     assert.equal(sources.user?.userServer?.type, "stdio");
     assert.equal(sources.project?.projectServer?.type, "http");
   });
+
+  it("returns source paths for merged MCP servers", async () => {
+    const cwd = await tempWorkspace();
+    const userPath = join(cwd, "user-mcp.json");
+    const projectPath = join(cwd, ".mcp.json");
+    await writeJson(userPath, { mcpServers: { shared: { type: "stdio", command: "user" } } });
+    await writeJson(projectPath, { mcpServers: { shared: { type: "stdio", command: "project" } } });
+
+    const merged = await loadMergedMcpServersWithSourceDetails({ cwd, userMcpPath: userPath, projectMcpPath: projectPath });
+
+    assert.equal(merged[0]?.name, "shared");
+    assert.equal(merged[0]?.source, "project");
+    assert.equal(merged[0]?.sourcePath, projectPath);
+    assert.equal(merged[0]?.sourceFormat, "json");
+  });
+
+  it("writes disabled state to the effective JSON source only", async () => {
+    const cwd = await tempWorkspace();
+    const userPath = join(cwd, "user-mcp.json");
+    const projectPath = join(cwd, ".mcp.json");
+    await writeJson(userPath, { mcpServers: { shared: { type: "stdio", command: "user" } } });
+    await writeJson(projectPath, { mcpServers: { shared: { type: "stdio", command: "project" } } });
+
+    await setMcpServerDisabledState({ cwd, userMcpPath: userPath, projectMcpPath: projectPath }, "shared", true);
+
+    assert.equal(JSON.parse(await readFile(projectPath, "utf8")).mcpServers.shared.disabled, true);
+    assert.equal(JSON.parse(await readFile(userPath, "utf8")).mcpServers.shared.disabled, undefined);
+  });
+
+  it("enables JSON servers by removing disabled", async () => {
+    const cwd = await tempWorkspace();
+    const projectPath = join(cwd, ".mcp.json");
+    await writeJson(projectPath, { mcpServers: { docs: { type: "http", url: "https://project.example.test", disabled: true } } });
+
+    await setMcpServerDisabledState({ cwd, projectMcpPath: projectPath }, "docs", false);
+
+    const parsed = JSON.parse(await readFile(projectPath, "utf8"));
+    assert.equal(Object.prototype.hasOwnProperty.call(parsed.mcpServers.docs, "disabled"), false);
+  });
+
+  it("throws without creating a missing MCP server", async () => {
+    const cwd = await tempWorkspace();
+    const projectPath = join(cwd, ".mcp.json");
+    await writeJson(projectPath, { mcpServers: { docs: { type: "http", url: "https://project.example.test" } } });
+
+    await assert.rejects(setMcpServerDisabledState({ cwd, projectMcpPath: projectPath }, "missing", true), /Unknown MCP server missing/);
+
+    assert.equal(JSON.parse(await readFile(projectPath, "utf8")).mcpServers.missing, undefined);
+  });
+
 });

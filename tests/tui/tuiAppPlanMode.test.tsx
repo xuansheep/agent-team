@@ -197,8 +197,8 @@ describe("TuiApp global Plan Mode", () => {
       providerFactory={planProviderFactory}
       diagnostics={{
         mcp: [
-          { name: "docs", source: "project", state: "connected", toolCount: 1, resourceCount: 2, promptCount: 3 },
-          { name: "broken", source: "user", state: "failed", error: "boom", toolCount: 0, resourceCount: 0, promptCount: 0 }
+          { name: "docs", source: "project", state: "connected", transport: "http", toolCount: 1, resourceCount: 2, promptCount: 3 },
+          { name: "broken", source: "user", state: "failed", error: "boom", transport: "stdio", toolCount: 0, resourceCount: 0, promptCount: 0 }
         ],
         skills: [
           { name: "reviewer", source: "project", mode: "inline", path: "skills/reviewer/SKILL.md", hasHooks: true }
