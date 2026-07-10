@@ -68,7 +68,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     const endpoint = this.endpoint();
     const response = await fetchProvider(endpoint, {
       method: "POST",
-      headers: this.headers(),
+      headers: this.headers(request),
       signal: request.signal,
       body: JSON.stringify(toAnthropicRequestBody(request, this.options))
     });
@@ -84,7 +84,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     const endpoint = this.endpoint();
     const response = await fetchProvider(endpoint, {
       method: "POST",
-      headers: this.headers({ accept: "text/event-stream" }),
+      headers: this.headers(request, { accept: "text/event-stream" }),
       signal: request.signal,
       body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options), stream: true })
     });
@@ -165,8 +165,11 @@ export class AnthropicMessagesProvider implements ModelProvider {
     return `${this.options.baseUrl.replace(/\/$/, "")}/v1/messages`;
   }
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    const betaHeaders = this.options.betaHeaders?.filter(Boolean).join(",");
+  private headers(request: ModelRequest, extra: Record<string, string> = {}): Record<string, string> {
+    const betaHeaders = [...new Set([
+      ...(this.options.betaHeaders ?? []),
+      ...(typeof request.effort === "string" ? ["effort-2025-11-24"] : [])
+    ].filter(Boolean))].join(",");
     return {
       ...buildApiKeyHeaders(this.options.apiKey, this.options.apiKeyMode ?? "x-api-key"),
       ...extra,
@@ -209,8 +212,10 @@ function toAnthropicRequestBody(request: ModelRequest, options: AnthropicMessage
       ...(options.thinking.budget_tokens ? { budget_tokens: options.thinking.budget_tokens } : {})
     };
   }
+  if (typeof request.effort === "string") body.output_config = { effort: request.effort };
   if (options.jsonSchemaOutput && request.response_schema) {
     body.output_config = {
+      ...((body.output_config as Record<string, unknown> | undefined) ?? {}),
       format: {
         type: "json_schema",
         schema: request.response_schema
@@ -218,6 +223,9 @@ function toAnthropicRequestBody(request: ModelRequest, options: AnthropicMessage
     };
   }
 
+  if (typeof request.effort === "number" && process.env.USER_TYPE === "ant") {
+    body.anthropic_internal = { effort_override: request.effort };
+  }
   return Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined));
 }
 

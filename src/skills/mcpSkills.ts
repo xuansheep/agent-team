@@ -1,46 +1,50 @@
-import type { McpPrompt } from "../mcp/types.js";
-import type { LoadedSkill } from "./skillLoader.js";
+import type { McpResource } from "../mcp/types.js";
+import { parseSkillMarkdown, type LoadedSkill } from "./skillLoader.js";
 
-type McpPromptSkillRuntime = {
-  listPrompts(input?: { server?: string }): Promise<Array<McpPrompt & { server: string }>>;
+type McpSkillRuntime = {
+  listResources(input?: { server?: string }): Promise<Array<McpResource & { server: string }>>;
+  readResource(server: string, uri: string): Promise<unknown>;
 };
 
-export async function loadMcpPromptSkills(runtime: McpPromptSkillRuntime): Promise<LoadedSkill[]> {
-  const prompts = await runtime.listPrompts();
-  return prompts.map((prompt) => ({
-    name: mcpSkillName(prompt.server, prompt.name),
-    description: prompt.description,
-    whenToUse: prompt.description,
-    allowedTools: ["RunMcpPrompt"],
-    mode: "inline",
-    prompt: mcpSkillPrompt(prompt),
-    path: `mcp://${prompt.server}/prompts/${prompt.name}`,
-    root: `mcp://${prompt.server}/prompts`,
-    source: "mcp",
-    metadata: {
-      mcpServer: prompt.server,
-      mcpPrompt: prompt.name,
-      arguments: prompt.arguments ?? []
+export async function loadMcpResourceSkills(runtime: McpSkillRuntime): Promise<LoadedSkill[]> {
+  const resources = (await runtime.listResources()).filter((resource) => resource.uri.startsWith("skill://"));
+  const loaded = await Promise.all(resources.map(async (resource) => {
+    try {
+      const result = await runtime.readResource(resource.server, resource.uri);
+      const markdown = resourceText(result);
+      if (markdown === undefined) return undefined;
+      const parsed = parseSkillMarkdown(markdown, resource.uri);
+      return {
+        ...parsed,
+        description: parsed.description ?? resource.description,
+        path: resource.uri,
+        root: skillResourceRoot(resource.uri),
+        source: "mcp" as const,
+        shell: undefined,
+        metadata: { ...parsed.metadata, mcpServer: resource.server, mcpResource: resource.uri }
+      };
+    } catch {
+      return undefined;
     }
   }));
+  return loaded.flatMap((skill) => skill ? [skill as LoadedSkill] : []);
 }
 
-function mcpSkillName(server: string, prompt: string): string {
-  return `mcp__${sanitizeName(server)}__${sanitizeName(prompt)}`;
+export const loadMcpPromptSkills = loadMcpResourceSkills;
+
+function resourceText(result: unknown): string | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const contents = (result as { contents?: unknown }).contents;
+  if (!Array.isArray(contents)) return undefined;
+  const texts = contents.flatMap((content) => {
+    if (!content || typeof content !== "object" || Array.isArray(content)) return [];
+    const text = (content as { text?: unknown }).text;
+    return typeof text === "string" ? [text] : [];
+  });
+  return texts.length ? texts.join("\n") : undefined;
 }
 
-function sanitizeName(value: string): string {
-  return value.replace(/[^A-Za-z0-9_]/g, "_");
-}
-
-function mcpSkillPrompt(prompt: McpPrompt & { server: string }): string {
-  const args = prompt.arguments?.length
-    ? `\nArguments: ${prompt.arguments.map((arg) => `${arg.name}${arg.required ? " required" : ""}`).join(", ")}`
-    : "";
-  return [
-    `This skill is backed by MCP prompt ${prompt.server}/${prompt.name}.`,
-    "Use the RunMcpPrompt tool with this server, prompt name, and required arguments when the skill is selected.",
-    `Server: ${prompt.server}`,
-    `Prompt: ${prompt.name}${args}`
-  ].join("\n");
+function skillResourceRoot(uri: string): string {
+  const slash = uri.lastIndexOf("/");
+  return slash > "skill://".length ? uri.slice(0, slash) : uri;
 }

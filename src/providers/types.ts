@@ -36,6 +36,7 @@ export type ModelRequestContext = {
 
 export type ModelRequest = {
   model: string;
+  effort?: string | number;
   messages: ModelMessage[];
   tools: Tool[];
   response_schema?: unknown;

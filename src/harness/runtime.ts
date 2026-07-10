@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelMessage, ModelProvider, ModelResponse, ModelToolCall } from "../providers/types.js";
+import { skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { hasModelUsage } from "../model/usage.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { Tool, ToolResult } from "../tools/types.js";
@@ -12,8 +13,6 @@ import { HarnessEvent, StoredEvent } from "./events.js";
 import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
 import type { ToolPermissionContext } from "../permissions/context.js";
 import { checkToolPermission } from "../permissions/checkToolPermission.js";
-import type { HookRuntime } from "../hooks/runtime.js";
-import type { HookEvent, HookRunResult } from "../hooks/types.js";
 export type RuntimeInteraction = {
   requestPermission?(request: PermissionRequest): Promise<PermissionDecision>;
 };
@@ -21,6 +20,7 @@ export type NodeRuntimeOptions = {
   node: WorkflowNodeConfig;
   systemPrompt: string;
   model: string;
+  effort?: string | number;
   provider: ModelProvider;
   tools: ToolRegistry;
   permissions: ToolPermissionContext | PermissionSet;
@@ -33,12 +33,11 @@ export type NodeRuntimeOptions = {
   onDialogueMessages?: (messages: ModelMessage[]) => Promise<void> | void;
   interaction?: RuntimeInteraction;
   eventSink?: (event: StoredEvent) => void;
-  hookRuntime?: HookRuntime;
 };
 export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> {
   const attempt = options.attempt ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
-  const requestTools = [...options.tools.list(), submitNodeResultTool];
+  let requestTools = [...options.tools.list(), submitNodeResultTool];
   const runtimePermissions = normalizeRuntimePermissions(options.permissions);
   const baseMessages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff, { tools: requestTools, permissionMode: runtimePermissions.mode });
   const messages: ModelMessage[] = [...baseMessages, ...(options.dialogueMessages ?? [])];
@@ -53,13 +52,11 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     messages.push(message);
     await persistDialogueMessages();
   };
-  const userPromptHook = await runUserPromptSubmitHook(options, messages, runtimePermissions);
-  if (userPromptHook.blockingErrors.length || userPromptHook.preventContinuation) {
-    throw new Error(hookFailureMessage(userPromptHook));
-  }
   for (;;) {
+    requestTools = [...options.tools.list(), submitNodeResultTool];
     const request = {
       model: options.model,
+      effort: options.effort,
       messages,
       tools: requestTools,
       response_schema: requestTools.length ? undefined : nodeResultJsonSchema,
@@ -102,14 +99,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       }
       await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls });
       for (const call of response.tool_calls) {
-        const preToolHook = await runToolHook("PreToolUse", options, call, runtimePermissions);
-        if (preToolHook.updatedInput) call.input = preToolHook.updatedInput;
-        if (preToolHook.blockingErrors.length || preToolHook.preventContinuation || preToolHook.permissionBehavior === "deny") {
-          const error = hookFailureMessage(preToolHook);
-          await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, error });
-          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error }) });
-          continue;
-        }
+        options.tools.activateSkillsForInput(call.input, options.cwd);
         const specifier = toolSpecifier(call.name, call.input);
         const tool = options.tools.get(call.name);
         const permission = await checkToolPermission(tool, call.input, { ...runtimePermissions, cwd: options.cwd });
@@ -164,9 +154,8 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         }
         await appendRuntimeEvent(options, { type: "tool_invoked", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, input: call.input });
         try {
-          const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt });
+          const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt, runId: options.runId, provider: options.provider, model: options.model, toolRegistry: options.tools, permissionMode: runtimePermissions.mode });
           await appendRuntimeEvent(options, { type: "tool_completed", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, result });
-          await runToolHook("PostToolUse", options, call, runtimePermissions, result);
           const artifact = artifactFromToolResult(result);
           if (artifact) {
             await appendRuntimeEvent(options, { type: "artifact_created", node_id: options.node.id, artifact_id: artifact.artifact_id, path: artifact.path });
@@ -175,24 +164,20 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
             }
           }
           await appendDialogueMessage({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+          const skillMessage = skillSystemMessageFromToolResult(result);
+          if (skillMessage) await appendDialogueMessage(skillMessage);
+          const skillOverrides = skillRuntimeOverridesFromToolResult(result);
+          if (skillOverrides?.model) options.model = skillOverrides.model;
+          if (skillOverrides?.effort !== undefined) options.effort = skillOverrides.effort;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, tool_call_id: call.id, tool: call.name, error: message });
-          await runToolHook("PostToolUseFailure", options, call, runtimePermissions, undefined, message);
           await appendDialogueMessage({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: message }) });
         }
       }
       continue;
     }
     if (!response.content) throw new Error(`Node ${options.node.id} returned no content and no tool calls`);
-    const stopMessages: ModelMessage[] = [...messages, { role: "assistant", content: response.content }];
-    const stopHook = await runStopHook(options, stopMessages, runtimePermissions);
-    appendHookContext(messages, stopHook);
-    if (stopHook.blockingErrors.length || stopHook.preventContinuation) {
-      await appendDialogueMessage({ role: "assistant", content: response.content });
-      await appendDialogueMessage({ role: "user", content: hookFailureMessage(stopHook) });
-      continue;
-    }
     try {
       const result = mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
       if (result.status !== "success") await appendDialogueMessage({ role: "assistant", content: response.content });
@@ -205,73 +190,6 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       continue;
     }
   }
-}
-async function runUserPromptSubmitHook(
-  options: NodeRuntimeOptions,
-  messages: ModelMessage[],
-  permissions: ToolPermissionContext
-): Promise<HookRunResult> {
-  const result = await runHook(options, "UserPromptSubmit", { prompt: lastUserMessageText(messages) }, permissions);
-  appendHookContext(messages, result);
-  return result;
-}
-async function runStopHook(
-  options: NodeRuntimeOptions,
-  messages: ModelMessage[],
-  permissions: ToolPermissionContext
-): Promise<HookRunResult> {
-  return runHook(options, "Stop", { messages: messages.map((message) => ({ role: message.role, content: message.content })) }, permissions);
-}
-async function runToolHook(
-  event: HookEvent,
-  options: NodeRuntimeOptions,
-  call: ModelToolCall,
-  permissions: ToolPermissionContext,
-  result?: ToolResult,
-  error?: string
-): Promise<HookRunResult> {
-  return runHook(options, event, {
-    tool_name: call.name,
-    tool_input: call.input,
-    tool_call_id: call.id,
-    ...(result ? { tool_response: result } : {}),
-    ...(error ? { error } : {})
-  }, permissions);
-}
-async function runHook(
-  options: NodeRuntimeOptions,
-  event: HookEvent,
-  hookInput: Record<string, unknown>,
-  permissions: ToolPermissionContext
-): Promise<HookRunResult> {
-  const empty: HookRunResult = { event, executed: 0, blockingErrors: [], nonBlockingErrors: [], additionalContexts: [], systemMessages: [] };
-  if (!options.hookRuntime) return empty;
-  return options.hookRuntime.run(event, hookInput, {
-    cwd: options.cwd,
-    sessionId: options.runId,
-    runId: options.runId,
-    permissionMode: permissions.mode,
-    provider: options.provider,
-    model: options.model,
-    tools: options.tools.list()
-  });
-}
-function appendHookContext(messages: ModelMessage[], result: HookRunResult): void {
-  for (const systemMessage of result.systemMessages) messages.push({ role: "system", content: systemMessage });
-  for (const context of result.additionalContexts) messages.push({ role: "system", content: context });
-}
-function hookFailureMessage(result: HookRunResult): string {
-  const detail = result.blockingErrors.map((error) => error.blockingError).filter(Boolean).join("; ");
-  return detail || result.stopReason || `Hook ${result.event} blocked continuation`;
-}
-function lastUserMessageText(messages: ModelMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "user") continue;
-    if (typeof message.content === "string") return message.content;
-    return message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-  }
-  return "";
 }
 const submitNodeResultTool: Tool = {
   name: "SubmitNodeResult",

@@ -58,8 +58,8 @@ export async function getAgentsMemoryFiles(options: AgentsMemoryLoadOptions): Pr
 
   for (const dir of projectDirsFromRoot(cwd)) {
     files.push(...await processAgentsMemoryFile(join(dir, "AGENTS.md"), "Project", processed, cwd, includeExternal, options.settings));
-    files.push(...await processAgentsMemoryFile(join(dir, ".agents", "AGENTS.md"), "Project", processed, cwd, includeExternal, options.settings));
-    files.push(...await processAgentsRules(join(dir, ".agents", "rules"), "Project", processed, cwd, includeExternal, false, undefined, options.settings));
+    files.push(...await processAgentsMemoryFile(join(dir, ".einsteins", "AGENTS.md"), "Project", processed, cwd, includeExternal, options.settings));
+    files.push(...await processAgentsRules(join(dir, ".einsteins", "rules"), "Project", processed, cwd, includeExternal, false, undefined, options.settings));
     files.push(...await processAgentsMemoryFile(join(dir, "AGENTS.local.md"), "Local", processed, cwd, includeExternal, options.settings));
   }
 

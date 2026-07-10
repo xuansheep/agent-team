@@ -19,9 +19,8 @@ describe("slash command completion", () => {
     assert.deepEqual(slashCommandSuggestions("/pl", context).map((item) => item.value), ["/plan"]);
   });
 
-  it("suggests skills, hooks, mcp, and mcp subcommands", () => {
+  it("suggests skills, mcp, and mcp subcommands", () => {
     assert.deepEqual(slashCommandSuggestions("/sk", context).map((item) => item.value), ["/skills"]);
-    assert.deepEqual(slashCommandSuggestions("/ho", context).map((item) => item.value), ["/hooks"]);
     assert.deepEqual(slashCommandSuggestions("/mc", context).map((item) => item.value), ["/mcp"]);
     assert.deepEqual(slashCommandSuggestions("/mcp e", context).map((item) => item.value), ["/mcp enable"]);
     assert.deepEqual(slashCommandSuggestions("/mcp d", context).map((item) => item.value), ["/mcp disable"]);

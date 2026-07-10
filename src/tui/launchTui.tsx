@@ -4,7 +4,6 @@ import { AlternateScreen, render } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loadConfig.js";
 import { collectRuntimeDiagnostics, type RuntimeDiagnostics } from "../diagnostics/runtimeDiagnostics.js";
-import { HookRuntime } from "../hooks/runtime.js";
 import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
 import { McpRuntime } from "../mcp/runtime.js";
 import { createMcpClientFactory } from "../mcp/transports.js";
@@ -30,7 +29,6 @@ export type PreparedTuiRuntime = {
   settings: ResolvedAgentTeamSettings;
   mcpRuntime: McpRuntime;
   skillRuntime: SkillRuntime;
-  hookRuntime: HookRuntime;
   diagnostics: RuntimeDiagnostics;
   mcpConfigOptions: McpConfigSourceOptions;
 };
@@ -44,17 +42,17 @@ export async function prepareTuiRuntime(options: { cwd: string }): Promise<Prepa
   const workflowId = selectDefaultWorkflow(workflows);
   const mcpConfigOptions = { cwd: options.cwd, agentTeamPath: configPath, agentTeamServers: config.mcpServers };
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
-  const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory() });
+  const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory({ roots: () => [{ uri: options.cwd }] }) });
   await mcpRuntime.connectAll(mcpServers);
   const skillRuntime = await SkillRuntime.discover({
     cwd: options.cwd,
     explicitProjectSkillPaths: (config.skills?.paths ?? []).map((path) => isAbsolute(path) ? path : join(options.cwd, path)),
     mcpSkills: () => loadMcpPromptSkills(mcpRuntime)
   });
-  const hookRuntime = new HookRuntime(settings.hooks);
-  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session"), mcpRuntime, hookRuntime });
-  const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime, hookRuntime });
-  return { config, workflows, workflowId, engine, settings, mcpRuntime, skillRuntime, hookRuntime, diagnostics, mcpConfigOptions };
+  mcpRuntime.onCatalogChanged(async (kind) => { if (kind === "resources") await skillRuntime.refresh(); });
+  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session"), mcpRuntime, skillRuntime });
+  const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
+  return { config, workflows, workflowId, engine, settings, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions };
 }
 
 export async function launchTui(options: { cwd: string }): Promise<void> {
@@ -66,7 +64,6 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
   let settings: ResolvedAgentTeamSettings | undefined;
   let mcpRuntime: McpRuntime | undefined;
   let skillRuntime: SkillRuntime | undefined;
-  let hookRuntime: HookRuntime | undefined;
   let diagnostics: RuntimeDiagnostics | undefined;
   let mcpConfigOptions: McpConfigSourceOptions | undefined;
 
@@ -79,7 +76,6 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     settings = prepared.settings;
     mcpRuntime = prepared.mcpRuntime;
     skillRuntime = prepared.skillRuntime;
-    hookRuntime = prepared.hookRuntime;
     diagnostics = prepared.diagnostics;
     mcpConfigOptions = prepared.mcpConfigOptions;
   } catch (error) {
@@ -100,9 +96,8 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         settings={settings}
         mcpRuntime={mcpRuntime}
         skillRuntime={skillRuntime}
-        hookRuntime={hookRuntime}
         diagnostics={diagnostics}
-        collectDiagnostics={() => collectRuntimeDiagnostics({ mcpRuntime, skillRuntime, hookRuntime })}
+        collectDiagnostics={() => collectRuntimeDiagnostics({ mcpRuntime, skillRuntime })}
         mcpConfigOptions={mcpConfigOptions}
       />
     </AlternateScreen>,

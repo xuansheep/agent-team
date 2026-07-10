@@ -87,7 +87,11 @@ function serverDetailText(server: McpRuntimeDiagnostic): string {
     `disabled: ${server.disabled === true}`,
     `tools: ${server.toolCount}`,
     `resources: ${server.resourceCount}`,
+    `resourceTemplates: ${server.resourceTemplateCount ?? 0}`,
     `prompts: ${server.promptCount}`,
+    server.serverInfo ? `serverInfo: ${server.serverInfo.name}@${server.serverInfo.version}` : undefined,
+    server.instructions ? `instructions: ${server.instructions}` : undefined,
+    server.capabilities ? `capabilities: ${JSON.stringify(server.capabilities)}` : undefined,
     server.error ? `error: ${server.error}` : undefined
   ].filter(Boolean).join("\n");
 }
@@ -98,6 +102,8 @@ function toolDetailText(tool: McpToolDiagnostic): string {
     `originalName: ${tool.originalName}`,
     `server: ${tool.server}`,
     tool.description ? `description: ${tool.description}` : undefined,
-    `inputSchema:\n${JSON.stringify(tool.inputSchema ?? {}, null, 2)}`
+    `inputSchema:\n${JSON.stringify(tool.inputSchema ?? {}, null, 2)}`,
+    tool.outputSchema ? `outputSchema:\n${JSON.stringify(tool.outputSchema, null, 2)}` : undefined,
+    tool.annotations ? `annotations:\n${JSON.stringify(tool.annotations, null, 2)}` : undefined
   ].filter(Boolean).join("\n");
 }

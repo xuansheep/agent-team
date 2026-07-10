@@ -49,6 +49,7 @@ export function InteractionArea({
   workflowId,
   queued,
   workflows,
+  skills,
   questions = [],
   isLoading,
   permissionMode = "default",
@@ -65,6 +66,7 @@ export function InteractionArea({
   workflowId?: string;
   queued: string[];
   workflows: string[];
+  skills?: Array<{ name: string; description?: string; argumentHint?: string }>;
   questions?: unknown[];
   isLoading: boolean;
   permissionMode?: PermissionMode;
@@ -352,6 +354,7 @@ export function InteractionArea({
           workflowId={workflowId}
           queued={queued}
           workflows={workflows}
+          skills={skills}
           isLoading={isLoading}
           permissionMode={permissionMode}
           inputBlocked={inputDisabled || (Boolean(choice) && (choice?.multiSelect || !choice?.allowPromptInput || (hasPreview && !previewNotesActive)))}

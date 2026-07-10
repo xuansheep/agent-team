@@ -5,7 +5,7 @@ export function buildSkillsListChoice(input: { skills: SkillRuntimeDiagnostic[];
   const options = input.skills.map((skill) => ({
     label: skill.name,
     value: skill.name,
-    description: [skill.source, skill.mode, skill.hasHooks ? "hooks" : "no-hooks", skill.path].join(" · ")
+    description: [skill.source, skill.mode, skill.error ? "invalid" : undefined, skill.path].filter(Boolean).join(" · ")
   }));
   return {
     title: "Skills",
@@ -40,7 +40,12 @@ function skillDetailText(skill: SkillRuntimeDiagnostic): string {
     `source: ${skill.source}`,
     `mode: ${skill.mode}`,
     `path: ${skill.path}`,
-    `hasHooks: ${skill.hasHooks}`,
+    skill.error ? `error: ${skill.error}` : undefined,
+    skill.version ? `version: ${skill.version}` : undefined,
+    skill.argumentHint ? `argumentHint: ${skill.argumentHint}` : undefined,
+    skill.userInvocable !== undefined ? `userInvocable: ${skill.userInvocable}` : undefined,
+    skill.disableModelInvocation !== undefined ? `disableModelInvocation: ${skill.disableModelInvocation}` : undefined,
+    skill.paths?.length ? `paths: ${skill.paths.join(", ")}` : undefined,
     skill.allowedTools?.length ? `allowedTools: ${skill.allowedTools.join(", ")}` : "allowedTools: none",
     skill.description ? `description: ${skill.description}` : undefined,
     skill.whenToUse ? `whenToUse: ${skill.whenToUse}` : undefined

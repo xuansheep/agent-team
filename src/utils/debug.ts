@@ -5,7 +5,7 @@ let logFilePath: string | undefined;
 
 /**
  * Write a debug message to the agent-team debug log file.
- * Logs are written to the workspace's `.agent-team/logs/debug.log` file.
+ * Logs are written to the workspace's `.einsteins/logs/debug.log` file.
  * Respects the AGENT_TEAM_DEBUG environment variable to enable logging.
  * Also respects AGENT_TEAM_LOG_DIR to override the log directory.
  */
@@ -18,7 +18,7 @@ export function logForDebugging(
   if (!logFilePath) {
     const logDir =
       process.env.AGENT_TEAM_LOG_DIR ||
-      join(process.cwd(), ".agent-team", "logs");
+      join(process.cwd(), ".einsteins", "logs");
     if (!existsSync(logDir)) {
       try {
         mkdirSync(logDir, { recursive: true });

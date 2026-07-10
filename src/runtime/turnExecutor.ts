@@ -10,8 +10,7 @@ import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { executeToolCalls } from "../tools/orchestration.js";
 import { Tool, ToolResult } from "../tools/types.js";
-import { skillSystemMessageFromToolResult } from "../skills/skillTools.js";
-import type { HookEvent, HookRunResult } from "../hooks/types.js";
+import { skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { PlanApprovalRequest, PromptInjectionRecord, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
 
 const maxToolIterations = 20;
@@ -32,11 +31,6 @@ export class RuntimeTurnExecutor {
 
   async execute(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
     const messages = await buildTurnMessages(input);
-    const userPromptHook = await runUserPromptSubmitHook(input, messages);
-    if (userPromptHook.blockingErrors.length || userPromptHook.preventContinuation) {
-      return { status: "failed", error: hookFailureMessage(userPromptHook), messages };
-    }
-    const kernelTools = createKernelToolRegistry(input.tools);
     const permissionKernel = new PermissionKernel();
     const promptInjection = promptInjectionRecord(input, messages);
     if (promptInjection) await emit(input, { type: "runtime_prompt_injection", session_id: input.sessionId, run_id: input.runId, record: promptInjection });
@@ -48,6 +42,7 @@ export class RuntimeTurnExecutor {
         provider: input.provider,
         request: {
           model: input.model,
+          effort: input.effort,
           messages,
           tools: modelVisibleTools(input),
           context: {
@@ -70,14 +65,10 @@ export class RuntimeTurnExecutor {
           messages.push({ role: "assistant", content: response.content });
           await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content });
         }
-        const stopHook = await runStopHook(input, messages);
-        if (stopHook.blockingErrors.length || stopHook.preventContinuation) {
-          messages.push({ role: "user", content: hookFailureMessage(stopHook) });
-          continue;
-        }
         return { status: "completed", messages };
       }
       const toolCalls = await executableToolCalls(response.tool_calls, input.tools);
+      const kernelTools = createKernelToolRegistry(input.tools);
       messages.push({ role: "assistant", content: response.content ?? "", tool_calls: toolCalls });
       await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content ?? "" });
 
@@ -87,14 +78,7 @@ export class RuntimeTurnExecutor {
 
       for (const call of toolCalls) {
         throwIfAborted(input.abortSignal);
-        const preToolHook = await runToolHook("PreToolUse", input, call);
-        if (preToolHook.updatedInput) call.input = preToolHook.updatedInput;
-        if (preToolHook.blockingErrors.length || preToolHook.preventContinuation || preToolHook.permissionBehavior === "deny") {
-          const error = hookFailureMessage(preToolHook);
-          permissionResults.push({ call, decision: "deny", error });
-          if (input.permissions.mode === "plan") planModePermissionBlocked = true;
-          continue;
-        }
+        input.tools.activateSkillsForInput(call.input, input.cwd);
         const permission = await permissionKernel.check(kernelTools.get(call.name), call.input, { ...input.permissions, cwd: input.cwd });
         await audit(input, {
           type: "permission_decision",
@@ -171,16 +155,18 @@ export class RuntimeTurnExecutor {
         abortSignal: input.abortSignal,
         nodeId: "runtime",
         attempt: iteration + 1,
-        auditSink: input.auditSink
+        auditSink: input.auditSink,
+        provider: input.provider,
+        model: input.model,
+        toolRegistry: input.tools,
+        permissionMode: input.permissions.mode
       }, {
         onToolStart: (call) => emit(input, { type: "runtime_tool_invoked", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, input: call.input }),
         onToolComplete: async (call, result) => {
           await emit(input, { type: "runtime_tool_completed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, result });
-          await runToolHook("PostToolUse", input, call, result);
         },
         onToolError: async (call, error) => {
           await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
-          await runToolHook("PostToolUseFailure", input, call, undefined, error);
         }
       });
       throwIfAborted(input.abortSignal);
@@ -195,6 +181,9 @@ export class RuntimeTurnExecutor {
           messages.push(execution.result ? toolMessage(execution.call.id, execution.result, tool) : { role: "tool", tool_call_id: execution.call.id, content: JSON.stringify({ error: execution.error ?? "Tool failed" }) });
           const skillMessage = skillSystemMessageFromToolResult(execution.result);
           if (skillMessage) messages.push(skillMessage);
+          const skillOverrides = skillRuntimeOverridesFromToolResult(execution.result);
+          if (skillOverrides?.model) input.model = skillOverrides.model;
+          if (skillOverrides?.effort !== undefined) input.effort = skillOverrides.effort;
           const planApproval = planApprovalFromToolResult(execution.result);
         if (planApproval) {
           await emit(input, planApproval.event);
@@ -223,70 +212,6 @@ export class RuntimeTurnExecutor {
   }
 }
 
-
-async function runUserPromptSubmitHook(input: RuntimeTurnInput, messages: ModelMessage[]): Promise<HookRunResult> {
-  const prompt = lastUserMessageText(messages);
-  const result = await runHook(input, "UserPromptSubmit", { prompt });
-  appendHookContext(messages, result);
-  return result;
-}
-
-async function runStopHook(input: RuntimeTurnInput, messages: ModelMessage[]): Promise<HookRunResult> {
-  const result = await runHook(input, "Stop", { messages: messages.map((message) => ({ role: message.role, content: message.content })) });
-  appendHookContext(messages, result);
-  return result;
-}
-
-async function runToolHook(
-  event: HookEvent,
-  input: RuntimeTurnInput,
-  call: ModelToolCall,
-  result?: ToolResult,
-  error?: string
-): Promise<HookRunResult> {
-  return runHook(input, event, {
-    tool_name: call.name,
-    tool_input: call.input,
-    tool_call_id: call.id,
-    ...(result ? { tool_response: result } : {}),
-    ...(error ? { error } : {})
-  });
-}
-
-async function runHook(input: RuntimeTurnInput, event: HookEvent, hookInput: Record<string, unknown>): Promise<HookRunResult> {
-  const empty: HookRunResult = { event, executed: 0, blockingErrors: [], nonBlockingErrors: [], additionalContexts: [], systemMessages: [] };
-  if (!input.hookRuntime) return empty;
-  return input.hookRuntime.run(event, hookInput, {
-    cwd: input.cwd,
-    sessionId: input.sessionId,
-    runId: input.runId,
-    permissionMode: input.permissions.mode,
-    provider: input.provider,
-    model: input.model,
-    tools: input.tools.list(),
-    signal: input.abortSignal
-  });
-}
-
-function appendHookContext(messages: ModelMessage[], result: HookRunResult): void {
-  for (const systemMessage of result.systemMessages) messages.push({ role: "system", content: systemMessage });
-  for (const context of result.additionalContexts) messages.push({ role: "system", content: context });
-}
-
-function hookFailureMessage(result: HookRunResult): string {
-  const detail = result.blockingErrors.map((error) => error.blockingError).filter(Boolean).join("; ");
-  return detail || result.stopReason || `Hook ${result.event} blocked continuation`;
-}
-
-function lastUserMessageText(messages: ModelMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "user") continue;
-    if (typeof message.content === "string") return message.content;
-    return message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-  }
-  return "";
-}
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;

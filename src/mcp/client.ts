@@ -15,6 +15,12 @@ export class InMemoryMcpClient implements McpClient {
     this.tools = new Map(tools.map((tool) => [tool.name, tool]));
   }
 
+  async initialize(): Promise<void> {}
+
+  getMetadata() { return {}; }
+
+  onListChanged(): void {}
+
   async listTools(): Promise<McpToolDefinition[]> {
     return [...this.tools.values()].map(({ execute: _execute, ...definition }) => definition);
   }
@@ -29,19 +35,22 @@ export class InMemoryMcpClient implements McpClient {
     return this.resources;
   }
 
-  async readResource(uri: string): Promise<unknown> {
+  async readResource(uri: string): Promise<{ contents: [] }> {
     const resource = this.resources.find((item) => item.uri === uri);
     if (!resource) throw new Error(`Unknown MCP resource ${uri}`);
-    return { uri, contents: [] };
+    return { contents: [] };
   }
 
   async listPrompts(): Promise<McpPrompt[]> {
     return this.prompts;
   }
 
-  async getPrompt(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async getPrompt(name: string, args: Record<string, unknown>): Promise<{ messages: [] }> {
     const prompt = this.prompts.find((item) => item.name === name);
     if (!prompt) throw new Error(`Unknown MCP prompt ${name}`);
-    return { name, arguments: args, messages: [] };
+    void args;
+    return { messages: [] };
   }
+
+  async close(): Promise<void> {}
 }

@@ -1,5 +1,8 @@
 import type { AuditSink } from "../audit/auditEvent.js";
 import type { PlanSessionState } from "../plans/planSession.js";
+import type { ModelProvider } from "../providers/types.js";
+import type { PermissionMode } from "../permissions/PermissionMode.js";
+import type { ToolRegistry } from "./registry.js";
 
 export type ToolContext = {
   cwd: string;
@@ -11,6 +14,10 @@ export type ToolContext = {
   planState?: PlanSessionState;
   abortSignal?: AbortSignal;
   auditSink?: AuditSink;
+  provider?: ModelProvider;
+  model?: string;
+  toolRegistry?: ToolRegistry;
+  permissionMode?: PermissionMode;
 };
 
 export type ToolResult = {

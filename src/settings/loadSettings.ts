@@ -12,7 +12,7 @@ export type LoadSettingsOptions = {
 };
 
 export async function loadSettings(options: LoadSettingsOptions): Promise<ResolvedAgentTeamSettings> {
-  const userSettings = await readSettingsFile(options.userSettingsPath ?? defaultUserSettingsPath(), legacyUserSettingsPath());
+  const userSettings = await readSettingsFile(options.userSettingsPath ?? defaultUserSettingsPath());
   const projectSettings = await readSettingsFile(options.projectSettingsPath ?? defaultProjectSettingsPath(options.cwd));
   return resolveSettings({ cwd: options.cwd, userSettings, projectSettings });
 }
@@ -21,21 +21,16 @@ export function defaultUserSettingsPath(): string {
   return join(homedir(), ".einsteins", "settings.yaml");
 }
 
-export function legacyUserSettingsPath(): string {
-  return join(homedir(), ".agent-team", "settings.yaml");
-}
-
 function defaultProjectSettingsPath(cwd: string): string {
-  return join(cwd, ".agent-team", "settings.yaml");
+  return join(cwd, ".einsteins", "settings.yaml");
 }
 
-async function readSettingsFile(path: string, fallbackPath?: string): Promise<AgentTeamSettings | undefined> {
+async function readSettingsFile(path: string): Promise<AgentTeamSettings | undefined> {
   try {
     const raw = await readFile(path, "utf8");
     return settingsSchema.parse(yaml.load(raw) ?? {});
   } catch (error) {
     if ((error as { code?: unknown }).code !== "ENOENT") throw error;
-    if (!fallbackPath) return undefined;
-    return readSettingsFile(fallbackPath);
+    return undefined;
   }
 }

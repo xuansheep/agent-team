@@ -5,12 +5,10 @@ import { withRuntimeAttachments } from "../context/messages.js";
 import { isDefaultPlanFilePath, planFilenameSlug, readPlan, uniquePlanFilePath } from "../plans/planFiles.js";
 import { hasModelUsage } from "../model/usage.js";
 import type { ModelMessage, ModelProvider, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
-import type { HookRuntime } from "../hooks/runtime.js";
-import type { HookEvent, HookRunResult } from "../hooks/types.js";
 import type { GlobalPromptMetadata } from "../config/schema.js";
 import type { AuditSink } from "../audit/auditEvent.js";
 import type { PromptInjectionRecord, RuntimeEvent } from "../runtime/types.js";
-import { skillSystemMessageFromToolResult } from "../skills/skillTools.js";
+import { skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { PermissionKernel } from "./permissions/permissionKernel.js";
 import { PlanModeController } from "./plan/planModeController.js";
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "./plan/planToolCallMessages.js";
@@ -24,6 +22,7 @@ export type QueryEngineInput = {
   session: KernelSession;
   provider: ModelProvider;
   model: string;
+  effort?: string | number;
   tools: KernelToolRegistry;
   globalPrompt?: string;
   globalPromptMetadata?: GlobalPromptMetadata;
@@ -32,7 +31,6 @@ export type QueryEngineInput = {
   signal?: AbortSignal;
   onStreamEvent?: (event: ModelStreamEvent) => void;
   nodeId?: string;
-  hookRuntime?: HookRuntime;
 };
 
 export type QueryEngineResult = {
@@ -49,10 +47,6 @@ export class QueryEngine {
       status: input.session.toolPermissionContext.mode === "plan" ? "planning" : "running_query"
     });
     const messages = await buildQueryMessages(session, input.tools, input);
-    const userPromptHook = await runUserPromptSubmitHook(input, session, messages);
-    if (userPromptHook.blockingErrors.length || userPromptHook.preventContinuation) {
-      return { session: { ...session, messages: [...messages, { role: "system", content: hookFailureMessage(userPromptHook) }], status: "idle_input" } };
-    }
     const promptInjection = promptInjectionRecord(input, messages);
     if (promptInjection) await emit(input, { type: "runtime_prompt_injection", session_id: session.id, run_id: session.workflowBinding?.runId, record: promptInjection });
     await emit(input, { type: "runtime_turn_started", session_id: session.id, run_id: session.workflowBinding?.runId });
@@ -60,6 +54,7 @@ export class QueryEngine {
       throwIfAborted(input.signal);
       const request = {
         model: input.model,
+        effort: input.effort,
         messages,
         tools: input.tools.visibleTools(session.toolPermissionContext).map((tool) => tool.legacyTool),
         context: {
@@ -83,11 +78,6 @@ export class QueryEngine {
           messages.push({ role: "assistant", content: response.content });
           await emit(input, { type: "runtime_assistant_message", session_id: session.id, run_id: session.workflowBinding?.runId, content: response.content });
         }
-        const stopHook = await runStopHook(input, session, messages);
-        if (stopHook.blockingErrors.length || stopHook.preventContinuation) {
-          messages.push({ role: "user", content: hookFailureMessage(stopHook) });
-          continue;
-        }
         return { session: { ...session, messages, status: "idle_input" } };
       }
       let calls = await callsUntilUserInteraction(response.tool_calls, input.tools, session);
@@ -100,18 +90,7 @@ export class QueryEngine {
       let pendingPlanApprovalCall: ModelToolCall | undefined;
       let planModePermissionBlocked = false;
       for (const call of calls) {
-        const preToolHook = await runToolHook("PreToolUse", input, session, call);
-        if (preToolHook.updatedInput) call.input = preToolHook.updatedInput;
-        if (preToolHook.blockingErrors.length || preToolHook.preventContinuation || preToolHook.permissionBehavior === "deny") {
-          const error = hookFailureMessage(preToolHook);
-          await emit(input, { type: "runtime_tool_failed", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, error });
-          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error, permission_denied: true }) });
-          if (session.toolPermissionContext.mode === "plan") {
-            planModePermissionBlocked = true;
-            continue;
-          }
-          return { session: { ...session, messages, status: "idle_input" } };
-        }
+        input.tools.legacyRegistry?.activateSkillsForInput(call.input, session.cwd);
         const tool = input.tools.get(call.name);
         const permission = await this.permissions.check(tool, call.input, { ...session.toolPermissionContext, cwd: session.cwd });
         if (permission.decision === "ask") {
@@ -152,7 +131,7 @@ export class QueryEngine {
         : calls;
       for (const call of executableCalls) {
         const tool = input.tools.get(call.name);
-          const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, auditSink: input.auditSink };
+          const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, auditSink: input.auditSink, provider: input.provider, model: input.model, toolRegistry: input.tools.legacyRegistry, permissionMode: session.toolPermissionContext.mode };
         const interaction = await tool.requiresUserInteraction(call.input, context);
         if (interaction?.type === "ask_user_question") {
           const result = await tool.execute(call.input, context);
@@ -182,14 +161,15 @@ export class QueryEngine {
           try {
             const result = await tool.execute(call.input, context);
             await emit(input, { type: "runtime_tool_completed", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, result });
-            await runToolHook("PostToolUse", input, session, call, result);
             messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(tool.mapToolResultToModelResult(result, context)) });
             const skillMessage = skillSystemMessageFromToolResult(result);
             if (skillMessage) messages.push(skillMessage);
+            const skillOverrides = skillRuntimeOverridesFromToolResult(result);
+            if (skillOverrides?.model) input.model = skillOverrides.model;
+            if (skillOverrides?.effort !== undefined) input.effort = skillOverrides.effort;
           } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await emit(input, { type: "runtime_tool_failed", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, error: message });
-          await runToolHook("PostToolUseFailure", input, session, call, undefined, message);
           messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: message }) });
         }
       }
@@ -209,70 +189,6 @@ export class QueryEngine {
 }
 
 
-
-async function runUserPromptSubmitHook(input: QueryEngineInput, session: KernelSession, messages: ModelMessage[]): Promise<HookRunResult> {
-  const result = await runHook(input, session, "UserPromptSubmit", { prompt: lastUserMessageText(messages) });
-  appendHookContext(messages, result);
-  return result;
-}
-
-async function runStopHook(input: QueryEngineInput, session: KernelSession, messages: ModelMessage[]): Promise<HookRunResult> {
-  const result = await runHook(input, session, "Stop", { messages: messages.map((message) => ({ role: message.role, content: message.content })) });
-  appendHookContext(messages, result);
-  return result;
-}
-
-async function runToolHook(
-  event: HookEvent,
-  input: QueryEngineInput,
-  session: KernelSession,
-  call: ModelToolCall,
-  result?: unknown,
-  error?: string
-): Promise<HookRunResult> {
-  return runHook(input, session, event, {
-    tool_name: call.name,
-    tool_input: call.input,
-    tool_call_id: call.id,
-    ...(result ? { tool_response: result } : {}),
-    ...(error ? { error } : {})
-  });
-}
-
-async function runHook(input: QueryEngineInput, session: KernelSession, event: HookEvent, hookInput: Record<string, unknown>): Promise<HookRunResult> {
-  const empty: HookRunResult = { event, executed: 0, blockingErrors: [], nonBlockingErrors: [], additionalContexts: [], systemMessages: [] };
-  if (!input.hookRuntime) return empty;
-  return input.hookRuntime.run(event, hookInput, {
-    cwd: session.cwd,
-    sessionId: session.id,
-    runId: session.workflowBinding?.runId,
-    permissionMode: session.toolPermissionContext.mode,
-    provider: input.provider,
-    model: input.model,
-    tools: input.tools.list().map((tool) => tool.legacyTool),
-    signal: input.signal
-  });
-}
-
-function appendHookContext(messages: ModelMessage[], result: HookRunResult): void {
-  for (const systemMessage of result.systemMessages) messages.push({ role: "system", content: systemMessage });
-  for (const context of result.additionalContexts) messages.push({ role: "system", content: context });
-}
-
-function hookFailureMessage(result: HookRunResult): string {
-  const detail = result.blockingErrors.map((error) => error.blockingError).filter(Boolean).join("; ");
-  return detail || result.stopReason || `Hook ${result.event} blocked continuation`;
-}
-
-function lastUserMessageText(messages: ModelMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "user") continue;
-    if (typeof message.content === "string") return message.content;
-    return message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-  }
-  return "";
-}
 
 async function prepareInitialPlanWrite(
   session: KernelSession,

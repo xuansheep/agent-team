@@ -35,8 +35,7 @@ function mergeSettings(userSettings: AgentTeamSettings, projectSettings: AgentTe
     ...projectSettings,
     permissions: mergeObject(userSettings.permissions, projectSettings.permissions),
     models: mergeModels(userSettings.models, projectSettings.models),
-    planMode: mergeObject(userSettings.planMode, projectSettings.planMode),
-    hooks: mergeHooks(userSettings.hooks, projectSettings.hooks)
+    planMode: mergeObject(userSettings.planMode, projectSettings.planMode)
   };
 }
 
@@ -48,18 +47,6 @@ function mergeModels(userModels: AgentTeamSettings["models"], projectModels: Age
     aliases: mergeObject(userModels?.aliases, projectModels?.aliases),
     contextWindows: mergeObject(userModels?.contextWindows, projectModels?.contextWindows)
   };
-}
-
-function mergeHooks(userHooks: AgentTeamSettings["hooks"], projectHooks: AgentTeamSettings["hooks"]): AgentTeamSettings["hooks"] {
-  if (!userHooks && !projectHooks) return undefined;
-  const merged: NonNullable<AgentTeamSettings["hooks"]> = {};
-  for (const source of [userHooks, projectHooks]) {
-    for (const [event, matchers] of Object.entries(source ?? {})) {
-      const hookEvent = event as keyof typeof merged;
-      merged[hookEvent] = [...(merged[hookEvent] ?? []), ...matchers];
-    }
-  }
-  return merged;
 }
 
 function mergeObject<T extends Record<string, unknown>>(base: T | undefined, override: T | undefined): T | undefined {

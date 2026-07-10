@@ -1,13 +1,9 @@
 import type { ResolvedMcpServerConfig } from "./schema.js";
-import type { McpClient, McpPrompt, McpResource, McpTool } from "./types.js";
+import type { McpClient, McpPrompt, McpResource, McpResourceTemplate, McpServerMetadata, McpTool, McpToolCallResult } from "./types.js";
 
 export type McpServerState = "pending" | "connected" | "failed" | "disabled";
 
-export type McpServerStatus = {
-  name: string;
-  state: McpServerState;
-  error?: string;
-};
+export type McpServerStatus = { name: string; state: McpServerState; error?: string };
 
 export type RuntimeMcpTool = McpTool & {
   server: string;
@@ -28,34 +24,49 @@ export type McpRuntimeDiagnostic = McpServerStatus & {
   toolCount: number;
   resourceCount: number;
   promptCount: number;
+  resourceTemplateCount?: number;
+  capabilities?: Record<string, unknown>;
+  serverInfo?: McpServerMetadata["serverInfo"];
+  instructions?: string;
 };
 
 export type McpToolDiagnostic = RuntimeMcpTool;
+export type McpPromptCommand = { name: string; server: string; prompt: string; description?: string; argumentHint?: string };
 
 type ServerRecord = {
   config: ResolvedMcpServerConfig;
   status: McpServerStatus;
   client?: McpClient;
+  metadata: McpServerMetadata;
   tools: RuntimeMcpTool[];
   resources: McpResource[];
+  resourceTemplates: McpResourceTemplate[];
   prompts: McpPrompt[];
 };
 
 export class McpRuntime {
   private readonly servers = new Map<string, ServerRecord>();
+  private readonly catalogListeners = new Set<(kind: "tools" | "resources" | "prompts", server: string) => void | Promise<void>>();
 
   constructor(private readonly options: McpRuntimeOptions) {}
 
   async connectAll(configs: ResolvedMcpServerConfig[]): Promise<void> {
-    await Promise.all(configs.map((config) => this.connect(config)));
+    const nextNames = new Set(configs.map((config) => config.name));
+    await Promise.all([...this.servers.keys()].filter((name) => !nextNames.has(name)).map(async (name) => {
+      await closeClient(this.servers.get(name)?.client);
+      this.servers.delete(name);
+    }));
+    await Promise.all(configs.map((config) => this.reconnect(config)));
   }
 
   async connect(config: ResolvedMcpServerConfig): Promise<void> {
     const record: ServerRecord = {
       config,
       status: { name: config.name, state: config.disabled ? "disabled" : "pending" },
+      metadata: {},
       tools: [],
       resources: [],
+      resourceTemplates: [],
       prompts: []
     };
     this.servers.set(config.name, record);
@@ -66,18 +77,22 @@ export class McpRuntime {
       client = await this.options.clientFactory(config);
       await client.initialize?.();
       record.client = client;
-      record.tools = (await client.listTools()).map((tool) => ({
-        ...tool,
-        server: config.name,
-        originalName: tool.name,
-        name: mcpToolName(config.name, tool.name)
-      }));
-      record.resources = await client.listResources();
-      record.prompts = await client.listPrompts();
+      record.metadata = client.getMetadata?.() ?? {};
+      client.onListChanged?.({
+        tools: async (tools) => { record.tools = runtimeTools(config.name, tools); await this.notifyCatalog("tools", config.name); },
+        resources: async (resources) => { record.resources = resources.slice(); record.resourceTemplates = await client!.listResourceTemplates?.() ?? []; await this.notifyCatalog("resources", config.name); },
+        prompts: async (prompts) => { record.prompts = prompts.slice(); await this.notifyCatalog("prompts", config.name); }
+      });
+      const [tools, resources, resourceTemplates, prompts] = await Promise.all([client.listTools(), client.listResources(), client.listResourceTemplates?.() ?? [], client.listPrompts()]);
+      record.tools = runtimeTools(config.name, tools);
+      record.resources = resources;
+      record.resourceTemplates = resourceTemplates;
+      record.prompts = prompts;
       record.status = { name: config.name, state: "connected" };
     } catch (error) {
-      await client?.close?.().catch(() => undefined);
-      record.status = { name: config.name, state: "failed", error: error instanceof Error ? error.message : String(error) };
+      await closeClient(client);
+      record.client = undefined;
+      record.status = { name: config.name, state: "failed", error: errorMessage(error) };
     }
   }
 
@@ -88,14 +103,21 @@ export class McpRuntime {
     record.client = undefined;
     record.tools = [];
     record.resources = [];
+    record.resourceTemplates = [];
     record.prompts = [];
     record.status = closeError ? { name, state, error: closeError } : { name, state };
     if (closeError) throw new Error(closeError);
   }
 
   async reconnect(config: ResolvedMcpServerConfig): Promise<void> {
-    if (this.servers.has(config.name)) await this.disconnect(config.name, config.disabled ? "disabled" : "pending");
+    const existing = this.servers.get(config.name);
+    if (existing) await closeClient(existing.client);
     await this.connect(config);
+  }
+
+  onCatalogChanged(listener: (kind: "tools" | "resources" | "prompts", server: string) => void | Promise<void>): () => void {
+    this.catalogListeners.add(listener);
+    return () => this.catalogListeners.delete(listener);
   }
 
   getServerStatus(name: string): McpServerStatus | undefined {
@@ -116,8 +138,12 @@ export class McpRuntime {
       disabled: record.config.disabled,
       toolCount: record.tools.length,
       resourceCount: record.resources.length,
-      promptCount: record.prompts.length
-    }));
+      resourceTemplateCount: record.resourceTemplates.length,
+      promptCount: record.prompts.length,
+      capabilities: record.metadata.capabilities,
+      serverInfo: record.metadata.serverInfo,
+      instructions: record.metadata.instructions
+    })).sort((left, right) => left.name.localeCompare(right.name));
   }
 
   listTools(): RuntimeMcpTool[] {
@@ -125,40 +151,55 @@ export class McpRuntime {
   }
 
   listToolDiagnostics(server?: string): McpToolDiagnostic[] {
-    if (!server) return [...this.servers.values()].flatMap((record) => record.tools);
+    if (!server) return this.listTools();
     const record = this.servers.get(server);
     if (!record) throw new Error(`Unknown MCP server ${server}`);
     return record.tools.slice();
   }
 
-  async callTool(server: string, tool: string, input: unknown): Promise<unknown> {
-    const record = this.requireConnectedServer(server);
-    return record.client.callTool(tool, input);
+  getServerInstructions(): string[] {
+    return [...this.servers.values()].flatMap((record) => record.status.state === "connected" && record.metadata.instructions
+      ? [`MCP server ${record.config.name} instructions:\n${record.metadata.instructions}`]
+      : []);
+  }
+
+  listPromptCommands(): McpPromptCommand[] {
+    return [...this.servers.values()].flatMap((record) => record.prompts.map((prompt) => ({
+      name: mcpPromptCommandName(record.config.name, prompt.name),
+      server: record.config.name,
+      prompt: prompt.name,
+      description: prompt.description,
+      argumentHint: prompt.arguments?.map((argument) => `${argument.required ? "<" : "["}${argument.name}${argument.required ? ">" : "]"}`).join(" ")
+    })));
+  }
+
+  async callTool(server: string, tool: string, input: unknown): Promise<McpToolCallResult> {
+    return await this.requireConnectedServer(server).client.callTool(tool, input) as McpToolCallResult;
   }
 
   async listResources(input: { server?: string } = {}): Promise<Array<McpResource & { server: string }>> {
-    return this.matchingRecords(input.server).flatMap((record) =>
-      record.resources.map((resource) => ({ ...resource, server: record.config.name }))
-    );
+    return this.matchingRecords(input.server).flatMap((record) => record.resources.map((resource) => ({ ...resource, server: record.config.name })));
   }
 
-  async readResource(server: string, uri: string): Promise<unknown> {
+  async listResourceTemplates(input: { server?: string } = {}): Promise<Array<McpResourceTemplate & { server: string }>> {
+    return this.matchingRecords(input.server).flatMap((record) => record.resourceTemplates.map((template) => ({ ...template, server: record.config.name })));
+  }
+
+  async readResource(server: string, uri: string) {
     return this.requireConnectedServer(server).client.readResource(uri);
   }
 
   async listPrompts(input: { server?: string } = {}): Promise<Array<McpPrompt & { server: string }>> {
-    return this.matchingRecords(input.server).flatMap((record) =>
-      record.prompts.map((prompt) => ({ ...prompt, server: record.config.name }))
-    );
+    return this.matchingRecords(input.server).flatMap((record) => record.prompts.map((prompt) => ({ ...prompt, server: record.config.name })));
   }
 
-  async getPrompt(server: string, name: string, args: Record<string, unknown>): Promise<unknown> {
-    return this.requireConnectedServer(server).client.getPrompt(name, args);
+  async getPrompt(server: string, name: string, args: Record<string, unknown>): Promise<{ description?: string; messages: import("./types.js").McpPromptMessage[] }> {
+    return await this.requireConnectedServer(server).client.getPrompt(name, args) as { description?: string; messages: import("./types.js").McpPromptMessage[] };
   }
 
-  private matchingRecords(server?: string): ServerRecord[] {
+  private matchingRecords(server?: string): Array<ServerRecord & { client: McpClient }> {
     if (server) return [this.requireConnectedServer(server)];
-    return [...this.servers.values()].filter((record) => record.status.state === "connected" && record.client);
+    return [...this.servers.values()].filter((record): record is ServerRecord & { client: McpClient } => record.status.state === "connected" && Boolean(record.client));
   }
 
   private requireConnectedServer(server: string): ServerRecord & { client: McpClient } {
@@ -167,10 +208,22 @@ export class McpRuntime {
     if (record.status.state !== "connected" || !record.client) throw new Error(`MCP server ${server} is not connected`);
     return record as ServerRecord & { client: McpClient };
   }
+
+  private async notifyCatalog(kind: "tools" | "resources" | "prompts", server: string): Promise<void> {
+    await Promise.all([...this.catalogListeners].map((listener) => listener(kind, server)));
+  }
 }
 
 export function mcpToolName(server: string, tool: string): string {
   return `mcp__${sanitizeName(server)}__${sanitizeName(tool)}`;
+}
+
+export function mcpPromptCommandName(server: string, prompt: string): string {
+  return `mcp__${sanitizeName(server)}__${sanitizeName(prompt)}`;
+}
+
+function runtimeTools(server: string, tools: McpTool[]): RuntimeMcpTool[] {
+  return tools.map((tool) => ({ ...tool, server, originalName: tool.name, name: mcpToolName(server, tool.name) }));
 }
 
 async function closeClient(client: McpClient | undefined): Promise<string | undefined> {
@@ -178,10 +231,14 @@ async function closeClient(client: McpClient | undefined): Promise<string | unde
     await client?.close?.();
     return undefined;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
 }
 
 function sanitizeName(value: string): string {
   return value.replace(/[^A-Za-z0-9_]/g, "_");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -24,19 +24,29 @@ const planModeWriteTools = new Set(["Write", "Edit", "MultiEdit"]);
 export class KernelToolRegistry {
   private readonly tools = new Map<string, KernelTool>();
 
+  constructor(readonly legacyRegistry?: ToolRegistry) {}
+
   add(tool: KernelTool): void {
     if (this.tools.has(tool.name)) throw new Error(`Duplicate tool ${tool.name}`);
     this.tools.set(tool.name, tool);
   }
 
   get(name: string): KernelTool {
+    this.syncLegacyTools();
     const tool = this.tools.get(name);
     if (!tool) throw new Error(`Unknown tool ${name}`);
     return tool;
   }
 
   list(): KernelTool[] {
+    this.syncLegacyTools();
     return [...this.tools.values()];
+  }
+
+  private syncLegacyTools(): void {
+    for (const tool of this.legacyRegistry?.list() ?? []) {
+      if (!this.tools.has(tool.name)) this.tools.set(tool.name, adaptToolToKernelTool(tool));
+    }
   }
 
   visibleTools(context: ToolPermissionContext): KernelTool[] {
@@ -48,7 +58,7 @@ export class KernelToolRegistry {
 }
 
 export function createKernelToolRegistry(legacy: ToolRegistry): KernelToolRegistry {
-  const registry = new KernelToolRegistry();
+  const registry = new KernelToolRegistry(legacy);
   for (const tool of legacy.list()) registry.add(adaptToolToKernelTool(tool));
   return registry;
 }

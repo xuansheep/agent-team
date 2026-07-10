@@ -2,10 +2,11 @@ import type { Tool } from "../tools/types.js";
 
 type ResourceRuntime = {
   listResources(input?: { server?: string }): Promise<Array<{ server: string; uri: string; name?: string; description?: string; mimeType?: string }>>;
+  listResourceTemplates?(input?: { server?: string }): Promise<Array<{ server: string; uriTemplate: string; name: string; description?: string; mimeType?: string }>>;
   readResource(server: string, uri: string): Promise<unknown>;
 };
 
-export function createListMcpResourcesTool(runtime: Pick<ResourceRuntime, "listResources">): Tool {
+export function createListMcpResourcesTool(runtime: Pick<ResourceRuntime, "listResources" | "listResourceTemplates">): Tool {
   return {
     name: "ListMcpResources",
     description: "List MCP resources by optional server.",
@@ -20,10 +21,10 @@ export function createListMcpResourcesTool(runtime: Pick<ResourceRuntime, "listR
     isConcurrencySafe: () => true,
     async execute(input) {
       const server = optionalString(input, "server");
-      const resources = await runtime.listResources({ server });
+      const [resources, templates] = await Promise.all([runtime.listResources({ server }), runtime.listResourceTemplates?.({ server }) ?? []]);
       return {
-        output: resources.map((resource) => `${resource.server} ${resource.uri} ${resource.name ?? ""}`).join("\n"),
-        data: resources
+        output: [...resources.map((resource) => `${resource.server} ${resource.uri} ${resource.name ?? ""}`), ...templates.map((template) => `${template.server} ${template.uriTemplate} ${template.name} (template)`)].join("\n"),
+        data: { resources, templates }
       };
     }
   };
@@ -47,9 +48,9 @@ export function createReadMcpResourceTool(runtime: Pick<ResourceRuntime, "readRe
       const value = requiredObject(input);
       const server = requiredString(value, "server");
       const uri = requiredString(value, "uri");
-      const resource = await runtime.readResource(server, uri) as { contents?: Array<{ type?: string; text?: string; mimeType?: string }> };
+      const resource = await runtime.readResource(server, uri) as { contents?: Array<{ uri: string; text?: string; blob?: string; mimeType?: string }> };
       const text = resource.contents
-        ?.filter((part) => part.type === "text" && typeof part.text === "string")
+        ?.filter((part) => typeof part.text === "string")
         .map((part) => part.text)
         .join("\n");
       if (!text) return { error: `MCP resource ${uri} did not contain readable text`, data: resource };

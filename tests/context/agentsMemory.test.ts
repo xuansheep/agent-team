@@ -15,13 +15,13 @@ describe("agentsMemory", () => {
     const home = await workspace();
     const nested = join(cwd, "packages", "app");
     await mkdir(join(home, ".einsteins"), { recursive: true });
-    await mkdir(join(cwd, ".agents", "rules"), { recursive: true });
+    await mkdir(join(cwd, ".einsteins", "rules"), { recursive: true });
     await mkdir(nested, { recursive: true });
     await writeFile(join(home, ".einsteins", "AGENTS.md"), "User instructions.\n", "utf8");
     await writeFile(join(cwd, "AGENTS.md"), "Root project instructions.\n", "utf8");
     await writeFile(join(nested, "AGENTS.md"), "Nested project instructions.\n", "utf8");
     await writeFile(join(nested, "AGENTS.local.md"), "Local instructions.\n", "utf8");
-    await writeFile(join(cwd, ".agents", "rules", "style.md"), "Rule instructions.\n", "utf8");
+    await writeFile(join(cwd, ".einsteins", "rules", "style.md"), "Rule instructions.\n", "utf8");
     await writeFile(join(cwd, "GLOBAL.md"), "Configured instructions.\n", "utf8");
 
     const files = await getAgentsMemoryFiles({ cwd: nested, homeDir: home, configDir: cwd, configuredPromptFile: "GLOBAL.md" });

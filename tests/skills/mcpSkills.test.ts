@@ -1,25 +1,21 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { loadMcpPromptSkills } from "../../src/skills/mcpSkills.js";
+import { loadMcpResourceSkills } from "../../src/skills/mcpSkills.js";
 
 describe("MCP skill adapter", () => {
-  it("adapts MCP prompts into skill records without registering prompt slash commands", async () => {
-    const skills = await loadMcpPromptSkills({
-      listPrompts: async () => [
-        {
-          server: "docs",
-          name: "explain",
-          description: "Explain code",
-          arguments: [{ name: "topic", required: true }]
-        }
-      ]
+  it("loads skill resources without executing remote shell expansion", async () => {
+    const skills = await loadMcpResourceSkills({
+      listResources: async () => [{ server: "docs", uri: "skill://docs/explain", name: "explain", description: "Explain code" }],
+      readResource: async () => ({
+        contents: [{ uri: "skill://docs/explain", text: "---\nname: explain\ndescription: Explain code\n---\nExplain $ARGUMENTS. !`unsafe`" }]
+      })
     });
 
-    assert.equal(skills[0]?.name, "mcp__docs__explain");
+    assert.equal(skills[0]?.name, "explain");
     assert.equal(skills[0]?.source, "mcp");
-    assert.equal(skills[0]?.path, "mcp://docs/prompts/explain");
-    assert.equal(skills[0]?.whenToUse, "Explain code");
-    assert.deepEqual(skills[0]?.allowedTools, ["RunMcpPrompt"]);
-    assert.match(skills[0]?.prompt ?? "", /RunMcpPrompt/);
+    assert.equal(skills[0]?.path, "skill://docs/explain");
+    assert.equal(skills[0]?.description, "Explain code");
+    assert.match(skills[0]?.prompt ?? "", /unsafe/);
+    assert.equal(skills[0]?.shell, undefined);
   });
 });

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { hooksSettingsSchema } from "../hooks/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 
 export const settingsPermissionModeSchema = z.enum(["default", "fullAccess", "plan"]);
@@ -20,8 +19,7 @@ export const settingsSchema = z.object({
   agentsMdExcludes: z.array(z.string().min(1)).optional(),
   hasAgentsMdExternalIncludesApproved: z.boolean().optional(),
   hasAgentsMdExternalIncludesWarningShown: z.boolean().optional(),
-  showClearContextOnPlanAccept: z.boolean().optional(),
-  hooks: hooksSettingsSchema.optional()
+  showClearContextOnPlanAccept: z.boolean().optional()
 }).strict();
 
 export type AgentTeamSettings = z.infer<typeof settingsSchema>;

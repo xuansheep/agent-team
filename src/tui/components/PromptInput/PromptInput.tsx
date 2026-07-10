@@ -57,6 +57,7 @@ export function PromptInput(props: {
 
 
   workflows: string[];
+  skills?: Array<{ name: string; description?: string; argumentHint?: string }>;
 
 
   isLoading: boolean;
@@ -103,7 +104,7 @@ export function PromptInput(props: {
   const [dismissedCompletionFor, setDismissedCompletionFor] = useState<string>();
 
 
-  const rawSuggestions = useMemo(() => slashCommandSuggestions(buffer.text, { workflows: props.workflows }), [buffer.text, props.workflows]);
+  const rawSuggestions = useMemo(() => slashCommandSuggestions(buffer.text, { workflows: props.workflows, skills: props.skills }), [buffer.text, props.workflows]);
 
 
   const suggestions = dismissedCompletionFor === buffer.text ? [] : rawSuggestions;
@@ -215,6 +216,7 @@ export function PromptInput(props: {
     isActive: !props.inputBlocked,
     textInputBlocked: props.textInputBlocked,
     imageAttachments,
+    skillNames: props.skills?.map((skill) => skill.name) ?? [],
 
 
     suggestions,

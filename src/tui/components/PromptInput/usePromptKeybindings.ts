@@ -29,6 +29,7 @@ type PromptKeybindingInput = {
   isActive?: boolean;
   textInputBlocked?: boolean;
   imageAttachments?: PromptInputImageAttachment[];
+  skillNames: string[];
   suggestions: SlashCommandSuggestion[];
   selectedSuggestion: number;
   onSelectedSuggestion: (index: number) => void;
@@ -198,6 +199,10 @@ function submit(input: PromptKeybindingInput) {
     input.onEvent({ type: "queue", text, ...(images.length ? { images } : {}) });
   } else if (processed.type === "command") {
     input.onEvent({ type: "command", name: processed.command.type, args: processed.command.args });
+  } else if (processed.type === "query" && text.startsWith("/")) {
+    const [name, ...args] = text.slice(1).split(/\s+/);
+    if (name && input.skillNames.includes(name)) input.onEvent({ type: "command", name, args });
+    else input.onEvent({ type: "submit", text, ...(images.length ? { images } : {}) });
   } else if (images.length && processed.type === "empty") {
     input.onEvent({ type: "submit", text, images });
   } else if (processed.type === "query") {

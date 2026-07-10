@@ -9,7 +9,6 @@ import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
-import { HookRuntime } from "../../src/hooks/runtime.js";
 import { SkillRuntime } from "../../src/skills/runtime.js";
 
 const config = {
@@ -63,85 +62,6 @@ describe("TuiApp global Plan Mode", () => {
 
     assert.equal(starts, 0);
     assert.doesNotMatch(output.lastFrame() ?? "", /Plan draft updated/);
-
-    output.unmount();
-    output.cleanup();
-  });
-
-  it("runs hook runtime during global Plan Mode turns", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-hooks-"));
-    const requests: ModelRequest[] = [];
-    const engine = { async startInteractive() { return fakeSession(); } };
-    const hookRuntime = new HookRuntime();
-    hookRuntime.addFunctionHook("UserPromptSubmit", "*", {
-      type: "function",
-      callback: () => ({ hookSpecificOutput: { additionalContext: "Plan hook context" } })
-    });
-    const output = render(
-      <TuiApp
-        cwd={cwd}
-        config={config}
-        workflows={["delivery"]}
-        workflowId="delivery"
-        engine={engine as never}
-        providerFactory={recordingPlanProviderFactory(requests)}
-        settings={{ permissions: { defaultMode: "plan" } }}
-        hookRuntime={hookRuntime}
-      />
-    );
-
-    await sendTuiLine(output, "Use hook context.");
-    const request = await waitForRequest(requests, "Use hook context.");
-
-    assert.match(requestText(request), /Plan hook context/);
-
-    output.unmount();
-    output.cleanup();
-  });
-
-  it("clears activated skill hooks after approved Plan Mode session starts workflow", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-skill-hooks-"));
-    const hookRuntime = new HookRuntime();
-    const skillRuntime = new SkillRuntime([{
-      name: "reviewer",
-      description: "Review plans",
-      prompt: "Review the plan before execution.",
-      path: "skills/reviewer/SKILL.md",
-      root: "skills/reviewer",
-      source: "project",
-      mode: "inline",
-      hooks: {
-        Stop: [{ hooks: [{ type: "command", command: "verify-review" }] }]
-      },
-      metadata: {}
-    }]);
-    const inputs: unknown[] = [];
-    const engine = { async startInteractive(_config: unknown, _workflowId: string, input: unknown) { inputs.push(input); return fakeSession(); } };
-    const output = render(
-      <TuiApp
-        cwd={cwd}
-        config={config}
-        workflows={["delivery"]}
-        workflowId="delivery"
-        engine={engine as never}
-        providerFactory={skillPlanProviderFactory}
-        skillRuntime={skillRuntime}
-        hookRuntime={hookRuntime}
-      />
-    );
-
-    await sendTuiLine(output, "/plan");
-    await sendTuiLine(output, "Use reviewer skill.");
-    await waitForFrame(output, /Plan draft saved/);
-    assert.equal(hookRuntime.getDiagnostics().some((hook) => hook.source === "skill" && hook.command === "verify-review"), true);
-
-    await sendTuiLine(output, "Ready for approval.");
-    await waitForFrame(output, /Ready to code\?/);
-    output.stdin.write("\r");
-    await settleTuiWork();
-
-    assert.equal(inputs.length, 1);
-    assert.equal(hookRuntime.getDiagnostics().some((hook) => hook.source === "skill" && hook.command === "verify-review"), false);
 
     output.unmount();
     output.cleanup();
@@ -201,10 +121,7 @@ describe("TuiApp global Plan Mode", () => {
           { name: "broken", source: "user", state: "failed", error: "boom", transport: "stdio", toolCount: 0, resourceCount: 0, promptCount: 0 }
         ],
         skills: [
-          { name: "reviewer", source: "project", mode: "inline", path: "skills/reviewer/SKILL.md", hasHooks: true }
-        ],
-        hooks: [
-          { id: "hook-1", event: "Stop", matcher: "*", type: "command", source: "settings", command: "verify-stop", wired: true }
+          { name: "reviewer", source: "project", mode: "inline", path: "skills/reviewer/SKILL.md" }
         ]
       }}
     />);
@@ -217,44 +134,8 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(frame, /docs connected project tools=1 resources=2 prompts=3/);
     assert.match(frame, /broken failed user boom/);
     assert.match(frame, /Skills: 1/);
-    assert.match(frame, /reviewer project inline hooks/);
-    assert.match(frame, /Hooks: 1/);
+    assert.match(frame, /reviewer project inline/);
     assert.match(frame, /Stop settings command wired verify-stop/);
-
-    output.unmount();
-    output.cleanup();
-  });
-
-  it("refreshes runtime diagnostics when slash command runs", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-diagnostics-live-"));
-    const requests: ModelRequest[] = [];
-    const engine = { async startInteractive() { return fakeSession(); } };
-    const hookRuntime = new HookRuntime();
-    hookRuntime.addFunctionHook("UserPromptSubmit", "*", {
-      type: "function",
-      callback: () => true
-    });
-    const output = render(
-      <TuiApp
-        cwd={cwd}
-        config={config}
-        workflows={["delivery"]}
-        workflowId="delivery"
-        engine={engine as never}
-        providerFactory={recordingPlanProviderFactory(requests)}
-        settings={{ permissions: { defaultMode: "plan" } }}
-        hookRuntime={hookRuntime}
-        collectDiagnostics={() => ({ mcp: [], skills: [], hooks: hookRuntime.getDiagnostics() })}
-      />
-    );
-
-    await sendTuiLine(output, "Refresh diagnostics after hook.");
-    await waitForRequest(requests, "Refresh diagnostics after hook.");
-    await sendTuiLine(output, "/diagnostics");
-    await waitForFrame(output, /last=success/);
-
-    const frame = output.lastFrame() ?? "";
-    assert.match(frame, /UserPromptSubmit builtin function wired function last=success/);
 
     output.unmount();
     output.cleanup();
@@ -573,7 +454,7 @@ describe("TuiApp global Plan Mode", () => {
         sha256: "global-hash",
         chars: projectPrompt.length,
         lines: 1,
-        sources: [{ kind: "project_agents" as const, path: join(cwd, ".agents", "AGENTS.md"), sha256: "source-hash", chars: projectPrompt.length, lines: 1 }]
+        sources: [{ kind: "project_agents" as const, path: join(cwd, ".einsteins", "AGENTS.md"), sha256: "source-hash", chars: projectPrompt.length, lines: 1 }]
       }
     };
     const output = render(<TuiApp cwd={cwd} config={configWithGlobalPrompt} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);

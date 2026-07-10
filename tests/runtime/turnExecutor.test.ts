@@ -275,8 +275,8 @@ describe("RuntimeTurnExecutor", () => {
   it("injects project AGENTS instructions loaded from config into plan mode runtime messages", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-project-agents-"));
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-runtime-project-agents-home-"));
-    await mkdir(join(cwd, ".agents"), { recursive: true });
-    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Project AGENTS instructions.\n", "utf8");
+    await mkdir(join(cwd, ".einsteins"), { recursive: true });
+    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Project AGENTS instructions.\n", "utf8");
     const configFile = join(cwd, "agent-team.yaml");
     await writeFile(configFile, `
 providers:

@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@commander-js/extra-typings": "^12.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^12.1.0",
     "fast-glob": "^3.3.2",
     "ink": "^5.2.1",

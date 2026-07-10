@@ -22,7 +22,6 @@ import type { RuntimeEvent } from "../runtime/types.js";
 import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
 import { setMcpServerDisabledState } from "../mcp/configMutations.js";
 import type { McpRuntime } from "../mcp/runtime.js";
-import type { HookRuntime } from "../hooks/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { SessionIndex } from "../storage/sessionIndex.js";
@@ -38,7 +37,7 @@ import { TuiDefaultExecutionMode, TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
-import { buildHooksEventChoice, buildHooksHookChoice, buildHooksHookDetailChoice, buildHooksMatcherChoice, buildMcpListChoice, buildMcpServerChoice, buildMcpToolDetailChoice, buildMcpToolsChoice, buildSkillsDetailChoice, buildSkillsListChoice, type McpMenuAction } from "./commandMenus/index.js";
+import { buildMcpListChoice, buildMcpServerChoice, buildMcpToolDetailChoice, buildMcpToolsChoice, buildSkillsDetailChoice, buildSkillsListChoice, type McpMenuAction } from "./commandMenus/index.js";
 import type { SelectImageAttachment } from "./components/CustomSelect/index.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./components/PromptInput/types.js";
 import { ResultPanel } from "./components/ResultPanel.js";
@@ -53,10 +52,6 @@ import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, get
 export type CommandMenuState =
   | { kind: "skills:list" }
   | { kind: "skills:detail"; skillName: string }
-  | { kind: "hooks:events" }
-  | { kind: "hooks:matchers"; event: string }
-  | { kind: "hooks:hooks"; event: string; matcher: string }
-  | { kind: "hooks:detail"; id: string }
   | { kind: "mcp:list" }
   | { kind: "mcp:server"; serverName: string }
   | { kind: "mcp:tools"; serverName: string }
@@ -77,7 +72,6 @@ export function TuiApp({
   settings,
   mcpRuntime,
   skillRuntime,
-  hookRuntime,
   diagnostics,
   collectDiagnostics,
   mcpConfigOptions,
@@ -97,7 +91,6 @@ export function TuiApp({
   settings?: ResolvedAgentTeamSettings;
   mcpRuntime?: McpRuntime;
   skillRuntime?: SkillRuntime;
-  hookRuntime?: HookRuntime;
   diagnostics?: RuntimeDiagnostics;
   collectDiagnostics?: () => RuntimeDiagnostics;
   mcpConfigOptions?: McpConfigSourceOptions;
@@ -319,7 +312,6 @@ export function TuiApp({
     };
   }, [stdin, state.mode, hasSelection, selection]);
   const resetSession = () => {
-    if (planSessionRef.current) hookRuntime?.clearSessionHooks(planSessionRef.current.sessionId);
     sessionRef.current = undefined;
     planSessionRef.current = undefined;
     resetPlanApprovalFeedback();
@@ -509,7 +501,7 @@ export function TuiApp({
     setPlanWorkCount((current) => current + 1);
     let lastUsage: ModelUsage | undefined;
     try {
-      const legacyTools = createLocalToolRegistry({ mcpRuntime, skillRuntime, hookRuntime });
+      const legacyTools = createLocalToolRegistry({ mcpRuntime, skillRuntime });
       const kernelSession: KernelSession = {
         id: currentPlan.sessionId,
         cwd,
@@ -536,8 +528,7 @@ export function TuiApp({
         nodeId: "runtime",
         globalPrompt: config?.global_prompt,
         globalPromptMetadata: config?.global_prompt_metadata,
-        hookRuntime,
-        signal: abortController.signal,
+            signal: abortController.signal,
         eventSink: (event) => {
           if (planTurnGenerationRef.current !== turnGeneration || abortController.signal.aborted) return;
           if (event.type === "runtime_prompt_injection") {
@@ -1129,7 +1120,6 @@ ${message.detailText}` : ""}` }
     planMessagesRef.current = resolved.session.messages;
     appendPlanTranscriptMessages(nextPlan.sessionId, resolvedMessages);
     savePlanSession(nextPlan);
-    hookRuntime?.clearSessionHooks(nextPlan.sessionId);
     resetPlanApprovalFeedback();
     const execution = resolved.execution;
     setState((current) => ({ ...current, mode: "running", inputPermissionMode: execution?.permissionMode ?? current.inputPermissionMode, planSession: nextPlan, pendingReview: undefined, error: undefined }));
@@ -1279,6 +1269,68 @@ ${message.detailText}` : ""}` }
       failUi(error);
     }
   };
+  const dispatchInjectedPrompt = (content: string) => {
+    if (state.pendingReview || state.mode === "permission" || state.mode.startsWith("confirm_") || state.mode === "resume_picker" || state.mode === "select_workflow") {
+      throw new Error(`Cannot inject a prompt while ${state.mode}`);
+    }
+    if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || isPlanSessionAcceptingInput(planSessionRef.current)) {
+      enqueuePlanTurn(content);
+    } else if (state.mode === "paused" && state.runId) {
+      continueSession(content);
+    } else if (state.runId || state.mode === "completed" || state.mode === "failed" || state.mode === "interrupted") {
+      continueSession(content);
+    } else {
+      void startRun(content);
+    }
+  };
+  const runMcpPromptCommand = async (commandName: string, args: string[]) => {
+    try {
+      if (!mcpRuntime) throw new Error("MCP runtime is not available");
+      const command = mcpRuntime.listPromptCommands().find((candidate) => candidate.name === commandName);
+      if (!command) throw new Error(`Unknown MCP prompt command ${commandName}`);
+      const prompt = (await mcpRuntime.listPrompts({ server: command.server })).find((candidate) => candidate.name === command.prompt);
+      const named = Object.fromEntries(args.filter((arg) => arg.includes("=")).map((arg) => { const index = arg.indexOf("="); return [arg.slice(0, index), arg.slice(index + 1)]; }));
+      const positional = args.filter((arg) => !arg.includes("="));
+      const promptArgs = Object.fromEntries((prompt?.arguments ?? []).flatMap((argument, index) => {
+        const value = named[argument.name] ?? positional[index];
+        if (value === undefined && argument.required) throw new Error(`Missing required MCP prompt argument ${argument.name}`);
+        return value === undefined ? [] : [[argument.name, value]];
+      }));
+      const result = await mcpRuntime.getPrompt(command.server, command.prompt, promptArgs);
+      const content = result.messages.map((message) => {
+        const body = message.content.type === "text" && typeof message.content.text === "string" ? message.content.text : JSON.stringify(message.content);
+        return `${message.role}: ${body}`;
+      }).join("\n\n");
+      setState((current) => ({ ...current, logMessages: [...current.logMessages, statusLog(`MCP prompt: ${command.server}/${command.prompt}`)], error: undefined }));
+      dispatchInjectedPrompt(content);
+    } catch (error) {
+      failUi(error);
+    }
+  };
+  const runUserSkillCommand = async (name: string, args: string[]) => {
+    try {
+      if (!skillRuntime) throw new Error("Skill runtime is not available");
+      const skill = skillRuntime.getSkill(name);
+      if (!skill || skill.userInvocable === false) throw new Error(`Unknown user-invocable skill ${name}`);
+      const providerSelection = selectPlanProvider({ config, workflowId: selectedWorkflowId ?? state.workflowId, providerFactory });
+      const tools = createLocalToolRegistry({ mcpRuntime, skillRuntime });
+      const activation = await skillRuntime.activateSkill(name, {
+        args: args.join(" "),
+        prompt: args.join(" "),
+        cwd,
+        sessionId: planSessionRef.current?.sessionId ?? state.runId ?? `skill-${name}`,
+        provider: providerSelection?.provider,
+        model: providerSelection?.model,
+        tools,
+        parentPermissionMode: state.inputPermissionMode
+      });
+      const content = activation.mode === "inline" ? activation.renderedPrompt : activation.output;
+      setState((current) => ({ ...current, logMessages: [...current.logMessages, statusLog(`Skill activated: ${name}`)], error: undefined }));
+      dispatchInjectedPrompt(content);
+    } catch (error) {
+      failUi(error);
+    }
+  };
   const handlePromptEvent = (event: PromptInputEvent) => {
     if (event.type === "cancel") {
       cancelActiveChoice();
@@ -1325,6 +1377,33 @@ ${message.detailText}` : ""}` }
       return;
     }
     if (event.type === "command") {
+      const mcpPromptCommand = mcpRuntime?.listPromptCommands().find((command) => command.name === event.name);
+      if (mcpPromptCommand) {
+        void runMcpPromptCommand(event.name, event.args);
+        return;
+      }
+      const invokedSkill = skillRuntime?.getSkill(event.name);
+      if (invokedSkill && invokedSkill.userInvocable !== false) {
+        void runUserSkillCommand(event.name, event.args);
+        return;
+      }
+      if (event.name === "skills") {
+        if (event.args[0] === "refresh") {
+          void skillRuntime?.refresh().then(() => {
+            setState((current) => ({ ...current, error: undefined, logMessages: [...current.logMessages, statusLog("Skills refreshed")] }));
+            setCommandMenu({ kind: "skills:list" });
+          }).catch((error) => failUi(error));
+        } else {
+          setCommandMenu({ kind: "skills:list" });
+        }
+        return;
+      }
+      if (event.name === "mcp") {
+        const action = event.args[0];
+        if (action === "enable" || action === "disable" || action === "reconnect") void runMcpAction(action, event.args.slice(1).join(" ") || undefined);
+        else setCommandMenu({ kind: "mcp:list" });
+        return;
+      }
       if (event.name === "help") {
         showHelp();
       }
@@ -1410,7 +1489,7 @@ ${message.detailText}` : ""}` }
   const logMessages = state.logMessages;
   const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: workStatusDetail });
   const activityStatus = hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus;
-  const currentDiagnosticsForMenu = collectDiagnostics?.() ?? diagnostics ?? { mcp: [], skills: [], hooks: [] };
+  const currentDiagnosticsForMenu = collectDiagnostics?.() ?? diagnostics ?? { mcp: [], skills: [] };
   const commandMenuChoice = commandMenu ? buildCommandMenuChoice({
     state: commandMenu,
     diagnostics: currentDiagnosticsForMenu,
@@ -1712,6 +1791,7 @@ ${message.detailText}` : ""}` }
         workflowId={state.workflowId}
         queued={queued}
         workflows={workflows}
+        skills={[...(skillRuntime?.listSkills().map((skill) => ({ name: skill.name, description: skill.description, argumentHint: skill.argumentHint })) ?? []), ...(mcpRuntime?.listPromptCommands().map((command) => ({ name: command.name, description: command.description, argumentHint: command.argumentHint })) ?? [])]}
         questions={state.questions}
         isLoading={isLoading}
         permissionMode={state.inputPermissionMode}
@@ -2597,19 +2677,6 @@ export function buildCommandMenuChoice(input: {
     const skill = input.diagnostics.skills.find((candidate) => candidate.name === state.skillName);
     return skill ? buildSkillsDetailChoice({ skill, onBack: () => input.setCommandMenu({ kind: "skills:list" }), onCancel: () => input.closeCommandMenu("Skills dialog dismissed") }) : undefined;
   }
-  if (state.kind === "hooks:events") {
-    return buildHooksEventChoice({ hooks: input.diagnostics.hooks, onSelect: (event) => input.setCommandMenu({ kind: "hooks:matchers", event }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") });
-  }
-  if (state.kind === "hooks:matchers") {
-    return buildHooksMatcherChoice({ event: state.event, hooks: input.diagnostics.hooks, onSelect: (matcher) => input.setCommandMenu({ kind: "hooks:hooks", event: state.event, matcher }), onBack: () => input.setCommandMenu({ kind: "hooks:events" }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") });
-  }
-  if (state.kind === "hooks:hooks") {
-    return buildHooksHookChoice({ event: state.event, matcher: state.matcher, hooks: input.diagnostics.hooks, onSelect: (id) => input.setCommandMenu({ kind: "hooks:detail", id }), onBack: () => input.setCommandMenu({ kind: "hooks:matchers", event: state.event }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") });
-  }
-  if (state.kind === "hooks:detail") {
-    const hook = input.diagnostics.hooks.find((candidate) => candidate.id === state.id);
-    return hook ? buildHooksHookDetailChoice({ hook, onBack: () => input.setCommandMenu({ kind: "hooks:events" }), onCancel: () => input.closeCommandMenu("Hooks dialog dismissed") }) : undefined;
-  }
   if (state.kind === "mcp:list") {
     return buildMcpListChoice({ servers: input.diagnostics.mcp, onSelect: (serverName) => input.setCommandMenu({ kind: "mcp:server", serverName }), onAction: (action, serverName) => { void input.runMcpAction(action, serverName); }, onCancel: () => input.closeCommandMenu("MCP dialog dismissed") });
   }
@@ -2635,9 +2702,8 @@ function helpDetailText(): string {
     "Slash commands:",
     "  /help show this help",
     "  /plan [open|text] Plan Mode, show/open plan, or send plan text",
-    "  /diagnostics show MCP, skill, and hook runtime diagnostics",
+    "  /diagnostics show MCP and skill runtime diagnostics",
     "  /skills list available skills",
-    "  /hooks view hook configurations",
     "  /mcp manage MCP servers",
     "  /mcp enable|disable [server-name] toggle MCP servers",
     "  /mcp reconnect <server-name> reconnect an MCP server",
@@ -2650,7 +2716,6 @@ function helpDetailText(): string {
 function diagnosticsDetailText(diagnostics: RuntimeDiagnostics | undefined): string {
   const mcp = diagnostics?.mcp ?? [];
   const skills = diagnostics?.skills ?? [];
-  const hooks = diagnostics?.hooks ?? [];
   return [
     `MCP servers: ${mcp.length}`,
     ...mcp.map((server) => [
@@ -2666,19 +2731,8 @@ function diagnosticsDetailText(diagnostics: RuntimeDiagnostics | undefined): str
     ...skills.map((skill) => [
       skill.name,
       skill.source,
-      skill.mode,
-      skill.hasHooks ? "hooks" : "no-hooks"
+      skill.mode
     ].join(" ")),
-    `Hooks: ${hooks.length}`,
-    ...hooks.map((hook) => [
-      hook.event,
-      hook.source,
-      hook.type,
-      hook.wired ? "wired" : "not-wired",
-      hook.command,
-      hook.lastExecution ? `last=${hook.lastExecution.outcome}` : undefined,
-      hook.lastExecution?.error
-    ].filter(Boolean).join(" "))
   ].join("\n");
 }
 

@@ -126,7 +126,7 @@ describe("Plan Mode V2", () => {
     const { state, permissions } = enterPlanMode({
       sessionId: "session-custom-plans",
       cwd,
-      plansDirectory: ".agent-team/plans",
+      plansDirectory: ".einsteins/plans",
       originalInput: { request: "build" },
       permissions: { mode: "default", allow: [], ask: [], deny: [] }
     });

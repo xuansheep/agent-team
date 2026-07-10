@@ -15,9 +15,8 @@ describe("command registry", () => {
     assert.deepEqual(parseCommandAction("/statusline mode,workflow"), { type: "statusline", args: ["mode,workflow"] });
   });
 
-  it("parses skills, hooks, and mcp commands", () => {
+  it("parses skills and mcp commands", () => {
     assert.deepEqual(parseCommandAction("/skills"), { type: "skills", args: [] });
-    assert.deepEqual(parseCommandAction("/hooks"), { type: "hooks", args: [] });
     assert.deepEqual(parseCommandAction("/mcp"), { type: "mcp", args: [] });
     assert.deepEqual(parseCommandAction("/mcp enable docs"), { type: "mcp", args: ["enable", "docs"], subcommand: "enable", serverName: "docs" });
     assert.deepEqual(parseCommandAction("/mcp disable"), { type: "mcp", args: ["disable"], subcommand: "disable", serverName: undefined });
@@ -30,7 +29,7 @@ describe("command registry", () => {
   });
 
   it("exposes stable command names for TUI completion", () => {
-    assert.deepEqual(commandNames(), ["clear", "diagnostics", "help", "hooks", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline"]);
+    assert.deepEqual(commandNames(), ["clear", "diagnostics", "help", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline"]);
   });
 
   it("documents /plan open in the command hint", () => {

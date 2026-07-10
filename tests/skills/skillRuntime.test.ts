@@ -17,7 +17,7 @@ describe("SkillRuntime", () => {
     const explicitRoot = join(cwd, "configured-skills");
     await writeSkill(join(userRoot, "shared"), "shared", "user");
     await writeSkill(join(bundledRoot, "shared"), "shared", "bundled");
-    await writeSkill(join(cwd, ".agents", "skills", "project"), "project", "project");
+    await writeSkill(join(cwd, ".einsteins", "skills", "project"), "project", "project");
     await writeSkill(join(cwd, ".einsteins", "skills", "shared"), "shared", "project-einsteins");
     await writeSkill(join(explicitRoot, "explicit"), "explicit", "explicit");
 
@@ -65,7 +65,7 @@ Review carefully.
 
   it("activates inline skills as system context", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-inline-skill-"));
-    await writeSkill(join(cwd, ".agents", "skills", "planner"), "planner", "Always plan first.");
+    await writeSkill(join(cwd, ".einsteins", "skills", "planner"), "planner", "Always plan first.");
     const runtime = await SkillRuntime.discover({ cwd });
 
     const result = await runtime.activateSkill("planner", {
@@ -80,7 +80,7 @@ Review carefully.
 
   it("runs fork skills through a constrained child model request", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-fork-skill-"));
-    await writeSkill(join(cwd, ".agents", "skills", "reviewer"), "reviewer", "Review only.", {
+    await writeSkill(join(cwd, ".einsteins", "skills", "reviewer"), "reviewer", "Review only.", {
       mode: "fork",
       allowedTools: ["Read"]
     });
@@ -113,7 +113,7 @@ Review carefully.
 
   it("reports skill diagnostics for later TUI surfaces", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-skill-diagnostics-"));
-    await writeSkill(join(cwd, ".agents", "skills", "planner"), "planner", "Plan.", {
+    await writeSkill(join(cwd, ".einsteins", "skills", "planner"), "planner", "Plan.", {
       mode: "inline",
       allowedTools: ["Read"]
     });
@@ -123,9 +123,8 @@ Review carefully.
       name: "planner",
       source: "project",
       mode: "inline",
-      path: join(cwd, ".agents", "skills", "planner", "SKILL.md"),
-      allowedTools: ["Read"],
-      hasHooks: false
+      path: join(cwd, ".einsteins", "skills", "planner", "SKILL.md"),
+      allowedTools: ["Read"]
     }]);
   });
 });

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { getPlanFilePath } from "../../src/plans/planFiles.js";
-import { defaultUserSettingsPath, legacyUserSettingsPath, loadSettings } from "../../src/settings/loadSettings.js";
+import { defaultUserSettingsPath, loadSettings } from "../../src/settings/loadSettings.js";
 import { resolveSettings } from "../../src/settings/resolveSettings.js";
 import { settingsSchema } from "../../src/settings/types.js";
 
@@ -22,7 +22,7 @@ describe("settings", () => {
   it("loads user and project settings with project settings taking precedence", async () => {
     const cwd = await workspace();
     const userSettingsPath = join(cwd, "user-settings.yaml");
-    const projectSettingsPath = join(cwd, ".agent-team", "settings.yaml");
+    const projectSettingsPath = join(cwd, ".einsteins", "settings.yaml");
     await writeText(userSettingsPath, `
 permissions:
   defaultMode: default
@@ -41,7 +41,7 @@ showClearContextOnPlanAccept: false
     await writeText(projectSettingsPath, `
 permissions:
   defaultMode: fullAccess
-plansDirectory: .agent-team/plans
+plansDirectory: .einsteins/plans
 models:
   planModel: project-plan
   aliases:
@@ -56,7 +56,7 @@ showClearContextOnPlanAccept: true
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
 
     assert.equal(settings.permissions?.defaultMode, "fullAccess");
-    assert.equal(settings.plansDirectory, resolve(cwd, ".agent-team", "plans"));
+    assert.equal(settings.plansDirectory, resolve(cwd, ".einsteins", "plans"));
     assert.equal(settings.models?.planModel, "project-plan");
     assert.deepEqual(settings.models?.aliases, { shared: "project-model", "user-only": "user-model" });
     assert.deepEqual(settings.models?.contextWindows, { "shared-model": 2000 });
@@ -83,8 +83,8 @@ showClearContextOnPlanAccept: true
     const cwd = await workspace();
 
     assert.equal(
-      resolveSettings({ cwd, projectSettings: { plansDirectory: ".agent-team/plans" } }).plansDirectory,
-      resolve(cwd, ".agent-team", "plans")
+      resolveSettings({ cwd, projectSettings: { plansDirectory: ".einsteins/plans" } }).plansDirectory,
+      resolve(cwd, ".einsteins", "plans")
     );
     assert.throws(() => resolveSettings({ cwd, projectSettings: { plansDirectory: "../outside" } }), /within project root/);
     assert.throws(() => resolveSettings({ cwd, projectSettings: { plansDirectory: resolve(cwd, "..", "outside") } }), /within project root/);
@@ -92,7 +92,7 @@ showClearContextOnPlanAccept: true
 
   it("uses configured plan directory for plan file paths", async () => {
     const cwd = await workspace();
-    const settings = resolveSettings({ cwd, projectSettings: { plansDirectory: ".agent-team/plans" } });
+    const settings = resolveSettings({ cwd, projectSettings: { plansDirectory: ".einsteins/plans" } });
 
     assert.match(getPlanFilePath("session-1", cwd, settings.plansDirectory), /[.]agent-team[\\/]plans[\\/].+[.]md$/);
   });
@@ -174,9 +174,8 @@ workflows:
     assert.deepEqual(provider.context_windows, { "legacy-model": 1000, "shared-model": 32000, "settings-model": 128000 });
   });
 
-  it("defaults user settings to ~/.einsteins and exposes the legacy fallback path", () => {
+  it("defaults user settings to ~/.einsteins", () => {
     assert.match(defaultUserSettingsPath(), /[\\/]\.einsteins[\\/]settings\.yaml$/);
-    assert.match(legacyUserSettingsPath(), /[\\/]\.agent-team[\\/]settings\.yaml$/);
   });
 
 });

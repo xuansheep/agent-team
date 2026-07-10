@@ -17,19 +17,24 @@ import { enterPlanModeTool } from "./local/enterPlanMode.js";
 import { exitPlanModeTool } from "./local/exitPlanMode.js";
 import { askUserQuestionTool } from "./local/askUserQuestion.js";
 import type { McpRuntime } from "../mcp/runtime.js";
-import { createDeferredMcpTool, createMcpToolSearchTool } from "../mcp/deferredTools.js";
+import { createMcpToolSearchTool } from "../mcp/deferredTools.js";
 import { createListMcpResourcesTool, createReadMcpResourceTool } from "../mcp/resourceTools.js";
 import { createGetMcpPromptTool, createListMcpPromptsTool, createRunMcpPromptTool } from "../mcp/promptTools.js";
-import type { HookRuntime } from "../hooks/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import { createListSkillsTool, createUseSkillTool } from "../skills/skillTools.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
+  constructor(readonly skillRuntime?: SkillRuntime) {}
+
   add(tool: Tool): void {
     if (this.tools.has(tool.name)) throw new Error(`Duplicate tool ${tool.name}`);
     this.tools.set(tool.name, tool);
+  }
+
+  has(name: string): boolean {
+    return this.tools.has(name);
   }
 
   get(name: string): Tool {
@@ -41,10 +46,14 @@ export class ToolRegistry {
   list(): Tool[] {
     return [...this.tools.values()];
   }
+
+  activateSkillsForInput(input: unknown, cwd: string): string[] {
+    return this.skillRuntime?.activateForPaths(candidatePaths(input), cwd) ?? [];
+  }
 }
 
-export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skillRuntime?: SkillRuntime; hookRuntime?: HookRuntime } = {}): ToolRegistry {
-  const registry = new ToolRegistry();
+export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skillRuntime?: SkillRuntime } = {}): ToolRegistry {
+  const registry = new ToolRegistry(options.skillRuntime);
   for (const tool of [
     readTool,
     writeTool,
@@ -73,17 +82,21 @@ export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skil
     registry.add(createListMcpPromptsTool(options.mcpRuntime));
     registry.add(createGetMcpPromptTool(options.mcpRuntime));
     registry.add(createRunMcpPromptTool(options.mcpRuntime));
-    for (const tool of options.mcpRuntime.listTools()) {
-      registry.add(createDeferredMcpTool(tool, options.mcpRuntime));
-    }
   }
   if (options.skillRuntime) {
     registry.add(createListSkillsTool(options.skillRuntime));
-    registry.add(createUseSkillTool(options.skillRuntime, { hookRuntime: options.hookRuntime }));
+    registry.add(createUseSkillTool(options.skillRuntime));
   }
   return registry;
 }
 
+
+function candidatePaths(input: unknown): string[] {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return [];
+  const record = input as Record<string, unknown>;
+  return [record.file_path, record.path, record.cwd, record.directory]
+    .flatMap((value) => typeof value === "string" && value.trim() ? [value] : []);
+}
 
 export function createPlanModeToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();

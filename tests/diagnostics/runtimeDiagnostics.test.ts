@@ -1,20 +1,23 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { collectRuntimeDiagnostics } from "../../src/diagnostics/runtimeDiagnostics.js";
-import { HookRuntime } from "../../src/hooks/runtime.js";
 import { McpRuntime } from "../../src/mcp/runtime.js";
 import { SkillRuntime } from "../../src/skills/runtime.js";
 
 describe("runtime diagnostics", () => {
-  it("collects MCP, skill, and hook diagnostics for TUI surfaces", async () => {
+  it("collects MCP and skill diagnostics for TUI surfaces", async () => {
     const mcpRuntime = new McpRuntime({
       clientFactory: async () => ({
+        initialize: async () => undefined,
+        getMetadata: () => ({ capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: "docs", version: "1.0.0" } }),
+        onListChanged: () => undefined,
         listTools: async () => [{ name: "search" }],
-        callTool: async () => ({}),
-        listResources: async () => [{ uri: "file://readme" }],
-        readResource: async () => ({ uri: "file://readme", contents: [] }),
+        callTool: async () => ({ content: [] }),
+        listResources: async () => [{ uri: "file://readme", name: "readme" }],
+        readResource: async () => ({ contents: [] }),
         listPrompts: async () => [{ name: "explain" }],
-        getPrompt: async () => ({ name: "explain", messages: [] })
+        getPrompt: async () => ({ messages: [] }),
+        close: async () => undefined
       })
     });
     await mcpRuntime.connectAll([{ name: "docs", source: "project", type: "http", url: "https://mcp.example.test" }]);
@@ -24,16 +27,16 @@ describe("runtime diagnostics", () => {
       path: "SKILL.md",
       root: ".",
       source: "project",
-      mode: "inline"
+      mode: "inline",
+      userInvocable: true,
+      disableModelInvocation: false,
+      metadata: {}
     }]);
-    const hookRuntime = new HookRuntime({
-      Stop: [{ hooks: [{ type: "command", command: "verify" }] }]
-    });
 
-    const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime, hookRuntime });
+    const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
 
     assert.equal(diagnostics.mcp[0]?.name, "docs");
+    assert.equal(diagnostics.mcp[0]?.serverInfo?.version, "1.0.0");
     assert.equal(diagnostics.skills[0]?.name, "planner");
-    assert.equal(diagnostics.hooks[0]?.event, "Stop");
   });
 });

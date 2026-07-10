@@ -110,7 +110,7 @@ describe("SessionStore", () => {
           sha256: "global-hash",
           chars: 23,
           lines: 1,
-          sources: [{ kind: "project_agents", path: join(root, ".agents", "AGENTS.md"), sha256: "source-hash", chars: 23, lines: 1 }]
+          sources: [{ kind: "project_agents", path: join(root, ".einsteins", "AGENTS.md"), sha256: "source-hash", chars: 23, lines: 1 }]
         }
       }
     });
