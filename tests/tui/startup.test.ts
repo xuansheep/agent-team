@@ -1,9 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareTuiRuntime, selectDefaultWorkflow } from "../../src/tui/launchTui.js";
+import { writeProjectConfig } from "../helpers/projectConfig.js";
 
 
 describe("TUI startup workflow selection", () => {
@@ -28,39 +29,29 @@ describe("TUI startup workflow selection", () => {
     assert.equal(selectDefaultWorkflow(["a", "b"]), undefined);
   });
 
-  it("discovers configured project skills during bootstrap", async () => {
+  it("creates user settings before reporting a missing project config", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-missing-config-"));
+    const homeDir = await mkdtemp(join(tmpdir(), "agent-team-tui-missing-home-"));
+
+    await assert.rejects(() => prepareTuiRuntime({ cwd, homeDir }), /ENOENT/);
+    assert.match(await readFile(join(homeDir, ".einsteins", "settings.yaml"), "utf8"), /providers:/);
+  });
+
+  it("discovers project skills during bootstrap", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-skills-"));
-    await mkdir(join(cwd, "configured-skills", "reviewer"), { recursive: true });
-    await writeFile(join(cwd, "configured-skills", "reviewer", "SKILL.md"), `---
+    const homeDir = await mkdtemp(join(tmpdir(), "agent-team-tui-home-"));
+    await mkdir(join(cwd, ".einsteins", "skills", "reviewer"), { recursive: true });
+    await writeFile(join(cwd, ".einsteins", "skills", "reviewer", "SKILL.md"), `---
 name: reviewer
 ---
 Review carefully.
 `, "utf8");
-    await writeFile(join(cwd, "agent-team.yaml"), `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: default-model
-skills:
-  paths:
-    - configured-skills
-roles:
-  dev:
-    system_prompt: Build safely.
-workflows:
-  delivery:
-    nodes:
-      - id: dev
-        role: dev
-        provider: default
-    edges: []
-`, "utf8");
+    await writeProjectConfig(cwd);
 
-    const runtime = await prepareTuiRuntime({ cwd });
+    const runtime = await prepareTuiRuntime({ cwd, homeDir });
 
     assert.equal(runtime.skillRuntime?.getSkill("reviewer")?.source, "project");
+    assert.match(await readFile(join(homeDir, ".einsteins", "settings.yaml"), "utf8"), /providers:\s+[\s\S]*default:/);
   });
 
 });

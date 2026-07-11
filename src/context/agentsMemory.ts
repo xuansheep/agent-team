@@ -23,7 +23,6 @@ export type AgentsMemoryLoadOptions = {
   configDir?: string;
   homeDir?: string;
   configuredPromptFile?: string;
-  configuredPrompt?: string;
   settings?: ResolvedAgentTeamSettings;
   includeExternal?: boolean;
 };
@@ -178,9 +177,7 @@ async function configuredMemory(
   if (options.configuredPromptFile) {
     return processAgentsMemoryFile(resolve(configDir, options.configuredPromptFile), "Configured", processed, cwd, includeExternal, options.settings);
   }
-  const content = options.configuredPrompt?.trim();
-  if (!content) return undefined;
-  return [{ path: "<configured_inline>", type: "Configured", content, sourceKind: "configured_inline" }];
+  return undefined;
 }
 
 function parseFrontmatter(raw: string): { content: string; paths?: string[] } {

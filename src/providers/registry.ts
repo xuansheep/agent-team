@@ -7,8 +7,8 @@ import { AnthropicMessagesProvider } from "./anthropicMessages.js";
 export function createProvider(config: AgentTeamConfig, providerId: string): ModelProvider {
   const provider = config.providers[providerId];
   if (!provider) throw new Error(`Unknown provider ${providerId}`);
-  const apiKey = process.env[provider.api_key_env];
-  if (!apiKey) throw new Error(`Missing API key environment variable ${provider.api_key_env}`);
+  const apiKey = provider.api_key.trim();
+  if (!apiKey) throw new Error(`Missing API key for provider ${providerId}; configure api_key in ~/.einsteins/settings.yaml`);
 
   switch (provider.type) {
     case "openai-compatible":

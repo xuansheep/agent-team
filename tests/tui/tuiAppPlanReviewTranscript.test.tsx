@@ -47,7 +47,7 @@ describe("TuiApp plan review transcript", () => {
 function tuiConfig() {
   return {
     providers: {
-      default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
+      default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
     },
     roles: {
       product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } }

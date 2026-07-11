@@ -30,11 +30,11 @@ export type StdioMcpServerConfig = z.infer<typeof stdioMcpServerSchema>;
 export type RemoteMcpServerConfig = z.infer<typeof remoteMcpServerSchema>;
 export type McpServerConfig = z.infer<typeof mcpServerSchema>;
 export type McpServersConfig = z.infer<typeof mcpServersSchema>;
-export type McpConfigSource = "managed" | "user" | "project" | "local" | "agent-team";
+export type McpConfigSource = "managed" | "user" | "project" | "local";
 
 export type ResolvedMcpServerConfig = McpServerConfig & {
   name: string;
   source: McpConfigSource;
   sourcePath?: string;
-  sourceFormat?: "json" | "yaml";
+  sourceFormat?: "json";
 };

@@ -3,6 +3,9 @@ import { AgentTeamConfig } from "./schema.js";
 export function resolveConfig(config: AgentTeamConfig): AgentTeamConfig {
   for (const [workflowId, workflow] of Object.entries(config.workflows)) {
     const nodeIds = new Set(workflow.nodes.map((node) => node.id));
+    if (nodeIds.size !== workflow.nodes.length) {
+      throw new Error(`Duplicate node id in workflow ${workflowId}`);
+    }
 
     for (const node of workflow.nodes) {
       if (!config.roles[node.role]) {

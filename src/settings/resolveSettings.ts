@@ -1,15 +1,15 @@
 import { isAbsolute, relative, resolve } from "node:path";
-import { AgentTeamSettings, ResolvedAgentTeamSettings, settingsSchema } from "./types.js";
+import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 
 export type ResolveSettingsInput = {
   cwd: string;
   userSettings?: AgentTeamSettings;
-  projectSettings?: AgentTeamSettings;
+  projectSettings?: ProjectAgentTeamSettings;
 };
 
 export function resolveSettings(input: ResolveSettingsInput): ResolvedAgentTeamSettings {
   const userSettings = input.userSettings ? settingsSchema.parse(input.userSettings) : {};
-  const projectSettings = input.projectSettings ? settingsSchema.parse(input.projectSettings) : {};
+  const projectSettings = input.projectSettings ? projectSettingsSchema.parse(input.projectSettings) : {};
   const merged = mergeSettings(userSettings, projectSettings);
 
   if (!merged.plansDirectory) return merged;
@@ -29,17 +29,18 @@ export function resolvePlansDirectory(cwd: string, plansDirectory: string): stri
   return target;
 }
 
-function mergeSettings(userSettings: AgentTeamSettings, projectSettings: AgentTeamSettings): AgentTeamSettings {
+function mergeSettings(userSettings: AgentTeamSettings, projectSettings: ProjectAgentTeamSettings): AgentTeamSettings {
   return {
     ...userSettings,
     ...projectSettings,
+    providers: userSettings.providers,
     permissions: mergeObject(userSettings.permissions, projectSettings.permissions),
     models: mergeModels(userSettings.models, projectSettings.models),
     planMode: mergeObject(userSettings.planMode, projectSettings.planMode)
   };
 }
 
-function mergeModels(userModels: AgentTeamSettings["models"], projectModels: AgentTeamSettings["models"]): AgentTeamSettings["models"] {
+function mergeModels(userModels: AgentTeamSettings["models"], projectModels: ProjectAgentTeamSettings["models"]): AgentTeamSettings["models"] {
   const merged = mergeObject(userModels, projectModels);
   if (!merged) return undefined;
   return {

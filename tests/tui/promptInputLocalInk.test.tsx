@@ -337,6 +337,43 @@ describe("PromptInput with local Ink renderer", () => {
 
 
 
+  it("scrolls slash command suggestions while navigating past the first page", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream & { output: string };
+    const instance = renderSync(
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onEvent={() => undefined}
+      />,
+      {
+        stdin,
+        stdout,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      stdin.send("/");
+      await settleTimers();
+      for (let index = 0; index < 6; index += 1) {
+        stdin.send("\u001b[B");
+        await settleTimers();
+      }
+
+      assert.match(stripAnsi(stdout.output), /> \/permissions/);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
   it("does not insert ctrl shortcuts into the prompt buffer", async () => {
     const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
     const events: PromptInputEvent[] = [];

@@ -76,6 +76,7 @@ export function TuiApp({
   collectDiagnostics,
   mcpConfigOptions,
   executeMcpActionForTest,
+  saveDefaultPermissionMode,
   onExit
 }: {
   cwd: string;
@@ -95,6 +96,7 @@ export function TuiApp({
   collectDiagnostics?: () => RuntimeDiagnostics;
   mcpConfigOptions?: McpConfigSourceOptions;
   executeMcpActionForTest?: (action: McpMenuAction, serverName?: string) => Promise<McpActionResult>;
+  saveDefaultPermissionMode?: (mode: TuiDefaultExecutionMode) => Promise<void>;
   onExit?: () => void;
 }) {
   const { exit } = useApp();
@@ -138,6 +140,7 @@ export function TuiApp({
   const planApprovalFeedbackRef = useRef("");
   const planApprovalImagesRef = useRef<SelectImageAttachment[]>([]);
   const planApprovalImageIdRef = useRef(1);
+  const persistedDefaultExecutionModeRef = useRef(settings?.permissions?.defaultMode);
   const [planApprovalImages, setPlanApprovalImages] = useState<SelectImageAttachment[]>([]);
   const planQuestionImagesRef = useRef<Record<string, SelectImageAttachment[]>>({});
   const planQuestionImageIdRef = useRef(1);
@@ -439,7 +442,7 @@ export function TuiApp({
         allow: [],
         ask: [],
         deny: [],
-        source: settings?.permissions?.defaultMode === state.defaultExecutionMode ? "settings" : "session",
+        source: persistedDefaultExecutionModeRef.current === state.defaultExecutionMode ? "settings" : "session",
         ...(reentry ? { planFilePath: previousPlan?.planFilePath } : {})
       },
       reentry
@@ -1582,19 +1585,28 @@ ${message.detailText}` : ""}` }
       }
     },
     resolveDefaultExecutionMode: (mode) => {
-      setState((current) => {
-        const nextMode = current.modeBeforeConfirmation && current.modeBeforeConfirmation !== "permissions"
-          ? current.modeBeforeConfirmation
-          : "input";
-        return {
-          ...current,
-          mode: nextMode,
-          modeBeforeConfirmation: undefined,
-          defaultExecutionMode: mode,
-          inputPermissionMode: current.inputPermissionMode === "plan" ? "plan" : mode,
-          error: undefined,
-          logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(mode)}`)]
-        };
+      const persistence = !saveDefaultPermissionMode || mode === state.defaultExecutionMode
+        ? Promise.resolve()
+        : saveDefaultPermissionMode(mode);
+      void persistence.then(() => {
+        if (saveDefaultPermissionMode) persistedDefaultExecutionModeRef.current = mode;
+        setState((current) => {
+          const nextMode = current.modeBeforeConfirmation && current.modeBeforeConfirmation !== "permissions"
+            ? current.modeBeforeConfirmation
+            : "input";
+          return {
+            ...current,
+            mode: nextMode,
+            modeBeforeConfirmation: undefined,
+            defaultExecutionMode: mode,
+            inputPermissionMode: current.inputPermissionMode === "plan" ? "plan" : mode,
+            error: undefined,
+            logMessages: [...current.logMessages, statusLog(`Permission mode: ${permissionModeLabel(mode)}`)]
+          };
+        });
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setState((current) => ({ ...current, error: `Failed to save permission mode: ${message}` }));
       });
     }
   });
@@ -1750,7 +1762,7 @@ ${message.detailText}` : ""}` }
       <Box flexDirection="column" height={terminalRows}>
         <Header cwd={cwd} />
         <Text color="red">{initialError}</Text>
-        <Text>Run agent-team init to create agent-team.yaml</Text>
+        <Text>Create config/prompt.md, config/roles, and config/workflows</Text>
       </Box>
     );
   }

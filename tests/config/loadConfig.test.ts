@@ -1,9 +1,30 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import yaml from "js-yaml";
 import { loadConfig } from "../../src/config/loadConfig.js";
+import type { LoadConfigOptions } from "../../src/config/loadConfig.js";
+import { settingsSchema } from "../../src/settings/types.js";
+import { writeProjectConfig, type TestRole, type TestWorkflow } from "../helpers/projectConfig.js";
+
+const defaultProvider = {
+  type: "openai-compatible" as const,
+  base_url: "https://api.example.test/v1",
+  api_key: "test-key",
+  default_model: "gpt-test",
+  capabilities: { tool_calling: true, vision: true }
+};
+
+function providerSettings(provider: unknown = defaultProvider) {
+  return settingsSchema.parse({ providers: { default: provider, deepseek: provider } });
+}
+
+async function loadTestConfig(path: string, options: LoadConfigOptions = {}) {
+  const configDir = await fixtureConfigDir(path);
+  return loadConfig(configDir, { ...options, settings: options.settings ?? providerSettings() });
+}
 
 async function tempFile(name: string, text: string) {
   const dir = await mkdtemp(join(tmpdir(), "agent-team-config-"));
@@ -12,18 +33,26 @@ async function tempFile(name: string, text: string) {
   return file;
 }
 
+async function fixtureConfigDir(path: string): Promise<string> {
+  if ((await stat(path)).isDirectory()) return path;
+  const parsed = yaml.load(await readFile(path, "utf8")) as {
+    global_prompt_file?: string;
+    roles?: Record<string, TestRole>;
+    workflows?: Record<string, TestWorkflow & { edges?: unknown }>;
+  };
+  const prompt = parsed.global_prompt_file
+    ? await readFile(join(dirname(path), parsed.global_prompt_file), "utf8")
+    : "";
+  const workflows = Object.fromEntries(Object.entries(parsed.workflows ?? {}).map(([name, workflow]) => [name, {
+    nodes: workflow.nodes,
+    ...(workflow.workflow_permissions ? { workflow_permissions: workflow.workflow_permissions } : {})
+  }]));
+  return writeProjectConfig(dirname(path), { prompt, roles: parsed.roles, workflows });
+}
+
 describe("loadConfig", () => {
-  it("loads a valid single-file config", async () => {
+  it("loads a valid directory config", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
-    capabilities:
-      tool_calling: true
-      vision: true
 roles:
   product:
     description: Product role
@@ -37,22 +66,17 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file);
 
     assert.equal(config.providers.default.type, "openai-compatible");
     assert.equal(config.providers.default.api_key_mode, "bearer");
     assert.equal(config.workflows.delivery.nodes[0].id, "product");
     assert.equal(config.workflows.delivery.nodes[0].mode, "task");
+    assert.deepEqual(config.roles.product.requires, { tool_calling: true, vision: true });
   });
 
   it("defaults omitted workflow edges to an empty array", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles:
   product:
     system_prompt: Product plan.
@@ -70,7 +94,7 @@ workflows:
         mode: complete
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file);
 
     assert.deepEqual(config.workflows.delivery.edges, []);
     assert.equal(config.workflows.delivery.nodes[1]?.id, "final_delivery");
@@ -78,12 +102,6 @@ workflows:
 
   it("loads Responses API provider defaults", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: responses-api
-    base_url: https://api.openai.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles:
   product:
     system_prompt: Product plan.
@@ -96,7 +114,12 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file, { settings: providerSettings({
+      type: "responses-api",
+      base_url: "https://api.openai.test/v1",
+      api_key: "test-key",
+      default_model: "gpt-test"
+    }) });
     const provider = config.providers.default;
 
     assert.equal(provider.type, "responses-api");
@@ -107,12 +130,6 @@ workflows:
 
   it("loads Anthropic provider defaults", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: anthropic
-    base_url: https://api.anthropic.test
-    api_key_env: TEST_API_KEY
-    default_model: claude-test
 roles:
   product:
     system_prompt: Product plan.
@@ -125,7 +142,12 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file, { settings: providerSettings({
+      type: "anthropic",
+      base_url: "https://api.anthropic.test",
+      api_key: "test-key",
+      default_model: "claude-test"
+    }) });
     const provider = config.providers.default;
 
     assert.equal(provider.type, "anthropic");
@@ -137,14 +159,6 @@ workflows:
 
   it("allows disabling Anthropic prompt cache", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: anthropic
-    base_url: https://api.anthropic.test
-    api_key_env: TEST_API_KEY
-    default_model: claude-test
-    anthropic:
-      prompt_cache: false
 roles:
   product:
     system_prompt: Product plan.
@@ -157,7 +171,13 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file, { settings: providerSettings({
+      type: "anthropic",
+      base_url: "https://api.anthropic.test",
+      api_key: "test-key",
+      default_model: "claude-test",
+      anthropic: { prompt_cache: false }
+    }) });
     const provider = config.providers.default;
 
     assert.equal(provider.type, "anthropic");
@@ -166,13 +186,6 @@ workflows:
 
   it("allows API key mode overrides", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: anthropic
-    base_url: https://api.anthropic.test
-    api_key_env: TEST_API_KEY
-    api_key_mode: bearer
-    default_model: claude-test
 roles:
   product:
     system_prompt: Product plan.
@@ -185,19 +198,19 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file, { settings: providerSettings({
+      type: "anthropic",
+      base_url: "https://api.anthropic.test",
+      api_key: "test-key",
+      api_key_mode: "bearer",
+      default_model: "claude-test"
+    }) });
 
     assert.equal(config.providers.default.api_key_mode, "bearer");
   });
 
   it("loads complete node mode and rejects plan node mode", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles:
   product:
     system_prompt: Product plan.
@@ -219,17 +232,11 @@ workflows:
         condition: success
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file);
 
     assert.equal(config.workflows.delivery.nodes[1]?.mode, "complete");
 
     const planFile = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles:
   product:
     system_prompt: Product plan.
@@ -243,11 +250,11 @@ workflows:
     edges: []
 `);
 
-    await assert.rejects(() => loadConfig(planFile), /Invalid enum value/);
+    await assert.rejects(() => loadTestConfig(planFile), /Invalid enum value/);
   });
 
   it("keeps the bundled example workflow free of user_acceptance nodes", async () => {
-    const config = await loadConfig("agent-team.example.yaml");
+    const config = await loadTestConfig(resolve("config"));
     const workflow = config.workflows.delivery;
 
     assert.equal(config.roles.user_acceptance, undefined);
@@ -260,13 +267,6 @@ workflows:
 
   it("loads provider user_agent override", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
-    user_agent: custom-agent/1.0
 roles:
   product:
     system_prompt: Product plan.
@@ -279,24 +279,21 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file, { settings: providerSettings({
+      ...defaultProvider,
+      user_agent: "custom-agent/1.0"
+    }) });
 
     assert.equal(config.providers.default.user_agent, "custom-agent/1.0");
   });
 
-  it("loads a global prompt file relative to the config file", async () => {
+  it("loads the fixed config prompt file", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-team-global-prompt-"));
     const promptFile = join(dir, "GLOBAL.md");
     const configFile = join(dir, "agent-team.yaml");
     await writeFile(promptFile, "Global safety rules.\nApply to every node.", "utf8");
     await writeFile(configFile, `
 global_prompt_file: GLOBAL.md
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles:
   product:
     system_prompt: Product plan.
@@ -310,11 +307,10 @@ workflows:
 `, "utf8");
 
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-empty-home-"));
-    const config = await loadConfig(configFile, { cwd: dir, homeDir });
+    const config = await loadTestConfig(configFile, { cwd: dir, homeDir });
 
-    assert.equal(config.global_prompt_file, "GLOBAL.md");
     assert.match(config.global_prompt ?? "", /Codebase and user instructions are shown below/);
-    assert.match(config.global_prompt ?? "", /Contents of .*GLOBAL[.]md .*configured instructions/);
+    assert.match(config.global_prompt ?? "", /Contents of .*config[\\/]prompt[.]md .*configured instructions/);
     assert.match(config.global_prompt ?? "", /Global safety rules[.]\nApply to every node/);
   });
 
@@ -329,12 +325,6 @@ workflows:
     const configFile = join(dir, "agent-team.yaml");
     await writeFile(configFile, `
 global_prompt_file: GLOBAL.md
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles:
   product:
     system_prompt: Product plan.
@@ -347,7 +337,7 @@ workflows:
     edges: []
 `, "utf8");
 
-    const config = await loadConfig(configFile, { cwd: dir, homeDir });
+    const config = await loadTestConfig(configFile, { cwd: dir, homeDir });
 
     assert.match(config.global_prompt ?? "", /User instructions[\s\S]*Project instructions[\s\S]*Configured instructions/);
     assert.deepEqual(config.global_prompt_metadata?.sources.map((source) => source.kind), ["user_agents", "project_agents", "configured_file"]);
@@ -361,12 +351,6 @@ workflows:
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-missing-agents-home-"));
     const configFile = join(dir, "agent-team.yaml");
     await writeFile(configFile, `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles:
   product:
     system_prompt: Product plan.
@@ -379,19 +363,13 @@ workflows:
     edges: []
 `, "utf8");
 
-    const config = await loadConfig(configFile, { cwd: dir, homeDir });
+    const config = await loadTestConfig(configFile, { cwd: dir, homeDir });
 
     assert.equal(config.global_prompt, undefined);
   });
 
   it("rejects nodes that reference missing roles", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
 roles: {}
 workflows:
   delivery:
@@ -402,23 +380,11 @@ workflows:
     edges: []
 `);
 
-    await assert.rejects(() => loadConfig(file), /Unknown role developer/);
+    await assert.rejects(() => loadTestConfig(file), /Unknown role developer/);
   });
 
   it("loads provider model routing metadata", async () => {
-    const configPath = await tempFile("agent-team.yaml", `providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: default-alias
-    plan_model: plan-alias
-    model_aliases:
-      default-alias: gpt-default
-      plan-alias: gpt-plan
-    context_windows:
-      gpt-default: 128000
-roles:
+    const configPath = await tempFile("agent-team.yaml", `roles:
   dev:
     system_prompt: Build safely.
 workflows:
@@ -430,21 +396,21 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(configPath);
+    const config = await loadTestConfig(configPath, { settings: providerSettings({
+      ...defaultProvider,
+      default_model: "default-alias",
+      plan_model: "plan-alias",
+      model_aliases: { "default-alias": "gpt-default", "plan-alias": "gpt-plan" },
+      context_windows: { "gpt-default": 128000 }
+    }) });
 
     assert.equal(config.providers.default.plan_model, "plan-alias");
     assert.deepEqual(config.providers.default.model_aliases, { "default-alias": "gpt-default", "plan-alias": "gpt-plan" });
     assert.deepEqual(config.providers.default.context_windows, { "gpt-default": 128000 });
   });
 
-  it("parses mcpServers from agent-team.yaml", async () => {
+  it("does not expose project MCP server configuration", async () => {
     const file = await tempFile("agent-team.yaml", `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: default-model
 mcpServers:
   local:
     type: stdio
@@ -463,9 +429,37 @@ workflows:
     edges: []
 `);
 
-    const config = await loadConfig(file);
+    const config = await loadTestConfig(file);
 
-    assert.equal(config.mcpServers?.local?.type, "stdio");
+    assert.equal(Object.hasOwn(config, "mcpServers"), false);
+  });
+
+  it("does not parse legacy agent-team.yaml files", async () => {
+    const file = await tempFile("agent-team.yaml", `
+providers: {}
+roles:
+  dev:
+    system_prompt: Build safely.
+workflows:
+  delivery:
+    nodes:
+      - id: dev
+        role: dev
+`);
+
+    await assert.rejects(() => loadConfig(file), /ENOTDIR/);
+  });
+
+  it("rejects edges in workflow JSON files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-team-workflow-edges-"));
+    const configDir = await writeProjectConfig(dir);
+    await writeFile(join(configDir, "workflows", "delivery.json"), JSON.stringify({
+      name: "delivery",
+      nodes: [{ id: "dev", role: "dev", provider: "default" }],
+      edges: [{ from: "dev", to: "dev" }]
+    }), "utf8");
+
+    await assert.rejects(() => loadTestConfig(configDir), /Unrecognized key.*edges/s);
   });
 
 

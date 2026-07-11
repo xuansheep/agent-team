@@ -1,8 +1,7 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import fg from "fast-glob";
-import yaml from "js-yaml";
 import type { ModelMessage, ModelProvider } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolContext } from "../tools/types.js";
@@ -215,7 +214,7 @@ export function defaultManagedSkillRoot(): string {
 }
 
 async function discoverSkills(options: SkillRuntimeDiscoverOptions): Promise<DiscoveryResult> {
-  const explicitPaths = options.explicitProjectSkillPaths ?? await configuredSkillPaths(options.cwd);
+  const explicitPaths = options.explicitProjectSkillPaths ?? [];
   const roots: SkillSourceRoot[] = [
     { root: options.managedSkillRoot ?? defaultManagedSkillRoot(), source: "managed" },
     { root: options.userSkillRoot ?? defaultUserSkillRoot(), source: "user" },
@@ -293,18 +292,6 @@ async function loadCommands(root: string): Promise<{ skills: LoadedSkill[]; erro
     }
   }
   return { skills, errors };
-}
-
-async function configuredSkillPaths(cwd: string): Promise<string[]> {
-  try {
-    const parsed = yaml.load(await readFile(join(cwd, "agent-team.yaml"), "utf8")) as { skills?: { paths?: unknown } } | undefined;
-    const paths = parsed?.skills?.paths;
-    if (!Array.isArray(paths)) return [];
-    return paths.flatMap((path) => typeof path === "string" && path.trim() ? [isAbsolute(path) ? path : join(cwd, path)] : []);
-  } catch (error) {
-    if ((error as { code?: unknown }).code === "ENOENT") return [];
-    throw error;
-  }
 }
 
 function defaultCommandRoots(cwd: string): string[] {

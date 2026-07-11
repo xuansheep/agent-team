@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { access, readdir, readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import yaml from "js-yaml";
-import { configSchema } from "./schema.js";
+import { configSchema, roleFrontmatterSchema, workflowFileSchema } from "./schema.js";
 import type { AgentTeamConfig } from "./schema.js";
 import { resolveConfig } from "./resolveConfig.js";
 import { AgentTeamSettings, ResolvedAgentTeamSettings } from "../settings/types.js";
@@ -14,19 +14,26 @@ export type LoadConfigOptions = {
   settings?: AgentTeamSettings | ResolvedAgentTeamSettings;
 };
 
-export async function loadConfig(path: string, options: LoadConfigOptions = {}): Promise<AgentTeamConfig> {
-  const raw = await readFile(path, "utf8");
-  const parsed = yaml.load(raw);
-  const config = configSchema.parse(parsed) as AgentTeamConfig;
-  const configDir = dirname(path);
-  const cwd = options.cwd ?? configDir;
+export async function loadConfig(configDir: string, options: LoadConfigOptions = {}): Promise<AgentTeamConfig> {
+  const resolvedConfigDir = resolve(configDir);
+  const cwd = options.cwd ?? resolve(resolvedConfigDir, "..");
+  await access(join(resolvedConfigDir, "prompt.md"));
+  const [roles, workflows] = await Promise.all([
+    loadRoles(join(resolvedConfigDir, "roles")),
+    loadWorkflows(join(resolvedConfigDir, "workflows"))
+  ]);
+  const projectConfig = configSchema.parse({ roles, workflows });
+  const resolvedSettings = resolveSettings({ cwd, userSettings: options.settings });
+  const config: AgentTeamConfig = {
+    ...projectConfig,
+    providers: applyModelSettings(resolvedSettings.providers ?? {}, resolvedSettings.models)
+  };
   const memoryFiles = await getAgentsMemoryFiles({
     cwd,
-    configDir,
+    configDir: resolvedConfigDir,
     homeDir: options.homeDir,
-    configuredPromptFile: config.global_prompt_file,
-    configuredPrompt: config.global_prompt,
-    settings: resolveSettings({ cwd, projectSettings: options.settings })
+    configuredPromptFile: "prompt.md",
+    settings: resolvedSettings
   });
   const globalPrompt = getAgentsPrompt(memoryFiles);
   if (globalPrompt) {
@@ -36,26 +43,87 @@ export async function loadConfig(path: string, options: LoadConfigOptions = {}):
     delete config.global_prompt;
     delete config.global_prompt_metadata;
   }
-  return resolveConfig(applySettings(config, options.settings, cwd));
+  return resolveConfig(config);
 }
 
-function applySettings(config: AgentTeamConfig, settings: LoadConfigOptions["settings"], cwd: string): AgentTeamConfig {
-  if (!settings) return config;
-  const resolvedSettings = resolveSettings({ cwd, projectSettings: settings });
-  const models = resolvedSettings.models;
-  if (!models) return config;
+async function loadRoles(rolesDir: string): Promise<AgentTeamConfig["roles"]> {
+  const files = await configFiles(rolesDir, ".md");
+  if (!files.length) throw new Error(`No role files found in ${rolesDir}`);
+  const roles = Object.create(null) as AgentTeamConfig["roles"];
+  for (const file of files) {
+    const path = join(rolesDir, file);
+    const { metadata, body } = parseRoleMarkdown(await readFile(path, "utf8"), path);
+    const role = parseFile(roleFrontmatterSchema, metadata, path, "role frontmatter");
+    if (roles[role.name]) throw new Error(`Duplicate role name ${role.name} in ${path}`);
+    if (!body.trim()) throw new Error(`Role prompt in ${path} must not be empty`);
+    roles[role.name] = {
+      description: role.description,
+      system_prompt: body.trim(),
+      requires: { tool_calling: true, vision: true }
+    };
+  }
+  return roles;
+}
 
+async function loadWorkflows(workflowsDir: string): Promise<AgentTeamConfig["workflows"]> {
+  const files = await configFiles(workflowsDir, ".json");
+  if (!files.length) throw new Error(`No workflow files found in ${workflowsDir}`);
+  const workflows = Object.create(null) as AgentTeamConfig["workflows"];
+  for (const file of files) {
+    const path = join(workflowsDir, file);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(path, "utf8"));
+    } catch (error) {
+      throw new Error(`Invalid workflow JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const workflow = parseFile(workflowFileSchema, raw, path, "workflow");
+    if (workflows[workflow.name]) throw new Error(`Duplicate workflow name ${workflow.name} in ${path}`);
+    workflows[workflow.name] = {
+      nodes: workflow.nodes,
+      edges: [],
+      ...(workflow.workflow_permissions ? { workflow_permissions: workflow.workflow_permissions } : {})
+    };
+  }
+  return workflows;
+}
+
+async function configFiles(dir: string, extension: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(extension))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function parseRoleMarkdown(raw: string, path: string): { metadata: unknown; body: string } {
+  const normalized = raw.replace(/^\uFEFF/, "");
+  const frontmatter = normalized.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!frontmatter) throw new Error(`Role file ${path} must start with YAML frontmatter`);
   return {
-    ...config,
-    providers: Object.fromEntries(Object.entries(config.providers).map(([providerId, provider]) => {
-      const modelAliases = { ...provider.model_aliases, ...models.aliases };
-      const contextWindows = { ...provider.context_windows, ...models.contextWindows };
-      return [providerId, {
-        ...provider,
-        ...(models.planModel ? { plan_model: models.planModel } : {}),
-        ...(Object.keys(modelAliases).length ? { model_aliases: modelAliases } : {}),
-        ...(Object.keys(contextWindows).length ? { context_windows: contextWindows } : {})
-      }];
-    }))
+    metadata: yaml.load(frontmatter[1] ?? "") ?? {},
+    body: normalized.slice(frontmatter[0].length)
   };
+}
+
+function parseFile<Output>(schema: { parse(value: unknown): Output }, value: unknown, path: string, kind: string): Output {
+  try {
+    return schema.parse(value);
+  } catch (error) {
+    throw new Error(`Invalid ${kind} in ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function applyModelSettings(providers: AgentTeamConfig["providers"], models: ResolvedAgentTeamSettings["models"]): AgentTeamConfig["providers"] {
+  if (!models) return providers;
+  return Object.fromEntries(Object.entries(providers).map(([providerId, provider]) => {
+    const modelAliases = { ...provider.model_aliases, ...models.aliases };
+    const contextWindows = { ...provider.context_windows, ...models.contextWindows };
+    return [providerId, {
+      ...provider,
+      ...(models.planModel ? { plan_model: models.planModel } : {}),
+      ...(Object.keys(modelAliases).length ? { model_aliases: modelAliases } : {}),
+      ...(Object.keys(contextWindows).length ? { context_windows: contextWindows } : {})
+    }];
+  }));
 }

@@ -1,0 +1,41 @@
+{
+  "name": "delivery",
+  "workflow_permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./secrets/**)",
+      "Bash(rm *)"
+    ],
+    "ask": [],
+    "allow": []
+  },
+  "nodes": [
+    {
+      "id": "developer",
+      "role": "developer",
+      "provider": "default",
+      "permissions": {
+        "allow": [
+          "Read",
+          "Write",
+          "LS",
+          "Glob",
+          "Grep"
+        ]
+      }
+    },
+    {
+      "id": "final_delivery",
+      "role": "final_delivery",
+      "provider": "deepseek",
+      "mode": "complete",
+      "permissions": {
+        "allow": [
+          "Read",
+          "LS",
+          "Glob"
+        ]
+      }
+    }
+  ]
+}

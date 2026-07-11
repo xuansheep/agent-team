@@ -882,7 +882,7 @@ async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
 
 function twoNodeConfig() {
   return {
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
     roles: {
       product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
@@ -896,7 +896,7 @@ function config() {
 
 
 
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
 
 
 

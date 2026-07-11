@@ -1,5 +1,5 @@
 import { access } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { AlternateScreen, render } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loadConfig.js";
@@ -8,7 +8,7 @@ import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } fr
 import { McpRuntime } from "../mcp/runtime.js";
 import { createMcpClientFactory } from "../mcp/transports.js";
 import { createProvider } from "../providers/registry.js";
-import { loadSettings } from "../settings/loadSettings.js";
+import { loadSettings, setUserDefaultPermissionMode } from "../settings/loadSettings.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { loadMcpPromptSkills } from "../skills/mcpSkills.js";
 import { SkillRuntime } from "../skills/runtime.js";
@@ -33,20 +33,26 @@ export type PreparedTuiRuntime = {
   mcpConfigOptions: McpConfigSourceOptions;
 };
 
-export async function prepareTuiRuntime(options: { cwd: string }): Promise<PreparedTuiRuntime> {
-  const configPath = join(options.cwd, "agent-team.yaml");
-  await access(configPath);
-  const settings = await loadSettings({ cwd: options.cwd });
-  const config = await loadConfig(configPath, { cwd: options.cwd, settings });
+export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string }): Promise<PreparedTuiRuntime> {
+  const configDir = join(options.cwd, "config");
+  const settings = await loadSettings({
+    cwd: options.cwd,
+    ...(options.homeDir ? { userSettingsPath: join(options.homeDir, ".einsteins", "settings.yaml") } : {})
+  });
+  await Promise.all([
+    access(join(configDir, "prompt.md")),
+    access(join(configDir, "roles")),
+    access(join(configDir, "workflows"))
+  ]);
+  const config = await loadConfig(configDir, { cwd: options.cwd, homeDir: options.homeDir, settings });
   const workflows = Object.keys(config.workflows);
   const workflowId = selectDefaultWorkflow(workflows);
-  const mcpConfigOptions = { cwd: options.cwd, agentTeamPath: configPath, agentTeamServers: config.mcpServers };
+  const mcpConfigOptions = { cwd: options.cwd };
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
   const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory({ roots: () => [{ uri: options.cwd }] }) });
   await mcpRuntime.connectAll(mcpServers);
   const skillRuntime = await SkillRuntime.discover({
     cwd: options.cwd,
-    explicitProjectSkillPaths: (config.skills?.paths ?? []).map((path) => isAbsolute(path) ? path : join(options.cwd, path)),
     mcpSkills: () => loadMcpPromptSkills(mcpRuntime)
   });
   mcpRuntime.onCatalogChanged(async (kind) => { if (kind === "resources") await skillRuntime.refresh(); });
@@ -80,7 +86,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     mcpConfigOptions = prepared.mcpConfigOptions;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    initialError = message.includes("ENOENT") ? "Missing agent-team.yaml" : message;
+    initialError = message.includes("ENOENT") ? "Missing config directory or required config file" : message;
   }
 
   const instance = await render(
@@ -97,6 +103,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         mcpRuntime={mcpRuntime}
         skillRuntime={skillRuntime}
         diagnostics={diagnostics}
+        saveDefaultPermissionMode={setUserDefaultPermissionMode}
         collectDiagnostics={() => collectRuntimeDiagnostics({ mcpRuntime, skillRuntime })}
         mcpConfigOptions={mcpConfigOptions}
       />

@@ -59,15 +59,14 @@ describe("MCP config schema", () => {
     }), /Unrecognized key|Invalid/);
   });
 
-  it("merges MCP servers with agent-team precedence over project and user", () => {
+  it("merges project MCP servers with precedence over user servers", () => {
     const merged = mergeMcpServers({
       user: { shared: { type: "stdio", command: "user" }, userOnly: { type: "stdio", command: "user-only" } },
-      project: { shared: { type: "stdio", command: "project" }, projectOnly: { type: "http", url: "https://project.example.test" } },
-      agentTeam: { shared: { type: "stdio", command: "agent" }, agentOnly: { type: "sse", url: "https://agent.example.test/sse" } }
+      project: { shared: { type: "stdio", command: "project" }, projectOnly: { type: "http", url: "https://project.example.test" } }
     });
 
-    assert.equal(merged.find((server) => server.name === "shared")?.source, "agent-team");
-    assert.equal((merged.find((server) => server.name === "shared") as { command?: string }).command, "agent");
+    assert.equal(merged.find((server) => server.name === "shared")?.source, "project");
+    assert.equal((merged.find((server) => server.name === "shared") as { command?: string }).command, "project");
     assert.equal(merged.find((server) => server.name === "projectOnly")?.source, "project");
     assert.equal(merged.find((server) => server.name === "userOnly")?.source, "user");
   });

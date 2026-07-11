@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { mcpServersSchema } from "../mcp/schema.js";
 
 export const permissionSetSchema = z.object({
   allow: z.array(z.string()).default([]),
@@ -18,7 +17,7 @@ const providerCapabilitiesSchema = z.object({
 
 const providerBaseSchema = {
   base_url: z.string().url(),
-  api_key_env: z.string().min(1),
+  api_key: z.string(),
   default_model: z.string().min(1),
   plan_model: z.string().min(1).optional(),
   model_aliases: z.record(z.string().min(1)).optional(),
@@ -31,7 +30,7 @@ const providerBaseSchema = {
 const openAiCompatibleProviderSchema = z.object({
   type: z.literal("openai-compatible"),
   ...providerBaseSchema
-});
+}).strict();
 
 const responsesProviderSchema = z.object({
   type: z.literal("responses-api"),
@@ -44,7 +43,7 @@ const responsesProviderSchema = z.object({
       summary: z.string().optional()
     }).optional()
   }).default({})
-});
+}).strict();
 
 const anthropicProviderSchema = z.object({
   type: z.literal("anthropic"),
@@ -60,7 +59,7 @@ const anthropicProviderSchema = z.object({
       budget_tokens: z.number().int().positive().optional()
     }).default({})
   }).default({})
-});
+}).strict();
 
 export const providerSchema = z.discriminatedUnion("type", [
   openAiCompatibleProviderSchema,
@@ -77,6 +76,11 @@ export const roleSchema = z.object({
     vision: z.boolean().default(false)
   }).default({})
 });
+
+export const roleFrontmatterSchema = z.object({
+  name: z.string().trim().min(1),
+  description: z.string().trim().min(1)
+}).strict();
 
 export const nodeSchema = z.object({
   id: z.string().min(1),
@@ -100,31 +104,29 @@ export const workflowSchema = z.object({
   workflow_permissions: permissionSetSchema.optional()
 });
 
-export const skillsConfigSchema = z.object({
-  paths: z.array(z.string().min(1)).default([])
+export const workflowFileSchema = z.object({
+  name: z.string().trim().min(1),
+  nodes: z.array(nodeSchema).min(1),
+  workflow_permissions: permissionSetSchema.optional()
 }).strict();
 
 export const configSchema = z.object({
-  global_prompt_file: z.string().min(1).optional(),
   global_prompt: z.string().optional(),
-  providers: z.record(providerSchema),
-  mcpServers: mcpServersSchema.optional(),
-  skills: skillsConfigSchema.optional(),
   roles: z.record(roleSchema),
   workflows: z.record(workflowSchema)
-});
+}).strict();
 
-type ParsedAgentTeamConfig = z.infer<typeof configSchema>;
+type ParsedProjectConfig = z.infer<typeof configSchema>;
 type ParsedProviderConfig = z.infer<typeof providerSchema>;
 type ParsedWorkflowConfig = z.infer<typeof workflowSchema>;
 type ParsedWorkflowNodeConfig = z.infer<typeof nodeSchema>;
-type ProviderConfig = ParsedProviderConfig extends infer Provider
+export type ProviderConfig = ParsedProviderConfig extends infer Provider
   ? Provider extends { api_key_mode: infer Mode }
     ? Omit<Provider, "api_key_mode"> & { api_key_mode?: Mode }
     : Provider
   : never;
 
-export type GlobalPromptSourceKind = "managed_agents" | "user_agents" | "project_agents" | "local_agents" | "configured_file" | "configured_inline";
+export type GlobalPromptSourceKind = "managed_agents" | "user_agents" | "project_agents" | "local_agents" | "configured_file";
 export type GlobalPromptSourceMetadata = {
   kind: GlobalPromptSourceKind;
   path?: string;
@@ -141,7 +143,7 @@ export type GlobalPromptMetadata = {
 export type WorkflowNodeMode = "task" | "complete";
 export type WorkflowNodeConfig = Omit<ParsedWorkflowNodeConfig, "mode"> & { mode?: WorkflowNodeMode };
 export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes"> & { nodes: WorkflowNodeConfig[] };
-export type AgentTeamConfig = Omit<ParsedAgentTeamConfig, "providers" | "workflows"> & {
+export type AgentTeamConfig = Omit<ParsedProjectConfig, "workflows"> & {
   providers: Record<string, ProviderConfig>;
   workflows: Record<string, WorkflowConfig>;
   global_prompt_metadata?: GlobalPromptMetadata;

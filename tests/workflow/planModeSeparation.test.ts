@@ -26,7 +26,8 @@ describe("Plan Mode V2 workflow separation", () => {
       cwd: process.cwd(),
       providerFactory: () => ({ async generate() { return { content: "{}" }; } })
     });
-    const config = configSchema.parse(configWithNodeTaskMode());
+    const input = configWithNodeTaskMode();
+    const config = { ...configSchema.parse(input), providers: input.providers };
 
     await assert.rejects(
       () => engine.run(config, "flow", { request: "build" }, { permissionMode: "plan" as never }),
@@ -41,7 +42,7 @@ describe("Plan Mode V2 workflow separation", () => {
 
 function configWithNodePlanMode() {
   return {
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
     roles: {
       product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
@@ -56,7 +57,7 @@ function configWithNodePlanPermissionMode() {
 
 function configWithNodePermissionMode(permission_mode: string) {
   return {
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
     roles: {
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
     },
@@ -66,7 +67,7 @@ function configWithNodePermissionMode(permission_mode: string) {
 
 function configWithNodeTaskMode() {
   return {
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
     roles: {
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
     },

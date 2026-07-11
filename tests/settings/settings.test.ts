@@ -1,13 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { getPlanFilePath } from "../../src/plans/planFiles.js";
-import { defaultUserSettingsPath, loadSettings } from "../../src/settings/loadSettings.js";
+import { defaultUserSettingsPath, loadSettings, setUserDefaultPermissionMode } from "../../src/settings/loadSettings.js";
 import { resolveSettings } from "../../src/settings/resolveSettings.js";
 import { settingsSchema } from "../../src/settings/types.js";
+import { writeProjectConfig } from "../helpers/projectConfig.js";
 
 async function workspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agent-team-settings-"));
@@ -19,6 +20,67 @@ async function writeText(path: string, text: string): Promise<void> {
 }
 
 describe("settings", () => {
+  it("creates the user settings template once without overwriting it", async () => {
+    const cwd = await workspace();
+    const userSettingsPath = join(cwd, "home", ".einsteins", "settings.yaml");
+    const projectSettingsPath = join(cwd, "project-settings.yaml");
+
+    const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
+    const generated = await readFile(userSettingsPath, "utf8");
+
+    assert.deepEqual(Object.keys(settings.providers ?? {}), ["default", "openai_compatible", "anthropic"]);
+    assert.match(generated, /api_key: ""/);
+    if (process.platform !== "win32") assert.equal((await stat(userSettingsPath)).mode & 0o777, 0o600);
+
+    await writeFile(userSettingsPath, "permissions:\n  defaultMode: plan\n", "utf8");
+    await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
+    assert.equal(await readFile(userSettingsPath, "utf8"), "permissions:\n  defaultMode: plan\n");
+  });
+
+  it("rejects providers in project settings", async () => {
+    const cwd = await workspace();
+    const userSettingsPath = join(cwd, "user-settings.yaml");
+    const projectSettingsPath = join(cwd, ".einsteins", "settings.yaml");
+    await writeText(userSettingsPath, "providers: {}\n");
+    await writeText(projectSettingsPath, "providers: {}\n");
+
+    await assert.rejects(
+      () => loadSettings({ cwd, userSettingsPath, projectSettingsPath }),
+      /Project settings cannot define providers/
+    );
+  });
+
+  it("persists the user default permission mode without losing provider settings", async () => {
+    const cwd = await workspace();
+    const userSettingsPath = join(cwd, "home", ".einsteins", "settings.yaml");
+    const projectSettingsPath = join(cwd, "project-settings.yaml");
+    await writeText(userSettingsPath, `
+providers:
+  default:
+    type: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key: preserved-key
+    default_model: gpt-test
+permissions:
+  defaultMode: default
+`);
+
+    await setUserDefaultPermissionMode("fullAccess", userSettingsPath);
+    const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
+
+    assert.equal(settings.permissions?.defaultMode, "fullAccess");
+    assert.equal(settings.providers?.default?.api_key, "preserved-key");
+  });
+
+  it("rejects provider environment variable keys", () => {
+    assert.throws(() => settingsSchema.parse({ providers: { default: {
+      type: "openai-compatible",
+      base_url: "https://api.example.test/v1",
+      api_key_env: "OPENAI_API_KEY",
+      default_model: "gpt-test"
+    } } }), /api_key/);
+  });
+
   it("loads user and project settings with project settings taking precedence", async () => {
     const cwd = await workspace();
     const userSettingsPath = join(cwd, "user-settings.yaml");
@@ -94,32 +156,23 @@ showClearContextOnPlanAccept: true
     const cwd = await workspace();
     const settings = resolveSettings({ cwd, projectSettings: { plansDirectory: ".einsteins/plans" } });
 
-    assert.match(getPlanFilePath("session-1", cwd, settings.plansDirectory), /[.]agent-team[\\/]plans[\\/].+[.]md$/);
+    assert.match(getPlanFilePath("session-1", cwd, settings.plansDirectory), /[.]einsteins[\\/]plans[\\/].+[.]md$/);
   });
 
-  it("does not let permission defaults change workflow YAML node semantics", async () => {
+  it("does not let permission defaults change workflow node semantics", async () => {
     const cwd = await workspace();
-    const configPath = join(cwd, "agent-team.yaml");
-    await writeText(configPath, `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: default-model
-roles:
-  dev:
-    system_prompt: Build safely.
-workflows:
-  delivery:
-    nodes:
-      - id: dev
-        role: dev
-        provider: default
-    edges: []
-`);
+    const configPath = await writeProjectConfig(cwd);
 
-    const settings = resolveSettings({ cwd, projectSettings: { permissions: { defaultMode: "plan" }, planMode: { defaultEntry: true } } });
+    const settings = resolveSettings({
+      cwd,
+      userSettings: settingsSchema.parse({ providers: { default: {
+        type: "openai-compatible",
+        base_url: "https://api.example.test/v1",
+        api_key: "test-key",
+        default_model: "default-model"
+      } } }),
+      projectSettings: { permissions: { defaultMode: "plan" }, planMode: { defaultEntry: true } }
+    });
     const config = await loadConfig(configPath, { cwd, settings });
     const node = config.workflows.delivery.nodes[0];
 
@@ -129,35 +182,19 @@ workflows:
 
   it("merges settings model metadata into provider config with settings precedence", async () => {
     const cwd = await workspace();
-    const configPath = join(cwd, "agent-team.yaml");
-    await writeText(configPath, `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: quick
-    plan_model: config-plan
-    model_aliases:
-      legacy: legacy-model
-      shared: config-model
-    context_windows:
-      legacy-model: 1000
-      shared-model: 2000
-roles:
-  dev:
-    system_prompt: Build safely.
-workflows:
-  delivery:
-    nodes:
-      - id: dev
-        role: dev
-        provider: default
-    edges: []
-`);
+    const configPath = await writeProjectConfig(cwd);
 
     const settings = resolveSettings({
       cwd,
+      userSettings: settingsSchema.parse({ providers: { default: {
+        type: "openai-compatible",
+        base_url: "https://api.example.test/v1",
+        api_key: "test-key",
+        default_model: "quick",
+        plan_model: "config-plan",
+        model_aliases: { legacy: "legacy-model", shared: "config-model" },
+        context_windows: { "legacy-model": 1000, "shared-model": 2000 }
+      } } }),
       projectSettings: {
         models: {
           planModel: "settings-plan",

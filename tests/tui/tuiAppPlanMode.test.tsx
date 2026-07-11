@@ -12,7 +12,7 @@ import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { SkillRuntime } from "../../src/skills/runtime.js";
 
 const config = {
-  providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key_env: "TEST_API_KEY", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+  providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
   roles: { product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } } },
   workflows: { delivery: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
 };

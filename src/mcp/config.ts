@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
-import yaml from "js-yaml";
 import { mcpServersSchema, type McpConfigSource, type McpServersConfig, type ResolvedMcpServerConfig } from "./schema.js";
 
 export type McpConfigSourceOptions = {
@@ -9,8 +8,6 @@ export type McpConfigSourceOptions = {
   userMcpPath?: string;
   projectMcpPath?: string;
   managedMcpPath?: string;
-  agentTeamPath?: string;
-  agentTeamServers?: McpServersConfig;
 };
 
 export type McpConfigSources = {
@@ -18,10 +15,9 @@ export type McpConfigSources = {
   user?: McpServersConfig;
   project?: McpServersConfig;
   local?: McpServersConfig;
-  agentTeam?: McpServersConfig;
 };
 
-export type McpConfigSourceFormat = "json" | "yaml";
+export type McpConfigSourceFormat = "json";
 export type McpConfigSourceDetail = {
   source: McpConfigSource;
   path: string;
@@ -51,8 +47,7 @@ export async function loadMcpConfigSources(options: McpConfigSourceOptions): Pro
     managed: mergedDetails(details, "managed"),
     user: mergedDetails(details, "user"),
     project: mergedDetails(details, "project"),
-    local: mergedDetails(details, "local"),
-    agentTeam: mergedDetails(details, "agent-team")
+    local: mergedDetails(details, "local")
   };
 }
 
@@ -62,8 +57,6 @@ export async function loadMcpConfigSourceDetails(options: McpConfigSourceOptions
   const projectState = currentProjectState(globalConfig, options.cwd);
   const managedPath = options.managedMcpPath ?? defaultManagedMcpPath();
   const managed = await readJsonMcpServers(managedPath);
-  const agentTeamPath = options.agentTeamPath ?? defaultAgentTeamPath(options.cwd);
-  const agentTeam = await readYamlMcpServers(agentTeamPath) ?? options.agentTeamServers;
   const details: McpConfigSourceDetail[] = [];
 
   if (managed !== undefined) {
@@ -74,7 +67,6 @@ export async function loadMcpConfigSourceDetails(options: McpConfigSourceOptions
     for (const path of projectPaths) details.push({ source: "project", path, format: "json", servers: await readJsonMcpServers(path) });
     details.push({ source: "local", path: userPath, format: "json", servers: projectState?.mcpServers });
   }
-  details.push({ source: "agent-team", path: agentTeamPath, format: "yaml", servers: agentTeam });
   return details;
 }
 
@@ -83,8 +75,7 @@ export function mergeMcpServers(sources: McpConfigSources): ResolvedMcpServerCon
     { source: "managed", path: defaultManagedMcpPath(), format: "json", servers: sources.managed },
     { source: "user", path: defaultUserMcpPath(), format: "json", servers: sources.user },
     { source: "project", path: "", format: "json", servers: sources.project },
-    { source: "local", path: defaultUserMcpPath(), format: "json", servers: sources.local },
-    { source: "agent-team", path: "", format: "yaml", servers: sources.agentTeam }
+    { source: "local", path: defaultUserMcpPath(), format: "json", servers: sources.local }
   ]);
 }
 
@@ -127,10 +118,6 @@ export function defaultManagedMcpPath(): string {
   const root = process.env.AGENT_TEAM_MANAGED_DIR
     ?? (platform() === "win32" ? join(process.env.ProgramData ?? "C:\\ProgramData", "agent-team") : "/etc/agent-team");
   return join(root, "managed-mcp.json");
-}
-
-export function defaultAgentTeamPath(cwd: string): string {
-  return join(cwd, "agent-team.yaml");
 }
 
 export async function readEinsteinsConfig(path = defaultUserMcpPath()): Promise<EinsteinsGlobalConfig | undefined> {
@@ -178,18 +165,6 @@ async function readJsonMcpServers(path: string): Promise<McpServersConfig | unde
   try {
     const parsed = JSON.parse(await readFile(path, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid JSON object in ${path}`);
-    const servers = (parsed as { mcpServers?: unknown }).mcpServers;
-    return servers === undefined ? undefined : parseServers(servers, path);
-  } catch (error) {
-    if ((error as { code?: unknown }).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-async function readYamlMcpServers(path: string): Promise<McpServersConfig | undefined> {
-  try {
-    const parsed = yaml.load(await readFile(path, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid YAML object in ${path}`);
     const servers = (parsed as { mcpServers?: unknown }).mcpServers;
     return servers === undefined ? undefined : parseServers(servers, path);
   } catch (error) {

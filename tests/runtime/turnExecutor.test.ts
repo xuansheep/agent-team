@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
 import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { loadConfig } from "../../src/config/loadConfig.js";
+import { settingsSchema } from "../../src/settings/types.js";
 import { ModelProvider } from "../../src/providers/types.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
@@ -17,6 +18,7 @@ import { exitPlanModeTool } from "../../src/tools/local/exitPlanMode.js";
 import { todoWriteTool } from "../../src/tools/local/todoWrite.js";
 import { writeTool as localWriteTool } from "../../src/tools/local/write.js";
 import { Tool } from "../../src/tools/types.js";
+import { writeProjectConfig } from "../helpers/projectConfig.js";
 
 describe("RuntimeTurnExecutor", () => {
   it("returns completed for a provider response without tools and preserves the assistant message", async () => {
@@ -241,7 +243,7 @@ describe("RuntimeTurnExecutor", () => {
         sha256: "global-hash",
         chars: "Custom AGENT instructions.".length,
         lines: 1,
-        sources: [{ kind: "configured_inline" as const, sha256: "source-hash", chars: "Custom AGENT instructions.".length, lines: 1 }]
+        sources: [{ kind: "configured_file" as const, sha256: "source-hash", chars: "Custom AGENT instructions.".length, lines: 1 }]
       },
       eventSink: (event: RuntimeEvent) => {
         events.push(event);
@@ -277,26 +279,14 @@ describe("RuntimeTurnExecutor", () => {
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-runtime-project-agents-home-"));
     await mkdir(join(cwd, ".einsteins"), { recursive: true });
     await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Project AGENTS instructions.\n", "utf8");
-    const configFile = join(cwd, "agent-team.yaml");
-    await writeFile(configFile, `
-providers:
-  default:
-    type: openai-compatible
-    base_url: https://api.example.test/v1
-    api_key_env: TEST_API_KEY
-    default_model: gpt-test
-roles:
-  dev:
-    system_prompt: Build safely.
-workflows:
-  delivery:
-    nodes:
-      - id: dev
-        role: dev
-        provider: default
-    edges: []
-`, "utf8");
-    const config = await loadConfig(configFile, { cwd, homeDir });
+    const configFile = await writeProjectConfig(cwd);
+    const settings = settingsSchema.parse({ providers: { default: {
+      type: "openai-compatible",
+      base_url: "https://api.example.test/v1",
+      api_key: "test-key",
+      default_model: "gpt-test"
+    } } });
+    const config = await loadConfig(configFile, { cwd, homeDir, settings });
     const planFilePath = getPlanFilePath("session-project-agents", cwd);
     let capturedSystem = "";
     const provider: ModelProvider = {
