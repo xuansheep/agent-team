@@ -53,7 +53,8 @@ describe("local tools", () => {
   it("finds hidden AGENTS files with absolute platform paths", async () => {
     const cwd = await workspace();
     await mkdir(join(cwd, ".einsteins"), { recursive: true });
-    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Project instructions.\n", "utf8");
+    await mkdir(join(cwd, ".agents"), { recursive: true });
+    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Project instructions.\n", "utf8");
     const tools = createLocalToolRegistry();
 
     const result = await tools.get("Glob").execute({ pattern: join(cwd, "**", "AGENTS.md") }, { cwd });

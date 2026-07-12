@@ -47,7 +47,7 @@ Blocked in current environment:
 
 Implemented:
 
-- Skill discovery from explicit paths, project `.agents/skills`, project `.einsteins/skills`, user `~/.einsteins/skills`, bundled skills, and MCP prompt skills.
+- Skill discovery is intentionally limited to project `.agents/skills` and user `~/.einsteins/skills`; project skills take precedence over same-name user skills.
 - Metadata parsing for name, description, when-to-use, allowed tools, model, effort, mode, and hooks.
 - Inline skill activation into model context.
 - Fork skill execution through a constrained child model request.

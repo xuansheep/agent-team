@@ -48,9 +48,8 @@ describe("runtime context attachments", () => {
 
     assert.equal(attachment?.type, "global_prompt");
     assert.match(attachment?.content ?? "", /ATTACHMENT global_prompt/);
-    assert.match(attachment?.content ?? "", /Codebase and user instructions are shown below/);
-    assert.match(attachment?.content ?? "", /OVERRIDE any default behavior/);
-    assert.match(attachment?.content ?? "", /MUST follow them exactly as written/);
+    assert.match(attachment?.content ?? "", /config[/\\]prompt[.]md and the active role system prompt take precedence/);
+    assert.match(attachment?.content ?? "", /take precedence over AGENTS[.]md/);
     assert.match(attachment?.content ?? "", /Always reply in Chinese\./);
   });
 

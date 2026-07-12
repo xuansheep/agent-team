@@ -309,18 +309,18 @@ workflows:
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-empty-home-"));
     const config = await loadTestConfig(configFile, { cwd: dir, homeDir });
 
-    assert.match(config.global_prompt ?? "", /Codebase and user instructions are shown below/);
-    assert.match(config.global_prompt ?? "", /Contents of .*config[\\/]prompt[.]md .*configured instructions/);
+    assert.match(config.global_prompt ?? "", /Mandatory system instructions from .*config[\\/]prompt[.]md/);
     assert.match(config.global_prompt ?? "", /Global safety rules[.]\nApply to every node/);
   });
 
-  it("loads user and project AGENTS prompts before configured global prompt", async () => {
+  it("loads the system prompt before user and project AGENTS prompts", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-team-agents-prompt-"));
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-agents-home-"));
     await mkdir(join(homeDir, ".einsteins"), { recursive: true });
-    await mkdir(join(dir, ".einsteins"), { recursive: true });
+    await mkdir(join(dir, ".git"), { recursive: true });
+    await mkdir(join(dir, ".agents"), { recursive: true });
     await writeFile(join(homeDir, ".einsteins", "AGENTS.md"), "User instructions.\n", "utf8");
-    await writeFile(join(dir, ".einsteins", "AGENTS.md"), "Project instructions.\n", "utf8");
+    await writeFile(join(dir, ".agents", "AGENTS.md"), "Project instructions.\n", "utf8");
     await writeFile(join(dir, "GLOBAL.md"), "Configured instructions.\n", "utf8");
     const configFile = join(dir, "agent-team.yaml");
     await writeFile(configFile, `
@@ -339,9 +339,10 @@ workflows:
 
     const config = await loadTestConfig(configFile, { cwd: dir, homeDir });
 
-    assert.match(config.global_prompt ?? "", /User instructions[\s\S]*Project instructions[\s\S]*Configured instructions/);
-    assert.deepEqual(config.global_prompt_metadata?.sources.map((source) => source.kind), ["user_agents", "project_agents", "configured_file"]);
-    assert.equal(config.global_prompt_metadata?.sources[1]?.path, join(dir, ".einsteins", "AGENTS.md"));
+    assert.match(config.global_prompt ?? "", /Configured instructions[\s\S]*User instructions[\s\S]*Project instructions/);
+    assert.match(config.global_prompt ?? "", /never override or weaken/);
+    assert.deepEqual(config.global_prompt_metadata?.sources.map((source) => source.kind), ["configured_file", "user_agents", "project_agents"]);
+    assert.equal(config.global_prompt_metadata?.sources[2]?.path, join(dir, ".agents", "AGENTS.md"));
     assert.match(config.global_prompt_metadata?.sha256 ?? "", /^[a-f0-9]{64}$/);
     assert.equal(JSON.stringify(config.global_prompt_metadata).includes("Project instructions"), false);
   });
@@ -370,7 +371,9 @@ workflows:
 
   it("rejects nodes that reference missing roles", async () => {
     const file = await tempFile("agent-team.yaml", `
-roles: {}
+roles:
+  product:
+    system_prompt: Product plan.
 workflows:
   delivery:
     nodes:
@@ -447,7 +450,7 @@ workflows:
         role: dev
 `);
 
-    await assert.rejects(() => loadConfig(file), /ENOTDIR/);
+    await assert.rejects(() => loadConfig(file), /ENOENT|ENOTDIR/);
   });
 
   it("rejects edges in workflow JSON files", async () => {

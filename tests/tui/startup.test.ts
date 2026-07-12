@@ -40,8 +40,9 @@ describe("TUI startup workflow selection", () => {
   it("discovers project skills during bootstrap", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-skills-"));
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-tui-home-"));
-    await mkdir(join(cwd, ".einsteins", "skills", "reviewer"), { recursive: true });
-    await writeFile(join(cwd, ".einsteins", "skills", "reviewer", "SKILL.md"), `---
+    await mkdir(join(cwd, ".git"), { recursive: true });
+    await mkdir(join(cwd, ".agents", "skills", "reviewer"), { recursive: true });
+    await writeFile(join(cwd, ".agents", "skills", "reviewer", "SKILL.md"), `---
 name: reviewer
 ---
 Review carefully.

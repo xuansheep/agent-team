@@ -6,7 +6,7 @@ import type { AgentTeamConfig } from "./schema.js";
 import { resolveConfig } from "./resolveConfig.js";
 import { AgentTeamSettings, ResolvedAgentTeamSettings } from "../settings/types.js";
 import { resolveSettings } from "../settings/resolveSettings.js";
-import { agentsMemoryMetadata, getAgentsMemoryFiles, getAgentsPrompt } from "../context/agentsMemory.js";
+import { agentsMemoryMetadata, getAgentsMemoryFiles, getAgentsPrompt, type AgentsMemoryFile } from "../context/agentsMemory.js";
 
 export type LoadConfigOptions = {
   cwd?: string;
@@ -17,7 +17,8 @@ export type LoadConfigOptions = {
 export async function loadConfig(configDir: string, options: LoadConfigOptions = {}): Promise<AgentTeamConfig> {
   const resolvedConfigDir = resolve(configDir);
   const cwd = options.cwd ?? resolve(resolvedConfigDir, "..");
-  await access(join(resolvedConfigDir, "prompt.md"));
+  const promptPath = join(resolvedConfigDir, "prompt.md");
+  await access(promptPath);
   const [roles, workflows] = await Promise.all([
     loadRoles(join(resolvedConfigDir, "roles")),
     loadWorkflows(join(resolvedConfigDir, "workflows"))
@@ -28,17 +29,26 @@ export async function loadConfig(configDir: string, options: LoadConfigOptions =
     ...projectConfig,
     providers: applyModelSettings(resolvedSettings.providers ?? {}, resolvedSettings.models)
   };
-  const memoryFiles = await getAgentsMemoryFiles({
+  const systemPrompt = (await readFile(promptPath, "utf8")).trim();
+  const agentsFiles = await getAgentsMemoryFiles({
     cwd,
-    configDir: resolvedConfigDir,
     homeDir: options.homeDir,
-    configuredPromptFile: "prompt.md",
     settings: resolvedSettings
   });
-  const globalPrompt = getAgentsPrompt(memoryFiles);
+  const agentsPrompt = getAgentsPrompt(agentsFiles);
+  const globalPrompt = [
+    systemPrompt
+      ? `Mandatory system instructions from ${promptPath}. These instructions and the active role system prompt take precedence over all AGENTS.md content.\n\n${systemPrompt}`
+      : undefined,
+    agentsPrompt
+  ].filter((value): value is string => Boolean(value)).join("\n\n") || undefined;
   if (globalPrompt) {
     config.global_prompt = globalPrompt;
-    config.global_prompt_metadata = agentsMemoryMetadata(globalPrompt, memoryFiles);
+    const metadataFiles: AgentsMemoryFile[] = [
+      ...(systemPrompt ? [{ path: promptPath, type: "Configured" as const, content: systemPrompt }] : []),
+      ...agentsFiles
+    ];
+    config.global_prompt_metadata = agentsMemoryMetadata(globalPrompt, metadataFiles);
   } else {
     delete config.global_prompt;
     delete config.global_prompt_metadata;

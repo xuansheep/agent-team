@@ -1,13 +1,11 @@
-import { stat } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import fg from "fast-glob";
+import { projectDirectoriesToGitRoot } from "../context/projectDirectories.js";
 import type { ModelMessage, ModelProvider } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { Tool, ToolContext } from "../tools/types.js";
 import {
   canonicalSkillPath,
-  loadSkillFile,
   loadSkillsDirectory,
   type LoadedSkill,
   type SkillLoadError,
@@ -17,13 +15,7 @@ import {
 
 export type SkillRuntimeDiscoverOptions = {
   cwd: string;
-  explicitProjectSkillPaths?: string[];
   userSkillRoot?: string;
-  managedSkillRoot?: string;
-  bundledSkillRoots?: string[];
-  bundledSkills?: LoadedSkill[];
-  commandRoots?: string[];
-  mcpSkills?: LoadedSkill[] | (() => Promise<LoadedSkill[]>);
 };
 
 export type SkillActivationOptions = {
@@ -60,7 +52,6 @@ export type SkillRuntimeDiagnostic = {
   error?: string;
 };
 
-type SkillSourceRoot = { root: string; source: Exclude<SkillSource, "mcp">; kind?: "skills" | "commands" };
 type DiscoveryResult = { skills: LoadedSkill[]; errors: Array<SkillLoadError & { source: Exclude<SkillSource, "mcp"> }> };
 
 export class SkillRuntime {
@@ -207,34 +198,21 @@ export function defaultUserSkillRoot(): string {
   return join(homedir(), ".einsteins", "skills");
 }
 
-export function defaultManagedSkillRoot(): string {
-  const managedRoot = process.env.AGENT_TEAM_MANAGED_DIR
-    ?? (platform() === "win32" ? join(process.env.ProgramData ?? "C:\\ProgramData", "agent-team") : "/etc/agent-team");
-  return join(managedRoot, ".einsteins", "skills");
-}
-
 async function discoverSkills(options: SkillRuntimeDiscoverOptions): Promise<DiscoveryResult> {
-  const explicitPaths = options.explicitProjectSkillPaths ?? [];
-  const roots: SkillSourceRoot[] = [
-    { root: options.managedSkillRoot ?? defaultManagedSkillRoot(), source: "managed" },
-    { root: options.userSkillRoot ?? defaultUserSkillRoot(), source: "user" },
-    ...projectDirectories(options.cwd).map((directory) => ({ root: join(directory, ".einsteins", "skills"), source: "project" as const })),
-    ...explicitPaths.map((root) => ({ root, source: "project" as const })),
-    ...(options.commandRoots ?? defaultCommandRoots(options.cwd)).map((root) => ({ root, source: "commands" as const, kind: "commands" as const })),
-    ...(options.bundledSkillRoots ?? []).map((root) => ({ root, source: "bundled" as const }))
+  const projectDirectories = await projectDirectoriesToGitRoot(options.cwd);
+  const roots = [
+    ...projectDirectories.map((directory) => ({ root: join(directory, ".agents", "skills"), source: "project" as const })),
+    { root: options.userSkillRoot ?? defaultUserSkillRoot(), source: "user" as const }
   ];
 
   const discovered = new Map<string, LoadedSkill>();
   const seenPaths = new Set<string>();
   const errors: Array<SkillLoadError & { source: Exclude<SkillSource, "mcp"> }> = [];
   for (const root of roots) {
-    const result = root.kind === "commands" ? await loadCommands(root.root) : await loadSkillsPath(root.root, root.source);
+    const result = await loadSkillsDirectory(root.root, root.source);
     errors.push(...result.errors.map((error) => ({ ...error, source: root.source })));
     for (const skill of result.skills) await addSkill(discovered, seenPaths, { ...skill, source: root.source });
   }
-  for (const skill of options.bundledSkills ?? []) await addSkill(discovered, seenPaths, { ...skill, source: "bundled" });
-  const mcpSkills = typeof options.mcpSkills === "function" ? await options.mcpSkills() : options.mcpSkills ?? [];
-  for (const skill of mcpSkills) if (!discovered.has(skill.name)) discovered.set(skill.name, { ...skill, source: "mcp" });
   return { skills: [...discovered.values()], errors };
 }
 
@@ -246,83 +224,6 @@ async function addSkill(target: Map<string, LoadedSkill>, seenPaths: Set<string>
     if (identity) seenPaths.add(identity.toLowerCase());
   }
   target.set(skill.name, skill);
-}
-
-async function loadSkillsPath(path: string, source: Exclude<SkillSource, "mcp">): Promise<{ skills: LoadedSkill[]; errors: SkillLoadError[] }> {
-  const kind = await pathKind(path);
-  if (!kind) return { skills: [], errors: [] };
-  if (kind === "file") {
-    try {
-      return { skills: [await loadSkillFile(path, { source })], errors: [] };
-    } catch (error) {
-      return { skills: [], errors: [{ path, error: errorMessage(error) }] };
-    }
-  }
-  const directSkill = join(path, "SKILL.md");
-  if (await pathKind(directSkill) === "file") {
-    try {
-      return { skills: [await loadSkillFile(directSkill, { source, name: basename(path), root: path })], errors: [] };
-    } catch (error) {
-      return { skills: [], errors: [{ path: directSkill, error: errorMessage(error) }] };
-    }
-  }
-  return loadSkillsDirectory(path, source);
-}
-
-async function loadCommands(root: string): Promise<{ skills: LoadedSkill[]; errors: SkillLoadError[] }> {
-  let files: string[];
-  try {
-    files = (await fg("**/*.md", { cwd: root, absolute: true, onlyFiles: true, dot: true })).sort();
-  } catch (error) {
-    return { skills: [], errors: [{ path: root, error: errorMessage(error) }] };
-  }
-  const skillFileDirectories = new Set(files.filter((file) => basename(file).toLowerCase() === "skill.md").map(dirname));
-  const skills: LoadedSkill[] = [];
-  const errors: SkillLoadError[] = [];
-  for (const file of files) {
-    if (basename(file).toLowerCase() !== "skill.md" && skillFileDirectories.has(dirname(file))) continue;
-    const relativePath = relative(root, file);
-    const isSkillFile = basename(file).toLowerCase() === "skill.md";
-    const parts = (isSkillFile ? dirname(relativePath) : relativePath.slice(0, -3)).split(/[\\/]+/).filter((part) => part && part !== ".");
-    const name = parts.join(":") || basename(dirname(file));
-    try {
-      skills.push(await loadSkillFile(file, { source: "commands", name, root: isSkillFile ? dirname(file) : root }));
-    } catch (error) {
-      errors.push({ path: file, error: errorMessage(error) });
-    }
-  }
-  return { skills, errors };
-}
-
-function defaultCommandRoots(cwd: string): string[] {
-  return [join(homedir(), ".einsteins", "commands"), ...projectDirectories(cwd).map((directory) => join(directory, ".einsteins", "commands"))];
-}
-
-function projectDirectories(cwd: string): string[] {
-  const home = resolve(homedir()).toLowerCase();
-  const directories: string[] = [];
-  let current = resolve(cwd);
-  for (;;) {
-    if (current.toLowerCase() === home) break;
-    directories.push(current);
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return directories;
-}
-
-async function pathKind(path: string): Promise<"file" | "directory" | undefined> {
-  try {
-    const info = await stat(path);
-    if (info.isFile()) return "file";
-    if (info.isDirectory()) return "directory";
-    return undefined;
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
-    throw error;
-  }
 }
 
 function resolveMode(skill: LoadedSkill, requested: SkillMode | undefined): "inline" | "fork" {
@@ -427,8 +328,4 @@ function escapeRegExp(value: string): string {
 function stripLeadingSlash(value: string): string {
   const trimmed = value.trim();
   return trimmed.startsWith("/") ? trimmed.slice(1) : trimmed;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

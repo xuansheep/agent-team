@@ -29,7 +29,7 @@ Plugin skills are explicitly out of scope.
 | User settings directory | ~/.einsteins/settings.yaml |
 | Legacy settings | ~/.agent-team/settings.yaml may be read as fallback only |
 | Skill execution | inline and fork are both required |
-| Skill sources | ~/.einsteins/skills, project .agents/skills, project .einsteins/skills, bundled skills, MCP skills |
+| Skill sources | project `.agents/skills` and user `~/.einsteins/skills`; project takes precedence |
 | Excluded skill sources | plugin skills, remote canonical skills, marketplace |
 | Hook scope | skill hooks plus a global hook runtime |
 | Hook types | command, prompt, agent, http, function |
@@ -188,14 +188,10 @@ MCP prompts are not registered as slash commands in phase one. They are exposed 
 
 SkillRuntime scans:
 
-1. Explicit project skill paths configured under agent-team.yaml.
-2. Project .agents/skills.
-3. Project .einsteins/skills.
-4. User ~/.einsteins/skills.
-5. Bundled skills.
-6. MCP skills.
+1. Project `.agents/skills` directories from the current directory to the Git root, nearest first.
+2. User `~/.einsteins/skills`.
 
-Plugin skills, marketplace, and remote canonical skills are excluded.
+Same-name project skills override user skills. Managed, explicit, legacy command, bundled, plugin, MCP, marketplace, and remote canonical skill discovery are excluded.
 
 ### Skill Format
 
@@ -411,11 +407,11 @@ Phase one MCP is complete when:
 
 Skill runtime is complete when:
 
-1. all confirmed non-plugin skill sources are scanned.
-2. same-name skill precedence is deterministic.
+1. project and user skill sources are scanned within the Git boundary.
+2. same-name project skills deterministically override user skills.
 3. inline and fork execution both work.
 4. fork execution cannot expand permissions.
-5. MCP skills are adapted in the Skill phase.
+5. MCP resources and prompts are not adapted into skills.
 
 Hook runtime is complete when:
 

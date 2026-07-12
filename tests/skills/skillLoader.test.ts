@@ -44,6 +44,12 @@ Review risks.
   it("parses markdown without marketplace or executable plugin behavior", () => {
     const skill = parseSkillMarkdown("Plain prompt body.", "plain.md");
 
-    assert.deepEqual(skill, { name: "plain", prompt: "Plain prompt body." });
+    assert.deepEqual(skill, {
+      name: "plain",
+      userInvocable: true,
+      disableModelInvocation: false,
+      prompt: "Plain prompt body.",
+      metadata: {}
+    });
   });
 });

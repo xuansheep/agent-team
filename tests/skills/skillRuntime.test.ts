@@ -10,32 +10,44 @@ import { SkillRuntime } from "../../src/skills/runtime.js";
 import { parseSkillMarkdown } from "../../src/skills/skillLoader.js";
 
 describe("SkillRuntime", () => {
-  it("discovers project, user, bundled, and MCP skills with deterministic precedence", async () => {
+  it("discovers project and user skills with project precedence", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-skill-runtime-"));
     const userRoot = await mkdtemp(join(tmpdir(), "agent-team-user-skills-"));
-    const bundledRoot = await mkdtemp(join(tmpdir(), "agent-team-bundled-skills-"));
-    const explicitRoot = join(cwd, "configured-skills");
+    await mkdir(join(cwd, ".git"));
     await writeSkill(join(userRoot, "shared"), "shared", "user");
-    await writeSkill(join(bundledRoot, "shared"), "shared", "bundled");
-    await writeSkill(join(cwd, ".einsteins", "skills", "project"), "project", "project");
-    await writeSkill(join(cwd, ".einsteins", "skills", "shared"), "shared", "project-einsteins");
-    await writeSkill(join(explicitRoot, "explicit"), "explicit", "explicit");
+    await writeSkill(join(userRoot, "user-only"), "user-only", "user-only");
+    await writeSkill(join(cwd, ".agents", "skills", "project"), "project", "project");
+    await writeSkill(join(cwd, ".agents", "skills", "shared"), "shared", "project-agents");
+    await writeSkill(join(cwd, ".einsteins", "skills", "ignored"), "ignored", "old-project-path");
 
     const runtime = await SkillRuntime.discover({
       cwd,
-      explicitProjectSkillPaths: [explicitRoot],
-      userSkillRoot: userRoot,
-      bundledSkillRoots: [bundledRoot],
-      mcpSkills: [{ name: "mcp", prompt: "mcp", path: "mcp://skills/mcp", root: "mcp://skills", source: "mcp", metadata: {} }]
+      userSkillRoot: userRoot
     });
 
     assert.deepEqual(runtime.listSkills().map((skill) => `${skill.name}:${skill.source}`), [
-      "explicit:project",
-      "mcp:mcp",
       "project:project",
-      "shared:project"
+      "shared:project",
+      "user-only:user"
     ]);
-    assert.equal(runtime.getSkill("shared")?.prompt.trim(), "project-einsteins");
+    assert.equal(runtime.getSkill("shared")?.prompt.trim(), "project-agents");
+    assert.equal(runtime.getSkill("ignored"), undefined);
+  });
+
+  it("prefers the nearest project skill and stops at the git root", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "agent-team-skill-parent-"));
+    const root = join(parent, "repo");
+    const nested = join(root, "packages", "app");
+    await mkdir(join(root, ".git"), { recursive: true });
+    await mkdir(nested, { recursive: true });
+    await writeSkill(join(parent, ".agents", "skills", "outside"), "outside", "outside");
+    await writeSkill(join(root, ".agents", "skills", "shared"), "shared", "root");
+    await writeSkill(join(nested, ".agents", "skills", "shared"), "shared", "nested");
+
+    const runtime = await SkillRuntime.discover({ cwd: nested, userSkillRoot: join(parent, "user-skills") });
+
+    assert.equal(runtime.getSkill("shared")?.prompt.trim(), "nested");
+    assert.equal(runtime.getSkill("outside"), undefined);
   });
 
   it("parses tui-code style skill metadata while preserving unknown frontmatter", () => {
@@ -65,7 +77,8 @@ Review carefully.
 
   it("activates inline skills as system context", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-inline-skill-"));
-    await writeSkill(join(cwd, ".einsteins", "skills", "planner"), "planner", "Always plan first.");
+    await mkdir(join(cwd, ".git"));
+    await writeSkill(join(cwd, ".agents", "skills", "planner"), "planner", "Always plan first.");
     const runtime = await SkillRuntime.discover({ cwd });
 
     const result = await runtime.activateSkill("planner", {
@@ -80,7 +93,8 @@ Review carefully.
 
   it("runs fork skills through a constrained child model request", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-fork-skill-"));
-    await writeSkill(join(cwd, ".einsteins", "skills", "reviewer"), "reviewer", "Review only.", {
+    await mkdir(join(cwd, ".git"));
+    await writeSkill(join(cwd, ".agents", "skills", "reviewer"), "reviewer", "Review only.", {
       mode: "fork",
       allowedTools: ["Read"]
     });
@@ -113,7 +127,8 @@ Review carefully.
 
   it("reports skill diagnostics for later TUI surfaces", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-skill-diagnostics-"));
-    await writeSkill(join(cwd, ".einsteins", "skills", "planner"), "planner", "Plan.", {
+    await mkdir(join(cwd, ".git"));
+    await writeSkill(join(cwd, ".agents", "skills", "planner"), "planner", "Plan.", {
       mode: "inline",
       allowedTools: ["Read"]
     });
@@ -123,8 +138,15 @@ Review carefully.
       name: "planner",
       source: "project",
       mode: "inline",
-      path: join(cwd, ".einsteins", "skills", "planner", "SKILL.md"),
-      allowedTools: ["Read"]
+      path: join(cwd, ".agents", "skills", "planner", "SKILL.md"),
+      description: undefined,
+      whenToUse: undefined,
+      allowedTools: ["Read"],
+      argumentHint: undefined,
+      version: undefined,
+      userInvocable: true,
+      disableModelInvocation: false,
+      paths: undefined
     }]);
   });
 });

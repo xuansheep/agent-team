@@ -454,7 +454,7 @@ describe("TuiApp global Plan Mode", () => {
         sha256: "global-hash",
         chars: projectPrompt.length,
         lines: 1,
-        sources: [{ kind: "project_agents" as const, path: join(cwd, ".einsteins", "AGENTS.md"), sha256: "source-hash", chars: projectPrompt.length, lines: 1 }]
+        sources: [{ kind: "project_agents" as const, path: join(cwd, ".agents", "AGENTS.md"), sha256: "source-hash", chars: projectPrompt.length, lines: 1 }]
       }
     };
     const output = render(<TuiApp cwd={cwd} config={configWithGlobalPrompt} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);

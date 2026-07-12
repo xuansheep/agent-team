@@ -29,9 +29,14 @@ config/
     developer.md
   workflows/
     delivery.json
+.agents/
+  AGENTS.md
+  skills/
+    reviewer/
+      SKILL.md
 ```
 
-`config/prompt.md` contains shared instructions prepended to every role prompt. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the system prompt. Role tool-calling and vision requirements are always enabled by the runtime.
+`config/prompt.md` contains mandatory system instructions prepended to every role prompt. Project-specific user instructions may be added in `.agents/AGENTS.md`; they supplement but cannot override `config/prompt.md` or the active role prompt. Project skills are discovered from `.agents/skills/<name>/SKILL.md`, while user instructions and skills remain under `~/.einsteins/AGENTS.md` and `~/.einsteins/skills`. Project skills override same-name user skills. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt. Role tool-calling and vision requirements are always enabled by the runtime.
 
 Each workflow JSON file contains `name`, `nodes`, and optional `workflow_permissions`. Workflows follow node order, so workflow files do not accept an `edges` field.
 
@@ -79,7 +84,7 @@ The harness follows Claude Code-style local tool execution and permissions where
 
 ## 中文说明
 
-`agent-team` 是一个本地 TUI 版 Agent 团队编排 Harness。Provider 和 API 密钥统一配置在用户目录的 `~/.einsteins/settings.yaml`；项目目录的 `config/roles`、`config/workflows` 和 `config/prompt.md` 分别配置角色、工作流和全局提示词。系统按 `nodes` 顺序执行模型调用和本地工具调用，并把每次会话记录到 `.session/{run_id}`。
+`agent-team` 是一个本地 TUI 版 Agent 团队编排 Harness。Provider 和 API 密钥统一配置在用户目录的 `~/.einsteins/settings.yaml`；项目目录的 `config/roles`、`config/workflows` 和 `config/prompt.md` 分别配置角色、工作流和必须遵循的系统提示词。项目自定义提示词与 Skill 分别放在 `.agents/AGENTS.md` 和 `.agents/skills`，用户级内容继续放在 `~/.einsteins`。系统按 `nodes` 顺序执行模型调用和本地工具调用，并把每次会话记录到 `.session/{run_id}`。
 
 MVP 支持：
 

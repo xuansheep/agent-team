@@ -29,7 +29,7 @@ export type ToolPromptsAttachmentInput = {
 };
 
 const globalPromptInstruction =
-  "Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
+  "System and user-provided project instructions are shown below. Follow the priority boundaries stated in the content: config/prompt.md and the active role system prompt take precedence over AGENTS.md.";
 
 export function buildGlobalPromptAttachment(prompt: string | undefined): RuntimeAttachment | undefined {
   const content = prompt?.trim();

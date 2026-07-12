@@ -10,7 +10,6 @@ import { createMcpClientFactory } from "../mcp/transports.js";
 import { createProvider } from "../providers/registry.js";
 import { loadSettings, setUserDefaultPermissionMode } from "../settings/loadSettings.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
-import { loadMcpPromptSkills } from "../skills/mcpSkills.js";
 import { SkillRuntime } from "../skills/runtime.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { TuiApp } from "./TuiApp.js";
@@ -51,11 +50,7 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
   const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory({ roots: () => [{ uri: options.cwd }] }) });
   await mcpRuntime.connectAll(mcpServers);
-  const skillRuntime = await SkillRuntime.discover({
-    cwd: options.cwd,
-    mcpSkills: () => loadMcpPromptSkills(mcpRuntime)
-  });
-  mcpRuntime.onCatalogChanged(async (kind) => { if (kind === "resources") await skillRuntime.refresh(); });
+  const skillRuntime = await SkillRuntime.discover({ cwd: options.cwd });
   const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session"), mcpRuntime, skillRuntime });
   const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
   return { config, workflows, workflowId, engine, settings, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions };
