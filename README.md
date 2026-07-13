@@ -38,7 +38,7 @@ config/
 
 `config/prompt.md` contains mandatory system instructions prepended to every role prompt. Project-specific user instructions may be added in `.agents/AGENTS.md`; they supplement but cannot override `config/prompt.md` or the active role prompt. Project skills are discovered from `.agents/skills/<name>/SKILL.md`, while user instructions and skills remain under `~/.einsteins/AGENTS.md` and `~/.einsteins/skills`. Project skills override same-name user skills. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt. Role tool-calling and vision requirements are always enabled by the runtime.
 
-Each workflow JSON file contains `name`, `nodes`, and optional `workflow_permissions`. Workflows follow node order, so workflow files do not accept an `edges` field.
+Each workflow JSON file contains `name`, `nodes`, optional `max_rework_cycles` (default `10`), and optional `workflow_permissions`. Workflows follow node order, so workflow files do not accept an `edges` field.
 
 ## Interactive TUI
 
@@ -68,7 +68,9 @@ npm test -- tests/config/loadConfig.test.ts tests/settings/settings.test.ts
 
 Workflow nodes run in the order listed under `nodes`.
 
-When a node returns `success`, the workflow advances to the next node. When a node returns `failure`, the workflow returns to the previous node for rework. When a node returns `needs_user_input`, the workflow pauses and asks the user for the requested input.
+Each node receives descriptors for its current, previous, and next workflow positions. A node submits the explicit direction `forward` or `backward`: `forward` advances or resumes the suspended downstream node, while `backward` suspends the current node and resumes the previous node in the same attempt. Every reactivation increments an auditable activation number. Only the first node can move backward to the user; the final node moves forward to the user to complete the run.
+
+The bundled `delivery` workflow is `product -> ui -> developer -> tester`. All nodes use the `default` provider, and `tester` is the complete node that produces the final verification report.
 
 Workflow session control in the TUI:
 
@@ -80,7 +82,7 @@ Workflow session control in the TUI:
 
 ## Safety Model
 
-The harness follows Claude Code-style local tool execution and permissions where practical. Workflow-level deny rules are baseline restrictions. Node-level permissions grant role-specific access. MVP node completion is model-declared; downstream nodes and user acceptance can reject completion and trigger feedback loops.
+The harness follows Claude Code-style local tool execution and permissions where practical. Workflow-level deny rules are baseline restrictions. Node-level permissions grant role-specific access. Workflow state uses V2 crash-recoverable primary/backup checkpoints. A per-run process lease prevents concurrent engines from advancing the same run, workflow and role fingerprints reject unsafe resumes after configuration drift, and the tool event ledger prevents automatic replay of non-read-only calls with unknown outcomes. Artifact writes create immutable revisions with SHA-256 indexes instead of overwriting earlier handoff files.
 
 ## 中文说明
 
@@ -91,8 +93,12 @@ MVP 支持：
 - Responses API、OpenAI-compatible 和 Anthropic Provider
 - Claude Code 风格 `allow`、`ask`、`deny` 权限规则
 - 本地工具集：`Read`、`Write`、`Edit`、`MultiEdit`、`LS`、`Glob`、`Grep`、`Bash`、`PowerShell`、`TodoWrite`、`AttachImage`、`WebFetch`、`WebSearch`
-- 默认按 `nodes` 顺序执行，`success` 进入下一节点，`failure` 返回上一节点返工，`needs_user_input` 暂停交给用户处理
-- `waiting_user` 暂停与 TUI 内继续
+- 默认按 `nodes` 顺序执行，节点必须显式提交 `forward` 或 `backward`；退回节点与上游节点保持原 attempt，并以新的 activation 从对话检查点继续
+- 只有首节点可以 `backward` 到用户；用户回答后首节点原位继续，末节点 `forward` 到用户后完成工作流
+- 默认 `delivery` 为 `product -> ui -> developer -> tester`，全部使用 `default` Provider，tester 兼任最终交付
+- 默认最多执行 10 次节点间退回，达到上限后由控制器暂停并请求用户决定
 - TUI session 状态控制：首次普通输入启动当前工作流；存在恢复检查点时，停止后进入 `paused`，后续普通输入从检查点节点继续；已完成或不可恢复失败后则作为同一 session 的新一轮；`/new` 显式重置，`/resume [run_id]` 仅恢复历史状态
 - 图片 artifact 输入和 vision capability 检查
-- `final_delivery` 普通节点式最终交付
+- 同名 artifact 使用不可变 revision 和 SHA-256 索引，旧版本不会被覆盖
+- 同一 run 使用跨进程排他租约；恢复时校验工作流与角色配置指纹，并通过工具调用账本避免重复执行结果不明的非只读操作
+- `state.json` 和 artifact 索引使用主副本崩溃恢复写入，Windows 下不会因 rename 失败退化为无保护覆盖

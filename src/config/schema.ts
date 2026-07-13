@@ -101,12 +101,14 @@ export const edgeSchema = z.object({
 export const workflowSchema = z.object({
   nodes: z.array(nodeSchema).min(1),
   edges: z.array(edgeSchema).default([]),
+  max_rework_cycles: z.number().int().positive().default(10),
   workflow_permissions: permissionSetSchema.optional()
 });
 
 export const workflowFileSchema = z.object({
   name: z.string().trim().min(1),
   nodes: z.array(nodeSchema).min(1),
+  max_rework_cycles: z.number().int().positive().default(10),
   workflow_permissions: permissionSetSchema.optional()
 }).strict();
 
@@ -142,7 +144,7 @@ export type GlobalPromptMetadata = {
 };
 export type WorkflowNodeMode = "task" | "complete";
 export type WorkflowNodeConfig = Omit<ParsedWorkflowNodeConfig, "mode"> & { mode?: WorkflowNodeMode };
-export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes"> & { nodes: WorkflowNodeConfig[] };
+export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes" | "max_rework_cycles"> & { nodes: WorkflowNodeConfig[]; max_rework_cycles?: number };
 export type AgentTeamConfig = Omit<ParsedProjectConfig, "workflows"> & {
   providers: Record<string, ProviderConfig>;
   workflows: Record<string, WorkflowConfig>;

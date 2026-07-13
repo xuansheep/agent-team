@@ -30,10 +30,24 @@ describe("local tools", () => {
 
     const result = await tools.get("ArtifactWrite").execute({ name: "report.md", content: "# Report\nDone.", description: "User report" }, { cwd, runDir, nodeId: "dev" });
 
-    assert.equal(result.artifact_id, "dev/report.md");
+    assert.equal(result.artifact_id, "dev/report.md@r1");
     assert.equal(result.description, "User report");
-    assert.match(result.path ?? "", /artifacts.*dev.*report\.md/);
-    assert.equal(await readFile(join(runDir, "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
+    assert.match(result.path ?? "", /artifacts.*dev.*r0001-report\.md/);
+    assert.equal(await readFile(join(runDir, "artifacts", "dev", "r0001-report.md"), "utf8"), "# Report\nDone.");
+  });
+
+  it("imports attached images as immutable indexed artifacts", async () => {
+    const cwd = await workspace();
+    const runDir = join(cwd, ".session", "run-1");
+    await writeFile(join(cwd, "diagram.png"), "image-bytes", "utf8");
+    const tools = createLocalToolRegistry();
+
+    const result = await tools.get("AttachImage").execute({ path: "diagram.png" }, { cwd, runDir, nodeId: "ui", attempt: 1, activation: 2 });
+
+    assert.equal(result.artifact_id, "ui/diagram.png@r1");
+    assert.equal(await readFile(String(result.path), "utf8"), "image-bytes");
+    const index = await readFile(join(runDir, "artifacts", "index.json"), "utf8");
+    assert.match(index, /"activation": 2/);
   });
 
   it("rejects artifact names with path traversal", async () => {

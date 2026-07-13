@@ -40,7 +40,7 @@ after(async () => {
 
 describe("ResponsesApiProvider", () => {
   it("sends Responses API request bodies and context headers", async () => {
-    const server = await startJsonServer({ output_text: "{\"status\":\"success\"}" });
+    const server = await startJsonServer({ output_text: "{\"direction\":\"forward\"}" });
     const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", jsonSchemaOutput: true, promptCache: true, parallelToolCalls: true });
 
     const result = await provider.generate({
@@ -54,7 +54,7 @@ describe("ResponsesApiProvider", () => {
       context
     });
 
-    assert.equal(result.content, "{\"status\":\"success\"}");
+    assert.equal(result.content, "{\"direction\":\"forward\"}");
     assert.equal(server.requestPath, "/v1/responses");
     assert.equal(server.requestHeaders.authorization, "Bearer test-key");
     assert.equal(server.requestHeaders["session-id"], "run-1");
@@ -81,7 +81,7 @@ describe("ResponsesApiProvider", () => {
   });
 
   it("keeps long tool prompts out of Responses API tool schemas", async () => {
-    const server = await startJsonServer({ output_text: "{\"status\":\"success\"}" });
+    const server = await startJsonServer({ output_text: "{\"direction\":\"forward\"}" });
     const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
 
     await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [promptedTool] });
@@ -99,7 +99,7 @@ describe("ResponsesApiProvider", () => {
     const server = await startJsonServer({
       output: [
         { type: "reasoning", summary: [{ type: "summary_text", text: "Checked the plan." }] },
-        { type: "message", content: [{ type: "output_text", text: "{\"status\":\"success\"}" }] }
+        { type: "message", content: [{ type: "output_text", text: "{\"direction\":\"forward\"}" }] }
       ]
     });
     const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
@@ -107,7 +107,7 @@ describe("ResponsesApiProvider", () => {
     const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
     assert.equal(result.thinking, "Checked the plan.");
-    assert.equal(result.content, "{\"status\":\"success\"}");
+    assert.equal(result.content, "{\"direction\":\"forward\"}");
   });
 
   it("maps usage and status into normalized response metadata", async () => {
@@ -174,8 +174,8 @@ describe("ResponsesApiProvider", () => {
 
   it("streams text deltas and completed function calls", async () => {
     const server = await startSseServer([
-      { type: "response.output_text.delta", delta: "{\"status\":" },
-      { type: "response.output_text.delta", delta: "\"success\"}" },
+      { type: "response.output_text.delta", delta: "{\"direction\":" },
+      { type: "response.output_text.delta", delta: "\"forward\"}" },
       { type: "response.output_item.done", item: { type: "function_call", call_id: "call-1", name: "Bash", arguments: "{\"command\":\"npm test\"}" } },
       "[DONE]"
     ]);
@@ -187,8 +187,8 @@ describe("ResponsesApiProvider", () => {
       (event) => deltas.push(event.text)
     );
 
-    assert.deepEqual(deltas, ["{\"status\":", "\"success\"}"]);
-    assert.equal(result?.content, "{\"status\":\"success\"}");
+    assert.deepEqual(deltas, ["{\"direction\":", "\"forward\"}"]);
+    assert.equal(result?.content, "{\"direction\":\"forward\"}");
     assert.deepEqual(result?.tool_calls, [{ id: "call-1", name: "Bash", input: { command: "npm test" } }]);
     assert.equal(server.requestBody.stream, true);
   });
@@ -242,7 +242,7 @@ describe("ResponsesApiProvider", () => {
     const server = await startSseServer([
       { type: "response.reasoning_summary_text.delta", delta: "Checked " },
       { type: "response.reasoning_summary_text.delta", delta: "constraints." },
-      { type: "response.output_text.delta", delta: "{\"status\":\"success\"}" },
+      { type: "response.output_text.delta", delta: "{\"direction\":\"forward\"}" },
       "[DONE]"
     ]);
     const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
@@ -257,7 +257,7 @@ describe("ResponsesApiProvider", () => {
 
     assert.deepEqual(thinking, ["Checked ", "constraints."]);
     assert.equal(result?.thinking, "Checked constraints.");
-    assert.equal(result?.content, "{\"status\":\"success\"}");
+    assert.equal(result?.content, "{\"direction\":\"forward\"}");
   });
 });
 

@@ -128,7 +128,7 @@ describe("RunStore index", () => {
     const root = await workspace();
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "indexed request" });
-    await store.saveState(run.runId, { status: "completed", workflow_id: "delivery", attempts: [] });
+    await store.saveState(run.runId, { version: 2, status: "completed", workflow_id: "delivery", attempts: [], node_checkpoints: {}, suspended_stack: [], rework_count: 0, rework_limit: 10 });
     await writeFile(join(run.runDir, "state.json"), "not-json", "utf8");
 
     const runs = await store.listRuns();
@@ -143,7 +143,7 @@ describe("RunStore index", () => {
     const root = await workspace();
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "scanned request" });
-    await store.saveState(run.runId, { status: "pending", workflow_id: "delivery", current_node_id: "product", attempts: [] });
+    await store.saveState(run.runId, { version: 2, status: "waiting_user", workflow_id: "delivery", current_node_id: "product", attempts: [], node_checkpoints: {}, suspended_stack: [], rework_count: 0, rework_limit: 10 });
     await writeFile(join(root, "index.json"), JSON.stringify({ version: 1, sessions: [] }, null, 2), "utf8");
 
     const runs = await store.listRuns();

@@ -8,8 +8,8 @@ describe("ModelStreamPanel", () => {
     const output = render(
       <ModelStreamPanel
         streams={[
-          { nodeId: "product", attempt: 1, text: "我先检查项目结构。\n{\"status\":\"success\",\"summary\":\"done\"}" },
-          { nodeId: "dev", attempt: 1, text: "{\"status\":\"success\",\"summary\":\"done\"}" }
+          { nodeId: "product", attempt: 1, text: "我先检查项目结构。\n{\"direction\":\"forward\",\"summary\":\"done\"}" },
+          { nodeId: "dev", attempt: 1, text: "{\"direction\":\"forward\",\"summary\":\"done\"}" }
         ]}
       />
     );

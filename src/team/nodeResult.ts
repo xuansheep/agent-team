@@ -3,7 +3,7 @@ export const nodeResultJsonSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    status: { type: "string", enum: ["success", "failure", "needs_user_input"] },
+    direction: { type: "string", enum: ["forward", "backward"] },
     summary: { type: "string" },
     document: { type: "string" },
     deliverables: {
@@ -68,7 +68,7 @@ export const nodeResultJsonSchema = {
       required: ["instruction", "must_follow", "known_risks", "open_questions"]
     }
   },
-  required: ["status", "summary", "document", "deliverables", "feedback", "questions", "handoff"]
+  required: ["direction", "summary", "document", "deliverables", "feedback", "questions", "handoff"]
 } as const;
 export const nodeResultOutputInstructions = [
   "# Preamble messages",
@@ -93,9 +93,9 @@ export const nodeResultOutputInstructions = [
   "Do not put NodeResult JSON in assistant content; put final structured data only in SubmitNodeResult input, or in the final JSON response when no tools are available.",
   "The final NodeResult must be only JSON that matches the NodeResult schema, or a SubmitNodeResult tool call when tools are available.",
   "Do not include Markdown fences, explanations, or natural-language text around the final NodeResult JSON object.",
-  "Use status success for completed work, failure for rejected work, and needs_user_input only when user input is required and questions contains at least one concrete question.",
-  "Use status failure when the previous workflow node should rework the task; include concrete defects/change_requests in feedback and clear rework instructions in handoff.",
-  "Use status needs_user_input when progress requires a user decision, missing information, or manual intervention; include concrete questions for the user.",
+  "Use direction forward when the next workflow node should continue, and backward when the previous workflow node must rework or answer a question.",
+  "When moving backward to another node, include concrete defects/change_requests in feedback and clear rework instructions in handoff.",
+  "Only the first workflow node can move backward to the user; it must include concrete questions for the user.",
   "When a question has clear mutually-exclusive answers, include them in questions[].options with label and value. Set allow_freeform to false only when the user must choose one of those options.",
   "Return exactly one final NodeResult JSON object. Do not return multiple JSON objects or revisions in one response.",
   "If repository inspection is needed, call tools instead of asking the user for permission to inspect.",
@@ -131,23 +131,15 @@ const handoffSchema = z.object({
   open_questions: z.array(z.string()).default([])
 }).strict();
 export const nodeResultSchema = z.object({
-  status: z.enum(["success", "failure", "needs_user_input"]),
+  direction: z.enum(["forward", "backward"]),
   summary: z.string().default(""),
   document: z.string().default(""),
   deliverables: z.array(deliverableSchema).default([]),
   feedback: feedbackSchema.default({}),
   questions: z.array(questionSchema).default([]),
   handoff: handoffSchema.default({})
-}).strict().superRefine((result, ctx) => {
-  if (result.status !== "needs_user_input") return;
-  if (result.questions.some((question) => question.text.trim())) return;
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    path: ["questions"],
-    message: "needs_user_input results must include at least one concrete question"
-  });
-});
-export type NodeResult = z.infer<typeof nodeResultSchema>;
+}).strict();
+export type NodeResult = z.infer<typeof nodeResultSchema> & { readonly status?: undefined };
 export function visibleAssistantTextBeforeNodeResult(text: string): string {
   const trimmed = text.trimStart();
   if (!trimmed) return "";
@@ -168,7 +160,7 @@ function nodeResultJsonStart(text: string): number {
   }
   return -1;
 }
-const NODE_RESULT_KEYS = ["status", "summary", "document", "deliverables", "feedback", "handoff", "questions"];
+const NODE_RESULT_KEYS = ["direction", "summary", "document", "deliverables", "feedback", "handoff", "questions"];
 function isNodeResultObjectStart(text: string): boolean {
   const afterBrace = text.slice(1).trimStart();
   if (!afterBrace || afterBrace === "\"") return true;
@@ -265,8 +257,8 @@ function extractJsonObjectAt(text: string, start: number): { object: string; end
 }
 function looksLikeNodeResult(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
-  const status = (value as { status?: unknown }).status;
-  return status === "success" || status === "failure" || status === "needs_user_input";
+  const direction = (value as { direction?: unknown }).direction;
+  return direction === "forward" || direction === "backward";
 }
 function excerpt(text: string): string {
   return JSON.stringify(text.slice(0, 240));

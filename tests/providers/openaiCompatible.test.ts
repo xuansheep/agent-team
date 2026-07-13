@@ -69,7 +69,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
 
 
   it("sends a Claude Code compatible user-agent by default", async () => {
-    const server = await startJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
+    const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
 
     await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
@@ -78,7 +78,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
   });
 
   it("keeps long tool prompts out of OpenAI-compatible tool schemas", async () => {
-    const server = await startJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
+    const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
 
     await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [promptedTool] });
@@ -95,7 +95,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
   });
 
   it("allows provider user-agent override", async () => {
-    const server = await startJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
+    const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", userAgent: "custom-agent/1.0" });
 
     await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
@@ -104,7 +104,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
   });
 
   it("sends json_schema response_format for non-streaming requests when enabled", async () => {
-    const server = await startJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
+    const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", jsonSchemaOutput: true });
 
     await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [], response_schema: responseSchema });
@@ -116,13 +116,13 @@ describe("OpenAiCompatibleProvider structured output", () => {
   });
 
   it("maps OpenAI-compatible reasoning_content into normalized thinking text", async () => {
-    const server = await startJsonServer({ choices: [{ message: { reasoning_content: "Checked constraints.", content: "{\"status\":\"success\"}" } }] });
+    const server = await startJsonServer({ choices: [{ message: { reasoning_content: "Checked constraints.", content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
 
     const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
     assert.equal(result.thinking, "Checked constraints.");
-    assert.equal(result.content, "{\"status\":\"success\"}");
+    assert.equal(result.content, "{\"direction\":\"forward\"}");
   });
 
   it("maps usage and finish reason into normalized response metadata", async () => {
@@ -139,12 +139,12 @@ describe("OpenAiCompatibleProvider structured output", () => {
   });
 
   it("retries transient network failures for non-streaming requests", async () => {
-    const server = await startFlakyJsonServer({ choices: [{ message: { content: "{\"status\":\"success\"}" } }] });
+    const server = await startFlakyJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
 
     const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
-    assert.equal(result.content, "{\"status\":\"success\"}");
+    assert.equal(result.content, "{\"direction\":\"forward\"}");
     assert.equal(server.attempts, 2);
   });
 
@@ -188,7 +188,7 @@ describe("OpenAiCompatibleProvider streaming", () => {
 
   it("streams content deltas and returns the aggregated response", async () => {
     const server = await startSseServer([
-      { choices: [{ delta: { content: "{\"status\":\"success\"," } }] },
+      { choices: [{ delta: { content: "{\"direction\":\"forward\"," } }] },
       { choices: [{ delta: { content: "\"summary\":\"done\"}" } }] },
       "[DONE]"
     ]);
@@ -202,8 +202,8 @@ describe("OpenAiCompatibleProvider streaming", () => {
       }
     );
 
-    assert.deepEqual(deltas, ["{\"status\":\"success\",", "\"summary\":\"done\"}"]);
-    assert.equal(result?.content, "{\"status\":\"success\",\"summary\":\"done\"}");
+    assert.deepEqual(deltas, ["{\"direction\":\"forward\",", "\"summary\":\"done\"}"]);
+    assert.equal(result?.content, "{\"direction\":\"forward\",\"summary\":\"done\"}");
     assert.equal(server.requestBody.stream, true);
     assert.deepEqual(server.requestBody.response_format, {
       type: "json_schema",
@@ -214,7 +214,7 @@ describe("OpenAiCompatibleProvider streaming", () => {
   it("streams reasoning_content deltas as normalized thinking events", async () => {
     const server = await startSseServer([
       { choices: [{ delta: { reasoning_content: "Checked " } }] },
-      { choices: [{ delta: { reasoning_content: "constraints.", content: "{\"status\":\"success\"}" } }] },
+      { choices: [{ delta: { reasoning_content: "constraints.", content: "{\"direction\":\"forward\"}" } }] },
       "[DONE]"
     ]);
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
@@ -229,7 +229,7 @@ describe("OpenAiCompatibleProvider streaming", () => {
 
     assert.deepEqual(thinking, ["Checked ", "constraints."]);
     assert.equal(result?.thinking, "Checked constraints.");
-    assert.equal(result?.content, "{\"status\":\"success\"}");
+    assert.equal(result?.content, "{\"direction\":\"forward\"}");
   });
 
   it("aggregates streamed tool call argument fragments", async () => {
@@ -247,7 +247,7 @@ describe("OpenAiCompatibleProvider streaming", () => {
 
   it("retries transient network failures before reading a stream", async () => {
     const server = await startFlakySseServer([
-      { choices: [{ delta: { content: "{\"status\":\"success\"}" } }] },
+      { choices: [{ delta: { content: "{\"direction\":\"forward\"}" } }] },
       "[DONE]"
     ]);
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
@@ -260,8 +260,8 @@ describe("OpenAiCompatibleProvider streaming", () => {
       }
     );
 
-    assert.deepEqual(deltas, ["{\"status\":\"success\"}"]);
-    assert.equal(result?.content, "{\"status\":\"success\"}");
+    assert.deepEqual(deltas, ["{\"direction\":\"forward\"}"]);
+    assert.equal(result?.content, "{\"direction\":\"forward\"}");
     assert.equal(server.attempts, 2);
   });
 });

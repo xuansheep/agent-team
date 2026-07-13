@@ -40,7 +40,7 @@ after(async () => {
 
 describe("AnthropicMessagesProvider", () => {
   it("sends Anthropic Messages request bodies and headers", async () => {
-    const server = await startJsonServer({ content: [{ type: "text", text: "{\"status\":\"success\"}" }] });
+    const server = await startJsonServer({ content: [{ type: "text", text: "{\"direction\":\"forward\"}" }] });
     const provider = new AnthropicMessagesProvider({
       baseUrl: server.baseUrl,
       apiKey: "test-key",
@@ -62,7 +62,7 @@ describe("AnthropicMessagesProvider", () => {
       context
     });
 
-    assert.equal(result.content, "{\"status\":\"success\"}");
+    assert.equal(result.content, "{\"direction\":\"forward\"}");
     assert.equal(server.requestPath, "/v1/messages");
     assert.equal(server.requestHeaders["x-api-key"], "test-key");
     assert.equal(server.requestHeaders["anthropic-version"], "2023-06-01");
@@ -82,7 +82,7 @@ describe("AnthropicMessagesProvider", () => {
   });
 
   it("keeps long tool prompts out of Anthropic tool schemas", async () => {
-    const server = await startJsonServer({ content: [{ type: "text", text: "{\"status\":\"success\"}" }] });
+    const server = await startJsonServer({ content: [{ type: "text", text: "{\"direction\":\"forward\"}" }] });
     const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
 
     await provider.generate({ model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [promptedTool] });
@@ -151,13 +151,13 @@ describe("AnthropicMessagesProvider", () => {
   });
 
   it("maps Anthropic thinking blocks into normalized thinking text", async () => {
-    const server = await startJsonServer({ content: [{ type: "thinking", thinking: "Checked constraints." }, { type: "text", text: "{\"status\":\"success\"}" }] });
+    const server = await startJsonServer({ content: [{ type: "thinking", thinking: "Checked constraints." }, { type: "text", text: "{\"direction\":\"forward\"}" }] });
     const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
 
     const result = await provider.generate({ model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
     assert.equal(result.thinking, "Checked constraints.");
-    assert.equal(result.content, "{\"status\":\"success\"}");
+    assert.equal(result.content, "{\"direction\":\"forward\"}");
   });
 
   it("maps usage and stop reason into normalized response metadata", async () => {
@@ -208,8 +208,8 @@ describe("AnthropicMessagesProvider", () => {
   it("streams text deltas and tool input deltas", async () => {
     const server = await startSseServer([
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "{\"status\":" } },
-      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "\"success\"}" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "{\"direction\":" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "\"forward\"}" } },
       { type: "content_block_stop", index: 0 },
       { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu-1", name: "Bash", input: {} } },
       { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"command\":" } },
@@ -225,8 +225,8 @@ describe("AnthropicMessagesProvider", () => {
       (event) => deltas.push(event.text)
     );
 
-    assert.deepEqual(deltas, ["{\"status\":", "\"success\"}"]);
-    assert.equal(result?.content, "{\"status\":\"success\"}");
+    assert.deepEqual(deltas, ["{\"direction\":", "\"forward\"}"]);
+    assert.equal(result?.content, "{\"direction\":\"forward\"}");
     assert.deepEqual(result?.tool_calls, [{ id: "toolu-1", name: "Bash", input: { command: "npm test" } }]);
     assert.equal(server.requestBody.stream, true);
     assert.deepEqual(server.requestBody.messages, [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }]);
@@ -239,7 +239,7 @@ describe("AnthropicMessagesProvider", () => {
       { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "constraints." } },
       { type: "content_block_stop", index: 0 },
       { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
-      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "{\"status\":\"success\"}" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "{\"direction\":\"forward\"}" } },
       { type: "content_block_stop", index: 1 },
       "[DONE]"
     ]);
@@ -255,7 +255,7 @@ describe("AnthropicMessagesProvider", () => {
 
     assert.deepEqual(thinking, ["Checked ", "constraints."]);
     assert.equal(result?.thinking, "Checked constraints.");
-    assert.equal(result?.content, "{\"status\":\"success\"}");
+    assert.equal(result?.content, "{\"direction\":\"forward\"}");
   });
 });
 

@@ -132,7 +132,7 @@ describe("Plan Mode V2", () => {
     });
     const currentPlanInput = { file_path: state.planFilePath.slice(cwd.length + 1), content: "# Plan" };
 
-    assert.match(state.planFilePath, /[.]agent-team[\\/]plans[\\/].+[.]md$/);
+    assert.match(state.planFilePath, /[.]einsteins[\\/]plans[\\/].+[.]md$/);
     assert.equal((await checkToolPermission(tools.get("Write"), currentPlanInput, { ...permissions, cwd })).decision, "allow");
     assert.equal((await checkToolPermission(tools.get("Write"), { file_path: ".session/plans/not-current.md", content: "x" }, { ...permissions, cwd })).decision, "deny");
   });

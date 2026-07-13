@@ -8,6 +8,93 @@ import { RunStore } from "../../src/storage/runStore.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
 describe("runNode interactive permissions", () => {
+  it("recovers a completed tool result from the event ledger without executing it again", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-recover-tool-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    await store.appendEvent(run.runId, { type: "tool_invoked", node_id: "dev", attempt: 1, activation: 1, tool_call_id: "tool-old", tool: "WriteOnce", input: { value: "x" } });
+    await store.appendEvent(run.runId, { type: "tool_completed", node_id: "dev", attempt: 1, activation: 1, tool_call_id: "tool-old", tool: "WriteOnce", result: { output: "saved", exit_code: 0 } });
+    let executions = 0;
+    const tools = new ToolRegistry();
+    tools.add({
+      name: "WriteOnce",
+      description: "non-idempotent test tool",
+      input_schema: {},
+      isReadOnly: () => false,
+      async execute() {
+        executions += 1;
+        return { output: "duplicate" };
+      }
+    });
+    const provider: ModelProvider = {
+      async generate(request) {
+        const recovered = request.messages.find((message) => message.role === "tool" && message.tool_call_id === "tool-old");
+        assert.match(String(recovered?.content), /saved/);
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["WriteOnce"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1,
+      dialogueMessages: [{ role: "assistant", content: "Saving.", tool_calls: [{ id: "tool-old", name: "WriteOnce", input: { value: "x" } }] }]
+    });
+
+    assert.equal(result.direction, "forward");
+    assert.equal(executions, 0);
+  });
+
+  it("refuses to replay an equivalent non-read-only tool call with an unknown outcome", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-in-doubt-tool-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    await store.appendEvent(run.runId, { type: "tool_invoked", node_id: "dev", attempt: 1, activation: 1, tool_call_id: "tool-old", tool: "WriteOnce", input: { value: "x" } });
+    let executions = 0;
+    const tools = new ToolRegistry();
+    tools.add({
+      name: "WriteOnce",
+      description: "non-idempotent test tool",
+      input_schema: {},
+      isReadOnly: () => false,
+      async execute() {
+        executions += 1;
+        return { output: "duplicate" };
+      }
+    });
+    const provider: ModelProvider = {
+      async generate() {
+        return { content: "I will retry the write.", tool_calls: [{ id: "tool-new", name: "WriteOnce", input: { value: "x" } }] };
+      }
+    };
+
+    await assert.rejects(() => runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["WriteOnce"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1,
+      dialogueMessages: [{ role: "assistant", content: "Saving.", tool_calls: [{ id: "tool-old", name: "WriteOnce", input: { value: "x" } }] }]
+    }), /Refusing to repeat non-read-only tool/);
+    assert.equal(executions, 0);
+  });
+
   it("injects long tool prompts into workflow node system messages", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-tool-prompt-"));
     const store = new RunStore(root);
@@ -28,7 +115,7 @@ describe("runNode interactive permissions", () => {
       async generate(request) {
         capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
         capturedDescription = request.tools.find((tool) => tool.name === "PromptedTool")?.description ?? "";
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
 
@@ -46,7 +133,7 @@ describe("runNode interactive permissions", () => {
       attempt: 1
     });
 
-    assert.equal(result.status, "success");
+    assert.equal(result.direction, "forward");
     assert.equal(capturedDescription, "Short provider description");
     assert.match(capturedSystem, /ATTACHMENT tool_prompts/);
     assert.match(capturedSystem, /### PromptedTool/);
@@ -74,7 +161,7 @@ describe("runNode interactive permissions", () => {
         if (calls === 1) {
           return { content: "我先运行测试确认当前状态。", tool_calls: [{ id: "tool-1", name: "Bash", input: { command: "npm test" } }] };
         }
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const result = await runNode({
@@ -97,8 +184,8 @@ describe("runNode interactive permissions", () => {
         }
       }
     });
-    assert.equal(result.status, "success");
-    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.equal(result.direction, "forward");
+    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /permission_requested/);
     assert.match(eventsText, /permission_resolved/);
     assert.match(eventsText, /tool_completed/);
@@ -115,7 +202,7 @@ describe("runNode interactive permissions", () => {
         if (calls === 1) {
           return { content: "我先写入报告产物。", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
         }
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const result = await runNode({
@@ -131,9 +218,9 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-    assert.deepEqual(result.deliverables, [{ artifact_id: "dev/report.md", description: "User report" }]);
-    assert.equal(await readFile(join(root, run.runId, "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
-    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.deepEqual(result.deliverables, [{ artifact_id: "dev/report.md@r1", description: "User report" }]);
+    assert.equal(await readFile(join(run.runDir, "artifacts", "dev", "r0001-report.md"), "utf8"), "# Report\nDone.");
+    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /artifact_created/);
     assert.match(eventsText, /dev\/report\.md/);
   });
@@ -150,7 +237,7 @@ describe("runNode interactive permissions", () => {
             id: "tool-1",
             name: "SubmitNodeResult",
             input: {
-              status: "success",
+              direction: "forward",
               summary: "done",
               document: "",
               deliverables: [],
@@ -181,7 +268,7 @@ describe("runNode interactive permissions", () => {
         }
       }
     });
-    assert.equal(result.status, "success");
+    assert.equal(result.direction, "forward");
     assert.equal(result.handoff.instruction, "next");
     assert.equal(requestedPermission, false);
   });
@@ -196,7 +283,7 @@ describe("runNode interactive permissions", () => {
       async generate(request) {
         assert.ok(request.context);
         contexts.push(request.context);
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const options = {
@@ -239,7 +326,7 @@ describe("runNode interactive permissions", () => {
         if (requests.length === 1) {
           return { content: "我先列出目录确认文件。", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
         }
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const result = await runNode({
@@ -255,13 +342,13 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-    assert.equal(result.status, "success");
+    assert.equal(result.direction, "forward");
     const followUp = requests[1]?.messages.slice(-2);
     assert.deepEqual(followUp, [
       { role: "assistant", content: "我先列出目录确认文件。", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] },
       { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
     ]);
-    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /model_stream_delta/);
     assert.match(eventsText, /我先列出目录确认文件。/);
   });
@@ -290,7 +377,7 @@ describe("runNode interactive permissions", () => {
         if (requests.length === 2) {
           return { content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] };
         }
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const result = await runNode({
@@ -306,7 +393,7 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-    assert.equal(result.status, "success");
+    assert.equal(result.direction, "forward");
     assert.equal(executions, 1);
     assert.match(JSON.stringify(requests[1]?.messages), /tool-call turn did not include a user-visible natural-language preamble/);
     const followUp = requests[2]?.messages.slice(-2);
@@ -314,7 +401,7 @@ describe("runNode interactive permissions", () => {
       { role: "assistant", content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] },
       { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
     ]);
-    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /我先列出目录确认项目结构。/);
   });
   it("repairs raw NodeResult text before tool-call turns so TUI gets a real preamble", async () => {
@@ -342,7 +429,7 @@ describe("runNode interactive permissions", () => {
         if (requests.length === 2) {
           return { content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] };
         }
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const result = await runNode({
@@ -358,7 +445,7 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-    assert.equal(result.status, "success");
+    assert.equal(result.direction, "forward");
     assert.equal(executions, 1);
     assert.match(JSON.stringify(requests[1]?.messages), /tool-call turn did not include a user-visible natural-language preamble/);
     const followUp = requests[2]?.messages.slice(-2);
@@ -367,7 +454,7 @@ describe("runNode interactive permissions", () => {
       { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
     ]);
     assert.doesNotMatch(JSON.stringify(followUp), /deliverables|document|status/);
-    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /我先列出目录确认项目结构。/);
   });
   it("asks the model to repair an invalid final NodeResult once without increasing node attempt", async () => {
@@ -377,13 +464,13 @@ describe("runNode interactive permissions", () => {
     const tools = new ToolRegistry();
     const requests: Array<{ messages: unknown[]; attempt?: number }> = [];
     let calls = 0;
-    const invalid = JSON.stringify({ status: "needs_user_input", summary: "need input", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] } });
+    const invalid = JSON.stringify({ direction: "sideways", summary: "need input", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] } });
     const provider: ModelProvider = {
       async generate(request) {
         calls += 1;
         requests.push({ messages: request.messages, attempt: request.context?.attempt });
         if (calls === 1) return { content: invalid };
-        return { content: JSON.stringify({ status: "success", summary: "repaired", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "repaired", handoff: { instruction: "next" } }) };
       }
     };
     const result = await runNode({
@@ -399,7 +486,7 @@ describe("runNode interactive permissions", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-    assert.equal(result.status, "success");
+    assert.equal(result.direction, "forward");
     assert.equal(result.summary, "repaired");
     assert.equal(calls, 2);
     assert.deepEqual(requests.map((request) => request.attempt), [1, 1]);
@@ -430,9 +517,9 @@ describe("runNode streaming", () => {
         assert.match(String(system), /assistant content field must contain the preamble/);
         assert.match(String(system), /Do not put NodeResult JSON in assistant content/);
         assert.match(String(system), /final NodeResult/);
-        onEvent({ type: "content_delta", text: "{\"status\":\"success\"," });
+        onEvent({ type: "content_delta", text: "{\"direction\":\"forward\"," });
         onEvent({ type: "content_delta", text: "\"summary\":\"done\"}" });
-        return { content: "{\"status\":\"success\",\"summary\":\"done\"}" };
+        return { content: "{\"direction\":\"forward\",\"summary\":\"done\"}" };
       }
     };
     const result = await runNode({
@@ -448,8 +535,8 @@ describe("runNode streaming", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-    assert.equal(result.status, "success");
-    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.equal(result.direction, "forward");
+    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /model_stream_delta/);
     assert.match(eventsText, /summary/);
   });
@@ -464,8 +551,8 @@ describe("runNode streaming", () => {
       },
       async stream(_request, onEvent) {
         onEvent({ type: "thinking_delta", text: "Checked constraints." });
-        onEvent({ type: "content_delta", text: "{\"status\":\"success\"}" });
-        return { thinking: "Checked constraints.", content: "{\"status\":\"success\"}" };
+        onEvent({ type: "content_delta", text: "{\"direction\":\"forward\"}" });
+        return { thinking: "Checked constraints.", content: "{\"direction\":\"forward\"}" };
       }
     };
     const result = await runNode({
@@ -481,8 +568,8 @@ describe("runNode streaming", () => {
       handoff: { request: "x" },
       attempt: 1
     });
-    assert.equal(result.status, "success");
-    const eventsText = await readFile(join(root, run.runId, "events.ndjson"), "utf8");
+    assert.equal(result.direction, "forward");
+    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /model_thinking_delta/);
     assert.match(eventsText, /model_stream_delta/);
   });

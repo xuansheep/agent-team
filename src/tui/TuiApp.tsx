@@ -1782,7 +1782,7 @@ ${message.detailText}` : ""}` }
   return (
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
-      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} />
+      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
       <ScrollBox ref={mainScrollRef} flexDirection="column" height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
         {planApprovalOverlayVisible && state.pendingReview ? (
           <PlanApprovalOverlay review={state.pendingReview} planFilePath={planApprovalPlanFilePath} editorName={externalEditorDisplayName()} maxDocumentLines={planApprovalDocumentMaxLines} scrollOffset={planApprovalDocumentOffset} />
@@ -2443,7 +2443,7 @@ function isConfirmationMode(mode: TuiState["mode"]): boolean {
   return mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume";
 }
 function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiState["mode"] {
-  if (status === "pending") return "question";
+  if (status === "waiting_user") return "question";
   return "paused";
 }
 function buildActiveChoice(input: {

@@ -1,10 +1,11 @@
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { HarnessEvent, StoredEvent } from "../harness/events.js";
 import { WorkflowState } from "../workflow/state.js";
 import { IndexedRunSummary, readRootIndex, SessionIndex, writeRootIndex } from "./sessionIndex.js";
 import { createSessionDir, rememberSessionDir } from "./sessionPaths.js";
+import { acquireFileLease, FileLease } from "./fileLease.js";
 
 export type RunSummary = {
   runId: string;
@@ -25,6 +26,8 @@ export type CreateRunOptions = {
 
 export class RunStore {
   private readonly writeQueues = new Map<string, Promise<unknown>>();
+  private readonly leaseQueues = new Map<string, Promise<unknown>>();
+  private readonly heldRunLeases = new Map<string, { lease: FileLease; references: number }>();
   private readonly runDirs = new Map<string, string>();
   /** Tracks the next event sequence number per runId to avoid re-reading the file on every append. */
   private readonly nextSeq = new Map<string, number>();
@@ -62,7 +65,17 @@ export class RunStore {
       const stored: StoredEvent = { ...event, ts: new Date().toISOString(), seq };
       this.nextSeq.set(runId, seq + 1);
       const line = `${JSON.stringify(stored)}\n`;
-      await appendFile(eventsPath, line, "utf8");
+      if (event.type === "tool_invoked" || event.type === "tool_completed" || event.type === "tool_failed") {
+        const handle = await open(eventsPath, "a");
+        try {
+          await handle.writeFile(line, "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } else {
+        await appendFile(eventsPath, line, "utf8");
+      }
       return stored;
     });
   }
@@ -76,9 +89,31 @@ export class RunStore {
   async saveState(runId: string, state: WorkflowState): Promise<void> {
     await this.enqueueRunWrite(runId, async () => {
       const runDir = await this.resolveRunDir(runId);
-      await writeFile(join(runDir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+      const serialized = `${JSON.stringify(state, null, 2)}\n`;
+      try {
+        const current = await readFile(join(runDir, "state.json"), "utf8");
+        JSON.parse(current);
+        await writeFile(join(runDir, "state.backup.json"), current, "utf8");
+      } catch (error) {
+        if (!isErrno(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
+      }
+      await writeFile(join(runDir, "state.json"), serialized, "utf8");
     });
     await this.updateRunIndex(runId);
+  }
+
+  async acquireRunLease(runId: string): Promise<FileLease> {
+    return this.enqueueLeaseOperation(runId, async () => {
+      const held = this.heldRunLeases.get(runId);
+      if (held) {
+        held.references += 1;
+        return this.runLeaseReference(runId);
+      }
+      const runDir = await this.resolveRunDir(runId);
+      const lease = await acquireFileLease(join(runDir, "run.lease"), `Run ${runId}`);
+      this.heldRunLeases.set(runId, { lease, references: 1 });
+      return this.runLeaseReference(runId);
+    });
   }
 
   async markInterrupted(runId: string, state: WorkflowState): Promise<void> {
@@ -88,16 +123,19 @@ export class RunStore {
 
   async loadState(runId: string): Promise<WorkflowState> {
     const runDir = await this.resolveRunDir(runId);
-    const statePath = join(runDir, "state.json");
     let lastError: unknown;
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        return JSON.parse(await readFile(statePath, "utf8")) as WorkflowState;
-      } catch (error) {
-        lastError = error;
-        if (!(error instanceof SyntaxError) || attempt === 4) break;
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      for (const name of ["state.json", "state.backup.json"]) {
+        try {
+          const parsed = JSON.parse(await readFile(join(runDir, name), "utf8")) as WorkflowState;
+          if (parsed.version !== 2) throw new Error(`Unsupported workflow state version ${String((parsed as { version?: unknown }).version ?? "legacy")}; start a new run`);
+          return parsed;
+        } catch (error) {
+          lastError = error;
+          if (!isErrno(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
+        }
       }
+      if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 10));
     }
     throw lastError;
   }
@@ -268,6 +306,31 @@ export class RunStore {
     const previous = this.writeQueues.get(runId) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(task);
     this.writeQueues.set(runId, next.catch(() => undefined));
+    return next;
+  }
+
+  private runLeaseReference(runId: string): FileLease {
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        released = true;
+        await this.enqueueLeaseOperation(runId, async () => {
+          const held = this.heldRunLeases.get(runId);
+          if (!held) return;
+          held.references -= 1;
+          if (held.references > 0) return;
+          this.heldRunLeases.delete(runId);
+          await held.lease.release();
+        });
+      }
+    };
+  }
+
+  private enqueueLeaseOperation<T>(runId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.leaseQueues.get(runId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(task);
+    this.leaseQueues.set(runId, next.catch(() => undefined));
     return next;
   }
 }

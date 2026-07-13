@@ -102,7 +102,7 @@ describe("McpRuntime", () => {
     assert.deepEqual(created, ["stdio", "http", "sse", "ws"]);
   });
 
-  it("registers MCP tools when runtime is supplied", async () => {
+  it("registers deferred MCP discovery tools when runtime is supplied", async () => {
     const runtime = new McpRuntime({
       clientFactory: async () => new FakeMcpClient([{ name: "search", description: "Search", inputSchema: { type: "object" } }])
     });
@@ -116,7 +116,6 @@ describe("McpRuntime", () => {
     assert.ok(registry.get("ListMcpPrompts"));
     assert.ok(registry.get("GetMcpPrompt"));
     assert.ok(registry.get("RunMcpPrompt"));
-    assert.ok(registry.get("mcp__docs__search"));
   });
 
   it("returns MCP diagnostics for connected, failed, and disabled servers", async () => {

@@ -162,7 +162,7 @@ describe("TUI event adapter", () => {
 
       attempt: 1,
 
-      text: "{\"status\":",
+      text: "{\"direction\":",
 
       ts: "2026-06-23T00:00:00.000Z",
 
@@ -178,7 +178,7 @@ describe("TUI event adapter", () => {
 
       attempt: 1,
 
-      text: "\"success\"}",
+      text: "\"forward\"}",
 
       ts: "2026-06-23T00:00:01.000Z",
 
@@ -188,7 +188,7 @@ describe("TUI event adapter", () => {
 
 
 
-    assert.deepEqual(state.modelStreams, [{ nodeId: "product", attempt: 1, text: "{\"status\":\"success\"}" }]);
+    assert.deepEqual(state.modelStreams, [{ nodeId: "product", attempt: 1, text: "{\"direction\":\"forward\"}" }]);
 
     assert.equal(state.logMessages.some((item) => item.kind === "assistant"), false);
 
@@ -256,7 +256,7 @@ describe("TUI event adapter", () => {
 
     state = reduceStoredEvent(state, { type: "model_stream_delta", node_id: "product", attempt: 1, text: "我先确认上下文。\n", ts: "2026-06-23T00:00:00.000Z", seq: 1 });
 
-    state = reduceStoredEvent(state, { type: "model_stream_delta", node_id: "product", attempt: 1, text: "{\"status\":\"success\",\"summary\":\"done\"}", ts: "2026-06-23T00:00:01.000Z", seq: 2 });
+    state = reduceStoredEvent(state, { type: "model_stream_delta", node_id: "product", attempt: 1, text: "{\"direction\":\"forward\",\"summary\":\"done\"}", ts: "2026-06-23T00:00:01.000Z", seq: 2 });
 
 
 
@@ -458,7 +458,7 @@ describe("TUI event adapter", () => {
 
     state = reduceStoredEvent(state, { type: "node_started", node_id: "product", attempt: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });
 
-    state = reduceStoredEvent(state, { type: "model_stream_delta", node_id: "product", attempt: 1, text: "{\"status\":", ts: "2026-06-23T00:00:01.000Z", seq: 2 });
+    state = reduceStoredEvent(state, { type: "model_stream_delta", node_id: "product", attempt: 1, text: "{\"direction\":", ts: "2026-06-23T00:00:01.000Z", seq: 2 });
 
     state = reduceStoredEvent(state, {
 

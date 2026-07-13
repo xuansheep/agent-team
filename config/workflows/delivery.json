@@ -9,7 +9,38 @@
     "ask": [],
     "allow": []
   },
+  "max_rework_cycles": 10,
   "nodes": [
+    {
+      "id": "product",
+      "role": "product",
+      "provider": "default",
+      "permissions": {
+        "allow": [
+          "Read",
+          "LS",
+          "Glob",
+          "Grep",
+          "ArtifactWrite",
+          "AttachImage"
+        ]
+      }
+    },
+    {
+      "id": "ui",
+      "role": "ui",
+      "provider": "default",
+      "permissions": {
+        "allow": [
+          "Read",
+          "LS",
+          "Glob",
+          "Grep",
+          "ArtifactWrite",
+          "AttachImage"
+        ]
+      }
+    },
     {
       "id": "developer",
       "role": "developer",
@@ -18,22 +49,28 @@
         "allow": [
           "Read",
           "Write",
+          "Edit",
+          "MultiEdit",
           "LS",
           "Glob",
-          "Grep"
+          "Grep",
+          "ArtifactWrite",
+          "AttachImage"
         ]
       }
     },
     {
-      "id": "final_delivery",
-      "role": "final_delivery",
-      "provider": "deepseek",
+      "id": "tester",
+      "role": "tester",
+      "provider": "default",
       "mode": "complete",
       "permissions": {
         "allow": [
           "Read",
           "LS",
-          "Glob"
+          "Glob",
+          "Grep",
+          "ArtifactWrite"
         ]
       }
     }

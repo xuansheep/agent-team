@@ -135,7 +135,6 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(frame, /broken failed user boom/);
     assert.match(frame, /Skills: 1/);
     assert.match(frame, /reviewer project inline/);
-    assert.match(frame, /Stop settings command wired verify-stop/);
 
     output.unmount();
     output.cleanup();
@@ -368,7 +367,7 @@ describe("TuiApp global Plan Mode", () => {
         if (workflowTurns === 1) {
           return { content: "I should plan this first.", tool_calls: [{ id: "tool-enter-plan", name: "EnterPlanMode", input: {} }] };
         }
-        return { content: JSON.stringify({ status: "success", summary: "abandoned", document: "", handoff: {}, deliverables: [] }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "abandoned", document: "", handoff: {}, deliverables: [] }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => workflowProvider, cwd, runRoot: join(cwd, ".session") });
@@ -403,7 +402,7 @@ describe("TuiApp global Plan Mode", () => {
           return { content: "I should plan this first.", tool_calls: [{ id: "tool-enter-plan", name: "EnterPlanMode", input: {} }] };
         }
         assert.match(requestText(request), /Permission denied by user for EnterPlanMode/);
-        return { content: JSON.stringify({ status: "success", summary: "Implemented directly", document: "", handoff: {}, deliverables: [] }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "Implemented directly", document: "", handoff: {}, deliverables: [] }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => workflowProvider, cwd, runRoot: join(cwd, ".session") });

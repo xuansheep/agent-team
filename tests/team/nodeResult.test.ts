@@ -11,7 +11,7 @@ describe("nodeResultJsonSchema", () => {
   });
 
   it("defaults document to an empty string when omitted", () => {
-    const result = parseNodeResult(JSON.stringify({ status: "success", summary: "done" }));
+    const result = parseNodeResult(JSON.stringify({ direction: "forward", summary: "done" }));
 
     assert.equal(result.document, "");
   });
@@ -21,7 +21,7 @@ describe("nodeResultJsonSchema", () => {
 
 \`\`\`json
 {
-  "status": "success",
+  "direction": "forward",
   "summary": "done",
   "document": "",
   "deliverables": [],
@@ -31,7 +31,7 @@ describe("nodeResultJsonSchema", () => {
 }
 \`\`\``);
 
-    assert.equal(result.status, "success");
+    assert.equal(result.direction, "forward");
     assert.equal(result.handoff.instruction, "next");
   });
 
@@ -39,7 +39,7 @@ describe("nodeResultJsonSchema", () => {
     assert.throws(
       () => parseNodeResult(`\`\`\`json
 {
-  "status": "success",
+  "direction": "forward",
   "summary": "done",
   "document": "",
   "artifacts": [],
@@ -52,7 +52,7 @@ describe("nodeResultJsonSchema", () => {
     );
   });
 
-  it("rejects needs_user_input without a concrete question", () => {
+  it("rejects the legacy status protocol", () => {
     assert.throws(
       () => parseNodeResult(JSON.stringify({
         status: "needs_user_input",
@@ -63,7 +63,7 @@ describe("nodeResultJsonSchema", () => {
         questions: [],
         handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] }
       })),
-      /needs_user_input results must include at least one concrete question/i
+      /direction|status/i
     );
   });
 
@@ -76,13 +76,13 @@ describe("nodeResultJsonSchema", () => {
     assert.equal(visibleAssistantTextBeforeNodeResult('{"deliver'), "");
     assert.equal(visibleAssistantTextBeforeNodeResult('{"foo":"bar"'), "");
     assert.equal(visibleAssistantTextBeforeNodeResult('[{"id":"next_step"'), "");
-    assert.equal(visibleAssistantTextBeforeNodeResult('```json\n{"status":"success"'), "");
-    assert.equal(visibleAssistantTextBeforeNodeResult('我先检查项目结构。\n{"status":"success"}'), "我先检查项目结构。");
+    assert.equal(visibleAssistantTextBeforeNodeResult('```json\n{"direction":"forward"'), "");
+    assert.equal(visibleAssistantTextBeforeNodeResult('我先检查项目结构。\n{"direction":"forward"}'), "我先检查项目结构。");
   });
 
   it("rejects responses that contain multiple NodeResult objects", () => {
-    const first = JSON.stringify({ status: "failure", summary: "first", document: "", deliverables: [], feedback: { defects: ["bad"], change_requests: [] }, questions: [], handoff: { instruction: "retry", must_follow: [], known_risks: [], open_questions: [] } });
-    const second = JSON.stringify({ status: "success", summary: "second", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "done", must_follow: [], known_risks: [], open_questions: [] } });
+    const first = JSON.stringify({ direction: "backward", summary: "first", document: "", deliverables: [], feedback: { defects: ["bad"], change_requests: [] }, questions: [], handoff: { instruction: "retry", must_follow: [], known_risks: [], open_questions: [] } });
+    const second = JSON.stringify({ direction: "forward", summary: "second", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "done", must_follow: [], known_risks: [], open_questions: [] } });
 
     assert.throws(() => parseNodeResult(`${first}${second}`), /multiple NodeResult/i);
   });

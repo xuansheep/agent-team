@@ -11,6 +11,7 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
     inputPermissionMode: input.inputPermissionMode ?? "default",
     defaultExecutionMode: defaultExecutionModeFrom(input.inputPermissionMode),
     nodes: [],
+    suspendedStack: [],
     tools: [],
     permissionRequests: [],
     modelStreams: [],
@@ -23,6 +24,15 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
 }
 function defaultExecutionModeFrom(mode: PermissionMode | undefined): TuiState["defaultExecutionMode"] {
   return mode === "fullAccess" ? "fullAccess" : "default";
+}
+function nextSuspendedStack(stack: string[], event: Extract<StoredEvent, { type: "transition" }>): string[] {
+  const next = [...stack];
+  if (event.reason === "backward") {
+    next.push(event.from);
+    return next;
+  }
+  if (event.reason === "forward" && next.at(-1) === event.to) next.pop();
+  return next;
 }
 export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
   const reset: TuiState = {
@@ -48,7 +58,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
     case "user_message":
       return appendConversation({ ...next, questions: [] }, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text }, event);
     case "node_started":
-      return upsertNode({ ...next, mode: "running", currentNodeId: event.node_id, questions: [] }, event.node_id, event.attempt, "running");
+      return upsertNode({ ...next, mode: "running", currentNodeId: event.node_id, questions: [] }, event.node_id, event.attempt, event.activation ?? 1, "running");
     case "complete_summary_available":
       return appendConversation(next, {
         kind: "status",
@@ -66,7 +76,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
 路径：${event.path}`
       }, event);
     case "transition":
-      return appendConversation({ ...next, mode: "running", currentNodeId: event.to }, {
+      return appendConversation({ ...next, mode: "running", currentNodeId: event.to, suspendedStack: nextSuspendedStack(next.suspendedStack, event) }, {
         kind: "status",
         text: `流程流转：${event.from} -> ${event.to}（${event.reason}）`,
         detailText: `from：${event.from}
@@ -78,9 +88,11 @@ reason：${event.reason}`
     case "model_stream_delta":
       return appendAssistantStreamLog(appendModelStream(next, event.node_id, event.attempt, event.text), event.node_id, event.attempt, event);
     case "node_completed": {
-      const attempt = findAttempt(next, event.node_id);
+      const attempt = event.attempt ?? findAttempt(next, event.node_id);
+      const activation = event.activation ?? findActivation(next, event.node_id);
       const formatted = nodeCompletedLog(event.node_id, event.status, event.result);
-      return appendConversation(upsertNode(next, event.node_id, attempt, event.status), {
+      const status = event.status === "success" ? "completed" : event.status;
+      return appendConversation(upsertNode(next, event.node_id, attempt, activation, status), {
         kind: "status",
         nodeId: event.node_id,
         attempt,
@@ -90,10 +102,11 @@ reason：${event.reason}`
     }
     case "node_waiting_user": {
       const attempt = findAttempt(next, event.node_id);
+      const activation = event.activation ?? findActivation(next, event.node_id);
       const existing = next.nodes.find((node) => node.nodeId === event.node_id && node.attempt === attempt);
       const status = existing?.status === "failure" ? "failure" : "waiting_user";
       return appendConversation(
-        upsertNode({ ...next, mode: "question", currentNodeId: event.node_id, questions: event.questions }, event.node_id, attempt, status),
+        upsertNode({ ...next, mode: "question", currentNodeId: event.node_id, questions: event.questions }, event.node_id, attempt, activation, status),
         { kind: "status", nodeId: event.node_id, attempt, text: `${event.node_id} 需要用户补充信息${questionSummary(event.questions)}`, detailText: questionDetail(event.questions) },
         event
       );
@@ -148,7 +161,7 @@ reason：${event.reason}`
         permissionRequests: next.permissionRequests.filter((request) => request.requestId !== event.request_id)
       }, event.request_id, event.decision === "allow_once" ? "allowed" : "denied");
     case "node_interrupted":
-      return appendConversation(upsertNode(next, event.node_id, event.attempt, "interrupted"), {
+      return appendConversation(upsertNode(next, event.node_id, event.attempt, findActivation(next, event.node_id), "interrupted"), {
         kind: "status",
         nodeId: event.node_id,
         attempt: event.attempt,
@@ -165,13 +178,15 @@ reason：${event.reason}`
       );
     case "run_completed":
       return appendConversation({ ...next, mode: "completed" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) }, event);
+    case "run_cancelled":
+      return appendConversation({ ...next, mode: "interrupted" }, { kind: "status", text: "运行已取消", detailText: event.reason }, event);
     default:
       return next;
   }
 }
-function upsertNode(state: TuiState, nodeId: string, attempt: number, status: TuiNodeState["status"]): TuiState {
+function upsertNode(state: TuiState, nodeId: string, attempt: number, activation: number, status: TuiNodeState["status"]): TuiState {
   const existing = state.nodes.findIndex((node) => node.nodeId === nodeId && node.attempt === attempt);
-  const node: TuiNodeState = { nodeId, attempt, status };
+  const node: TuiNodeState = { nodeId, attempt, activation, status };
   if (existing === -1) return { ...state, nodes: [...state.nodes, node] };
   const nodes = [...state.nodes];
   nodes[existing] = node;
@@ -370,6 +385,13 @@ function findAttempt(state: TuiState, nodeId: string): number {
   }
   return 1;
 }
+function findActivation(state: TuiState, nodeId: string): number {
+  for (let index = state.nodes.length - 1; index >= 0; index -= 1) {
+    const node = state.nodes[index];
+    if (node.nodeId === nodeId) return node.activation ?? 1;
+  }
+  return 1;
+}
 function inputText(input: unknown): string {
   if (typeof input === "string") return input;
   if (input && typeof input === "object") {
@@ -379,9 +401,9 @@ function inputText(input: unknown): string {
   }
   return readableValue(input);
 }
-function nodeCompletedLog(nodeId: string, status: "success" | "failure", result: unknown): { text: string; detailText: string } {
+function nodeCompletedLog(nodeId: string, status: "success" | "failure" | "completed" | "suspended", result: unknown): { text: string; detailText: string } {
   const summary = resultSummary(result);
-  const statusText = status === "success" ? "已完成" : "未通过";
+  const statusText = status === "success" || status === "completed" ? "已完成" : status === "suspended" ? "已挂起并退回" : "执行失败";
   return {
     text: summary ? `${nodeId} ${statusText}：${summary}` : `${nodeId} ${statusText}`,
     detailText: nodeResultDetail(result)

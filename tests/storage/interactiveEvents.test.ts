@@ -26,11 +26,16 @@ describe("interactive run events", () => {
       decision: "allow_once"
     });
     await store.markInterrupted(run.runId, {
-      status: "pending",
+      version: 2,
+      status: "paused",
       workflow_id: "flow",
       current_node_id: "dev",
-      attempts: [{ node_id: "dev", attempt: 1, status: "running" }],
-      handoff: { request: "x" }
+      attempts: [{ node_id: "dev", attempt: 1, activation: 1, status: "running", activations: [{ activation: 1, status: "running" }] }],
+      handoff: { request: "x" },
+      node_checkpoints: {},
+      suspended_stack: [],
+      rework_count: 0,
+      rework_limit: 10
     });
 
     const events = await store.loadEvents(run.runId);
@@ -39,7 +44,7 @@ describe("interactive run events", () => {
     assert.equal(events.some((event) => event.type === "run_interrupted"), true);
 
     const state = await store.loadState(run.runId);
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.current_node_id, "dev");
   });
 });

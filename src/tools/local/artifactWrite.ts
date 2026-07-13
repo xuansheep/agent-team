@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { z } from "zod";
+import { ArtifactStore } from "../../storage/artifacts.js";
 import { Tool } from "../types.js";
 
 const inputSchema = z.object({
@@ -23,15 +23,16 @@ export const artifactWriteTool: Tool = {
     if (!context.runDir) throw new Error("ArtifactWrite requires a run directory");
     if (!context.nodeId) throw new Error("ArtifactWrite requires a node id");
 
-    const dir = join(context.runDir, "artifacts", context.nodeId);
-    await mkdir(dir, { recursive: true });
-    const path = join(dir, parsed.name);
-    await writeFile(path, parsed.content, "utf8");
+    const ref = await new ArtifactStore(context.runDir).writeText(context.nodeId, parsed.name, parsed.content, {
+      description: parsed.description,
+      attempt: context.attempt,
+      activation: context.activation
+    });
 
     return {
-      output: `Wrote ${path}`,
-      artifact_id: `${context.nodeId}/${parsed.name}`,
-      path,
+      output: `Wrote immutable artifact ${ref.artifactId}`,
+      artifact_id: ref.artifactId,
+      path: ref.path,
       description: parsed.description
     };
   }

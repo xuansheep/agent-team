@@ -1,6 +1,6 @@
-import { access } from "node:fs/promises";
 import { basename } from "node:path";
 import { z } from "zod";
+import { ArtifactStore } from "../../storage/artifacts.js";
 import { Tool } from "../types.js";
 import { resolveWorkspacePath } from "./path.js";
 
@@ -12,8 +12,13 @@ export const attachImageTool: Tool = {
   input_schema: { type: "object", properties: { path: { type: "string" }, artifact_id: { type: "string" } }, required: ["path"] },
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
+    if (!context.runDir || !context.nodeId) throw new Error("AttachImage requires an active workflow run");
     const path = resolveWorkspacePath(context.cwd, parsed.path);
-    await access(path);
-    return { output: `Attached image ${parsed.path}`, artifact_id: parsed.artifact_id ?? `input/${basename(path)}` };
+    const ref = await new ArtifactStore(context.runDir).importFile(context.nodeId, path, basename(path), {
+      description: "节点附加图片",
+      attempt: context.attempt,
+      activation: context.activation
+    });
+    return { output: `Attached image ${parsed.path}`, artifact_id: ref.artifactId, path: ref.path, description: "节点附加图片" };
   }
 };

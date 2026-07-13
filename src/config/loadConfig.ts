@@ -92,6 +92,7 @@ async function loadWorkflows(workflowsDir: string): Promise<AgentTeamConfig["wor
     workflows[workflow.name] = {
       nodes: workflow.nodes,
       edges: [],
+      max_rework_cycles: workflow.max_rework_cycles,
       ...(workflow.workflow_permissions ? { workflow_permissions: workflow.workflow_permissions } : {})
     };
   }

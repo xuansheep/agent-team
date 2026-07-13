@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 
 
-import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { WorkflowEngine, workflowConfigFingerprint } from "../../src/workflow/engine.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { RunStore } from "../../src/storage/runStore.js";
 
@@ -29,7 +29,7 @@ describe("WorkflowSession", () => {
 
 
 
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
 
 
 
@@ -126,7 +126,7 @@ describe("WorkflowSession", () => {
 
 
 
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
 
 
 
@@ -184,7 +184,7 @@ describe("WorkflowSession", () => {
 
     const store = new RunStore(".tmp/session-interrupt-runs");
     const state = await store.loadState(session.runId);
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.attempts.at(-1)?.status, "waiting_user");
   });
 
@@ -195,15 +195,15 @@ describe("WorkflowSession", () => {
       async generate() {
         calls += 1;
         if (calls === 1) {
-          return { content: JSON.stringify({ status: "success", summary: "planned", handoff: { instruction: "build" } }) };
+          return { content: JSON.stringify({ direction: "forward", summary: "planned", handoff: { instruction: "build" } }) };
         }
         if (calls === 2) {
           await new Promise<void>((resolve) => {
             release = resolve;
           });
-          return { content: JSON.stringify({ status: "success", summary: "ignored after interrupt", handoff: { instruction: "old" } }) };
+          return { content: JSON.stringify({ direction: "forward", summary: "ignored after interrupt", handoff: { instruction: "old" } }) };
         }
-        return { content: JSON.stringify({ status: "success", summary: "resumed dev", handoff: { instruction: "done" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "resumed dev", handoff: { instruction: "done" } }) };
       }
     };
     const runRoot = `.tmp/session-checkpoint-interrupt-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -220,7 +220,7 @@ describe("WorkflowSession", () => {
     release();
     await promiseSettlesSoon(session.result);
     const interruptedState = await new RunStore(runRoot).loadState(session.runId);
-    assert.equal(interruptedState.status, "pending");
+    assert.equal(interruptedState.status, "paused");
 
     await session.resumeWithUserInput({ answer: "resume from here" });
 
@@ -230,7 +230,7 @@ describe("WorkflowSession", () => {
     const userMessages = events.filter((event) => event.type === "user_message");
     const state = await store.loadState(session.runId);
 
-    assert.deepEqual(starts, ["product:1", "dev:1"]);
+    assert.deepEqual(starts, ["product:1", "dev:1", "dev:1"]);
     assert.equal(events.filter((event) => event.type === "run_started").length, 1);
     assert.equal(userMessages.length, 1);
     assert.equal(userMessages[0]?.node_id, "dev");
@@ -389,7 +389,7 @@ describe("WorkflowSession", () => {
 
 
 
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.current_node_id, "dev");
     assert.equal(state.attempts.at(-1)?.status, "failure");
     assert.equal(events.some((event) => event.type === "node_completed" && event.status === "failure"), true);
@@ -433,7 +433,7 @@ describe("WorkflowSession", () => {
 
 
 
-          return { content: JSON.stringify({ status: "needs_user_input", summary: "need detail", questions: [{ id: "q1", text: "Target?", required: true }] }) };
+          return { content: JSON.stringify({ direction: "backward", summary: "need detail", questions: [{ id: "q1", text: "Target?", required: true }] }) };
 
 
 
@@ -441,7 +441,7 @@ describe("WorkflowSession", () => {
 
 
 
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
 
 
 
@@ -538,7 +538,8 @@ describe("WorkflowSession", () => {
 
 
     assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
-    assert.equal(seen.includes("node_started"), false);
+    assert.equal(seen.includes("node_started"), true);
+    assert.equal(result.attempts.find((attempt) => attempt.node_id === "dev")?.activation, 2);
     const resumedMessages = JSON.stringify((requests[1] as { messages?: unknown[] }).messages);
     assert.match(resumedMessages, /need detail/);
     assert.match(resumedMessages, /operators/);
@@ -577,7 +578,7 @@ describe("WorkflowSession", () => {
 
 
 
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
 
 
 
@@ -694,13 +695,20 @@ describe("WorkflowSession", () => {
     const runRoot = `.tmp/session-resume-stale-running-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const store = new RunStore(runRoot);
     const run = await store.createRun("flow", { request: "x" });
+    const teamConfig = config();
     await store.saveState(run.runId, {
+      version: 2,
       status: "running",
       workflow_id: "flow",
+      config_fingerprint: workflowConfigFingerprint(teamConfig, "flow"),
       current_node_id: "dev",
-      attempts: [{ node_id: "dev", attempt: 1, status: "running" }],
+      attempts: [{ node_id: "dev", attempt: 1, activation: 1, status: "running", activations: [{ activation: 1, status: "running" }] }],
       handoff: { request: "x" },
-      resume_checkpoint: { node_id: "dev", handoff: { request: "x" } }
+      resume_checkpoint: { node_id: "dev", handoff: { request: "x" }, attempt: 1, activation: 1, dialogue_messages: [] },
+      node_checkpoints: {},
+      suspended_stack: [],
+      rework_count: 0,
+      rework_limit: 10
     });
 
     const resumed = await new WorkflowEngine({
@@ -712,13 +720,13 @@ describe("WorkflowSession", () => {
       }),
       cwd: process.cwd(),
       runRoot
-    }).resumeInteractive(config(), run.runId);
+    }).resumeInteractive(teamConfig, run.runId);
 
     await promiseSettlesSoon(resumed.result);
     const events = await store.loadEvents(run.runId);
     const state = await store.loadState(run.runId);
 
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.resume_checkpoint?.node_id, "dev");
     assert.equal(state.attempts.at(-1)?.status, "waiting_user");
     assert.equal(events.some((event) => event.type === "node_waiting_user"), true);
@@ -734,9 +742,9 @@ describe("WorkflowSession", () => {
         calls += 1;
         requests.push(request);
         if (calls === 1) {
-          return { content: JSON.stringify({ status: "failure", summary: "rejected: missing details", feedback: { defects: ["incomplete"], change_requests: [] }, handoff: { instruction: "rework" } }) };
+          return { content: JSON.stringify({ direction: "backward", summary: "rejected: missing details", feedback: { defects: ["incomplete"], change_requests: [] }, handoff: { instruction: "rework" } }) };
         }
-        return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "rework accepted", handoff: { instruction: "done" } }) };
       }
     };
     const runRoot = `.tmp/session-failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -752,7 +760,7 @@ describe("WorkflowSession", () => {
     await promiseSettlesSoon(session.result);
     const store = new RunStore(runRoot);
     let state = await store.loadState(session.runId);
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.attempts.at(-1)?.status, "failure");
 
     await session.resumeWithUserInput({ answer: "adding required context for rework" });
@@ -776,7 +784,7 @@ describe("WorkflowSession", () => {
         await new Promise<void>((resolve) => {
           release = resolve;
         });
-        return { content: JSON.stringify({ status: "success", summary: "old", handoff: { instruction: "old" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "old", handoff: { instruction: "old" } }) };
       }
     };
     const runRoot = `.tmp/session-resume-paused-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -809,7 +817,7 @@ describe("WorkflowSession", () => {
 
     await promiseSettlesSoon(resumed.result);
     const state = await new RunStore(runRoot).loadState(session.runId);
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(calls, 1);
     assert.equal(events.includes("node_waiting_user"), true);

@@ -9,6 +9,7 @@ export type ToolContext = {
   runDir?: string;
   nodeId?: string;
   attempt?: number;
+  activation?: number;
   sessionId?: string;
   runId?: string;
   planState?: PlanSessionState;

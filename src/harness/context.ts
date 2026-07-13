@@ -7,6 +7,7 @@ import { planModeExitHandoffMarker, planModeExitPlanExistsMarker, stripInternalP
 import { nodeResultOutputInstructions } from "../team/nodeResult.js";
 import { Tool } from "../tools/types.js";
 import { PermissionMode } from "../permissions/PermissionMode.js";
+import type { NodeNavigation } from "../workflow/nodeTransitionController.js";
 
 export type ImageHandoffItem = {
   artifact_id: string;
@@ -18,10 +19,10 @@ type HandoffWithImages = {
   images?: ImageHandoffItem[];
 };
 
-export async function buildNodeMessages(node: WorkflowNodeConfig, systemPrompt: string, handoff: unknown, input: { tools?: Tool[]; permissionMode?: PermissionMode } = {}): Promise<ModelMessage[]> {
+export async function buildNodeMessages(node: WorkflowNodeConfig, systemPrompt: string, handoff: unknown, input: { tools?: Tool[]; permissionMode?: PermissionMode; navigation?: NodeNavigation } = {}): Promise<ModelMessage[]> {
   const protocolPrompt = `${systemPrompt}\n\n${nodeResultOutputInstructions}\n\n${nodeModeInstructions(node)}`;
   const images = collectImages(handoff);
-  const userContent = JSON.stringify({ node_id: node.id, node_mode: node.mode ?? "task", handoff: stripInternalPlanModeHandoffMarkers(handoff) }, null, 2);
+  const userContent = JSON.stringify({ node_id: node.id, node_mode: node.mode ?? "task", navigation: input.navigation, handoff: stripInternalPlanModeHandoffMarkers(handoff) }, null, 2);
   const attachments = runtimeAttachmentsFromHandoff(handoff);
   const toolPrompts = input.tools ? buildToolPromptsAttachment({ tools: input.tools }) : undefined;
   if (toolPrompts) attachments.unshift(toolPrompts);

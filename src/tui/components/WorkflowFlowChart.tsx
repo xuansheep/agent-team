@@ -19,11 +19,13 @@ const NODE_BORDER = {
 export function WorkflowFlowChart({
   nodes,
   workflowNodes,
-  currentNodeId
+  currentNodeId,
+  suspendedStack = []
 }: {
   nodes: TuiNodeState[];
   workflowNodes?: TuiWorkflowNodeState[];
   currentNodeId?: string;
+  suspendedStack?: string[];
 }) {
   const [animationRef, animationTime] = useAnimationFrame(nodes.some((node) => node.status === "running") ? 120 : null);
   const runningBorder: BorderStyle = { ...NODE_BORDER, topRight: RUNNING_TOP_RIGHT_FRAMES[Math.floor(animationTime / 120) % RUNNING_TOP_RIGHT_FRAMES.length] };
@@ -48,6 +50,7 @@ export function WorkflowFlowChart({
           </Box>
         );
       })}
+      {suspendedStack.length ? <Box width="100%"><Text color="yellow">挂起链：{suspendedStack.join(" → ")}</Text></Box> : null}
     </Box>
   );
 }
@@ -62,18 +65,20 @@ function latestNodeState(nodes: TuiNodeState[], nodeId: string): TuiNodeState | 
 
 function statusLabel(node: TuiNodeState | undefined): string {
   if (!node) return "pending";
-  if (node.status === "running") return `running #${node.attempt}`;
-  if (node.status === "success") return `done #${node.attempt}`;
-  if (node.status === "failure") return `failed #${node.attempt}`;
-  if (node.status === "waiting_user") return `waiting user #${node.attempt}`;
-  return `interrupted #${node.attempt}`;
+  const ref = `#${node.attempt}.${node.activation ?? 1}`;
+  if (node.status === "running") return `running ${ref}`;
+  if (node.status === "completed" || node.status === "success") return `done ${ref}`;
+  if (node.status === "suspended") return `suspended ${ref}`;
+  if (node.status === "failure") return `failed ${ref}`;
+  if (node.status === "waiting_user") return `waiting user ${ref}`;
+  return `interrupted ${ref}`;
 }
 
 function nodeColor(node: TuiNodeState | undefined, active: boolean): "cyan" | "green" | "red" | "yellow" | undefined {
   if (active) return "cyan";
   if (!node) return undefined;
-  if (node.status === "success") return "green";
+  if (node.status === "completed" || node.status === "success") return "green";
   if (node.status === "failure" || node.status === "interrupted") return "red";
-  if (node.status === "waiting_user") return "yellow";
+  if (node.status === "waiting_user" || node.status === "suspended") return "yellow";
   return undefined;
 }

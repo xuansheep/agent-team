@@ -32,6 +32,10 @@ describe("toolDisplay", () => {
     assert.match(detail, /退出码：0/);
   });
 
+  it("folds short successful output in compact mode", () => {
+    assert.equal(getCompactToolResultDetail({ output: "ok", exit_code: 0 }), "");
+  });
+
   it("shows empty command output explicitly", () => {
     const detail = getToolResultDetail({ output: "", exit_code: 0 });
 

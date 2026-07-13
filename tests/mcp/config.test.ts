@@ -99,7 +99,7 @@ describe("MCP config schema", () => {
     assert.equal(merged[0]?.sourceFormat, "json");
   });
 
-  it("writes disabled state to the effective JSON source only", async () => {
+  it("writes disabled state as a local project override", async () => {
     const cwd = await tempWorkspace();
     const userPath = join(cwd, "user-mcp.json");
     const projectPath = join(cwd, ".mcp.json");
@@ -108,19 +108,20 @@ describe("MCP config schema", () => {
 
     await setMcpServerDisabledState({ cwd, userMcpPath: userPath, projectMcpPath: projectPath }, "shared", true);
 
-    assert.equal(JSON.parse(await readFile(projectPath, "utf8")).mcpServers.shared.disabled, true);
-    assert.equal(JSON.parse(await readFile(userPath, "utf8")).mcpServers.shared.disabled, undefined);
+    assert.equal(JSON.parse(await readFile(projectPath, "utf8")).mcpServers.shared.disabled, undefined);
+    assert.equal((await loadMergedMcpServersWithSourceDetails({ cwd, userMcpPath: userPath, projectMcpPath: projectPath })).find((server) => server.name === "shared")?.disabled, true);
   });
 
-  it("enables JSON servers by removing disabled", async () => {
+  it("enables JSON servers with a local project override", async () => {
     const cwd = await tempWorkspace();
+    const userPath = join(cwd, "user.json");
     const projectPath = join(cwd, ".mcp.json");
     await writeJson(projectPath, { mcpServers: { docs: { type: "http", url: "https://project.example.test", disabled: true } } });
 
-    await setMcpServerDisabledState({ cwd, projectMcpPath: projectPath }, "docs", false);
+    await setMcpServerDisabledState({ cwd, userMcpPath: userPath, projectMcpPath: projectPath }, "docs", false);
 
-    const parsed = JSON.parse(await readFile(projectPath, "utf8"));
-    assert.equal(Object.prototype.hasOwnProperty.call(parsed.mcpServers.docs, "disabled"), false);
+    const effective = await loadMergedMcpServersWithSourceDetails({ cwd, userMcpPath: userPath, projectMcpPath: projectPath });
+    assert.equal(effective.find((server) => server.name === "docs")?.disabled, false);
   });
 
   it("throws without creating a missing MCP server", async () => {

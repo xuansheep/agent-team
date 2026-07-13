@@ -9,7 +9,7 @@ import { RunStore } from "../../src/storage/runStore.js";
 
 class FakeProvider implements ModelProvider {
   async generate() {
-    return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+    return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
   }
 }
 
@@ -49,8 +49,8 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        if (calls === 2) return { content: JSON.stringify({ status: "failure", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
-        return { content: JSON.stringify({ status: "success", summary: "ok", handoff: { instruction: "next" } }) };
+        if (calls === 2) return { content: JSON.stringify({ direction: "backward", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "ok", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-failure-runs-${Date.now()}` });
@@ -66,16 +66,18 @@ describe("WorkflowEngine", () => {
     }, "flow", { request: "x" });
 
     assert.equal(result.status, "completed");
-    assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["dev", "test", "dev", "test", "final"]);
+    assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["dev", "test", "final"]);
+    assert.equal(result.attempts.find((attempt) => attempt.node_id === "dev")?.activation, 2);
+    assert.equal(result.attempts.find((attempt) => attempt.node_id === "test")?.activation, 2);
   });
 
-  it("pauses for user input instead of returning to the previous node", async () => {
+  it("rejects direct user questions from non-first nodes", async () => {
     let calls = 0;
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        if (calls === 2) return { content: JSON.stringify({ status: "needs_user_input", summary: "need decision", questions: [{ id: "q1", text: "Proceed?", required: true }] }) };
-        return { content: JSON.stringify({ status: "success", summary: "ok", handoff: { instruction: "next" } }) };
+        if (calls === 2) return { content: JSON.stringify({ direction: "backward", summary: "need decision", questions: [{ id: "q1", text: "Proceed?", required: true }] }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "ok", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-user-input-runs-${Date.now()}` });
@@ -89,15 +91,15 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "pending");
-    assert.deepEqual(result.attempts.map((attempt) => `${attempt.node_id}:${attempt.status}`), ["dev:success", "test:waiting_user"]);
+    assert.equal(result.status, "paused");
+    assert.deepEqual(result.attempts.map((attempt) => `${attempt.node_id}:${attempt.status}`), ["dev:completed", "test:failure"]);
     assert.equal(calls, 2);
   });
 
   it("pauses when the first ordered node fails", async () => {
     const provider: ModelProvider = {
       async generate() {
-        return { content: JSON.stringify({ status: "failure", summary: "blocked", feedback: { defects: ["missing input"], change_requests: [] }, handoff: { instruction: "ask user" } }) };
+        return { content: JSON.stringify({ direction: "backward", summary: "blocked", feedback: { defects: ["missing input"], change_requests: [] }, handoff: { instruction: "ask user" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-first-failure-runs-${Date.now()}` });
@@ -111,17 +113,17 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "pending");
+    assert.equal(result.status, "paused");
     assert.deepEqual(result.attempts.map((attempt) => `${attempt.node_id}:${attempt.status}`), ["dev:failure"]);
   });
 
-  it("does not infer failure fallback for explicit success-edge workflows", async () => {
+  it("uses explicit directions even when programmatic configs contain legacy edges", async () => {
     let calls = 0;
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        if (calls === 2) return { content: JSON.stringify({ status: "failure", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
-        return { content: JSON.stringify({ status: "success", summary: "ok", handoff: { instruction: "next" } }) };
+        if (calls === 2) return { content: JSON.stringify({ direction: "backward", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "ok", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/explicit-success-runs-${Date.now()}` });
@@ -135,9 +137,10 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "pending");
+    assert.equal(result.status, "completed");
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b"]);
-    assert.equal(calls, 2);
+    assert.equal(result.attempts.every((attempt) => attempt.activation === 2), true);
+    assert.equal(calls, 4);
   });
 
   it("records model usage as workflow run events", async () => {
@@ -145,7 +148,7 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate() {
         return {
-          content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }),
+          content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }),
           usage: { inputTokens: 11, outputTokens: 13, totalTokens: 24 },
           stopReason: "stop"
         };
@@ -187,7 +190,7 @@ describe("WorkflowEngine", () => {
             tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "node --test --help", timeout_ms: 30000 } }]
           };
         }
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -217,15 +220,15 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        if (calls === 1) return { content: JSON.stringify({ status: "success", summary: "a done", handoff: { instruction: "continue" } }) };
-        if (calls === 2) return { content: JSON.stringify({ status: "failure", summary: "need tests", feedback: { defects: ["missing tests"], change_requests: [] }, handoff: { instruction: "run tests" } }) };
+        if (calls === 1) return { content: JSON.stringify({ direction: "forward", summary: "a done", handoff: { instruction: "continue" } }) };
+        if (calls === 2) return { content: JSON.stringify({ direction: "backward", summary: "need tests", feedback: { defects: ["missing tests"], change_requests: [] }, handoff: { instruction: "run tests" } }) };
         if (calls === 3) {
           return {
             content: "checking test runner",
             tool_calls: [{ id: "call-bash", name: "Bash", input: { command: "node --test --help", timeout_ms: 30000 } }]
           };
         }
-        return { content: JSON.stringify({ status: "success", summary: "b done", handoff: { instruction: "done" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "b done", handoff: { instruction: "done" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -244,14 +247,10 @@ describe("WorkflowEngine", () => {
       plan_requested_permissions: [{ tool: "Bash", prompt: "run tests" }]
     });
 
-    assert.equal(failed.status, "pending");
+    assert.equal(failed.status, "completed");
     assert.deepEqual(failed.plan_requested_permission_rules, ["Bash(prompt:run tests)"]);
 
-    const runId = await latestRunId(runRoot);
-    const resumed = await engine.resume(config, "flow", runId, { answer: "run tests now" });
-
-    assert.equal(resumed.status, "completed");
-    assert.equal(calls, 4);
+    assert.equal(calls, 5);
   });
 
   it("prepends the configured global prompt to every node system prompt", async () => {
@@ -263,7 +262,7 @@ describe("WorkflowEngine", () => {
           .map((message) => String(message.content))
           .find((content) => /^Global safety rules\.\n\nRole [AB]/.test(content));
         systemPrompts.push(String(system));
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/global-prompt-runs" });
@@ -287,9 +286,9 @@ describe("WorkflowEngine", () => {
       async generate() {
         calls += 1;
         if (calls === 2) {
-          return { content: JSON.stringify({ status: "failure", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+          return { content: JSON.stringify({ direction: "backward", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
         }
-        return { content: JSON.stringify({ status: "success", summary: "ok", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "ok", handoff: { instruction: "next" } }) };
       }
     }
 
@@ -305,7 +304,8 @@ describe("WorkflowEngine", () => {
     }, "flow", { request: "x" });
 
     assert.equal(result.status, "completed");
-    assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
+    assert.equal(result.attempts.find((attempt) => attempt.node_id === "dev")?.activation, 2);
   });
 
   it("resumes a waiting node with user input", async () => {
@@ -316,9 +316,9 @@ describe("WorkflowEngine", () => {
         requests.push(request);
         calls += 1;
         if (calls === 1) {
-          return { content: JSON.stringify({ status: "needs_user_input", summary: "need detail", questions: [{ id: "q1", text: "What is the target user?", required: true }] }) };
+          return { content: JSON.stringify({ direction: "backward", summary: "need detail", questions: [{ id: "q1", text: "What is the target user?", required: true }] }) };
         }
-        return { content: JSON.stringify({ status: "success", summary: "accepted answer", handoff: { instruction: "continue" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "accepted answer", handoff: { instruction: "continue" } }) };
       }
     }
 
@@ -331,7 +331,7 @@ describe("WorkflowEngine", () => {
     };
 
     const waiting = await engine.run(config, "flow", { request: "x" });
-    assert.equal(waiting.status, "pending");
+    assert.equal(waiting.status, "waiting_user");
 
     const runId = await latestRunId(runRoot);
     const resumed = await engine.resume(config, "flow", runId, { answer: "operators" });
@@ -361,7 +361,7 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate(request) {
         requests.push(request);
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/clear-context-plan-${Date.now()}` });
@@ -401,7 +401,7 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate(request) {
         requests.push(request);
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -435,7 +435,7 @@ describe("WorkflowEngine", () => {
       async generate() {
         calls += 1;
         if (calls === 1) return { content: "checking", tool_calls: [{ id: "tool-1", name: "Bash", input: { command: "echo workflow-full-access" } }] };
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/run-full-access-${Date.now()}` });
@@ -459,7 +459,7 @@ describe("WorkflowEngine", () => {
         requests.push(request);
         calls += 1;
         if (calls === 1) return { content: "writing artifact", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "full-access.md", content: "# Full access\nDone.", description: "Full access artifact" } }] };
-        return { content: JSON.stringify({ status: "success", summary: "done", handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -488,8 +488,8 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        if (calls === 1) return { content: JSON.stringify({ status: "success", summary: "dev done", handoff: { instruction: "summarize" } }) };
-        return { content: JSON.stringify({ status: "success", summary: "final done", document: "# Delivery Summary\nEverything is complete.", handoff: { instruction: "done" } }) };
+        if (calls === 1) return { content: JSON.stringify({ direction: "forward", summary: "dev done", handoff: { instruction: "summarize" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "final done", document: "# Delivery Summary\nEverything is complete.", handoff: { instruction: "done" } }) };
       }
     };
     const runRoot = ".tmp/final-runs";
@@ -509,12 +509,12 @@ describe("WorkflowEngine", () => {
     assert.match(String(finalResult.document), /Delivery Summary/);
 
     const runId = await latestRunId(runRoot);
-    const artifactPath = join(await runDirForRun(runRoot, runId), "artifacts", "final_delivery", "node-output-1.md");
+    const artifactPath = join(await runDirForRun(runRoot, runId), "artifacts", "final_delivery", "r0001-node-output-1-a1.md");
     assert.match(await readFile(artifactPath, "utf8"), /Delivery Summary/);
-    assert.equal(finalResult.deliverables?.some((item) => item.artifact_id === "final_delivery/node-output-1.md"), true);
+    assert.equal(finalResult.deliverables?.some((item) => item.artifact_id === "final_delivery/node-output-1-a1.md@r1"), true);
     const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; artifact_id?: string });
     assert.ok(events.some((event) => event.type === "complete_summary_available"));
-    assert.equal(events.some((event) => event.type === "artifact_created" && event.artifact_id === "final_delivery/node-output-1.md"), true);
+    assert.equal(events.some((event) => event.type === "artifact_created" && event.artifact_id === "final_delivery/node-output-1-a1.md@r1"), true);
   });
 
 
@@ -524,9 +524,9 @@ describe("WorkflowEngine", () => {
       async generate() {
         calls += 1;
         if (calls === 2) {
-          return { content: JSON.stringify({ status: "failure", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+          return { content: JSON.stringify({ direction: "backward", summary: "reject", feedback: { defects: ["missing behavior"], change_requests: [] }, handoff: { instruction: "fix" } }) };
         }
-        return { content: JSON.stringify({ status: "success", summary: `dev attempt ${calls}`, handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: `dev attempt ${calls}`, handoff: { instruction: "next" } }) };
       }
     };
     const runRoot = `.tmp/fallback-artifact-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -543,12 +543,13 @@ describe("WorkflowEngine", () => {
 
     assert.equal(result.status, "completed");
     const devAttempts = result.attempts.filter((attempt) => attempt.node_id === "dev");
-    assert.equal(devAttempts.length, 2);
-    assert.deepEqual(devAttempts.map((attempt) => (attempt.result as { deliverables?: Array<{ artifact_id: string }> }).deliverables?.[0]?.artifact_id), ["dev/node-output-1.md", "dev/node-output-2.md"]);
+    assert.equal(devAttempts.length, 1);
+    assert.equal(devAttempts[0]?.activation, 2);
+    assert.deepEqual(devAttempts[0]?.activations?.map((activation) => (activation.result as { deliverables?: Array<{ artifact_id: string }> }).deliverables?.[0]?.artifact_id), ["dev/node-output-1-a1.md@r1", "dev/node-output-1-a2.md@r1"]);
     const runId = await latestRunId(runRoot);
-    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "node-output-1.md"), "utf8"), /dev attempt 1/);
-    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "node-output-2.md"), "utf8"), /dev attempt 3/);
-    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "test", "node-output-1.md"), "utf8"), /reject/);
+    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "r0001-node-output-1-a1.md"), "utf8"), /dev attempt 1/);
+    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "r0001-node-output-1-a2.md"), "utf8"), /dev attempt 3/);
+    assert.match(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "test", "r0001-node-output-1-a1.md"), "utf8"), /reject/);
   });
 
   it("stores task deliverables in artifacts and carries them in results", async () => {
@@ -557,7 +558,7 @@ describe("WorkflowEngine", () => {
       async generate() {
         calls += 1;
         if (calls === 1) return { content: "我先写入报告产物。", tool_calls: [{ id: "tool-1", name: "ArtifactWrite", input: { name: "report.md", content: "# Report\nDone.", description: "User report" } }] };
-        return { content: JSON.stringify({ status: "success", summary: "dev done", handoff: { instruction: "summarize" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "dev done", handoff: { instruction: "summarize" } }) };
       }
     };
     const runRoot = ".tmp/task-artifact-runs";
@@ -571,14 +572,14 @@ describe("WorkflowEngine", () => {
 
     assert.equal(result.status, "completed");
     const devResult = result.attempts.at(-1)?.result as { deliverables?: Array<{ artifact_id: string; description: string }> };
-    assert.deepEqual(devResult.deliverables, [{ artifact_id: "dev/report.md", description: "User report" }]);
+    assert.deepEqual(devResult.deliverables, [{ artifact_id: "dev/report.md@r1", description: "User report" }]);
     const runId = await latestRunId(runRoot);
-    assert.equal(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "report.md"), "utf8"), "# Report\nDone.");
+    assert.equal(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "r0001-report.md"), "utf8"), "# Report\nDone.");
   });
   it("marks complete nodes without documents as waiting for user input", async () => {
     const provider: ModelProvider = {
       async generate() {
-        return { content: JSON.stringify({ status: "success", summary: "missing document", handoff: { instruction: "done" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "missing document", handoff: { instruction: "done" } }) };
       }
     };
     const runRoot = ".tmp/complete-missing-doc-runs";
@@ -590,14 +591,14 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default", mode: "complete" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.attempts.at(-1)?.status, "failure");
     assert.equal(state.current_node_id, "final_delivery");
     assert.equal(state.resume_checkpoint?.node_id, "final_delivery");
 
     const runId = await latestRunId(runRoot);
     const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; attempts: Array<{ status: string }> };
-    assert.equal(persisted.status, "pending");
+    assert.equal(persisted.status, "paused");
     assert.equal(persisted.attempts.at(-1)?.status, "failure");
 
     const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; status?: string });
@@ -607,7 +608,7 @@ describe("WorkflowEngine", () => {
 
 
   it("turns repeated invalid needs_user_input results into a failure with a concrete question", async () => {
-    const invalid = JSON.stringify({ status: "needs_user_input", summary: "need input", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] } });
+    const invalid = JSON.stringify({ direction: "backward", summary: "need input", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] } });
     const provider: ModelProvider = {
       async generate() {
         return { content: invalid };
@@ -622,10 +623,10 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(state.status, "pending");
+    assert.equal(state.status, "paused");
     assert.equal(state.attempts.at(-1)?.status, "failure");
     const result = state.attempts.at(-1)?.result as { questions?: Array<{ text?: string }>; summary?: string };
-    assert.match(result.summary ?? "", /Invalid NodeResult|needs_user_input/i);
+    assert.match(result.summary ?? "", /Invalid NodeResult|concrete user question/i);
     assert.ok((result.questions?.length ?? 0) > 0);
     assert.match(result.questions?.[0]?.text ?? "", /节点无法继续执行|NodeResult|needs_user_input/);
 
@@ -652,7 +653,7 @@ describe("WorkflowEngine", () => {
     const provider: ModelProvider = {
       async generate() {
         calls += 1;
-        return { content: JSON.stringify({ status: "success", summary: `call ${calls}`, handoff: { instruction: "next" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: `call ${calls}`, handoff: { instruction: "next" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -669,7 +670,8 @@ describe("WorkflowEngine", () => {
     const resumed = await engine.resume(config, "flow", runId, {});
 
     assert.equal(resumed.status, "completed");
-    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 2);
+    assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
+    assert.equal(resumed.attempts.find((attempt) => attempt.node_id === "dev")?.activation, 2);
   });
 
   it("resumes a failed node with model-returned failure status and rework succeeds", async () => {
@@ -680,9 +682,9 @@ describe("WorkflowEngine", () => {
         calls += 1;
         requests.push(request);
         if (calls === 1) {
-          return { content: JSON.stringify({ status: "failure", summary: "rejected: not enough detail", feedback: { defects: ["missing context"], change_requests: [] }, handoff: { instruction: "fix it" } }) };
+          return { content: JSON.stringify({ direction: "backward", summary: "rejected: not enough detail", feedback: { defects: ["missing context"], change_requests: [] }, handoff: { instruction: "fix it" } }) };
         }
-        return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "rework accepted", handoff: { instruction: "done" } }) };
       }
     };
     const runRoot = `.tmp/failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -694,13 +696,13 @@ describe("WorkflowEngine", () => {
     };
 
     const waiting = await engine.run(config, "flow", { request: "x" });
-    assert.equal(waiting.status, "pending");
+    assert.equal(waiting.status, "paused");
     assert.equal(waiting.attempts.at(-1)?.status, "failure");
     assert.equal(waiting.current_node_id, "dev");
 
     const runId = await latestRunId(runRoot);
     const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
-    assert.equal(persisted.status, "pending");
+    assert.equal(persisted.status, "paused");
     assert.equal(persisted.resume_checkpoint?.node_id, "dev");
 
     const resumed = await engine.resume(config, "flow", runId, { answer: "adding more context for rework" });
@@ -723,9 +725,9 @@ describe("WorkflowEngine", () => {
         calls += 1;
         requests.push(request);
         if (calls === 1) {
-          return { content: JSON.stringify({ status: "failure", summary: "implementation rejected", feedback: { defects: ["missing tests"], change_requests: [] }, handoff: { instruction: "fix" } }) };
+          return { content: JSON.stringify({ direction: "backward", summary: "implementation rejected", feedback: { defects: ["missing tests"], change_requests: [] }, handoff: { instruction: "fix" } }) };
         }
-        return { content: JSON.stringify({ status: "success", summary: "rework accepted", handoff: { instruction: "done" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "rework accepted", handoff: { instruction: "done" } }) };
       }
     };
     const runRoot = `.tmp/failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -739,7 +741,7 @@ describe("WorkflowEngine", () => {
     };
 
     const failed = await engine.run(config, "flow", { request: "x" });
-    assert.equal(failed.status, "pending");
+    assert.equal(failed.status, "paused");
     assert.equal(failed.attempts.at(-1)?.status, "failure");
 
     const runId = await latestRunId(runRoot);
@@ -761,7 +763,7 @@ describe("WorkflowEngine", () => {
       async generate() {
         calls += 1;
         if (calls === 1) throw new Error("provider exploded");
-        return { content: JSON.stringify({ status: "success", summary: "recovered", handoff: { instruction: "done" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "recovered", handoff: { instruction: "done" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -772,13 +774,13 @@ describe("WorkflowEngine", () => {
     };
 
     const waiting = await engine.run(config, "flow", { request: "x" });
-    assert.equal(waiting.status, "pending");
+    assert.equal(waiting.status, "paused");
     assert.equal(waiting.attempts.at(-1)?.status, "failure");
 
     const runId = await latestRunId(runRoot);
     const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
 
-    assert.equal(persisted.status, "pending");
+    assert.equal(persisted.status, "paused");
     assert.equal(persisted.resume_checkpoint?.node_id, "dev");
 
     const resumed = await engine.resume(config, "flow", runId, { answer: "try again" });

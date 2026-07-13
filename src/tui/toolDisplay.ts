@@ -49,8 +49,12 @@ export function getToolResultDetail(result: unknown): string {
 export function getCompactToolResultDetail(result: unknown): string {
   if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
   const value = result as Record<string, unknown>;
+  const output = typeof value.output === "string" ? value.output : undefined;
+  const outputLines = output?.split(/\r?\n/) ?? [];
+  if (output?.endsWith("\n") && outputLines.at(-1) === "") outputLines.pop();
+  if (!value.error && outputLines.length <= 5) return "";
   const lines: string[] = [];
-  if (typeof value.output === "string") lines.push(`输出：${value.output ? compactToolOutput(value.output) : "(no output)"}`);
+  if (output !== undefined) lines.push(`输出：${output ? compactToolOutput(output) : "(no output)"}`);
   if (typeof value.error === "string" && value.error) lines.push(`错误：${truncate(value.error, 500)}`);
   if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
   if (typeof value.path === "string") lines.push(`路径：${value.path}`);

@@ -27,7 +27,8 @@ describe("Plan Mode V2 workflow separation", () => {
       providerFactory: () => ({ async generate() { return { content: "{}" }; } })
     });
     const input = configWithNodeTaskMode();
-    const config = { ...configSchema.parse(input), providers: input.providers };
+    const { providers, ...projectConfig } = input;
+    const config = { ...configSchema.parse(projectConfig), providers };
 
     await assert.rejects(
       () => engine.run(config, "flow", { request: "build" }, { permissionMode: "plan" as never }),

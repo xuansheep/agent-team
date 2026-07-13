@@ -25,7 +25,8 @@ export type TuiMode =
 export type TuiNodeState = {
   nodeId: string;
   attempt: number;
-  status: "running" | "success" | "failure" | "waiting_user" | "interrupted";
+  activation?: number;
+  status: "running" | "completed" | "suspended" | "success" | "failure" | "waiting_user" | "interrupted";
 };
 
 export type TuiWorkflowNodeState = {
@@ -110,6 +111,7 @@ export type TuiState = {
   workflowId?: string;
   runId?: string;
   currentNodeId?: string;
+  suspendedStack: string[];
   nodes: TuiNodeState[];
   tools: TuiToolState[];
   permissionRequests: TuiPermissionRequestState[];

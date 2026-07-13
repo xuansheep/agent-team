@@ -2610,7 +2610,7 @@ describe("Workflow node status component", () => {
 
 
 
-    assert.match(frame, /product #1 running/);
+    assert.match(frame, /product #1\.1 running/);
 
 
 
@@ -6059,7 +6059,7 @@ describe("RunConversationPanel", () => {
 
 
 
-          { kind: "assistant", nodeId: "product", attempt: 1, text: "{\"status\":\"success\"}" },
+          { kind: "assistant", nodeId: "product", attempt: 1, text: "{\"direction\":\"forward\"}" },
 
 
 
@@ -6235,7 +6235,7 @@ describe("RunConversationPanel", () => {
 
 
 
-    assert.doesNotMatch(frame, /\{\"status\":\"success\"\}/);
+    assert.doesNotMatch(frame, /\{\"direction\":\"forward\"\}/);
 
 
 
@@ -8993,7 +8993,7 @@ describe("TuiApp", () => {
 
 
 
-    assert.match(output.lastFrame() ?? "", /agent-team init/);
+    assert.match(output.lastFrame() ?? "", /Create config\/prompt\.md/);
 
 
 
@@ -9403,7 +9403,7 @@ describe("TuiApp", () => {
 
         { type: "tool_completed", node_id: "product", attempt: 1, tool_call_id: "tool-1", tool: "Bash", result: { output: "ok", exit_code: 0 }, ts: "2026-06-24T00:00:03.000Z", seq: 4 },
 
-        { type: "model_stream_delta", node_id: "product", attempt: 1, text: "{\"status\":\"success\",\"summary\":\"done\"}", ts: "2026-06-24T00:00:04.000Z", seq: 5 }
+        { type: "model_stream_delta", node_id: "product", attempt: 1, text: "{\"direction\":\"forward\",\"summary\":\"done\"}", ts: "2026-06-24T00:00:04.000Z", seq: 5 }
 
       ]
 

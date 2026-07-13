@@ -18,7 +18,7 @@ export function NodeStatusList({
     <Box flexDirection="column" flexShrink={0}>
       {rows.map((row) => {
         const active = row.id === currentNodeId;
-        const text = row.state ? `${row.id} #${row.state.attempt} ${row.state.status}` : `${row.id} pending`;
+        const text = row.state ? `${row.id} #${row.state.attempt}.${row.state.activation ?? 1} ${row.state.status}` : `${row.id} pending`;
         return (
           <Text key={row.id} color={active ? "cyan" : undefined} bold={active}>
             {text}

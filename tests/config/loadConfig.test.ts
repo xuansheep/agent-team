@@ -253,14 +253,16 @@ workflows:
     await assert.rejects(() => loadTestConfig(planFile), /Invalid enum value/);
   });
 
-  it("keeps the bundled example workflow free of user_acceptance nodes", async () => {
+  it("loads the bundled four-node resumable delivery workflow", async () => {
     const config = await loadTestConfig(resolve("config"));
     const workflow = config.workflows.delivery;
 
     assert.equal(config.roles.user_acceptance, undefined);
     assert.equal(workflow.nodes.some((node) => node.id === "user_acceptance" || node.role === "user_acceptance"), false);
-    assert.equal(workflow.nodes.some((node) => node.id === "product"), false);
-    assert.equal(workflow.nodes.find((node) => node.id === "final_delivery")?.mode, "complete");
+    assert.deepEqual(workflow.nodes.map((node) => node.id), ["product", "ui", "developer", "tester"]);
+    assert.equal(workflow.nodes.every((node) => node.provider === "default"), true);
+    assert.equal(workflow.nodes.find((node) => node.id === "tester")?.mode, "complete");
+    assert.equal(workflow.max_rework_cycles, 10);
     assert.equal(workflow.edges.length, 0);
     assert.equal(workflow.edges.some((edge) => edge.from === "user_acceptance" || edge.to === "user_acceptance"), false);
   });
