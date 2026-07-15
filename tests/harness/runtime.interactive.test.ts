@@ -230,6 +230,7 @@ describe("runNode interactive permissions", () => {
     const run = await store.createRun("flow", { request: "x" });
     const tools = new ToolRegistry();
     let requestedPermission = false;
+    let persistedDialogue: unknown[] = [];
     const provider: ModelProvider = {
       async generate() {
         return {
@@ -266,12 +267,92 @@ describe("runNode interactive permissions", () => {
           requestedPermission = true;
           return "allow_once";
         }
+      },
+      onDialogueMessages(messages) {
+        persistedDialogue = messages;
       }
     });
     assert.equal(result.direction, "forward");
     assert.equal(result.handoff.instruction, "next");
     assert.equal(requestedPermission, false);
+    assert.deepEqual(persistedDialogue.slice(-2), [
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "tool-1",
+          name: "SubmitNodeResult",
+          input: {
+            direction: "forward",
+            summary: "done",
+            document: "",
+            deliverables: [],
+            feedback: { defects: [], change_requests: [] },
+            questions: [],
+            handoff: { instruction: "next", must_follow: [], known_risks: [], open_questions: [] }
+          }
+        }]
+      },
+      { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ status: "submitted" }) }
+    ]);
   });
+
+  it("repairs an unmatched legacy SubmitNodeResult call before resuming", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-recover-submit-result-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    const submittedCall = {
+      id: "tool-old-submit",
+      name: "SubmitNodeResult",
+      input: {
+        direction: "forward",
+        summary: "previous activation completed",
+        document: "",
+        deliverables: [],
+        feedback: { defects: [], change_requests: [] },
+        questions: [],
+        handoff: { instruction: "continue", must_follow: [], known_risks: [], open_questions: [] }
+      }
+    };
+    const provider: ModelProvider = {
+      async generate(request) {
+        const assistantIndex = request.messages.findIndex((message) =>
+          message.role === "assistant" && message.tool_calls?.some((call) => call.id === submittedCall.id)
+        );
+        assert.notEqual(assistantIndex, -1);
+        assert.deepEqual(request.messages.slice(assistantIndex, assistantIndex + 3), [
+          { role: "assistant", content: "", tool_calls: [submittedCall] },
+          { role: "tool", tool_call_id: submittedCall.id, content: JSON.stringify({ status: "submitted" }) },
+          { role: "user", content: "Rework the accessibility defect." }
+        ]);
+        return { content: JSON.stringify({ direction: "forward", summary: "fixed", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 2,
+      dialogueMessages: [
+        { role: "assistant", content: "", tool_calls: [submittedCall] },
+        { role: "user", content: "Rework the accessibility defect." }
+      ]
+    });
+
+    assert.equal(result.direction, "forward");
+    assert.equal(result.summary, "fixed");
+  });
+
   it("passes stable short prompt cache keys in model request context", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-context-"));
     const store = new RunStore(root);

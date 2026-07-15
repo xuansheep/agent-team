@@ -58,6 +58,7 @@ describe("AnthropicMessagesProvider", () => {
         { role: "user", content: "hello" }
       ],
       tools: [tool],
+      effort: "custom-level",
       response_schema: responseSchema,
       context
     });
@@ -66,7 +67,7 @@ describe("AnthropicMessagesProvider", () => {
     assert.equal(server.requestPath, "/v1/messages");
     assert.equal(server.requestHeaders["x-api-key"], "test-key");
     assert.equal(server.requestHeaders["anthropic-version"], "2023-06-01");
-    assert.equal(server.requestHeaders["anthropic-beta"], "messages-test-beta");
+    assert.equal(server.requestHeaders["anthropic-beta"], "messages-test-beta,effort-2025-11-24");
     assert.deepEqual(server.requestBody.system, [{ type: "text", text: "System prompt", cache_control: { type: "ephemeral" } }]);
     assert.deepEqual(server.requestBody.messages, [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }]);
     assert.deepEqual(server.requestBody.tools, [{ name: "Bash", description: "Run a command", input_schema: tool.input_schema }]);
@@ -77,6 +78,7 @@ describe("AnthropicMessagesProvider", () => {
     });
     assert.deepEqual(server.requestBody.thinking, { type: "enabled", budget_tokens: 1024 });
     assert.deepEqual(server.requestBody.output_config, {
+      effort: "custom-level",
       format: { type: "json_schema", schema: responseSchema }
     });
   });

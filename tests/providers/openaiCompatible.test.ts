@@ -77,6 +77,15 @@ describe("OpenAiCompatibleProvider structured output", () => {
     assert.equal(server.requestHeaders["user-agent"], "claude-code/2.1.186");
   });
 
+  it("passes arbitrary effort through as reasoning_effort", async () => {
+    const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    await provider.generate({ model: "gpt-test", effort: "custom-level", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.equal(server.requestBody.reasoning_effort, "custom-level");
+  });
+
   it("keeps long tool prompts out of OpenAI-compatible tool schemas", async () => {
     const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
@@ -165,6 +174,73 @@ describe("OpenAiCompatibleProvider structured output", () => {
       }
     );
     assert.equal(server.attempts, 5);
+  });
+
+  it("retries dependency-unavailable 424 responses and succeeds", async () => {
+    const server = await startResponseSequenceServer([
+      {
+        status: 424,
+        body: { error: { type: "service_dependency_unavailable", code: "service_dependency_unavailable" } }
+      },
+      {
+        status: 424,
+        body: { error: { type: "service_dependency_unavailable", code: "service_dependency_unavailable" } }
+      },
+      { status: 200, body: { choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] } }
+    ]);
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.equal(result.content, "{\"direction\":\"forward\"}");
+    assert.equal(server.attempts, 3);
+  });
+
+  it("does not retry unrelated 424 responses", async () => {
+    const server = await startStatusServer(424, JSON.stringify({ error: { code: "upstream_contract_error" } }));
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    await assert.rejects(
+      () => provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] }),
+      /Provider request failed 424/
+    );
+    assert.equal(server.attempts, 1);
+  });
+
+  it("stops dependency-unavailable retries when the request is aborted", async () => {
+    const body = JSON.stringify({ error: { type: "service_dependency_unavailable", code: "service_dependency_unavailable" } });
+    const server = await startStatusServer(424, body);
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25);
+
+    try {
+      await assert.rejects(
+        () => provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [], signal: controller.signal }),
+        (error) => {
+          assert.equal((error as { name?: string }).name, "AbortError");
+          return true;
+        }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    assert.equal(server.attempts, 1);
+  });
+
+  it("limits dependency-unavailable 424 retries and classifies exhaustion as server failure", async () => {
+    const body = JSON.stringify({ error: { type: "service_dependency_unavailable", code: "service_dependency_unavailable" } });
+    const server = await startStatusServer(424, body);
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    await assert.rejects(
+      () => provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] }),
+      (error) => {
+        assert.equal((error as { errorKind?: string }).errorKind, "server");
+        return true;
+      }
+    );
+    assert.equal(server.attempts, 3);
   });
 
   it("does not retry provider HTTP errors", async () => {
@@ -367,6 +443,24 @@ async function startNetworkFailureServer(): Promise<{ baseUrl: string; attempts:
   const server = createServer((request) => {
     attempts += 1;
     request.socket.destroy(new Error("simulated connection reset"));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  const handle = { baseUrl: `http://127.0.0.1:${address.port}/v1`, get attempts() { return attempts; }, close };
+  servers.push(handle);
+  return handle;
+}
+
+async function startResponseSequenceServer(responses: Array<{ status: number; body: unknown }>): Promise<{ baseUrl: string; attempts: number; close: () => Promise<void> }> {
+  let attempts = 0;
+  const server = createServer((request, response) => {
+    const current = responses[Math.min(attempts, responses.length - 1)]!;
+    attempts += 1;
+    request.resume();
+    response.writeHead(current.status, { "content-type": "application/json" });
+    response.end(typeof current.body === "string" ? current.body : JSON.stringify(current.body));
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

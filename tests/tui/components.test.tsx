@@ -2770,7 +2770,7 @@ describe("Workflow node status component", () => {
 
 
 
-        workflowNodes={[{ id: "product", role: "product", model: "gpt5.5" }, { id: "dev", role: "developer", model: "claude-dev" }, { id: "test", role: "tester" }]}
+        workflowNodes={[{ id: "product", role: "product", model: "gpt5.5", effort: "high" }, { id: "dev", role: "developer", model: "claude-dev", effort: "low" }, { id: "test", role: "tester" }]}
 
 
 
@@ -2882,7 +2882,7 @@ describe("Workflow node status component", () => {
 
 
 
-    assert.match(frame, /model: gpt5\.5/);
+    assert.match(frame, /model: gpt5\.5 high/);
 
 
 
@@ -2930,7 +2930,7 @@ describe("Workflow node status component", () => {
 
 
 
-    assert.match(frame, /model: claude-dev/);
+    assert.match(frame, /model: claude-dev low/);
 
 
 
@@ -11647,7 +11647,7 @@ describe("TuiApp", () => {
 
 
 
-    assert.match(frame, /model: gpt5\.5/);
+    assert.match(frame, /model: gpt5\.5 medium/);
 
 
 

@@ -18,7 +18,7 @@ import type { PermissionMode } from "../permissions/PermissionMode.js";
 
 import { ModelMessage, ModelProvider } from "../providers/types.js";
 import { modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
-import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
+import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
 
 import { ArtifactStore } from "../storage/artifacts.js";
 
@@ -1388,6 +1388,7 @@ export class WorkflowEngine {
                     navigation: this.transitionController.navigation(options.workflow, node.id),
                     systemPrompt: effectiveSystemPrompt(options.config.global_prompt, role.system_prompt),
                     model: resolveModelForWorkflowNode({ node, role, provider: providerConfig, permissionMode: effectivePermissionMode, planModel: providerConfig.plan_model, registry: modelRegistryFromProviderConfig(providerConfig) }),
+                    effort: resolveEffortForWorkflowNode({ node, provider: providerConfig }),
                     provider: this.options.providerFactory(node.provider),
                     tools,
                     permissions: workflowToolPermissions(effectivePermissionMode, basePermissions, node.permissions ?? permissionSetSchema.parse(undefined), planRequestedPermissionRules),

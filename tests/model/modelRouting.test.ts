@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { getModelContextWindow, resolveModelAlias } from "../../src/model/modelRegistry.js";
-import { resolveModelForWorkflowNode } from "../../src/model/modelRouting.js";
+import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../../src/model/modelRouting.js";
 
 describe("model routing", () => {
   it("keeps workflow node model ahead of role and provider defaults", () => {
@@ -24,6 +24,19 @@ describe("model routing", () => {
 
     assert.equal(resolveModelForWorkflowNode({ provider: { default_model: "default" }, permissionMode: "default", planModel: "plan", registry }), "gpt-default");
     assert.equal(resolveModelForWorkflowNode({ provider: { default_model: "default" }, permissionMode: "plan", planModel: "plan", registry }), "gpt-plan");
+  });
+
+  it("resolves effort from node, provider, then the medium default", () => {
+    assert.equal(resolveEffortForWorkflowNode({
+      node: { effort: "node-custom" },
+      provider: { default_model: "provider-model", effort: "provider-custom" }
+    }), "node-custom");
+    assert.equal(resolveEffortForWorkflowNode({
+      provider: { default_model: "provider-model", effort: "provider-custom" }
+    }), "provider-custom");
+    assert.equal(resolveEffortForWorkflowNode({
+      provider: { default_model: "provider-model" }
+    }), "medium");
   });
 
   it("resolves aliases and context windows", () => {

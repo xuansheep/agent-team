@@ -35,7 +35,7 @@ describe("createProvider", () => {
   it("rejects an empty key only when the provider is created", () => {
     assert.throws(
       () => createProvider(runtimeConfig(""), "default"),
-      /configure api_key in ~\/.einsteins\/settings.yaml/
+      /configure api_key in ~\/.einsteins\/settings.json/
     );
   });
 });

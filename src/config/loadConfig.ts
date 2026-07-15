@@ -12,12 +12,13 @@ export type LoadConfigOptions = {
   cwd?: string;
   homeDir?: string;
   settings?: AgentTeamSettings | ResolvedAgentTeamSettings;
+  promptPath?: string;
 };
 
 export async function loadConfig(configDir: string, options: LoadConfigOptions = {}): Promise<AgentTeamConfig> {
   const resolvedConfigDir = resolve(configDir);
   const cwd = options.cwd ?? resolve(resolvedConfigDir, "..");
-  const promptPath = join(resolvedConfigDir, "prompt.md");
+  const promptPath = resolve(options.promptPath ?? join(resolvedConfigDir, "prompt.md"));
   await access(promptPath);
   const [roles, workflows] = await Promise.all([
     loadRoles(join(resolvedConfigDir, "roles")),

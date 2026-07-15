@@ -30,8 +30,8 @@ export function WorkflowFlowChart({
   const [animationRef, animationTime] = useAnimationFrame(nodes.some((node) => node.status === "running") ? 120 : null);
   const runningBorder: BorderStyle = { ...NODE_BORDER, topRight: RUNNING_TOP_RIGHT_FRAMES[Math.floor(animationTime / 120) % RUNNING_TOP_RIGHT_FRAMES.length] };
   const rows = workflowNodes?.length
-    ? workflowNodes.map((node) => ({ id: node.id, model: node.model, state: latestNodeState(nodes, node.id) }))
-    : nodes.map((node) => ({ id: node.nodeId, model: undefined, state: node }));
+    ? workflowNodes.map((node) => ({ id: node.id, model: node.model, effort: node.effort, state: latestNodeState(nodes, node.id) }))
+    : nodes.map((node) => ({ id: node.nodeId, model: undefined, effort: undefined, state: node }));
 
   return (
     <Box ref={animationRef} flexWrap="wrap" flexShrink={0}>
@@ -43,7 +43,7 @@ export function WorkflowFlowChart({
           <Box key={row.id} alignItems="center">
             <Box borderStyle={running ? runningBorder : "single"} borderColor={color} paddingX={1} minWidth={18} flexDirection="column">
               <Text color={color} bold={active} dimColor={!row.state}>{row.id}</Text>
-              {row.model ? <Text color={color} dimColor={!row.state}>model: {row.model}</Text> : null}
+              {row.model ? <Text color={color} dimColor={!row.state}>model: {row.model}{row.effort ? " " + row.effort : ""}</Text> : null}
               <Text color={color} dimColor={!row.state}>{statusLabel(row.state)}</Text>
             </Box>
             {index < rows.length - 1 ? <Text dimColor> -&gt; </Text> : null}

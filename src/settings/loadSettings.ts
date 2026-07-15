@@ -2,7 +2,6 @@ import { chmod, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import yaml from "js-yaml";
 import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 import { resolveSettings } from "./resolveSettings.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
@@ -22,11 +21,11 @@ export async function loadSettings(options: LoadSettingsOptions): Promise<Resolv
 }
 
 export function defaultUserSettingsPath(): string {
-  return join(homedir(), ".einsteins", "settings.yaml");
+  return join(homedir(), ".einsteins", "settings.json");
 }
 
 function defaultProjectSettingsPath(cwd: string): string {
-  return join(cwd, ".einsteins", "settings.yaml");
+  return join(cwd, ".einsteins", "settings.json");
 }
 
 export async function ensureUserSettingsFile(path = defaultUserSettingsPath()): Promise<void> {
@@ -47,16 +46,16 @@ export async function setUserDefaultPermissionMode(
   path = defaultUserSettingsPath()
 ): Promise<void> {
   await ensureUserSettingsFile(path);
-  const settings = settingsSchema.parse(yaml.load(await readFile(path, "utf8")) ?? {});
+  const settings = settingsSchema.parse(parseSettingsJson(await readFile(path, "utf8"), path));
   const next = {
     ...settings,
     permissions: { ...settings.permissions, defaultMode: mode }
   };
   const existingMode = (await stat(path)).mode;
-  const temporaryPath = `${path}.tmp.${process.pid}.${randomUUID()}`;
+  const temporaryPath = path + ".tmp." + process.pid + "." + randomUUID();
   const handle = await open(temporaryPath, "wx", existingMode);
   try {
-    await handle.writeFile(yaml.dump(next, { lineWidth: -1, noRefs: true }), "utf8");
+    await handle.writeFile(JSON.stringify(next, null, 2) + "\n", "utf8");
     await handle.sync();
   } finally {
     await handle.close();
@@ -69,10 +68,9 @@ async function readSettingsFile(path: string, source: "user"): Promise<AgentTeam
 async function readSettingsFile(path: string, source: "project"): Promise<ProjectAgentTeamSettings | undefined>;
 async function readSettingsFile(path: string, source: "user" | "project"): Promise<AgentTeamSettings | ProjectAgentTeamSettings | undefined> {
   try {
-    const raw = await readFile(path, "utf8");
-    const parsed = yaml.load(raw) ?? {};
+    const parsed = parseSettingsJson(await readFile(path, "utf8"), path);
     if (source === "project" && parsed && typeof parsed === "object" && Object.hasOwn(parsed, "providers")) {
-      throw new Error(`Project settings cannot define providers: ${path}`);
+      throw new Error("Project settings cannot define providers: " + path);
     }
     return source === "user" ? settingsSchema.parse(parsed) : projectSettingsSchema.parse(parsed);
   } catch (error) {
@@ -81,38 +79,57 @@ async function readSettingsFile(path: string, source: "user" | "project"): Promi
   }
 }
 
-export const DEFAULT_USER_SETTINGS = `providers:
-  default:
-    type: responses-api
-    base_url: https://api.openai.com/v1
-    api_key: ""
-    default_model: gpt-5.5
-    api_key_mode: bearer
-    capabilities:
-      tool_calling: true
-      vision: true
-      streaming: true
-      json_schema_output: true
-  openai_compatible:
-    type: openai-compatible
-    base_url: https://api.example.com/v1
-    api_key: ""
-    default_model: model-name
-    api_key_mode: bearer
-    capabilities:
-      tool_calling: true
-      vision: false
-      streaming: true
-      json_schema_output: true
-  anthropic:
-    type: anthropic
-    base_url: https://api.anthropic.com
-    api_key: ""
-    default_model: claude-sonnet-4-5
-    api_key_mode: x-api-key
-    capabilities:
-      tool_calling: true
-      vision: true
-      streaming: true
-      json_schema_output: true
-`;
+function parseSettingsJson(raw: string, path: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error("Invalid JSON settings in " + path + ": " + (error instanceof Error ? error.message : String(error)));
+  }
+}
+
+export const DEFAULT_USER_SETTINGS = JSON.stringify({
+  providers: {
+    default: {
+      type: "responses-api",
+      base_url: "https://api.openai.com/v1",
+      api_key: "",
+      default_model: "gpt-5.5",
+      effort: "medium",
+      api_key_mode: "bearer",
+      capabilities: {
+        tool_calling: true,
+        vision: true,
+        streaming: true,
+        json_schema_output: true
+      }
+    },
+    openai_compatible: {
+      type: "openai-compatible",
+      base_url: "https://api.example.com/v1",
+      api_key: "",
+      default_model: "model-name",
+      effort: "medium",
+      api_key_mode: "bearer",
+      capabilities: {
+        tool_calling: true,
+        vision: false,
+        streaming: true,
+        json_schema_output: true
+      }
+    },
+    anthropic: {
+      type: "anthropic",
+      base_url: "https://api.anthropic.com",
+      api_key: "",
+      default_model: "claude-sonnet-4-5",
+      effort: "medium",
+      api_key_mode: "x-api-key",
+      capabilities: {
+        tool_calling: true,
+        vision: true,
+        streaming: true,
+        json_schema_output: true
+      }
+    }
+  }
+}, null, 2) + "\n";

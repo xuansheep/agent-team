@@ -467,5 +467,14 @@ workflows:
     await assert.rejects(() => loadTestConfig(configDir), /Unrecognized key.*edges/s);
   });
 
+  it("loads non-negotiable FullAccess boundaries for product and UI roles", async () => {
+    const config = await loadConfig(resolve("config"), { settings: providerSettings() });
 
+    assert.match(config.roles.product.system_prompt, /FullAccess mode.*do not override this role boundary/);
+    assert.match(config.roles.product.system_prompt, /only permitted mutation.*ArtifactWrite/);
+    assert.match(config.roles.product.system_prompt, /Never use Write, Edit, MultiEdit/);
+    assert.match(config.roles.ui.system_prompt, /FullAccess mode.*do not override this role boundary/);
+    assert.match(config.roles.ui.system_prompt, /only permitted mutations.*ArtifactWrite.*AttachImage/);
+    assert.match(config.roles.ui.system_prompt, /Never use Write, Edit, MultiEdit/);
+  });
 });

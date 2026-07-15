@@ -7,6 +7,8 @@ export type ProviderNetworkError = ModelProviderError;
 export const defaultProviderUserAgent = "claude-code/2.1.186";
 
 const providerNetworkAttempts = 5;
+const providerDependencyAttempts = 3;
+const providerDependencyRetryDelays = [200, 400] as const;
 
 export function buildApiKeyHeaders(apiKey: string, mode: ApiKeyMode): Record<string, string> {
   return mode === "x-api-key"
@@ -15,6 +17,18 @@ export function buildApiKeyHeaders(apiKey: string, mode: ApiKeyMode): Record<str
 }
 
 export async function fetchProvider(endpoint: string, init: Parameters<typeof fetch>[1]): Promise<Awaited<ReturnType<typeof fetch>>> {
+  const signal = init?.signal;
+  for (let attempt = 1; attempt <= providerDependencyAttempts; attempt += 1) {
+    const response = await fetchProviderNetwork(endpoint, init);
+    const retry = attempt < providerDependencyAttempts && await isDependencyUnavailable(response);
+    if (!retry) return response;
+    await response.body?.cancel();
+    await delay(providerDependencyRetryDelays[attempt - 1]!, signal);
+  }
+  throw new Error("Provider dependency retry loop completed without a response");
+}
+
+async function fetchProviderNetwork(endpoint: string, init: Parameters<typeof fetch>[1]): Promise<Awaited<ReturnType<typeof fetch>>> {
   const signal = init?.signal;
   let lastError: unknown;
   for (let attempt = 1; attempt <= providerNetworkAttempts; attempt += 1) {
@@ -37,6 +51,17 @@ export async function fetchProvider(endpoint: string, init: Parameters<typeof fe
   });
 }
 
+async function isDependencyUnavailable(response: Awaited<ReturnType<typeof fetch>>): Promise<boolean> {
+  if (response.status !== 424) return false;
+  try {
+    const body = await response.clone().json() as { error?: { type?: unknown; code?: unknown } };
+    return body.error?.type === "service_dependency_unavailable"
+      || body.error?.code === "service_dependency_unavailable";
+  } catch {
+    return false;
+  }
+}
+
 export function providerHttpError(status: number, body: string): ModelProviderError {
   return new ModelProviderError(`Provider request failed ${status}: ${body}`, { errorKind: classifyProviderStatus(status), status });
 }
@@ -45,6 +70,7 @@ export function classifyProviderStatus(status: number): ModelErrorKind {
   if (status === 401) return "auth";
   if (status === 403) return "permission";
   if (status === 429) return "rate_limit";
+  if (status === 424) return "server";
   if (status >= 500) return "server";
   if (status >= 400) return "invalid_request";
   return "unknown";
@@ -68,6 +94,7 @@ export async function consumeSseBlocks(
       buffer += decoder.decode(chunk.value, { stream: true });
     }
 
+    buffer = normalizeSseLineEndings(buffer, done);
     let separatorIndex = buffer.indexOf("\n\n");
     while (separatorIndex !== -1) {
       const block = buffer.slice(0, separatorIndex);
@@ -79,6 +106,13 @@ export async function consumeSseBlocks(
 
   if (buffer.trim()) return consumeSseBlock(buffer, onData);
   return false;
+}
+
+function normalizeSseLineEndings(value: string, flush: boolean): string {
+  const hasPendingCarriageReturn = !flush && value.endsWith("\r");
+  const stable = hasPendingCarriageReturn ? value.slice(0, -1) : value;
+  const normalized = stable.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return hasPendingCarriageReturn ? normalized + "\r" : normalized;
 }
 
 function consumeSseBlock(block: string, onData: (data: string) => boolean | void): boolean {

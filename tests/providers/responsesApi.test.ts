@@ -50,6 +50,7 @@ describe("ResponsesApiProvider", () => {
         { role: "user", content: "hello" }
       ],
       tools: [tool],
+      effort: "custom-level",
       response_schema: responseSchema,
       context
     });
@@ -67,6 +68,7 @@ describe("ResponsesApiProvider", () => {
     assert.deepEqual(server.requestBody.tools, [{ type: "function", name: "Bash", description: "Run a command", parameters: tool.input_schema }]);
     assert.equal(server.requestBody.tool_choice, "auto");
     assert.equal(server.requestBody.parallel_tool_calls, true);
+    assert.deepEqual(server.requestBody.reasoning, { effort: "custom-level" });
     assert.equal(server.requestBody.prompt_cache_key, "a".repeat(64));
     assert.deepEqual(server.requestBody.client_metadata, {
       session_id: "run-1",
@@ -172,13 +174,13 @@ describe("ResponsesApiProvider", () => {
     ]);
   });
 
-  it("streams text deltas and completed function calls", async () => {
+  it("streams CRLF-delimited text deltas and completed function calls", async () => {
     const server = await startSseServer([
       { type: "response.output_text.delta", delta: "{\"direction\":" },
       { type: "response.output_text.delta", delta: "\"forward\"}" },
       { type: "response.output_item.done", item: { type: "function_call", call_id: "call-1", name: "Bash", arguments: "{\"command\":\"npm test\"}" } },
       "[DONE]"
-    ]);
+    ], "\r\n");
     const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
     const deltas: string[] = [];
 
@@ -281,13 +283,13 @@ async function startJsonServer(responseBody: unknown): Promise<{ baseUrl: string
   return handle;
 }
 
-async function startSseServer(events: Array<unknown | "[DONE]">): Promise<{ baseUrl: string; requestBody: Record<string, unknown>; close: () => Promise<void> }> {
+async function startSseServer(events: Array<unknown | "[DONE]">, lineEnding: "\n" | "\r\n" = "\n"): Promise<{ baseUrl: string; requestBody: Record<string, unknown>; close: () => Promise<void> }> {
   let requestBody: Record<string, unknown> = {};
   const server = createServer(async (request, response) => {
     requestBody = await readJsonBody(request);
     response.writeHead(200, { "content-type": "text/event-stream" });
     for (const event of events) {
-      response.write(`data: ${event === "[DONE]" ? event : JSON.stringify(event)}\n\n`);
+      response.write(`data: ${event === "[DONE]" ? event : JSON.stringify(event)}${lineEnding}${lineEnding}`);
     }
     response.end();
   });

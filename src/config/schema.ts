@@ -19,6 +19,7 @@ const providerBaseSchema = {
   base_url: z.string().url(),
   api_key: z.string(),
   default_model: z.string().min(1),
+  effort: z.string().trim().min(1).optional(),
   plan_model: z.string().min(1).optional(),
   model_aliases: z.record(z.string().min(1)).optional(),
   context_windows: z.record(z.number().int().positive()).optional(),
@@ -39,9 +40,8 @@ const responsesProviderSchema = z.object({
     prompt_cache: z.boolean().default(true),
     parallel_tool_calls: z.boolean().default(true),
     reasoning: z.object({
-      effort: z.enum(["minimal", "low", "medium", "high"]).optional(),
       summary: z.string().optional()
-    }).optional()
+    }).strict().optional()
   }).default({})
 }).strict();
 
@@ -87,6 +87,7 @@ export const nodeSchema = z.object({
   role: z.string().min(1),
   provider: z.string().default("default"),
   model: z.string().optional(),
+  effort: z.string().trim().min(1).optional(),
   mode: z.enum(["task", "complete"]).default("task"),
   permission_mode: z.enum(["default", "fullAccess"]).default("default"),
   permissions: permissionSetSchema.optional()

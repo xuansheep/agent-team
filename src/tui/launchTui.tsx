@@ -1,8 +1,8 @@
-import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { AlternateScreen, render } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import { loadConfig } from "../config/loadConfig.js";
+import { defaultBundledConfigDir, defaultUserConfigDir, ensureUserRoleWorkflowConfig } from "../config/userConfig.js";
 import { collectRuntimeDiagnostics, type RuntimeDiagnostics } from "../diagnostics/runtimeDiagnostics.js";
 import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
 import { McpRuntime } from "../mcp/runtime.js";
@@ -32,18 +32,20 @@ export type PreparedTuiRuntime = {
   mcpConfigOptions: McpConfigSourceOptions;
 };
 
-export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string }): Promise<PreparedTuiRuntime> {
-  const configDir = join(options.cwd, "config");
+export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string; templateConfigDir?: string }): Promise<PreparedTuiRuntime> {
+  const templateConfigDir = options.templateConfigDir ?? defaultBundledConfigDir();
+  const userConfigDir = defaultUserConfigDir(options.homeDir);
+  await ensureUserRoleWorkflowConfig({ userConfigDir, templateConfigDir });
   const settings = await loadSettings({
     cwd: options.cwd,
-    ...(options.homeDir ? { userSettingsPath: join(options.homeDir, ".einsteins", "settings.yaml") } : {})
+    ...(options.homeDir ? { userSettingsPath: join(userConfigDir, "settings.json") } : {})
   });
-  await Promise.all([
-    access(join(configDir, "prompt.md")),
-    access(join(configDir, "roles")),
-    access(join(configDir, "workflows"))
-  ]);
-  const config = await loadConfig(configDir, { cwd: options.cwd, homeDir: options.homeDir, settings });
+  const config = await loadConfig(userConfigDir, {
+    cwd: options.cwd,
+    homeDir: options.homeDir,
+    settings,
+    promptPath: join(templateConfigDir, "prompt.md")
+  });
   const workflows = Object.keys(config.workflows);
   const workflowId = selectDefaultWorkflow(workflows);
   const mcpConfigOptions = { cwd: options.cwd };
@@ -81,7 +83,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     mcpConfigOptions = prepared.mcpConfigOptions;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    initialError = message.includes("ENOENT") ? "Missing config directory or required config file" : message;
+    initialError = message.includes("ENOENT") ? "Missing user roles/workflows or bundled config template" : message;
   }
 
   const instance = await render(

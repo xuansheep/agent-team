@@ -57,6 +57,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   };
   if (await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables)) await persistDialogueMessages();
   for (;;) {
+    assertResolvedToolCallHistory(messages);
     requestTools = [...options.tools.list(), submitNodeResultTool];
     const request = {
       model: options.model,
@@ -94,6 +95,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       const submittedResult = response.tool_calls.find((call) => call.name === submitNodeResultTool.name);
       if (submittedResult) {
         await appendDialogueMessage({ role: "assistant", content: assistantToolCallContent(response.content), tool_calls: [submittedResult] });
+        await appendDialogueMessage(submitNodeResultToolMessage(submittedResult.id));
         return mergeArtifactDeliverables(nodeResultSchema.parse(submittedResult.input), artifactDeliverables);
       }
       const assistantContent = assistantToolCallContent(response.content);
@@ -205,6 +207,12 @@ const submitNodeResultTool: Tool = {
     return { error: "SubmitNodeResult is handled by the runtime", exit_code: 1 };
   }
 };
+const submittedNodeResultContent = JSON.stringify({ status: "submitted" });
+
+function submitNodeResultToolMessage(toolCallId: string): ModelMessage {
+  return { role: "tool", tool_call_id: toolCallId, content: submittedNodeResultContent };
+}
+
 function artifactFromToolResult(result: ToolResult): { artifact_id: string; path: string; description: string } | undefined {
   if (!result.artifact_id || !result.path) return undefined;
   return { artifact_id: result.artifact_id, path: result.path, description: result.description ?? "" };
@@ -290,7 +298,12 @@ async function reconcileInterruptedToolCalls(options: NodeRuntimeOptions, attemp
     if (message.role !== "assistant" || !message.tool_calls?.length) continue;
     const recovered: ModelMessage[] = [];
     for (const call of message.tool_calls) {
-      if (existingToolResults.has(call.id) || call.name === submitNodeResultTool.name) continue;
+      if (existingToolResults.has(call.id)) continue;
+      if (call.name === submitNodeResultTool.name) {
+        recovered.push(submitNodeResultToolMessage(call.id));
+        existingToolResults.add(call.id);
+        continue;
+      }
       const ledger = toolCallLedger(events, options.node.id, attempt, options.activation ?? 1, call.id);
       if (ledger.completed) {
         recovered.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(ledger.completed.result) });
@@ -312,6 +325,25 @@ async function reconcileInterruptedToolCalls(options: NodeRuntimeOptions, attemp
     }
   }
   return changed;
+}
+
+function assertResolvedToolCallHistory(messages: ModelMessage[]): void {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "assistant" || !message.tool_calls?.length) continue;
+    const unresolved = new Set(message.tool_calls.map((call) => call.id));
+    for (let nextIndex = index + 1; nextIndex < messages.length && unresolved.size; nextIndex += 1) {
+      const next = messages[nextIndex];
+      if (next.role === "tool" && next.tool_call_id) {
+        unresolved.delete(next.tool_call_id);
+        continue;
+      }
+      if (next.role === "user" || next.role === "assistant") break;
+    }
+    if (unresolved.size) {
+      throw new Error(`Invalid model dialogue: unresolved tool calls before the next turn: ${[...unresolved].join(", ")}`);
+    }
+  }
 }
 
 async function assertToolCallCanExecute(options: NodeRuntimeOptions, attempt: number, call: ModelToolCall, tool: Tool): Promise<void> {

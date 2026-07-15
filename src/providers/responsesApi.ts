@@ -166,7 +166,7 @@ function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOpti
       turn_id: request.context.turnId
     };
   }
-  const requestedEffort = typeof request.effort === "string" ? (request.effort === "max" ? "high" : request.effort) : undefined;
+  const requestedEffort = typeof request.effort === "string" ? request.effort : undefined;
   if (options.reasoning || requestedEffort) {
     body.reasoning = { ...(options.reasoning ?? {}), ...(requestedEffort ? { effort: requestedEffort } : {}) };
   }

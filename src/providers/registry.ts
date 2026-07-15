@@ -8,7 +8,7 @@ export function createProvider(config: AgentTeamConfig, providerId: string): Mod
   const provider = config.providers[providerId];
   if (!provider) throw new Error(`Unknown provider ${providerId}`);
   const apiKey = provider.api_key.trim();
-  if (!apiKey) throw new Error(`Missing API key for provider ${providerId}; configure api_key in ~/.einsteins/settings.yaml`);
+  if (!apiKey) throw new Error(`Missing API key for provider ${providerId}; configure api_key in ~/.einsteins/settings.json`);
 
   switch (provider.type) {
     case "openai-compatible":

@@ -15,7 +15,7 @@ import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "..
 import { getPlanFilePath, readPlan } from "../plans/planFiles.js";
 import { getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import type { ModelUsage } from "../model/usage.js";
-import { resolveModelForWorkflowNode } from "../model/modelRouting.js";
+import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RuntimeEvent } from "../runtime/types.js";
@@ -526,6 +526,7 @@ export function TuiApp({
       const result = await new QueryEngine().run({
         session: kernelSession,
         model: providerSelection.model,
+        effort: providerSelection.effort,
         provider: providerSelection.provider,
         tools: createKernelToolRegistry(legacyTools),
         nodeId: "runtime",
@@ -1482,7 +1483,17 @@ ${message.detailText}` : ""}` }
     void startRun(event.text);
   };
   const workflowNodes = selectedWorkflowId
-    ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => ({ id: node.id, role: node.role, model: node.model ?? config.roles[node.role]?.default_model ?? config.providers[node.provider]?.default_model }))
+    ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => {
+      const provider = config.providers[node.provider];
+      const role = config.roles[node.role];
+      const registry = modelRegistryFromProviderConfig(provider);
+      return {
+        id: node.id,
+        role: node.role,
+        model: resolveModelForWorkflowNode({ node, role, provider, permissionMode: node.permission_mode, planModel: provider.plan_model, registry }),
+        effort: resolveEffortForWorkflowNode({ node, provider })
+      };
+    })
     : undefined;
   const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
   const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : hasPlanQuestion ? "question" : state.mode;
@@ -2995,7 +3006,7 @@ function selectPlanProvider(input: {
   config?: AgentTeamConfig;
   workflowId?: string;
   providerFactory?: (providerId: string) => ModelProvider;
-}): { provider: ModelProvider; model: string; contextWindow?: number } | undefined {
+}): { provider: ModelProvider; model: string; effort: string; contextWindow?: number } | undefined {
   if (!input.config || !input.providerFactory) return undefined;
   const providerId = input.config.providers.default
     ? "default"
@@ -3012,9 +3023,11 @@ function selectPlanProvider(input: {
     planModel: providerConfig.plan_model,
     registry
   });
+  const effort = resolveEffortForWorkflowNode({ provider: providerConfig });
   return {
     provider: input.providerFactory(providerId),
     model,
+    effort,
     contextWindow: getModelContextWindow(model, registry)
   };
 }

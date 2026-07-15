@@ -186,7 +186,7 @@ function toRequestBody(request: ModelRequest, options: OpenAiCompatibleOptions):
       }
     }))
   };
-  if (typeof request.effort === "string") body.reasoning_effort = request.effort === "max" ? "high" : request.effort;
+  if (typeof request.effort === "string") body.reasoning_effort = request.effort;
   if (options.jsonSchemaOutput && request.response_schema) {
     body.response_format = {
       type: "json_schema",

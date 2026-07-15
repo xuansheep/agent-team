@@ -33,6 +33,7 @@ export type TuiWorkflowNodeState = {
   id: string;
   role: string;
   model?: string;
+  effort?: string;
 };
 
 export type TuiToolState = {

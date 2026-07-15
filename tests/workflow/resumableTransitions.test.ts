@@ -38,6 +38,29 @@ describe("resumable workflow transitions", () => {
     assert.match(JSON.stringify(requests[3]?.messages), /@r1/);
   });
 
+  it("keeps SubmitNodeResult history valid when tester returns work to developer", async () => {
+    let call = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        assertResolvedToolCalls(request.messages);
+        call += 1;
+        if (call === 1) return submittedResponse("product-1", "forward", "PRD ready", "Start UI");
+        if (call === 2) return submittedResponse("ui-1", "forward", "Design ready", "Implement");
+        if (call === 3) return submittedResponse("developer-1", "forward", "Implementation ready", "Verify");
+        if (call === 4) return submittedResponse("tester-1", "backward", "Accessibility defect", "Fix accessibility", ["Missing accessible name"]);
+        if (call === 5) return submittedResponse("developer-2", "forward", "Accessibility fixed", "Retest");
+        return submittedResponse("tester-2", "forward", "Verification passed", "Deliver", [], "# Delivery\n\nVerified.");
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/resumable-submit-result-${Date.now()}` });
+    const state = await engine.run(config(), "delivery", { request: "Implement and verify" });
+
+    assert.equal(state.status, "completed");
+    assert.equal(state.rework_count, 1);
+    assert.equal(state.attempts.find((attempt) => attempt.node_id === "developer")?.activation, 2);
+    assert.equal(state.attempts.find((attempt) => attempt.node_id === "tester")?.activation, 2);
+  });
+
   it("waits for the user only at the first node and resumes its conversation", async () => {
     const requests: ModelRequest[] = [];
     let call = 0;
@@ -114,6 +137,41 @@ describe("resumable workflow transitions", () => {
     await assert.rejects(() => engine.resume(changed, "delivery", runId, { answer: "继续" }), /configuration changed/);
   });
 });
+
+function submittedResponse(id: string, direction: "forward" | "backward", summary: string, instruction: string, defects: string[] = [], document = "") {
+  return {
+    tool_calls: [{
+      id,
+      name: "SubmitNodeResult",
+      input: {
+        direction,
+        summary,
+        document,
+        deliverables: [],
+        feedback: { defects, change_requests: [] },
+        questions: [],
+        handoff: { instruction, must_follow: [], known_risks: [], open_questions: [] }
+      }
+    }]
+  };
+}
+
+function assertResolvedToolCalls(messages: ModelRequest["messages"]): void {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "assistant" || !message.tool_calls?.length) continue;
+    const unresolved = new Set(message.tool_calls.map((call) => call.id));
+    for (let nextIndex = index + 1; nextIndex < messages.length && unresolved.size; nextIndex += 1) {
+      const next = messages[nextIndex];
+      if (next.role === "tool" && next.tool_call_id) {
+        unresolved.delete(next.tool_call_id);
+        continue;
+      }
+      if (next.role === "user" || next.role === "assistant") break;
+    }
+    assert.deepEqual([...unresolved], []);
+  }
+}
 
 function response(direction: "forward" | "backward", summary: string, instruction: string, defects: string[] = [], document = "") {
   return {
