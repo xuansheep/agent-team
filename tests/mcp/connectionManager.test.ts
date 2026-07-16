@@ -183,13 +183,13 @@ describe("McpRuntime", () => {
     const runtime = new McpRuntime({
       clientFactory: async () => new FakeMcpClient([{ name: "search", description: "Search docs", inputSchema: { type: "object" } }])
     });
-    await runtime.connectAll([{ name: "docs", source: "project", sourcePath: "D:/repo/.mcp.json", sourceFormat: "json", type: "http", url: "https://mcp.example.test" }]);
+    await runtime.connectAll([{ name: "docs", source: "project", sourcePath: "D:/repo/.einsteins/settings.json", sourceFormat: "json", type: "http", url: "https://mcp.example.test" }]);
 
     const diagnostic = runtime.getDiagnostics()[0];
     const tool = runtime.listToolDiagnostics("docs")[0];
 
     assert.equal(diagnostic?.transport, "http");
-    assert.equal(diagnostic?.sourcePath, "D:/repo/.mcp.json");
+    assert.equal(diagnostic?.sourcePath, "D:/repo/.einsteins/settings.json");
     assert.equal(tool?.name, "mcp__docs__search");
     assert.equal(tool?.originalName, "search");
     assert.deepEqual(tool?.inputSchema, { type: "object" });

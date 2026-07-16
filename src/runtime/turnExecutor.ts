@@ -10,7 +10,7 @@ import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { executeToolCalls } from "../tools/orchestration.js";
 import { Tool, ToolResult } from "../tools/types.js";
-import { skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
+import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { PlanApprovalRequest, PromptInjectionRecord, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
 
 const maxToolIterations = 20;
@@ -152,6 +152,7 @@ export class RuntimeTurnExecutor {
         sessionId: input.sessionId,
         runId: input.runId,
         planState: input.planState,
+        planFilePath: input.permissions.planFilePath,
         abortSignal: input.abortSignal,
         nodeId: "runtime",
         attempt: iteration + 1,
@@ -177,10 +178,34 @@ export class RuntimeTurnExecutor {
           await emit(input, { type: "runtime_user_input_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: userInput.toolCallId, questions: userInput.questions });
           return { status: "waiting_user_input", messages, request: userInput };
           }
-          const tool = input.tools.get(execution.call.name);
-          messages.push(execution.result ? toolMessage(execution.call.id, execution.result, tool) : { role: "tool", tool_call_id: execution.call.id, content: JSON.stringify({ error: execution.error ?? "Tool failed" }) });
+          const tool = execution.result && input.tools.has(execution.call.name) ? input.tools.get(execution.call.name) : undefined;
+          messages.push(execution.result && tool
+            ? toolMessage(execution.call.id, execution.result, tool)
+            : failureToolMessage(execution.call.id, execution.failure, execution.error));
           const skillMessage = skillSystemMessageFromToolResult(execution.result);
           if (skillMessage) messages.push(skillMessage);
+          const skillActivation = skillActivationFromToolResult(execution.result);
+          if (skillActivation) {
+            applySkillPermissionRules(input.permissions, skillPermissionRulesFromToolResult(execution.result));
+            await emit(input, {
+              type: "runtime_skill_activated",
+              session_id: input.sessionId,
+              run_id: input.runId,
+              name: skillActivation.name,
+              mode: skillActivation.mode,
+              source: skillActivation.source,
+              version: skillActivation.version,
+              allowed_tools: skillActivation.allowedTools
+            });
+            await audit(input, {
+              type: "skill_activated",
+              name: skillActivation.name,
+              mode: skillActivation.mode,
+              source: skillActivation.source,
+              version: skillActivation.version,
+              allowed_tools: skillActivation.allowedTools
+            });
+          }
           const skillOverrides = skillRuntimeOverridesFromToolResult(execution.result);
           if (skillOverrides?.model) input.model = skillOverrides.model;
           if (skillOverrides?.effort !== undefined) input.effort = skillOverrides.effort;
@@ -265,6 +290,7 @@ async function executableToolCalls(calls: ModelToolCall[], tools: RuntimeTurnInp
 
 async function firstUserInteractionTool(calls: ModelToolCall[], tools: RuntimeTurnInput["tools"]): Promise<ModelToolCall | undefined> {
   for (const call of calls) {
+    if (!tools.has(call.name)) continue;
     if (await tools.get(call.name).requiresUserInteraction?.(call.input)) return call;
   }
   return undefined;
@@ -392,7 +418,16 @@ function isHumanTurn(message: ModelMessage): boolean {
 
 function toolMessage(toolCallId: string, result: ToolResult, tool: Tool): ModelMessage {
   const mapped = tool.mapToolResultToModelResult?.(result);
-  return { role: "tool", tool_call_id: toolCallId, content: typeof mapped === "string" ? mapped : JSON.stringify(mapped ?? result) };
+  return { role: "tool", tool_call_id: toolCallId, ...(result.is_error === true ? { is_error: true } : {}), content: typeof mapped === "string" ? mapped : JSON.stringify(mapped ?? result) };
+}
+
+function applySkillPermissionRules(permissions: RuntimeTurnInput["permissions"], rules: string[]): void {
+  permissions.transientAllow = [...new Set([...(permissions.transientAllow ?? []), ...rules])];
+}
+
+function failureToolMessage(toolCallId: string, failure: ToolResult | undefined, error: string | undefined): ModelMessage {
+  const result = failure ?? { is_error: true, error: error ?? "Tool failed" };
+  return { role: "tool", tool_call_id: toolCallId, is_error: true, content: JSON.stringify(result) };
 }
 
 function permissionDeniedMessage(toolName: string, reason: string): string {
@@ -400,7 +435,7 @@ function permissionDeniedMessage(toolName: string, reason: string): string {
 }
 
 function permissionDeniedToolMessage(toolCallId: string, error: string): ModelMessage {
-  return { role: "tool", tool_call_id: toolCallId, content: JSON.stringify({ error, permission_denied: true }) };
+  return { role: "tool", tool_call_id: toolCallId, is_error: true, content: JSON.stringify({ is_error: true, error, permission_denied: true }) };
 }
 
 function skippedPlanModeToolMessage(toolCallId: string, toolName: string): ModelMessage {

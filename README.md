@@ -19,23 +19,35 @@ Roles and workflows are user-level configuration under `~/.einsteins/roles` and 
 
 An empty `api_key` in the generated template does not block startup. The application reports an error only when a workflow tries to use that provider.
 
+## MCP Configuration
+
+User MCP servers are configured under the top-level `mcpServers` key in `~/.einsteins/settings.json`. Project MCP servers use `<project>/.einsteins/settings.json`; same-name project servers override user servers. Managed MCP configuration remains exclusive when present.
+
+MCP values support `${ENV_VAR}` expansion at runtime. Keep credentials as environment references so `/mcp enable|disable` can update local project overrides without writing resolved secrets back to disk. Legacy `~/.einsteins.json` and project `.mcp.json` files are not read.
+
 ## User Roles and Workflows
 
 Runtime configuration has this layout:
 
 ```text
 ~/.einsteins/
-  settings.json
+  settings.json       # providers, user MCP, and local project MCP overrides
+  history.jsonl       # project-scoped prompt input history
   roles/
     developer.md
   workflows/
     delivery.json
   AGENTS.md
+  skills/
+    reviewer/
+      SKILL.md
+~/.agents/skills/     # legacy user-skill fallback only
 <application-root>/config/
   prompt.md
-  roles/       # initialization templates
-  workflows/   # initialization templates
-<project>/.agents/
+  roles/              # initialization templates
+  workflows/          # initialization templates
+<project>/.einsteins/
+  settings.json       # project settings and project MCP
   AGENTS.md
   skills/
     reviewer/
@@ -44,7 +56,7 @@ Runtime configuration has this layout:
 
 The runtime never reads roles or workflows from the current project's `config/` directory. Missing user-level directories are initialized atomically from the bundled templates; an existing `roles` or `workflows` directory is never merged with or overwritten. The bundled `config/prompt.md` contains mandatory system instructions prepended to every role prompt.
 
-Project-specific instructions may be added in `.agents/AGENTS.md`; they supplement but cannot override the bundled prompt or active role prompt. Project skills are discovered from `.agents/skills/<name>/SKILL.md`, while user instructions and skills remain under `~/.einsteins/AGENTS.md` and `~/.einsteins/skills`. Project skills override same-name user skills. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt.
+Project-specific instructions may be added in `.einsteins/AGENTS.md`; they supplement but cannot override the bundled prompt or active role prompt. Skill precedence is nearest project `.einsteins/skills`, user `~/.einsteins/skills`, then legacy user `~/.agents/skills`. Project `.agents` directories are not read. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt.
 
 Each workflow JSON file contains `name`, `nodes`, optional `max_rework_cycles` (default `10`), and optional `workflow_permissions`. Workflows follow node order, so workflow files do not accept an `edges` field.
 
@@ -53,6 +65,8 @@ Each workflow JSON file contains `name`, `nodes`, optional `max_rework_cycles` (
 Every `agent-team` invocation opens the interactive terminal UI. Former headless subcommands such as `run`, `resume`, `status`, and `inspect` are routed into the TUI instead of executing automation directly.
 
 The TUI reads roles and workflows from `~/.einsteins`, selects workflow `delivery` when present, and lets you work in a reusable session with live node, tool, permission, log, and result status. The current directory does not need a `config/` directory.
+
+Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Use Shift+Enter or Ctrl+Enter to insert a newline; Alt+Enter is ignored.
 
 The `/permissions` menu persists the selected default execution mode to `~/.einsteins/settings.json`. New TUI sessions read that value during startup. A project-level `.einsteins/settings.json` can still override the user default for that project.
 
@@ -94,7 +108,7 @@ The harness follows Claude Code-style local tool execution and permissions where
 
 ## 中文说明
 
-`agent-team` 是一个本地 TUI 版 Agent 团队编排 Harness。Provider 和 API 密钥统一配置在用户目录的 `~/.einsteins/settings.json`，角色和工作流分别从 `~/.einsteins/roles`、`~/.einsteins/workflows` 读取；目录缺失时从应用内置 `config/` 模板初始化，已有目录不会被合并或覆盖。必须遵循的系统提示词固定读取应用内置 `config/prompt.md`。项目自定义提示词与 Skill 分别放在 `.agents/AGENTS.md` 和 `.agents/skills`。系统按 `nodes` 顺序执行模型调用和本地工具调用，并把每次会话记录到 `.session/{run_id}`。
+`agent-team` 是一个本地 TUI 版 Agent 团队编排 Harness。Provider 和 API 密钥统一配置在用户目录的 `~/.einsteins/settings.json`，角色和工作流分别从 `~/.einsteins/roles`、`~/.einsteins/workflows` 读取；目录缺失时从应用内置 `config/` 模板初始化，已有目录不会被合并或覆盖。必须遵循的系统提示词固定读取应用内置 `config/prompt.md`。项目自定义提示词与 Skill 分别放在 `.einsteins/AGENTS.md` 和 `.einsteins/skills`，用户级 MCP 与项目级 MCP 分别配置在各自的 `.einsteins/settings.json` 中。系统按 `nodes` 顺序执行模型调用和本地工具调用。会话数据统一保存在 `~/.einsteins/projects/{转义后的项目路径}/{sessionId}`：`session.json`、`transcript.jsonl` 与 `audit.ndjson` 属于 Session，单次执行数据位于 `runs/{runId}` 下的 `run.json`、`state.json`、`events.ndjson` 和 `artifacts`。Session 与 Run 标识不再包含日期前缀，也不再按月份分层。
 
 MVP 支持：
 

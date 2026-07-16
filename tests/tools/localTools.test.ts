@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 import { normalizeGlobPatternForFastGlob } from "../../src/tools/local/glob.js";
+import { executeBash } from "../../src/tools/local/shellProvider.js";
 
 async function workspace() {
   return mkdtemp(join(tmpdir(), "agent-team-tools-"));
@@ -67,13 +68,12 @@ describe("local tools", () => {
   it("finds hidden AGENTS files with absolute platform paths", async () => {
     const cwd = await workspace();
     await mkdir(join(cwd, ".einsteins"), { recursive: true });
-    await mkdir(join(cwd, ".agents"), { recursive: true });
-    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Project instructions.\n", "utf8");
+    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Project instructions.\n", "utf8");
     const tools = createLocalToolRegistry();
 
     const result = await tools.get("Glob").execute({ pattern: join(cwd, "**", "AGENTS.md") }, { cwd });
 
-    assert.match(result.output ?? "", /[.]agents[\\/]AGENTS[.]md/);
+    assert.match(result.output ?? "", /[.]einsteins[\\/]AGENTS[.]md/);
   });
 
   it("normalizes glob backslashes only for Windows patterns", () => {
@@ -94,11 +94,86 @@ describe("local tools", () => {
       assert.equal(tools.get(name).isConcurrencySafe?.(), false, `${name} should stay serial`);
     }
 
-    assert.equal(await tools.get("Write").writesPlanFile?.({ file_path: ".session/plans/session-1.md" }, { cwd }), true);
+    const planFilePath = join(cwd, ".einsteins", "projects", "test", "session-1", "plans", "plan.md");
+    assert.equal(await tools.get("Write").writesPlanFile?.({ file_path: planFilePath }, { cwd, planFilePath }), true);
     assert.equal(await tools.get("Write").writesPlanFile?.({ file_path: "src/index.ts" }, { cwd }), false);
     assert.equal(await tools.get("Bash").isDestructive?.({ command: "rm -rf dist" }), true);
     assert.equal(await tools.get("Bash").isDestructive?.({ command: "npm test" }), false);
     assert.equal(await tools.get("PowerShell").isDestructive?.({ command: "Remove-Item foo" }), true);
   });
 
+  it("kills nested Bash process trees when aborted", async () => {
+    const cwd = await workspace();
+    const scriptPath = join(cwd, "spawn-child.cjs");
+    const pidPath = join(cwd, "processes.json");
+    await writeFile(scriptPath, [
+      "const { spawn } = require('node:child_process');",
+      "const { writeFileSync } = require('node:fs');",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "writeFileSync('processes.json', JSON.stringify({ parent: process.pid, child: child.pid }));",
+      "setInterval(() => {}, 1000);"
+    ].join("\n"), "utf8");
+
+    const controller = new AbortController();
+    const execution = executeBash("node ./spawn-child.cjs", { cwd, timeoutMs: 10000, signal: controller.signal });
+    const processes = JSON.parse(await waitForFile(pidPath)) as { parent: number; child: number };
+    try {
+      controller.abort();
+      const result = await settlesWithin(execution, 3000);
+      assert.equal(result.interrupted, true);
+      await waitForProcessExit(processes.parent, 3000);
+      await waitForProcessExit(processes.child, 3000);
+      assert.equal(isProcessRunning(processes.parent), false);
+      assert.equal(isProcessRunning(processes.child), false);
+    } finally {
+      forceKill(processes.child);
+      forceKill(processes.parent);
+    }
+  });
+
 });
+
+async function waitForFile(path: string, timeoutMs = 3000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await readFile(path, "utf8");
+    } catch (error) {
+      if (!(error && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT")) throw error;
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessRunning(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function forceKill(pid: number): void {
+  if (!isProcessRunning(pid)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Best-effort cleanup for a failed process-tree assertion.
+  }
+}
+
+async function settlesWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Shell abort did not settle")), timeoutMs))
+  ]);
+}

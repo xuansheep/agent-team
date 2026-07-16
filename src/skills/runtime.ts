@@ -3,7 +3,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { projectDirectoriesToGitRoot } from "../context/projectDirectories.js";
 import type { ModelMessage, ModelProvider } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
-import type { Tool, ToolContext } from "../tools/types.js";
 import {
   canonicalSkillPath,
   loadSkillsDirectory,
@@ -16,6 +15,7 @@ import {
 export type SkillRuntimeDiscoverOptions = {
   cwd: string;
   userSkillRoot?: string;
+  legacyUserSkillRoot?: string;
 };
 
 export type SkillActivationOptions = {
@@ -171,7 +171,7 @@ export class SkillRuntime {
       model,
       effort: skill.effort,
       messages: [skillSystemMessage(skill, renderedPrompt), { role: "user", content: options.prompt ?? options.args ?? "" }],
-      tools: narrowedTools(options.tools, skill.allowedTools),
+      tools: options.tools?.list() ?? [],
       context: options.sessionId ? { sessionId: options.sessionId, runId: options.sessionId, nodeId: `skill:${skill.name}`, attempt: 1, threadId: options.sessionId, turnId: `${options.sessionId}:skill:${skill.name}`, promptCacheKey: options.sessionId } : undefined,
       signal: options.signal
     });
@@ -198,11 +198,16 @@ export function defaultUserSkillRoot(): string {
   return join(homedir(), ".einsteins", "skills");
 }
 
+export function defaultLegacyUserSkillRoot(): string {
+  return join(homedir(), ".agents", "skills");
+}
+
 async function discoverSkills(options: SkillRuntimeDiscoverOptions): Promise<DiscoveryResult> {
   const projectDirectories = await projectDirectoriesToGitRoot(options.cwd);
   const roots = [
-    ...projectDirectories.map((directory) => ({ root: join(directory, ".agents", "skills"), source: "project" as const })),
-    { root: options.userSkillRoot ?? defaultUserSkillRoot(), source: "user" as const }
+    ...projectDirectories.map((directory) => ({ root: join(directory, ".einsteins", "skills"), source: "project" as const })),
+    { root: options.userSkillRoot ?? defaultUserSkillRoot(), source: "user" as const },
+    { root: options.legacyUserSkillRoot ?? defaultLegacyUserSkillRoot(), source: "user" as const }
   ];
 
   const discovered = new Map<string, LoadedSkill>();
@@ -289,14 +294,6 @@ function hasShellExpansion(content: string): boolean {
 
 function skillSystemMessage(skill: LoadedSkill, prompt: string): ModelMessage {
   return { role: "system", content: `SKILL ${skill.name}\n\n${prompt.trim()}` };
-}
-
-function narrowedTools(registry: ToolRegistry | undefined, allowedTools: string[] | undefined): Tool[] {
-  if (!registry) return [];
-  const tools = registry.list();
-  if (!allowedTools?.length || allowedTools.includes("*")) return tools;
-  const allowed = new Set(allowedTools.map((entry) => entry.replace(/\(.*/, "")));
-  return tools.filter((tool) => allowed.has(tool.name));
 }
 
 function normalizedSkillRoot(root: string): string {

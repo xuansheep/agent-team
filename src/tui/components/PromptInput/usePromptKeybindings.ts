@@ -12,11 +12,16 @@ import {
   deletePreviousWord,
   deleteToEndOfLine,
   deleteToStartOfLine,
+  insertNewline,
   insertText,
+  isCursorOnFirstLine,
+  isCursorOnLastLine,
+  moveDown,
   moveEnd,
   moveHome,
   moveLeft,
-  moveRight
+  moveRight,
+  moveUp
 } from "./usePromptBuffer.js";
 import { nextHistory, previousHistory, pushHistory } from "./usePromptHistory.js";
 import { PromptBuffer, PromptHistory, PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./types.js";
@@ -35,6 +40,7 @@ type PromptKeybindingInput = {
   onSelectedSuggestion: (index: number) => void;
   onBuffer: (buffer: PromptBuffer) => void;
   onHistory: (history: PromptHistory) => void;
+  onRecordHistory?: (value: string) => void;
   onEvent: (event: PromptInputEvent) => void;
   onImagePaste?: (image: PromptInputImageAttachment) => void;
   resolveImagePaste?: (value: string) => Promise<{ text: string; images: PromptInputImageAttachment[] }>;
@@ -73,7 +79,8 @@ export function usePromptKeybindings(input: PromptKeybindingInput) {
     }
 
     const inputKey = toTuiInputKey(key, value);
-    const promptSubmit = inputKey.return && (current.buffer.text.trim() || current.imageAttachments?.length) && modeAcceptsSubmit(current.mode);
+    const promptSubmit = inputKey.return && !inputKey.shift && !inputKey.ctrl && !inputKey.meta
+      && (current.buffer.text.trim() || current.imageAttachments?.length) && modeAcceptsSubmit(current.mode);
     handleInputEvent({ type: "key", input: value, key: inputKey }, syncedInput);
     if (promptSubmit) event.stopImmediatePropagation();
   }, { isActive: input.isActive !== false });
@@ -120,6 +127,11 @@ function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
   }
   if (input.textInputBlocked) {
     if (event.input === "\u0007" || (key.ctrl && event.input === "g")) input.onEvent({ type: "external_editor" });
+    return;
+  }
+  if (key.return && key.meta) return;
+  if (key.return && (key.shift || key.ctrl)) {
+    if (modeAcceptsText(input.mode)) input.onBuffer(insertNewline(input.buffer));
     return;
   }
   if (input.suggestions.length > 0) {
@@ -194,6 +206,7 @@ function submit(input: PromptKeybindingInput) {
 
   const processed = processUserInput(text);
   input.onHistory(pushHistory(input.history, text));
+  input.onRecordHistory?.(text);
   input.onBuffer(clearBuffer());
   if (input.isLoading) {
     input.onEvent({ type: "queue", text, ...(images.length ? { images } : {}) });
@@ -253,13 +266,21 @@ function keyAction(inputText: string, key: TuiInputKey, mode: PromptInputMode): 
     else if (key.home) input.onBuffer(moveHome(input.buffer));
     else if (key.end) input.onBuffer(moveEnd(input.buffer));
     else if (key.upArrow) {
-      const previous = previousHistory(input.history);
-      input.onHistory(previous.history);
-      input.onBuffer({ text: previous.value, cursor: previous.value.length });
+      if (!isCursorOnFirstLine(input.buffer)) {
+        input.onBuffer(moveUp(input.buffer));
+      } else {
+        const previous = previousHistory(input.history, input.buffer.text);
+        input.onHistory(previous.history);
+        input.onBuffer({ text: previous.value, cursor: previous.value.length });
+      }
     } else if (key.downArrow) {
-      const next = nextHistory(input.history);
-      input.onHistory(next.history);
-      input.onBuffer({ text: next.value, cursor: next.value.length });
+      if (!isCursorOnLastLine(input.buffer)) {
+        input.onBuffer(moveDown(input.buffer));
+      } else {
+        const next = nextHistory(input.history);
+        input.onHistory(next.history);
+        input.onBuffer({ text: next.value, cursor: next.value.length });
+      }
     } else return false;
     return true;
   };

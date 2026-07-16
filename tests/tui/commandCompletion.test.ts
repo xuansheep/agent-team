@@ -27,9 +27,10 @@ describe("slash command completion", () => {
     assert.deepEqual(slashCommandSuggestions("/mcp r", context).map((item) => item.value), ["/mcp reconnect"]);
   });
 
-  it("does not suggest removed /run arguments", () => {
+  it("does not suggest removed commands", () => {
     assert.deepEqual(slashCommandSuggestions("/run d", context), []);
     assert.deepEqual(slashCommandSuggestions("/session", context), []);
+    assert.deepEqual(slashCommandSuggestions("/d", context), []);
   });
 
   it("suggests resume arguments", () => {

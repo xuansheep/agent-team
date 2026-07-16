@@ -98,6 +98,8 @@ describe("TuiApp global Plan Mode", () => {
 
     assert.match(frame, /\/plan \[open\|text\]/);
     assert.match(frame, /Ctrl\+G/);
+    assert.match(frame, /\/mcp list and manage MCP servers/);
+    assert.doesNotMatch(frame, /\/diagnostics/);
     assert.doesNotMatch(frame, /workflow delivery \| mode/);
     assert.doesNotMatch(frame, /mode [^\n]*Ctrl\+C stop/);
 
@@ -105,8 +107,8 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("shows runtime diagnostics from slash command", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-diagnostics-"));
+  it("shows the current MCP server list from /mcp", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-mcp-list-"));
     const engine = { async startInteractive() { return fakeSession(); } };
     const output = render(<TuiApp
       cwd={cwd}
@@ -120,21 +122,19 @@ describe("TuiApp global Plan Mode", () => {
           { name: "docs", source: "project", state: "connected", transport: "http", toolCount: 1, resourceCount: 2, promptCount: 3 },
           { name: "broken", source: "user", state: "failed", error: "boom", transport: "stdio", toolCount: 0, resourceCount: 0, promptCount: 0 }
         ],
-        skills: [
-          { name: "reviewer", source: "project", mode: "inline", path: "skills/reviewer/SKILL.md" }
-        ]
+        skills: []
       }}
     />);
 
-    await sendTuiLine(output, "/diagnostics");
-    await waitForFrame(output, /Runtime diagnostics/);
+    await sendTuiLine(output, "/mcp");
+    await waitForFrame(output, /MCP Servers/);
     const frame = output.lastFrame() ?? "";
 
-    assert.match(frame, /MCP servers: 2/);
-    assert.match(frame, /docs connected project tools=1 resources=2 prompts=3/);
-    assert.match(frame, /broken failed user boom/);
-    assert.match(frame, /Skills: 1/);
-    assert.match(frame, /reviewer project inline/);
+    assert.match(frame, /2 visible servers/);
+    assert.match(frame, /docs/);
+    assert.match(frame, /connected/);
+    assert.match(frame, /broken/);
+    assert.match(frame, /failed/);
 
     output.unmount();
     output.cleanup();
@@ -453,7 +453,7 @@ describe("TuiApp global Plan Mode", () => {
         sha256: "global-hash",
         chars: projectPrompt.length,
         lines: 1,
-        sources: [{ kind: "project_agents" as const, path: join(cwd, ".agents", "AGENTS.md"), sha256: "source-hash", chars: projectPrompt.length, lines: 1 }]
+        sources: [{ kind: "project_agents" as const, path: join(cwd, ".einsteins", "AGENTS.md"), sha256: "source-hash", chars: projectPrompt.length, lines: 1 }]
       }
     };
     const output = render(<TuiApp cwd={cwd} config={configWithGlobalPrompt} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={recordingPlanProviderFactory(requests)} />);
@@ -463,7 +463,7 @@ describe("TuiApp global Plan Mode", () => {
     const request = await waitForRequest(requests, "Check prompt metadata.");
     const sessionId = request.context?.sessionId;
     assert.equal(typeof sessionId, "string");
-    const store = new SessionStore(join(cwd, ".session"));
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
     const metadata = await waitForPromptInjectionMetadata(store, sessionId as string);
     const transcript = await store.loadTranscript(sessionId as string);
 
@@ -874,12 +874,12 @@ describe("TuiApp global Plan Mode", () => {
       await waitForFrame(output, /Current Plan/);
       const currentPlanFrame = output.lastFrame() ?? "";
       assert.match(currentPlanFrame, /Draft opened from command\./);
-      assert.match(currentPlanFrame.replace(/\s+/g, ""), /[.]session[\\/].+[\\/]plans[\\/].+[.]md/);
+      assert.match(currentPlanFrame.replace(/\s+/g, ""), /[.]einsteins[\\/]projects[\\/].+[\\/]plans[\\/]plan[.]md/);
       await sendTuiLine(output, "/plan open");
       for (let index = 0; index < 20 && editedFiles.length === 0; index += 1) await settleTuiWork();
 
       assert.equal(editedFiles.length, 1);
-      assert.match(editedFiles[0] ?? "", /[.]session[\\/].+[\\/]plans[\\/].+[.]md$/);
+      assert.match(editedFiles[0] ?? "", /[.]einsteins[\\/]projects[\\/].+[\\/]plans[\\/]plan[.]md$/);
     } finally {
       if (previousEditor === undefined) delete process.env.EDITOR;
       else process.env.EDITOR = previousEditor;
@@ -2092,7 +2092,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Which verification steps\?/);
     const questionFrame = output.lastFrame() ?? "";
     assert.match(questionFrame, /Planning:/);
-    assert.match(questionFrame, /\.session/);
+    assert.match(questionFrame, /\.einsteins/);
     const planningLine = questionFrame.split(/\r?\n/).find((line) => line.includes("Planning:")) ?? "";
     assert.equal(planningLine.includes(cwd), false);
 
@@ -2492,7 +2492,7 @@ describe("TuiApp global Plan Mode", () => {
     const planFilePath = getPlanFilePath("session-long-plan", cwd);
     const longPlan = Array.from({ length: 80 }, (_, index) => `Step ${String(index + 1).padStart(2, "0")}: verify the migration guardrail before executing.`).join(String.fromCharCode(10));
     await writePlan(planFilePath, `${longPlan}${String.fromCharCode(10)}`);
-    await new SessionStore(join(cwd, ".session")).savePlanState("session-long-plan", {
+    await new SessionStore(join(cwd, ".einsteins", "projects", "tui")).savePlanState("session-long-plan", {
       mode: "waiting_approval",
       sessionId: "session-long-plan",
       planFilePath,
@@ -2539,7 +2539,7 @@ describe("TuiApp global Plan Mode", () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-plan", cwd);
     await writePlan(planFilePath, "Saved plan.\n");
-    await new SessionStore(join(cwd, ".session")).savePlanState("session-plan", {
+    await new SessionStore(join(cwd, ".einsteins", "projects", "tui")).savePlanState("session-plan", {
       mode: "waiting_approval",
       sessionId: "session-plan",
       planFilePath,
@@ -2571,7 +2571,7 @@ describe("TuiApp global Plan Mode", () => {
   it("recovers missing waiting Plan Mode plan files from the transcript on /resume", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-plan-recover", cwd);
-    const store = new SessionStore(join(cwd, ".session"));
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
     await store.savePlanState("session-plan-recover", {
       mode: "waiting_approval",
       sessionId: "session-plan-recover",
@@ -2610,8 +2610,8 @@ describe("TuiApp global Plan Mode", () => {
   it("recovers missing Plan Mode metadata as planning when no ExitPlanMode was recorded", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const sessionId = "session-missing-plan-metadata";
-    const planFilePath = getPlanFilePath(sessionId, cwd);
-    const store = new SessionStore(join(cwd, ".session"));
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+    const planFilePath = join(store.sessionDir(sessionId), "plans", "plan.md");
     await writePlan(planFilePath, "# Plan\n\nKeep planning before approval.\n");
     await store.appendTranscript(sessionId, { role: "user", content: "Recover metadata" });
     await store.appendTranscript(sessionId, { role: "assistant", content: "Plan draft saved." });
@@ -2640,7 +2640,7 @@ describe("TuiApp global Plan Mode", () => {
   it("restores Plan Mode transcript messages into the TUI log", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-planning-transcript", cwd);
-    const store = new SessionStore(join(cwd, ".session"));
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
     await store.savePlanState("session-planning-transcript", {
       mode: "planning",
       sessionId: "session-planning-transcript",
@@ -2674,7 +2674,7 @@ describe("TuiApp global Plan Mode", () => {
   it("restores empty waiting Plan Mode sessions back into planning", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-empty-plan", cwd);
-    await new SessionStore(join(cwd, ".session")).savePlanState("session-empty-plan", {
+    await new SessionStore(join(cwd, ".einsteins", "projects", "tui")).savePlanState("session-empty-plan", {
       mode: "waiting_approval",
       sessionId: "session-empty-plan",
       planFilePath,

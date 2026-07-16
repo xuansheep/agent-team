@@ -10,8 +10,10 @@ export type AuditEvent = {
   | { type: "permission_decision"; tool: string; decision: AuditDecision; reason?: string; rule?: string; input?: unknown }
   | { type: "tool_invocation"; tool: string; input?: unknown }
   | { type: "tool_result"; tool: string; status: "completed" | "failed"; result?: unknown; error?: string }
-  | { type: "shell_command"; tool: "Bash" | "PowerShell"; command: string; destructive: boolean }
+  | { type: "shell_command"; tool: "Bash" | "PowerShell"; command: string; destructive: boolean; executor?: "bash" | "powershell"; executable?: string; fallback?: boolean; exit_code?: number }
   | { type: "file_write"; tool: "Write" | "Edit" | "MultiEdit"; path: string }
+  | { type: "artifact_read"; artifact_id: string; offset: number; bytes_read: number; total_bytes: number; truncated: boolean; source: "handoff" | "tool" }
+  | { type: "skill_activated"; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }
   | { type: "plan_mode"; action: "entered" | "draft_updated" | "approval_requested" | "approval_resolved"; plan_file_path?: string; decision?: "continue" | "stay" }
 );
 

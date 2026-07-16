@@ -9,6 +9,7 @@ export type ModelMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string | ModelContentPart[];
   tool_call_id?: string;
+  is_error?: boolean;
   tool_calls?: ModelToolCall[];
   metadata?: {
     runtimeAttachment?: {

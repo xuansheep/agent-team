@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { TextDecoder } from "node:util";
 import { acquireFileLease } from "./fileLease.js";
 
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/webp";
@@ -29,6 +30,18 @@ export type ArtifactRecord = {
   created_at: string;
 };
 
+export type ArtifactTextChunk = {
+  artifact_id: string;
+  logical_name: string;
+  description: string;
+  sha256: string;
+  content: string;
+  offset: number;
+  next_offset?: number;
+  truncated: boolean;
+  total_bytes: number;
+};
+
 type ArtifactIndex = { version: 1; artifacts: ArtifactRecord[] };
 
 export class ArtifactStore {
@@ -49,10 +62,11 @@ export class ArtifactStore {
   }
 
   async has(artifactId: string): Promise<boolean> {
-    const record = (await this.readIndex()).artifacts.find((item) => item.artifact_id === artifactId);
+    const record = await this.record(artifactId);
     if (!record) return false;
     try {
-      return sha256(await readFile(record.path)) === record.sha256;
+      const path = this.safeRecordPath(record);
+      return sha256(await readFile(path)) === record.sha256;
     } catch {
       return false;
     }
@@ -60,6 +74,46 @@ export class ArtifactStore {
 
   async record(artifactId: string): Promise<ArtifactRecord | undefined> {
     return (await this.readIndex()).artifacts.find((item) => item.artifact_id === artifactId);
+  }
+
+  async readText(artifactId: string, options: { offset?: number; maxBytes?: number } = {}): Promise<ArtifactTextChunk> {
+    const record = await this.record(artifactId);
+    if (!record) throw new Error(`Unknown artifact ${artifactId}`);
+    const path = this.safeRecordPath(record);
+    const bytes = await readFile(path);
+    const actualHash = sha256(bytes);
+    if (actualHash !== record.sha256) throw new Error(`Artifact integrity check failed for ${artifactId}`);
+
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error(`Artifact ${artifactId} is not valid UTF-8 text`);
+    }
+
+    const requestedOffset = options.offset ?? 0;
+    const maxBytes = options.maxBytes ?? 64 * 1024;
+    if (!Number.isInteger(requestedOffset) || requestedOffset < 0 || requestedOffset > bytes.length) {
+      throw new Error(`Invalid artifact offset ${requestedOffset}`);
+    }
+    if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 128 * 1024) {
+      throw new Error(`Invalid artifact maxBytes ${maxBytes}`);
+    }
+
+    const offset = nextUtf8Boundary(bytes, requestedOffset);
+    const proposedEnd = Math.min(bytes.length, offset + maxBytes);
+    const end = previousUtf8Boundary(bytes, proposedEnd, offset);
+    const nextOffset = end < bytes.length ? end : undefined;
+    return {
+      artifact_id: record.artifact_id,
+      logical_name: record.logical_name,
+      description: record.description,
+      sha256: record.sha256,
+      content: bytes.subarray(offset, end).toString("utf8"),
+      offset,
+      ...(nextOffset !== undefined ? { next_offset: nextOffset } : {}),
+      truncated: nextOffset !== undefined,
+      total_bytes: bytes.length
+    };
   }
 
   private async writeRevision(nodeId: string, logicalName: string, bytes: Buffer, metadata: { description?: string; attempt?: number; activation?: number }): Promise<ArtifactRef> {
@@ -97,6 +151,16 @@ export class ArtifactStore {
     return { path: record.path, record };
   }
 
+  private safeRecordPath(record: ArtifactRecord): string {
+    const artifactsRoot = resolve(this.runDir, "artifacts");
+    const candidate = resolve(isAbsolute(record.path) ? record.path : join(this.runDir, record.path));
+    const fromRoot = relative(artifactsRoot, candidate);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(fromRoot)) {
+      throw new Error(`Artifact path escapes the current run: ${record.artifact_id}`);
+    }
+    return candidate;
+  }
+
   private async writeIndex(index: ArtifactIndex): Promise<void> {
     const artifactsDir = join(this.runDir, "artifacts");
     await mkdir(artifactsDir, { recursive: true });
@@ -123,6 +187,18 @@ export class ArtifactStore {
   }
 }
 
+function nextUtf8Boundary(bytes: Uint8Array, offset: number): number {
+  let result = offset;
+  while (result < bytes.length && (bytes[result] & 0xc0) === 0x80) result += 1;
+  return result;
+}
+
+function previousUtf8Boundary(bytes: Uint8Array, offset: number, minimum: number): number {
+  let result = offset;
+  while (result > minimum && result < bytes.length && (bytes[result] & 0xc0) === 0x80) result -= 1;
+  return result;
+}
+
 function assertArtifactSegment(value: string, label: string): void {
   if (!value || value === "." || value === ".." || value.includes("/") || value.includes("\\") || /[<>:"|?*\u0000-\u001f]/.test(value)) {
     throw new Error(`Invalid artifact ${label}: ${value}`);
@@ -132,7 +208,6 @@ function assertArtifactSegment(value: string, label: string): void {
 function isErrno(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === code);
 }
-
 
 function publicRef(record: ArtifactRecord): ArtifactRef {
   return { artifactId: record.artifact_id, path: record.path, revision: record.revision, sha256: record.sha256 };

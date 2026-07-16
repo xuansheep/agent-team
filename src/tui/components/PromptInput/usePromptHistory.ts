@@ -1,25 +1,42 @@
 import { PromptHistory } from "./types.js";
 
-export function createHistory(): PromptHistory {
-  return { entries: [] };
+const MAX_HISTORY_ITEMS = 100;
+
+export function createHistory(entries: string[] = []): PromptHistory {
+  return { entries: entries.slice(-MAX_HISTORY_ITEMS) };
 }
 
 export function pushHistory(history: PromptHistory, value: string): PromptHistory {
   const trimmed = value.trim();
   if (!trimmed) return history;
-  return { entries: [...history.entries.filter((entry) => entry !== trimmed), trimmed], index: undefined };
+  return {
+    entries: [...history.entries, trimmed].slice(-MAX_HISTORY_ITEMS),
+    index: undefined,
+    draft: undefined
+  };
 }
 
-export function previousHistory(history: PromptHistory): { history: PromptHistory; value: string } {
-  if (history.entries.length === 0) return { history, value: "" };
+export function previousHistory(history: PromptHistory, currentValue = ""): { history: PromptHistory; value: string } {
+  if (history.entries.length === 0) return { history, value: currentValue };
   const index = history.index === undefined ? history.entries.length - 1 : Math.max(0, history.index - 1);
-  return { history: { ...history, index }, value: history.entries[index] ?? "" };
+  return {
+    history: {
+      ...history,
+      index,
+      draft: history.index === undefined ? currentValue : history.draft
+    },
+    value: history.entries[index] ?? currentValue
+  };
 }
 
 export function nextHistory(history: PromptHistory): { history: PromptHistory; value: string } {
-  if (history.entries.length === 0) return { history, value: "" };
-  if (history.index === undefined) return { history, value: "" };
+  if (history.entries.length === 0 || history.index === undefined) return { history, value: history.draft ?? "" };
   const index = history.index + 1;
-  if (index >= history.entries.length) return { history: { ...history, index: undefined }, value: "" };
-  return { history: { ...history, index }, value: history.entries[index] ?? "" };
+  if (index >= history.entries.length) {
+    return {
+      history: { ...history, index: undefined, draft: undefined },
+      value: history.draft ?? ""
+    };
+  }
+  return { history: { ...history, index }, value: history.entries[index] ?? history.draft ?? "" };
 }

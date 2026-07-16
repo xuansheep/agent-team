@@ -16,15 +16,22 @@ const stdioInputSchema = z.object({
 
 export const stdioMcpServerSchema = stdioInputSchema.transform((value) => ({ ...value, type: "stdio" as const }));
 
-export const remoteMcpServerSchema = z.object({
-  ...commonServerFields,
-  type: z.enum(["http", "sse", "ws"]),
-  url: z.string().url(),
-  headers: z.record(z.string()).optional()
-}).strict();
+function remoteServerSchema(url: z.ZodString) {
+  return z.object({
+    ...commonServerFields,
+    type: z.enum(["http", "sse", "ws"]),
+    url,
+    headers: z.record(z.string()).optional()
+  }).strict();
+}
 
+export const remoteMcpServerSchema = remoteServerSchema(z.string().url());
 export const mcpServerSchema = z.union([stdioMcpServerSchema, remoteMcpServerSchema]);
 export const mcpServersSchema = z.record(mcpServerSchema);
+export const mcpServersSettingsSchema = z.record(z.union([
+  stdioMcpServerSchema,
+  remoteServerSchema(z.string().min(1))
+]));
 
 export type StdioMcpServerConfig = z.infer<typeof stdioMcpServerSchema>;
 export type RemoteMcpServerConfig = z.infer<typeof remoteMcpServerSchema>;

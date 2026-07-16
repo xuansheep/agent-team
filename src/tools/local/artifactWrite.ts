@@ -1,4 +1,3 @@
-import { basename } from "node:path";
 import { z } from "zod";
 import { ArtifactStore } from "../../storage/artifacts.js";
 import { Tool } from "../types.js";
@@ -11,7 +10,7 @@ const inputSchema = z.object({
 
 export const artifactWriteTool: Tool = {
   name: "ArtifactWrite",
-  description: "Write a user-facing deliverable into this run's artifacts",
+  description: "Write a user-facing deliverable into this run's artifacts. Use a basename or the current node prefix, for example design.md or ui/design.md.",
   input_schema: {
     type: "object",
     properties: { name: { type: "string" }, content: { type: "string" }, description: { type: "string" } },
@@ -19,11 +18,11 @@ export const artifactWriteTool: Tool = {
   },
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
-    if (!isPlainArtifactName(parsed.name)) throw new Error(`Invalid artifact name ${parsed.name}`);
     if (!context.runDir) throw new Error("ArtifactWrite requires a run directory");
     if (!context.nodeId) throw new Error("ArtifactWrite requires a node id");
+    const name = normalizeArtifactName(parsed.name, context.nodeId);
 
-    const ref = await new ArtifactStore(context.runDir).writeText(context.nodeId, parsed.name, parsed.content, {
+    const ref = await new ArtifactStore(context.runDir).writeText(context.nodeId, name, parsed.content, {
       description: parsed.description,
       attempt: context.attempt,
       activation: context.activation
@@ -38,6 +37,14 @@ export const artifactWriteTool: Tool = {
   }
 };
 
-function isPlainArtifactName(name: string): boolean {
-  return name === basename(name) && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\\");
+function normalizeArtifactName(name: string, nodeId: string): string {
+  const normalized = name.replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  const value = segments.length === 1
+    ? segments[0]
+    : segments.length === 2 && segments[0] === nodeId ? segments[1] : undefined;
+  if (!value || value === "." || value === ".." || value.includes("/") || value.includes("\\")) {
+    throw new Error(`Invalid artifact name ${name}`);
+  }
+  return value;
 }

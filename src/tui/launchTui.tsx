@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { AlternateScreen, render } from "./ink.js";
 import { AgentTeamConfig } from "../config/schema.js";
@@ -8,8 +9,11 @@ import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } fr
 import { McpRuntime } from "../mcp/runtime.js";
 import { createMcpClientFactory } from "../mcp/transports.js";
 import { createProvider } from "../providers/registry.js";
-import { loadSettings, setUserDefaultPermissionMode } from "../settings/loadSettings.js";
+import { defaultProjectSettingsPath, loadSettings, setUserDefaultPermissionMode } from "../settings/loadSettings.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
+import { createPromptHistoryStore, type PromptHistoryStore } from "../storage/promptHistoryStore.js";
+import { prepareProjectStorage } from "../storage/projectStorage.js";
+import { SessionStore } from "../storage/sessionStore.js";
 import { SkillRuntime } from "../skills/runtime.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { TuiApp } from "./TuiApp.js";
@@ -26,6 +30,8 @@ export type PreparedTuiRuntime = {
   workflowId: string | undefined;
   engine: WorkflowEngine;
   settings: ResolvedAgentTeamSettings;
+  promptHistoryStore: PromptHistoryStore;
+  sessionStore: SessionStore;
   mcpRuntime: McpRuntime;
   skillRuntime: SkillRuntime;
   diagnostics: RuntimeDiagnostics;
@@ -35,11 +41,13 @@ export type PreparedTuiRuntime = {
 export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string; templateConfigDir?: string }): Promise<PreparedTuiRuntime> {
   const templateConfigDir = options.templateConfigDir ?? defaultBundledConfigDir();
   const userConfigDir = defaultUserConfigDir(options.homeDir);
+  const userSettingsPath = join(userConfigDir, "settings.json");
+  const projectSettingsPath = defaultProjectSettingsPath(options.cwd);
+  const projectStorage = await prepareProjectStorage({ cwd: options.cwd, homeDir: options.homeDir });
+  const sessionStore = new SessionStore(projectStorage);
+  const promptHistoryStore = await createPromptHistoryStore({ cwd: options.cwd, homeDir: options.homeDir, path: join(userConfigDir, "history.jsonl") });
   await ensureUserRoleWorkflowConfig({ userConfigDir, templateConfigDir });
-  const settings = await loadSettings({
-    cwd: options.cwd,
-    ...(options.homeDir ? { userSettingsPath: join(userConfigDir, "settings.json") } : {})
-  });
+  const settings = await loadSettings({ cwd: options.cwd, userSettingsPath, projectSettingsPath });
   const config = await loadConfig(userConfigDir, {
     cwd: options.cwd,
     homeDir: options.homeDir,
@@ -48,14 +56,18 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
   });
   const workflows = Object.keys(config.workflows);
   const workflowId = selectDefaultWorkflow(workflows);
-  const mcpConfigOptions = { cwd: options.cwd };
+  const mcpConfigOptions = { cwd: options.cwd, userSettingsPath, projectSettingsPath };
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
   const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory({ roots: () => [{ uri: options.cwd }] }) });
   await mcpRuntime.connectAll(mcpServers);
-  const skillRuntime = await SkillRuntime.discover({ cwd: options.cwd });
-  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: join(options.cwd, ".session"), mcpRuntime, skillRuntime });
+  const skillRuntime = await SkillRuntime.discover({
+    cwd: options.cwd,
+    userSkillRoot: join(userConfigDir, "skills"),
+    legacyUserSkillRoot: join(options.homeDir ?? homedir(), ".agents", "skills")
+  });
+  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: projectStorage.projectDir, mcpRuntime, skillRuntime });
   const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
-  return { config, workflows, workflowId, engine, settings, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions };
+  return { config, workflows, workflowId, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions };
 }
 
 export async function launchTui(options: { cwd: string }): Promise<void> {
@@ -65,6 +77,8 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
   let workflowId: string | undefined;
   let engine: WorkflowEngine | undefined;
   let settings: ResolvedAgentTeamSettings | undefined;
+  let promptHistoryStore: PromptHistoryStore | undefined;
+  let sessionStore: SessionStore | undefined;
   let mcpRuntime: McpRuntime | undefined;
   let skillRuntime: SkillRuntime | undefined;
   let diagnostics: RuntimeDiagnostics | undefined;
@@ -77,6 +91,8 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     workflowId = prepared.workflowId;
     engine = prepared.engine;
     settings = prepared.settings;
+    promptHistoryStore = prepared.promptHistoryStore;
+    sessionStore = prepared.sessionStore;
     mcpRuntime = prepared.mcpRuntime;
     skillRuntime = prepared.skillRuntime;
     diagnostics = prepared.diagnostics;
@@ -97,10 +113,12 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         engine={engine}
         providerFactory={config ? (providerId) => createProvider(config!, providerId) : undefined}
         settings={settings}
+        promptHistoryStore={promptHistoryStore}
+        sessionStore={sessionStore}
         mcpRuntime={mcpRuntime}
         skillRuntime={skillRuntime}
         diagnostics={diagnostics}
-        saveDefaultPermissionMode={setUserDefaultPermissionMode}
+        saveDefaultPermissionMode={(mode) => setUserDefaultPermissionMode(mode, mcpConfigOptions?.userSettingsPath)}
         collectDiagnostics={() => collectRuntimeDiagnostics({ mcpRuntime, skillRuntime })}
         mcpConfigOptions={mcpConfigOptions}
       />
@@ -109,5 +127,9 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
       exitOnCtrlC: false
     }
   );
-  await instance.waitUntilExit();
+  try {
+    await instance.waitUntilExit();
+  } finally {
+    await promptHistoryStore?.flush();
+  }
 }

@@ -4,6 +4,21 @@ import type { SkillRuntime } from "./runtime.js";
 
 const skillActivationDataType = "skill_activation";
 
+export type SkillActivationRecord = {
+  name: string;
+  mode: "inline" | "fork";
+  source: string;
+  version?: string;
+  allowedTools: string[];
+};
+
+type SkillActivationData = SkillActivationRecord & {
+  type: typeof skillActivationDataType;
+  systemMessage?: ModelMessage;
+  model?: string;
+  effort?: string | number;
+};
+
 export function createListSkillsTool(runtime: SkillRuntime): Tool {
   return {
     name: "ListSkills",
@@ -56,6 +71,12 @@ export function createUseSkillTool(runtime: SkillRuntime): Tool {
       const name = optionalString(input, "name");
       return !name || !runtime.skillRequiresShell(name);
     },
+    requiresPermissionPrompt(input) {
+      const name = optionalString(input, "name");
+      if (!name) return true;
+      const skill = runtime.getSkill(name);
+      return !skill || runtime.skillRequiresShell(name) || Boolean(skill.allowedTools?.length);
+    },
     async validateInput(input) {
       const value = requiredObject(input);
       const name = requiredString(value, "name");
@@ -85,10 +106,7 @@ export function createUseSkillTool(runtime: SkillRuntime): Tool {
       const systemMessage = activation.mode === "inline"
         ? activation.messages.at(-1)
         : { role: "system" as const, content: `SKILL ${activation.skill.name}\n\n${activation.output}` };
-      return {
-        output: `Activated skill ${activation.skill.name} (${activation.mode}).`,
-        data: { type: skillActivationDataType, name: activation.skill.name, mode: activation.mode, systemMessage, model: activation.skill.model, effort: activation.skill.effort }
-      };
+      return skillActivationResult(activation.skill, activation.mode, systemMessage);
     },
     mapToolResultToModelResult(result) {
       return result.output ?? result;
@@ -118,32 +136,85 @@ export async function activateUserInvokedSkill(
   const systemMessage = activation.mode === "inline"
     ? activation.messages.at(-1)
     : { role: "system" as const, content: `SKILL ${activation.skill.name}\n\n${activation.output}` };
+  return skillActivationResult(activation.skill, activation.mode, systemMessage);
+}
+
+export function skillActivationFromToolResult(result: ToolResult | undefined): SkillActivationRecord | undefined {
+  const data = skillActivationData(result);
+  if (!data) return undefined;
   return {
-    output: `Activated skill ${activation.skill.name} (${activation.mode}).`,
-    data: { type: skillActivationDataType, name: activation.skill.name, mode: activation.mode, systemMessage, model: activation.skill.model, effort: activation.skill.effort }
+    name: data.name,
+    mode: data.mode,
+    source: data.source,
+    ...(data.version ? { version: data.version } : {}),
+    allowedTools: data.allowedTools.slice()
   };
 }
 
+export function skillPermissionRulesFromToolResult(result: ToolResult | undefined): string[] {
+  const activation = skillActivationFromToolResult(result);
+  return activation?.mode === "inline" ? activation.allowedTools : [];
+}
+
 export function skillRuntimeOverridesFromToolResult(result: ToolResult | undefined): { model?: string; effort?: string | number } | undefined {
-  const data = result?.data;
-  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
-  const record = data as { type?: unknown; model?: unknown; effort?: unknown };
-  if (record.type !== skillActivationDataType) return undefined;
+  const data = skillActivationData(result);
+  if (!data) return undefined;
   return {
-    ...(typeof record.model === "string" && record.model ? { model: record.model } : {}),
-    ...((typeof record.effort === "string" || typeof record.effort === "number") ? { effort: record.effort } : {})
+    ...(data.model ? { model: data.model } : {}),
+    ...(data.effort !== undefined ? { effort: data.effort } : {})
   };
 }
 
 export function skillSystemMessageFromToolResult(result: ToolResult | undefined): ModelMessage | undefined {
-  const data = result?.data;
-  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
-  const record = data as { type?: unknown; systemMessage?: unknown };
-  if (record.type !== skillActivationDataType) return undefined;
-  const message = record.systemMessage;
+  const data = skillActivationData(result);
+  if (!data) return undefined;
+  const message = data.systemMessage;
   if (!message || typeof message !== "object" || Array.isArray(message)) return undefined;
   const value = message as { role?: unknown; content?: unknown };
   return value.role === "system" && typeof value.content === "string" ? { role: "system", content: value.content } : undefined;
+}
+
+function skillActivationResult(
+  skill: NonNullable<ReturnType<SkillRuntime["getSkill"]>>,
+  mode: "inline" | "fork",
+  systemMessage: ModelMessage | undefined
+): ToolResult {
+  const allowedTools = [...new Set((skill.allowedTools ?? []).filter((rule) => typeof rule === "string" && rule.trim()).map((rule) => rule.trim()))];
+  const data: SkillActivationData = {
+    type: skillActivationDataType,
+    name: skill.name,
+    mode,
+    source: skill.source,
+    ...(skill.version ? { version: skill.version } : {}),
+    allowedTools,
+    ...(systemMessage ? { systemMessage } : {}),
+    ...(skill.model ? { model: skill.model } : {}),
+    ...(skill.effort !== undefined ? { effort: skill.effort } : {})
+  };
+  return { output: `Activated skill ${skill.name} (${mode}).`, data };
+}
+
+function skillActivationData(result: ToolResult | undefined): SkillActivationData | undefined {
+  const data = result?.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const record = data as Record<string, unknown>;
+  if (record.type !== skillActivationDataType || typeof record.name !== "string") return undefined;
+  if (record.mode !== "inline" && record.mode !== "fork") return undefined;
+  if (typeof record.source !== "string") return undefined;
+  const allowedTools = Array.isArray(record.allowedTools)
+    ? [...new Set(record.allowedTools.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())).map((rule) => rule.trim()))]
+    : [];
+  return {
+    type: skillActivationDataType,
+    name: record.name,
+    mode: record.mode,
+    source: record.source,
+    ...(typeof record.version === "string" && record.version ? { version: record.version } : {}),
+    allowedTools,
+    ...(record.systemMessage && typeof record.systemMessage === "object" && !Array.isArray(record.systemMessage) ? { systemMessage: record.systemMessage as ModelMessage } : {}),
+    ...(typeof record.model === "string" && record.model ? { model: record.model } : {}),
+    ...((typeof record.effort === "string" || typeof record.effort === "number") ? { effort: record.effort } : {})
+  };
 }
 
 function skillRoutingPrompt(runtime: SkillRuntime): string {

@@ -1,6 +1,7 @@
-import { chmod, mkdir, open, readFile, rename, stat } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, stat, unlink, type FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 import { resolveSettings } from "./resolveSettings.js";
@@ -24,7 +25,7 @@ export function defaultUserSettingsPath(): string {
   return join(homedir(), ".einsteins", "settings.json");
 }
 
-function defaultProjectSettingsPath(cwd: string): string {
+export function defaultProjectSettingsPath(cwd: string): string {
   return join(cwd, ".einsteins", "settings.json");
 }
 
@@ -45,23 +46,61 @@ export async function setUserDefaultPermissionMode(
   mode: Extract<PermissionMode, "default" | "fullAccess">,
   path = defaultUserSettingsPath()
 ): Promise<void> {
-  await ensureUserSettingsFile(path);
-  const settings = settingsSchema.parse(parseSettingsJson(await readFile(path, "utf8"), path));
-  const next = {
+  await updateUserSettingsFile(path, (settings) => ({
     ...settings,
     permissions: { ...settings.permissions, defaultMode: mode }
-  };
+  }));
+}
+
+export async function updateUserSettingsFile(
+  path: string,
+  update: (settings: AgentTeamSettings) => AgentTeamSettings
+): Promise<void> {
+  await ensureUserSettingsFile(path);
+  await withSettingsLock(path, async () => {
+    const settings = settingsSchema.parse(parseSettingsJson(await readFile(path, "utf8"), path));
+    await writeSettingsAtomic(path, settingsSchema.parse(update(settings)));
+  });
+}
+
+async function withSettingsLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = `${path}.lock`;
+  let lock: FileHandle | undefined;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      lock = await open(lockPath, "wx", 0o600);
+      break;
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "EEXIST") throw error;
+      await delay(50);
+    }
+  }
+  if (!lock) throw new Error(`Timed out acquiring settings lock ${lockPath}`);
+  try {
+    return await operation();
+  } finally {
+    await lock.close();
+    await unlink(lockPath).catch(() => undefined);
+  }
+}
+
+async function writeSettingsAtomic(path: string, settings: AgentTeamSettings): Promise<void> {
   const existingMode = (await stat(path)).mode;
-  const temporaryPath = path + ".tmp." + process.pid + "." + randomUUID();
+  const temporaryPath = `${path}.tmp.${process.pid}.${randomUUID()}`;
   const handle = await open(temporaryPath, "wx", existingMode);
   try {
-    await handle.writeFile(JSON.stringify(next, null, 2) + "\n", "utf8");
+    await handle.writeFile(`${JSON.stringify(settings, null, 2)}\n`, "utf8");
     await handle.sync();
   } finally {
     await handle.close();
   }
-  await chmod(temporaryPath, existingMode);
-  await rename(temporaryPath, path);
+  try {
+    await chmod(temporaryPath, existingMode);
+    await rename(temporaryPath, path);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readSettingsFile(path: string, source: "user"): Promise<AgentTeamSettings | undefined>;

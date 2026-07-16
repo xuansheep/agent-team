@@ -1,12 +1,14 @@
 import { readFile } from "node:fs/promises";
-import { homedir, platform } from "node:os";
-import { dirname, join, parse, resolve } from "node:path";
+import { platform } from "node:os";
+import { join, resolve } from "node:path";
+import { defaultProjectSettingsPath, defaultUserSettingsPath } from "../settings/loadSettings.js";
+import { projectSettingsSchema, settingsSchema, type AgentTeamSettings, type McpProjectState } from "../settings/types.js";
 import { mcpServersSchema, type McpConfigSource, type McpServersConfig, type ResolvedMcpServerConfig } from "./schema.js";
 
 export type McpConfigSourceOptions = {
   cwd: string;
-  userMcpPath?: string;
-  projectMcpPath?: string;
+  userSettingsPath?: string;
+  projectSettingsPath?: string;
   managedMcpPath?: string;
 };
 
@@ -14,7 +16,6 @@ export type McpConfigSources = {
   managed?: McpServersConfig;
   user?: McpServersConfig;
   project?: McpServersConfig;
-  local?: McpServersConfig;
 };
 
 export type McpConfigSourceFormat = "json";
@@ -25,57 +26,38 @@ export type McpConfigSourceDetail = {
   servers?: McpServersConfig;
 };
 
-export type EinsteinsProjectState = {
-  mcpServers?: McpServersConfig;
-  disabledMcpServers?: string[];
-  enabledMcpServers?: string[];
-  enabledMcpjsonServers?: string[];
-  disabledMcpjsonServers?: string[];
-  enableAllProjectMcpServers?: boolean;
-  [key: string]: unknown;
-};
-
-export type EinsteinsGlobalConfig = {
-  mcpServers?: McpServersConfig;
-  projects?: Record<string, EinsteinsProjectState>;
-  [key: string]: unknown;
-};
+export type McpUserSettings = Pick<AgentTeamSettings, "mcpServers" | "projects">;
 
 export async function loadMcpConfigSources(options: McpConfigSourceOptions): Promise<McpConfigSources> {
   const details = await loadMcpConfigSourceDetails(options);
   return {
     managed: mergedDetails(details, "managed"),
     user: mergedDetails(details, "user"),
-    project: mergedDetails(details, "project"),
-    local: mergedDetails(details, "local")
+    project: mergedDetails(details, "project")
   };
 }
 
 export async function loadMcpConfigSourceDetails(options: McpConfigSourceOptions): Promise<McpConfigSourceDetail[]> {
-  const userPath = options.userMcpPath ?? defaultUserMcpPath();
-  const globalConfig = await readEinsteinsConfig(userPath);
-  const projectState = currentProjectState(globalConfig, options.cwd);
+  const userPath = options.userSettingsPath ?? defaultUserSettingsPath();
+  const projectPath = options.projectSettingsPath ?? defaultProjectSettingsPath(options.cwd);
+  const userSettings = await readUserSettings(userPath);
   const managedPath = options.managedMcpPath ?? defaultManagedMcpPath();
   const managed = await readJsonMcpServers(managedPath);
-  const details: McpConfigSourceDetail[] = [];
 
   if (managed !== undefined) {
-    details.push({ source: "managed", path: managedPath, format: "json", servers: managed });
-  } else {
-    details.push({ source: "user", path: userPath, format: "json", servers: globalConfig?.mcpServers });
-    const projectPaths = options.projectMcpPath ? [options.projectMcpPath] : ancestorMcpPaths(options.cwd);
-    for (const path of projectPaths) details.push({ source: "project", path, format: "json", servers: await readJsonMcpServers(path) });
-    details.push({ source: "local", path: userPath, format: "json", servers: projectState?.mcpServers });
+    return [{ source: "managed", path: managedPath, format: "json", servers: managed }];
   }
-  return details;
+  return [
+    { source: "user", path: userPath, format: "json", servers: userSettings?.mcpServers },
+    { source: "project", path: projectPath, format: "json", servers: await readProjectMcpServers(projectPath) }
+  ];
 }
 
 export function mergeMcpServers(sources: McpConfigSources): ResolvedMcpServerConfig[] {
   return mergeMcpServersWithSourceDetails([
     { source: "managed", path: defaultManagedMcpPath(), format: "json", servers: sources.managed },
-    { source: "user", path: defaultUserMcpPath(), format: "json", servers: sources.user },
-    { source: "project", path: "", format: "json", servers: sources.project },
-    { source: "local", path: defaultUserMcpPath(), format: "json", servers: sources.local }
+    { source: "user", path: defaultUserSettingsPath(), format: "json", servers: sources.user },
+    { source: "project", path: "", format: "json", servers: sources.project }
   ]);
 }
 
@@ -95,8 +77,8 @@ export async function loadMergedMcpServers(options: McpConfigSourceOptions): Pro
 
 export async function loadMergedMcpServersWithSourceDetails(options: McpConfigSourceOptions): Promise<ResolvedMcpServerConfig[]> {
   const servers = mergeMcpServersWithSourceDetails(await loadMcpConfigSourceDetails(options));
-  const globalConfig = await readEinsteinsConfig(options.userMcpPath ?? defaultUserMcpPath());
-  const state = currentProjectState(globalConfig, options.cwd);
+  const userSettings = await readUserSettings(options.userSettingsPath ?? defaultUserSettingsPath());
+  const state = currentProjectState(userSettings, options.cwd);
   const disabled = new Set(state?.disabledMcpServers ?? []);
   const enabled = new Set(state?.enabledMcpServers ?? []);
   return servers.map((server) => ({
@@ -106,11 +88,11 @@ export async function loadMergedMcpServersWithSourceDetails(options: McpConfigSo
 }
 
 export function defaultUserMcpPath(): string {
-  return join(homedir(), ".einsteins.json");
+  return defaultUserSettingsPath();
 }
 
 export function defaultProjectMcpPath(cwd: string): string {
-  return join(cwd, ".mcp.json");
+  return defaultProjectSettingsPath(cwd);
 }
 
 export function defaultManagedMcpPath(): string {
@@ -120,53 +102,44 @@ export function defaultManagedMcpPath(): string {
   return join(root, "managed-mcp.json");
 }
 
-export async function readEinsteinsConfig(path = defaultUserMcpPath()): Promise<EinsteinsGlobalConfig | undefined> {
-  try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid JSON object in ${path}`);
-    const config = parsed as EinsteinsGlobalConfig;
-    return {
-      ...config,
-      ...(config.mcpServers ? { mcpServers: parseServers(config.mcpServers, path) } : {}),
-      ...(config.projects ? { projects: Object.fromEntries(Object.entries(config.projects).map(([key, state]) => [key, {
-        ...state,
-        ...(state.mcpServers ? { mcpServers: parseServers(state.mcpServers, `${path}#projects.${key}`) } : {})
-      }])) } : {})
-    };
-  } catch (error) {
-    if ((error as { code?: unknown }).code === "ENOENT") return undefined;
-    throw error;
-  }
+async function readUserSettings(path: string): Promise<McpUserSettings | undefined> {
+  const parsed = await readJsonObject(path);
+  if (!parsed) return undefined;
+  const settings = settingsSchema.parse(parsed);
+  return {
+    ...(settings.mcpServers ? { mcpServers: parseServers(settings.mcpServers, path) } : {}),
+    ...(settings.projects ? { projects: settings.projects } : {})
+  };
 }
 
-export function currentProjectState(config: EinsteinsGlobalConfig | undefined, cwd: string): EinsteinsProjectState | undefined {
+async function readProjectMcpServers(path: string): Promise<McpServersConfig | undefined> {
+  const parsed = await readJsonObject(path);
+  if (!parsed) return undefined;
+  const servers = projectSettingsSchema.parse(parsed).mcpServers;
+  return servers === undefined ? undefined : parseServers(servers, path);
+}
+
+export function currentProjectState(config: McpUserSettings | undefined, cwd: string): McpProjectState | undefined {
   const target = normalizedProjectKey(cwd);
   return Object.entries(config?.projects ?? {}).find(([key]) => normalizedProjectKey(key) === target)?.[1];
 }
 
-export function currentProjectKey(config: EinsteinsGlobalConfig | undefined, cwd: string): string {
+export function currentProjectKey(config: McpUserSettings | undefined, cwd: string): string {
   const target = normalizedProjectKey(cwd);
   return Object.keys(config?.projects ?? {}).find((key) => normalizedProjectKey(key) === target) ?? resolve(cwd);
 }
 
-function ancestorMcpPaths(cwd: string): string[] {
-  const directories: string[] = [];
-  let current = resolve(cwd);
-  for (;;) {
-    directories.unshift(current);
-    const parent = dirname(current);
-    if (parent === current || current === parse(current).root) break;
-    current = parent;
-  }
-  return directories.map((directory) => join(directory, ".mcp.json"));
+async function readJsonMcpServers(path: string): Promise<McpServersConfig | undefined> {
+  const parsed = await readJsonObject(path);
+  const servers = parsed?.mcpServers;
+  return servers === undefined ? undefined : parseServers(servers, path);
 }
 
-async function readJsonMcpServers(path: string): Promise<McpServersConfig | undefined> {
+async function readJsonObject(path: string): Promise<Record<string, unknown> | undefined> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid JSON object in ${path}`);
-    const servers = (parsed as { mcpServers?: unknown }).mcpServers;
-    return servers === undefined ? undefined : parseServers(servers, path);
+    return parsed as Record<string, unknown>;
   } catch (error) {
     if ((error as { code?: unknown }).code === "ENOENT") return undefined;
     throw error;

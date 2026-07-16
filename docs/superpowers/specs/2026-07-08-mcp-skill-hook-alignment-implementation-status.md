@@ -1,6 +1,6 @@
 # MCP Skill Hook Alignment Implementation Status
 
-Date: 2026-07-08
+Date: 2026-07-16
 
 This document records the current implementation status for the tui-code alignment work across MCP, Skill, and Hook capabilities.
 
@@ -21,8 +21,10 @@ This document records the current implementation status for the tui-code alignme
 
 Implemented:
 
-- Config sources: user `~/.einsteins/mcp.json`, project `.mcp.json`, and `agent-team.yaml` `mcpServers`.
-- Precedence: `agent-team.yaml` over project `.mcp.json` over user config.
+- Config sources: user `~/.einsteins/settings.json#mcpServers`, project `.einsteins/settings.json#mcpServers`, and managed MCP JSON.
+- Precedence: managed configuration is exclusive; otherwise project servers override same-name user servers.
+- Legacy `~/.einsteins.json` and project `.mcp.json` files are not read.
+- `/mcp enable|disable` persists per-project overrides in user settings through the shared atomic settings updater.
 - Transports: `stdio`, `http`, `sse`, and `ws`.
 - JSON-RPC lifecycle: initialize before capability discovery, with initialized notification support.
 - Server isolation: individual server failures are recorded without failing the entire runtime.
@@ -47,7 +49,8 @@ Blocked in current environment:
 
 Implemented:
 
-- Skill discovery is intentionally limited to project `.agents/skills` and user `~/.einsteins/skills`; project skills take precedence over same-name user skills.
+- Skill discovery precedence is project `.einsteins/skills`, user `~/.einsteins/skills`, then legacy user `~/.agents/skills`.
+- Project `.agents/skills` is not read; nearest project skills take precedence over user skills.
 - Metadata parsing for name, description, when-to-use, allowed tools, model, effort, mode, and hooks.
 - Inline skill activation into model context.
 - Fork skill execution through a constrained child model request.
@@ -73,9 +76,10 @@ Implemented:
 
 Implemented:
 
-- User settings canonical path: `~/.einsteins/settings.yaml`.
-- Legacy fallback: `~/.agent-team/settings.yaml`.
-- Project settings remain project-scoped and are not part of the user settings migration.
+- User settings canonical path: `~/.einsteins/settings.json`.
+- Project settings canonical path: `<project>/.einsteins/settings.json`.
+- User global memory is `~/.einsteins/AGENTS.md`; project memory is `.einsteins/AGENTS.md` from the Git root to the current directory.
+- Permission and MCP mutations share the same locked atomic settings update path.
 
 ## Verification Commands
 

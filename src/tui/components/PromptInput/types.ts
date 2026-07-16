@@ -9,6 +9,7 @@ export type PromptBuffer = {
 export type PromptHistory = {
   entries: string[];
   index?: number;
+  draft?: string;
 };
 
 export type PromptInputImageAttachment = {

@@ -13,8 +13,15 @@ describe("command menu builders", () => {
     assert.match(buildSkillsDetailChoice({ skill: skills[0]!, onBack: noop, onCancel: noop }).documentBlock?.text ?? "", /whenToUse: Use before coding/);
   });
 
+  it("builds an empty mcp list", () => {
+    const choice = buildMcpListChoice({ servers: [], onSelect: noop, onAction: noop, onCancel: noop });
+
+    assert.equal(choice.detail, "No MCP servers configured");
+    assert.deepEqual(choice.options, [{ label: "No MCP servers", value: "__empty__", disabled: true }]);
+  });
+
   it("builds mcp choices", () => {
-    const servers = [{ name: "docs", state: "connected" as const, source: "project" as const, sourcePath: "D:/repo/.mcp.json", sourceFormat: "json" as const, transport: "http" as const, toolCount: 1, resourceCount: 0, promptCount: 0 }];
+    const servers = [{ name: "docs", state: "connected" as const, source: "project" as const, sourcePath: "D:/repo/.einsteins/settings.json", sourceFormat: "json" as const, transport: "http" as const, toolCount: 1, resourceCount: 0, promptCount: 0 }];
     const tools = [{ server: "docs", name: "mcp__docs__search", originalName: "search", description: "Search", inputSchema: { type: "object" } }];
 
     assert.equal(buildMcpListChoice({ servers, onSelect: noop, onAction: noop, onCancel: noop }).title, "MCP Servers");

@@ -13,6 +13,7 @@ export type ToolContext = {
   sessionId?: string;
   runId?: string;
   planState?: PlanSessionState;
+  planFilePath?: string;
   abortSignal?: AbortSignal;
   auditSink?: AuditSink;
   provider?: ModelProvider;
@@ -24,6 +25,8 @@ export type ToolContext = {
 export type ToolResult = {
   output?: string;
   error?: string;
+  stderr?: string;
+  is_error?: boolean;
   exit_code?: number;
   artifact_id?: string;
   path?: string;
@@ -37,6 +40,7 @@ export type ToolSafety = {
   isDestructive?: (input: unknown) => boolean | Promise<boolean>;
   writesPlanFile?: (input: unknown, context: ToolContext) => boolean | Promise<boolean>;
   requiresUserInteraction?: (input: unknown) => boolean | Promise<boolean>;
+  requiresPermissionPrompt?: (input: unknown, context: ToolContext) => boolean | Promise<boolean>;
 };
 
 export type Tool = ToolSafety & {

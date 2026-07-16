@@ -22,8 +22,8 @@ describe("Plan Mode V2", () => {
 
     assert.equal(first, again);
     assert.notEqual(first, other);
-    assert.match(first, /[.]session/);
-    assert.match(first, /\d{6}/);
+    assert.match(first, /[.]einsteins[\\/]projects/);
+    assert.doesNotMatch(first, /[\\/]\d{6}[\\/]/);
     assert.match(first, new RegExp(String.raw`[\\/]plans[\\/]plan[.]md$`));
   });
 
@@ -114,7 +114,7 @@ describe("Plan Mode V2", () => {
       originalInput: { request: "build" },
       permissions: { mode: "default", allow: [], ask: [], deny: [] }
     });
-    const currentPlanInput = { file_path: state.planFilePath.slice(cwd.length + 1), content: "# Plan" };
+    const currentPlanInput = { file_path: state.planFilePath, content: "# Plan" };
 
     assert.equal((await checkToolPermission(tools.get("Write"), currentPlanInput, { ...permissions, cwd })).decision, "allow");
     assert.equal((await checkToolPermission(tools.get("Write"), { file_path: "README.md", content: "x" }, { ...permissions, cwd })).decision, "deny");
@@ -130,7 +130,7 @@ describe("Plan Mode V2", () => {
       originalInput: { request: "build" },
       permissions: { mode: "default", allow: [], ask: [], deny: [] }
     });
-    const currentPlanInput = { file_path: state.planFilePath.slice(cwd.length + 1), content: "# Plan" };
+    const currentPlanInput = { file_path: state.planFilePath, content: "# Plan" };
 
     assert.match(state.planFilePath, /[.]einsteins[\\/]plans[\\/].+[.]md$/);
     assert.equal((await checkToolPermission(tools.get("Write"), currentPlanInput, { ...permissions, cwd })).decision, "allow");

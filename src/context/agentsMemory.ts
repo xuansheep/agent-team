@@ -53,7 +53,7 @@ export async function getAgentsMemoryFiles(options: AgentsMemoryLoadOptions): Pr
 
   const projectDirectories = await projectDirectoriesToGitRoot(cwd, options.homeDir);
   for (const dir of projectDirectories.reverse()) {
-    files.push(...await processAgentsMemoryFile(join(dir, ".agents", "AGENTS.md"), "Project", processed, cwd, includeExternal, options.settings));
+    files.push(...await processAgentsMemoryFile(join(dir, ".einsteins", "AGENTS.md"), "Project", processed, cwd, includeExternal, options.settings));
   }
   return files.filter((file) => file.content.trim());
 }

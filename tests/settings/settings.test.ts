@@ -74,15 +74,25 @@ describe("settings", () => {
     const projectSettingsPath = join(cwd, "project-settings.json");
     await writeJson(userSettingsPath, {
       providers: { default: provider({ api_key: "preserved-key", effort: "provider-custom" }) },
-      permissions: { defaultMode: "default" }
+      permissions: { defaultMode: "default" },
+      mcpServers: {
+        docs: { type: "http", url: "${DOCS_MCP_URL}", headers: { Authorization: "Bearer ${DOCS_MCP_TOKEN}" } }
+      },
+      projects: {
+        [resolve(cwd)]: { disabledMcpServers: ["docs"] }
+      }
     });
 
     await setUserDefaultPermissionMode("fullAccess", userSettingsPath);
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
+    const stored = JSON.parse(await readFile(userSettingsPath, "utf8"));
 
     assert.equal(settings.permissions?.defaultMode, "fullAccess");
     assert.equal(settings.providers?.default?.api_key, "preserved-key");
     assert.equal(settings.providers?.default?.effort, "provider-custom");
+    assert.equal(stored.mcpServers.docs.url, "${DOCS_MCP_URL}");
+    assert.equal(stored.mcpServers.docs.headers.Authorization, "Bearer ${DOCS_MCP_TOKEN}");
+    assert.deepEqual(stored.projects[resolve(cwd)].disabledMcpServers, ["docs"]);
   });
 
   it("rejects YAML content instead of applying legacy compatibility", async () => {
@@ -148,7 +158,8 @@ describe("settings", () => {
         contextWindows: { "shared-model": 1000 }
       },
       planMode: { defaultEntry: false },
-      showClearContextOnPlanAccept: false
+      showClearContextOnPlanAccept: false,
+      mcpServers: { shared: { type: "stdio", command: "user" } }
     });
     await writeJson(projectSettingsPath, {
       permissions: { defaultMode: "fullAccess" },
@@ -159,7 +170,8 @@ describe("settings", () => {
         contextWindows: { "shared-model": 2000 }
       },
       planMode: { defaultEntry: true },
-      showClearContextOnPlanAccept: true
+      showClearContextOnPlanAccept: true,
+      mcpServers: { shared: { type: "stdio", command: "project" } }
     });
 
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
@@ -171,6 +183,8 @@ describe("settings", () => {
     assert.deepEqual(settings.models?.contextWindows, { "shared-model": 2000 });
     assert.equal(settings.planMode?.defaultEntry, true);
     assert.equal(settings.showClearContextOnPlanAccept, true);
+    assert.equal(Object.hasOwn(settings, "mcpServers"), false);
+    assert.equal(Object.hasOwn(settings, "projects"), false);
   });
 
   it("rejects legacy session mode keys but allows Plan Mode defaults", () => {

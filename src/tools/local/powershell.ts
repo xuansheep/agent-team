@@ -1,6 +1,8 @@
-import { spawn } from "node:child_process";
 import { z } from "zod";
+import { ShellExecutionError } from "../errors.js";
 import { Tool } from "../types.js";
+import { interpretPowerShellCommand } from "./commandSemantics.js";
+import { executePowerShell } from "./shellProvider.js";
 import { isDestructiveShellCommand, isReadOnlyPowerShellCommand } from "./shellSafety.js";
 
 const inputSchema = z.object({ command: z.string().min(1), timeout_ms: z.number().int().positive().default(120000) });
@@ -19,7 +21,9 @@ export const powerShellTool: Tool = {
   requiresUserInteraction: () => false,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
-    const destructive = isDestructiveShellCommand(parsed);
+    if (process.platform !== "win32") throw new Error("PowerShell is only supported on Windows");
+    const result = await executePowerShell(parsed.command, { cwd: context.cwd, timeoutMs: parsed.timeout_ms, signal: context.abortSignal });
+    const interpretation = interpretPowerShellCommand(parsed.command, result.code, result.stdout, result.stderr);
     await context.auditSink?.({
       type: "shell_command",
       session_id: context.sessionId,
@@ -28,32 +32,26 @@ export const powerShellTool: Tool = {
       attempt: context.attempt,
       tool: "PowerShell",
       command: parsed.command,
-      destructive
+      destructive: isDestructiveShellCommand(parsed),
+      executor: "powershell",
+      executable: result.executable,
+      fallback: false,
+      exit_code: result.code
     });
-    if (process.platform !== "win32") {
-      return { error: "PowerShell is only supported on Windows in this MVP", exit_code: 1 };
+    if (interpretation.isError || result.interrupted) {
+      throw new ShellExecutionError(result.stdout, result.stderr, result.code, result.interrupted, "powershell", result.executable, false, interpretation.message);
     }
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn("powershell", ["-NoProfile", "-Command", parsed.command], { cwd: context.cwd, windowsHide: true });
-      } catch (error) {
-        resolve({ error: error instanceof Error ? error.message : String(error), exit_code: 1 });
-        return;
+    return {
+      output: result.stdout,
+      stderr: result.stderr || undefined,
+      exit_code: result.code,
+      data: {
+        executor: "powershell",
+        executable: result.executable,
+        fallback: false,
+        semantic_success: true,
+        return_code_interpretation: interpretation.message
       }
-      let output = "";
-      let error = "";
-      const timer = setTimeout(() => child.kill(), parsed.timeout_ms);
-      child.stdout.on("data", (chunk) => { output += String(chunk); });
-      child.stderr.on("data", (chunk) => { error += String(chunk); });
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({ error: err.message, exit_code: 1 });
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({ output, error, exit_code: code ?? 1 });
-      });
-    });
+    };
   }
 };

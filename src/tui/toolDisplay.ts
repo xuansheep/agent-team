@@ -40,6 +40,7 @@ export function getToolResultDetail(result: unknown): string {
   const value = result as Record<string, unknown>;
   const lines: string[] = [];
   if (typeof value.output === "string") lines.push(`输出：${value.output || "(no output)"}`);
+  if (typeof value.stderr === "string" && value.stderr) lines.push(`标准错误：${value.stderr}`);
   if (typeof value.error === "string" && value.error) lines.push(`错误：${value.error}`);
   if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
   if (typeof value.path === "string") lines.push(`路径：${value.path}`);
@@ -52,9 +53,10 @@ export function getCompactToolResultDetail(result: unknown): string {
   const output = typeof value.output === "string" ? value.output : undefined;
   const outputLines = output?.split(/\r?\n/) ?? [];
   if (output?.endsWith("\n") && outputLines.at(-1) === "") outputLines.pop();
-  if (!value.error && outputLines.length <= 5) return "";
+  if (!value.error && !value.stderr && outputLines.length <= 5) return "";
   const lines: string[] = [];
   if (output !== undefined) lines.push(`输出：${output ? compactToolOutput(output) : "(no output)"}`);
+  if (typeof value.stderr === "string" && value.stderr) lines.push(`标准错误：${truncate(value.stderr, 500)}`);
   if (typeof value.error === "string" && value.error) lines.push(`错误：${truncate(value.error, 500)}`);
   if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
   if (typeof value.path === "string") lines.push(`路径：${value.path}`);

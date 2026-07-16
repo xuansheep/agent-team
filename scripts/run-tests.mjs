@@ -13,6 +13,8 @@ async function collectTests(dir) {
   return files;
 }
 
+process.env.EINSTEINS_HOME ??= resolve(".tmp", "test-home", String(process.pid));
+
 const root = resolve("dist-test", "tests");
 const requested = process.argv.slice(2);
 const files = requested.length > 0

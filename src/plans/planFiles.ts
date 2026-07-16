@@ -1,20 +1,35 @@
+import { existsSync } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join } from "node:path";
-import { createSessionDir, getSessionSlug, planFilePathForSessionDir } from "../storage/sessionPaths.js";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { getSessionSlug, planFilePathForSessionDir } from "../storage/sessionPaths.js";
+import { sanitizeProjectPath } from "../storage/projectStorage.js";
 
-const defaultPlansDirectory = ".session/plans";
 const maxPlanSlugLength = 64;
 
 export function getPlanSlug(sessionId: string): string {
   return getSessionSlug(sessionId);
 }
 
-export function getPlanFilePath(sessionId: string, cwd = process.cwd(), plansDirectory = defaultPlansDirectory): string {
-  if (plansDirectory !== defaultPlansDirectory) {
+export function getPlanFilePath(sessionId: string, cwd = process.cwd(), plansDirectory?: string, homeDir = process.env.EINSTEINS_HOME ?? homedir()): string {
+  if (plansDirectory) {
     const directory = isAbsolute(plansDirectory) ? plansDirectory : join(cwd, plansDirectory);
     return join(directory, `${getPlanSlug(sessionId)}.md`);
   }
-  return planFilePathForSessionDir(createSessionDir(join(cwd, ".session"), sessionId));
+  const resolvedCwd = resolve(cwd);
+  let projectPath = resolvedCwd;
+  let current = resolvedCwd;
+  for (;;) {
+    if (existsSync(join(current, ".git"))) {
+      projectPath = current;
+      break;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  const projectDir = join(homeDir, ".einsteins", "projects", sanitizeProjectPath(projectPath));
+  return planFilePathForSessionDir(join(projectDir, getSessionSlug(sessionId)));
 }
 
 export async function readPlan(planFilePath: string): Promise<string | undefined> {

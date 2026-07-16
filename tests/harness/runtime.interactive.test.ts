@@ -573,6 +573,58 @@ describe("runNode interactive permissions", () => {
     assert.deepEqual(requests.map((request) => request.attempt), [1, 1]);
     assert.match(JSON.stringify(requests[1]?.messages), /Return exactly one valid NodeResult JSON object/);
   });
+  it("propagates abort to an active tool without recording a normal failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-abort-tool-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    tools.add({
+      name: "BlockingTool",
+      description: "blocking test tool",
+      input_schema: {},
+      async execute(_input, context) {
+        markStarted();
+        return new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(context.abortSignal?.reason);
+          if (context.abortSignal?.aborted) abort();
+          else context.abortSignal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+    });
+    const provider: ModelProvider = {
+      async generate() {
+        return { content: "I am starting the blocking tool.", tool_calls: [{ id: "tool-abort", name: "BlockingTool", input: {} }] };
+      }
+    };
+    const controller = new AbortController();
+    const execution = runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["BlockingTool"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      abortSignal: controller.signal
+    });
+
+    await started;
+    controller.abort();
+    await assert.rejects(execution, (error: unknown) => error instanceof Error && error.name === "AbortError");
+
+    const events = await store.loadEvents(run.runId);
+    assert.equal(events.some((event) => event.type === "tool_invoked" && event.tool_call_id === "tool-abort"), true);
+    assert.equal(events.some((event) => event.type === "tool_completed" && event.tool_call_id === "tool-abort"), false);
+    assert.equal(events.some((event) => event.type === "tool_failed" && event.tool_call_id === "tool-abort"), false);
+  });
 });
 describe("runNode streaming", () => {
   it("stores model stream deltas and still returns the final node result", async () => {

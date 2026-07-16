@@ -28,6 +28,7 @@ export type PromptKey = {
   downArrow?: boolean;
   ctrl?: boolean;
   meta?: boolean;
+  shift?: boolean;
 };
 
 const homeSequences = new Set(["\u001b[H", "\u001bOH", "\u001b[1~", "\u001b[7~"]);
@@ -40,8 +41,8 @@ export function resolvePromptKey(input: string, key: PromptKey, mode: "input" | 
     if (key.escape) return "cancel";
     return "none";
   }
-  if (key.return && key.meta) return "newline";
-  if (input === "\n" && key.ctrl) return "newline";
+  if (key.return && key.meta) return "none";
+  if (key.return && (key.shift || key.ctrl)) return "newline";
   if (key.ctrl) {
     if (input === "a") return "home";
     if (input === "e") return "end";

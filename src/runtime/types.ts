@@ -64,6 +64,7 @@ export type RuntimeEvent =
   | { type: "runtime_tool_invoked"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown }
   | { type: "runtime_tool_completed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; result: unknown }
   | { type: "runtime_tool_failed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; error: string }
+  | { type: "runtime_skill_activated"; session_id: string; run_id?: string; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }
   | PlanModeEvent;
 
 export type RuntimeTurnInput = {

@@ -3,6 +3,7 @@ import type { ModelStopReason } from "../providers/types.js";
 
 export type HarnessEvent =
   | { type: "run_started"; workflow_id: string; input: unknown }
+  | { type: "run_continued"; workflow_id: string; input: unknown }
   | { type: "user_message"; text: string; node_id?: string; attempt?: number }
   | { type: "node_started"; node_id: string; attempt: number; activation?: number }
   | { type: "node_waiting_user"; node_id: string; attempt?: number; activation?: number; questions: unknown[] }
@@ -12,7 +13,9 @@ export type HarnessEvent =
   | { type: "model_usage_recorded"; node_id: string; attempt: number; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "tool_invoked"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; input: unknown }
   | { type: "tool_completed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; result: unknown }
-  | { type: "tool_failed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; error: string }
+  | { type: "tool_failed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; error: string; result?: unknown }
+  | { type: "artifact_read"; node_id: string; attempt?: number; artifact_id: string; offset: number; bytes_read: number; total_bytes: number; truncated: boolean; source: "handoff" | "tool" }
+  | { type: "skill_activated"; node_id: string; attempt?: number; activation?: number; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }
   | { type: "artifact_created"; node_id: string; artifact_id: string; path: string }
   | { type: "node_completed"; node_id: string; attempt?: number; activation?: number; status: "success" | "failure" | "completed" | "suspended"; result: unknown }
   | { type: "transition"; from: string; to: string; reason: "success" | "failure" | "forward" | "backward"; activation?: number }

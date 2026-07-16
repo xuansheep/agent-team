@@ -19,9 +19,22 @@ export async function checkToolPermission(
   }
 
   if (context.mode === "plan") return checkPlanModePermission(tool, input, context);
-  if (context.mode === "fullAccess") return { decision: "allow" };
 
-  return decidePermission(tool.name, specifier, context);
+  const askDecision = firstRuleDecision(tool.name, specifier, context.ask, "ask");
+  if (askDecision) return askDecision;
+
+  if (await tool.requiresPermissionPrompt?.(input, context)) {
+    return { decision: "ask", reason: `Safety confirmation required for ${tool.name}` };
+  }
+
+  if (context.mode === "fullAccess") return { decision: "allow" };
+  if (tool.name === "UseSkill") return { decision: "allow", reason: "safe skill activation" };
+
+  return decidePermission(tool.name, specifier, {
+    deny: context.deny,
+    ask: context.ask,
+    allow: [...context.allow, ...(context.transientAllow ?? [])]
+  });
 }
 
 async function checkPlanModePermission(
@@ -64,10 +77,13 @@ function firstRuleDecision(
   tool: string,
   specifier: string,
   rules: string[],
-  decision: "deny"
+  decision: "ask" | "deny"
 ): ToolPermissionDecision | undefined {
   for (const rule of rules) {
-    const result = decidePermission(tool, specifier, { allow: [], ask: [], deny: [rule] });
+    const permissions = decision === "deny"
+      ? { allow: [], ask: [], deny: [rule] }
+      : { allow: [], ask: [rule], deny: [] };
+    const result = decidePermission(tool, specifier, permissions);
     if (result.decision === decision) return result;
   }
   return undefined;
@@ -80,6 +96,7 @@ function isWorkflowExecutionTool(toolName: string): boolean {
 function toolSpecifier(tool: string, input: unknown): string {
   const value = input as Record<string, unknown>;
   if (tool === "Bash" || tool === "PowerShell") return String(value.command ?? "");
+  if (tool === "UseSkill") return String(value.name ?? "").trim().replace(/^\//, "");
   if (typeof value.file_path === "string") return value.file_path;
   if (typeof value.path === "string") return value.path;
   if (typeof value.url === "string") return value.url;

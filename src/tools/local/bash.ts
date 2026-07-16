@@ -1,13 +1,15 @@
-import { spawn } from "node:child_process";
 import { z } from "zod";
+import { ShellExecutionError } from "../errors.js";
 import { Tool } from "../types.js";
+import { interpretBashCommand, interpretPowerShellCommand } from "./commandSemantics.js";
+import { executeBash, executePowerShell, ShellStartError } from "./shellProvider.js";
 import { isDestructiveShellCommand, isReadOnlyShellCommand } from "./shellSafety.js";
 
 const inputSchema = z.object({ command: z.string().min(1), timeout_ms: z.number().int().positive().default(120000) });
 
 export const bashTool: Tool = {
   name: "Bash",
-  description: "Run a shell command in the workspace",
+  description: "Run a Bash command in the workspace. On Windows this uses Git Bash and falls back to PowerShell only when Bash cannot start.",
   input_schema: {
     type: "object",
     properties: { command: { type: "string" }, timeout_ms: { type: "number" } },
@@ -19,7 +21,21 @@ export const bashTool: Tool = {
   requiresUserInteraction: () => false,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
-    const destructive = isDestructiveShellCommand(parsed);
+    let result;
+    let executor: "bash" | "powershell" = "bash";
+    let fallback = false;
+    try {
+      result = await executeBash(parsed.command, { cwd: context.cwd, timeoutMs: parsed.timeout_ms, signal: context.abortSignal });
+    } catch (error) {
+      if (!(error instanceof ShellStartError) || process.platform !== "win32") throw error;
+      executor = "powershell";
+      fallback = true;
+      result = await executePowerShell(parsed.command, { cwd: context.cwd, timeoutMs: parsed.timeout_ms, signal: context.abortSignal });
+    }
+
+    const interpretation = executor === "bash"
+      ? interpretBashCommand(parsed.command, result.code, result.stdout, result.stderr)
+      : interpretPowerShellCommand(parsed.command, result.code, result.stdout, result.stderr);
     await context.auditSink?.({
       type: "shell_command",
       session_id: context.sessionId,
@@ -28,29 +44,26 @@ export const bashTool: Tool = {
       attempt: context.attempt,
       tool: "Bash",
       command: parsed.command,
-      destructive
+      destructive: isDestructiveShellCommand(parsed),
+      executor,
+      executable: result.executable,
+      fallback,
+      exit_code: result.code
     });
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = spawn(parsed.command, { cwd: context.cwd, shell: true, windowsHide: true });
-      } catch (error) {
-        resolve({ error: error instanceof Error ? error.message : String(error), exit_code: 1 });
-        return;
+    if (interpretation.isError || result.interrupted) {
+      throw new ShellExecutionError(result.stdout, result.stderr, result.code, result.interrupted, executor, result.executable, fallback, interpretation.message);
+    }
+    return {
+      output: result.stdout,
+      stderr: result.stderr || undefined,
+      exit_code: result.code,
+      data: {
+        executor,
+        executable: result.executable,
+        fallback,
+        semantic_success: true,
+        return_code_interpretation: interpretation.message
       }
-      let output = "";
-      let error = "";
-      const timer = setTimeout(() => child.kill(), parsed.timeout_ms);
-      child.stdout.on("data", (chunk) => { output += String(chunk); });
-      child.stderr.on("data", (chunk) => { error += String(chunk); });
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({ error: err.message, exit_code: 1 });
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({ output, error, exit_code: code ?? 1 });
-      });
-    });
+    };
   }
 };

@@ -131,7 +131,7 @@ export class QueryEngine {
         : calls;
       for (const call of executableCalls) {
         const tool = input.tools.get(call.name);
-          const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, auditSink: input.auditSink, provider: input.provider, model: input.model, toolRegistry: input.tools.legacyRegistry, permissionMode: session.toolPermissionContext.mode };
+          const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, planFilePath: session.toolPermissionContext.planFilePath, auditSink: input.auditSink, provider: input.provider, model: input.model, toolRegistry: input.tools.legacyRegistry, permissionMode: session.toolPermissionContext.mode };
         const interaction = await tool.requiresUserInteraction(call.input, context);
         if (interaction?.type === "ask_user_question") {
           const result = await tool.execute(call.input, context);

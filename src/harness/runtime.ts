@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelMessage, ModelProvider, ModelResponse, ModelToolCall } from "../providers/types.js";
-import { skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
+import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { hasModelUsage } from "../model/usage.js";
+import { executeTool, toolFailureResult } from "../tools/errors.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { Tool, ToolResult } from "../tools/types.js";
 import { RunStore } from "../storage/runStore.js";
@@ -36,13 +37,32 @@ export type NodeRuntimeOptions = {
   onDialogueMessages?: (messages: ModelMessage[]) => Promise<void> | void;
   interaction?: RuntimeInteraction;
   eventSink?: (event: StoredEvent) => void;
+  abortSignal?: AbortSignal;
 };
 export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> {
+  options.abortSignal?.throwIfAborted();
   const attempt = options.attempt ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
   let requestTools = [...options.tools.list(), submitNodeResultTool];
   const runtimePermissions = normalizeRuntimePermissions(options.permissions);
-  const baseMessages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff, { tools: requestTools, permissionMode: runtimePermissions.mode, navigation: options.navigation });
+  await restoreSkillPermissions(options, runtimePermissions, attempt);
+  const baseMessages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff, {
+    tools: requestTools,
+    permissionMode: runtimePermissions.mode,
+    navigation: options.navigation,
+    runDir: options.store.runDir(options.runId),
+    onArtifactRead: async (chunk) => { await appendRuntimeEvent(options, {
+      type: "artifact_read",
+      node_id: options.node.id,
+      attempt,
+      artifact_id: chunk.artifact_id,
+      offset: chunk.offset,
+      bytes_read: Buffer.byteLength(chunk.content, "utf8"),
+      total_bytes: chunk.total_bytes,
+      truncated: chunk.truncated,
+      source: "handoff"
+    }); }
+  });
   const messages: ModelMessage[] = [...baseMessages, ...(options.dialogueMessages ?? [])];
   const baseMessageCount = baseMessages.length;
   const turnExecutor = new RuntimeTurnExecutor();
@@ -57,6 +77,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   };
   if (await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables)) await persistDialogueMessages();
   for (;;) {
+    options.abortSignal?.throwIfAborted();
     assertResolvedToolCallHistory(messages);
     requestTools = [...options.tools.list(), submitNodeResultTool];
     const request = {
@@ -65,6 +86,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       messages: messages.slice(),
       tools: requestTools,
       response_schema: requestTools.length ? undefined : nodeResultJsonSchema,
+      signal: options.abortSignal,
       context: {
         runId: options.runId,
         nodeId: options.node.id,
@@ -89,6 +111,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       }
     });
     await streamEventWrites;
+    options.abortSignal?.throwIfAborted();
     await appendModelUsageEvent(options, attempt, options.model, response);
     if (!streamed) await appendNonStreamingResponseEvents(options, attempt, response);
     if (response.tool_calls?.length) {
@@ -106,8 +129,15 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       }
       await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls });
       for (const call of response.tool_calls) {
+        options.abortSignal?.throwIfAborted();
         options.tools.activateSkillsForInput(call.input, options.cwd);
         const specifier = toolSpecifier(call.name, call.input);
+        if (!options.tools.has(call.name)) {
+          const failure: ToolResult = { is_error: true, error: `Unknown tool ${call.name}` };
+          await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, error: failure.error!, result: failure });
+          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, is_error: true, content: JSON.stringify(failure) });
+          continue;
+        }
         const tool = options.tools.get(call.name);
         const permission = await checkToolPermission(tool, call.input, { ...runtimePermissions, cwd: options.cwd });
         if (permission.decision === "deny") {
@@ -152,17 +182,19 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
             tool_call_id: call.id,
             decision
           });
+          options.abortSignal?.throwIfAborted();
           if (decision === "deny_once") {
             const error = `Permission denied by user for ${call.name}`;
             await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, error });
-            await appendDialogueMessage({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error }) });
+            await appendDialogueMessage({ role: "tool", tool_call_id: call.id, is_error: true, content: JSON.stringify({ is_error: true, error }) });
             continue;
           }
         }
+        options.abortSignal?.throwIfAborted();
         await assertToolCallCanExecute(options, attempt, call, tool);
         await appendRuntimeEvent(options, { type: "tool_invoked", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, input: call.input });
         try {
-          const result = await tool.execute(call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt, activation: options.activation ?? 1, runId: options.runId, provider: options.provider, model: options.model, toolRegistry: options.tools, permissionMode: runtimePermissions.mode });
+          const result = await executeTool(tool, call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt, activation: options.activation ?? 1, runId: options.runId, provider: options.provider, model: options.model, toolRegistry: options.tools, permissionMode: runtimePermissions.mode, planFilePath: runtimePermissions.planFilePath, abortSignal: options.abortSignal });
           await appendRuntimeEvent(options, { type: "tool_completed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, result });
           const artifact = artifactFromToolResult(result);
           if (artifact) {
@@ -171,16 +203,37 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
               artifactDeliverables.push({ artifact_id: artifact.artifact_id, description: artifact.description });
             }
           }
-          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+          const artifactRead = artifactReadFromToolResult(call.name, result);
+          if (artifactRead) {
+            await appendRuntimeEvent(options, { type: "artifact_read", node_id: options.node.id, attempt, source: "tool", ...artifactRead });
+          }
+          const skillActivation = skillActivationFromToolResult(result);
+          if (skillActivation) {
+            applySkillPermissionRules(runtimePermissions, skillPermissionRulesFromToolResult(result));
+            await appendRuntimeEvent(options, {
+              type: "skill_activated",
+              node_id: options.node.id,
+              attempt,
+              activation: options.activation,
+              name: skillActivation.name,
+              mode: skillActivation.mode,
+              source: skillActivation.source,
+              version: skillActivation.version,
+              allowed_tools: skillActivation.allowedTools
+            });
+          }
+          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, ...(result.is_error === true ? { is_error: true } : {}), content: JSON.stringify(result) });
           const skillMessage = skillSystemMessageFromToolResult(result);
           if (skillMessage) await appendDialogueMessage(skillMessage);
           const skillOverrides = skillRuntimeOverridesFromToolResult(result);
           if (skillOverrides?.model) options.model = skillOverrides.model;
           if (skillOverrides?.effort !== undefined) options.effort = skillOverrides.effort;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, error: message });
-          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: message }) });
+          options.abortSignal?.throwIfAborted();
+          const failure = toolFailureResult(error);
+            const message = failure.error ?? "Tool failed";
+          await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, error: message, result: failure });
+          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, is_error: true, content: JSON.stringify(failure) });
         }
       }
       continue;
@@ -218,9 +271,44 @@ function artifactFromToolResult(result: ToolResult): { artifact_id: string; path
   return { artifact_id: result.artifact_id, path: result.path, description: result.description ?? "" };
 }
 function normalizeRuntimePermissions(permissions: ToolPermissionContext | PermissionSet): ToolPermissionContext {
-  if ("mode" in permissions) return permissions;
-  return { mode: "default", source: "workflow", ...permissions };
+  if ("mode" in permissions) {
+    return {
+      ...permissions,
+      allow: permissions.allow.slice(),
+      ask: permissions.ask.slice(),
+      deny: permissions.deny.slice(),
+      transientAllow: permissions.transientAllow?.slice() ?? []
+    };
+  }
+  return { mode: "default", source: "workflow", allow: permissions.allow.slice(), ask: permissions.ask.slice(), deny: permissions.deny.slice(), transientAllow: [] };
 }
+
+async function restoreSkillPermissions(options: NodeRuntimeOptions, permissions: ToolPermissionContext, attempt: number): Promise<void> {
+  const activation = options.activation ?? 1;
+  const events = await options.store.loadEvents(options.runId);
+  const skills = events.filter((event): event is Extract<StoredEvent, { type: "skill_activated" }> =>
+    event.type === "skill_activated"
+    && event.node_id === options.node.id
+    && (event.attempt ?? 1) === attempt
+    && (event.activation ?? 1) === activation
+  );
+  for (const skill of skills) {
+    if (skill.mode === "inline") applySkillPermissionRules(permissions, skill.allowed_tools);
+  }
+  options.tools.skillRuntime?.restoreSession(options.runId, skills.map((skill) => skill.name));
+}
+
+function applySkillPermissionRules(permissions: ToolPermissionContext, rules: string[]): void {
+  permissions.transientAllow = [...new Set([...(permissions.transientAllow ?? []), ...rules])];
+}
+
+function artifactReadFromToolResult(tool: string, result: ToolResult): { artifact_id: string; offset: number; bytes_read: number; total_bytes: number; truncated: boolean } | undefined {
+  if (tool !== "ArtifactRead" || !result.data || typeof result.data !== "object" || Array.isArray(result.data)) return undefined;
+  const data = result.data as Record<string, unknown>;
+  if (typeof data.artifact_id !== "string" || typeof data.offset !== "number" || typeof data.content !== "string" || typeof data.total_bytes !== "number" || typeof data.truncated !== "boolean") return undefined;
+  return { artifact_id: data.artifact_id, offset: data.offset, bytes_read: Buffer.byteLength(data.content, "utf8"), total_bytes: data.total_bytes, truncated: data.truncated };
+}
+
 function nodeResultRepairPrompt(error: unknown): string {
   return [
     "The previous response was not a valid final NodeResult.",

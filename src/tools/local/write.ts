@@ -2,8 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { Tool } from "../types.js";
-import { resolveWorkspacePath } from "./path.js";
-import { writesSessionPlanFile } from "./planFile.js";
+import { resolvePlanAwareWritePath, writesSessionPlanFile } from "./planFile.js";
 
 const inputSchema = z.object({ file_path: z.string().min(1), content: z.string() });
 
@@ -21,7 +20,7 @@ export const writeTool: Tool = {
   writesPlanFile: writesSessionPlanFile,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
-    const path = resolveWorkspacePath(context.cwd, parsed.file_path);
+    const path = resolvePlanAwareWritePath(context, parsed.file_path);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, parsed.content, "utf8");
     await context.auditSink?.({

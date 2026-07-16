@@ -1,8 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
 import { Tool } from "../types.js";
-import { resolveWorkspacePath } from "./path.js";
-import { writesSessionPlanFile } from "./planFile.js";
+import { resolvePlanAwareWritePath, writesSessionPlanFile } from "./planFile.js";
 
 const editSchema = z.object({ old_string: z.string(), new_string: z.string() });
 const inputSchema = z.object({ file_path: z.string().min(1), edits: z.array(editSchema).min(1) });
@@ -21,7 +20,7 @@ export const multiEditTool: Tool = {
   writesPlanFile: writesSessionPlanFile,
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
-    const path = resolveWorkspacePath(context.cwd, parsed.file_path);
+    const path = resolvePlanAwareWritePath(context, parsed.file_path);
     let next = await readFile(path, "utf8");
     for (const edit of parsed.edits) {
       if (!next.includes(edit.old_string)) throw new Error(`old_string not found in ${parsed.file_path}`);

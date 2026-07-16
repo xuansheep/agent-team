@@ -24,9 +24,8 @@ import { setMcpServerDisabledState } from "../mcp/configMutations.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
-import { SessionIndex } from "../storage/sessionIndex.js";
+import type { PromptHistoryStore } from "../storage/promptHistoryStore.js";
 import { SessionStore } from "../storage/sessionStore.js";
-import { sessionDirFromPlanFilePath } from "../storage/sessionPaths.js";
 import { askUserQuestionModelResult } from "../tools/local/askUserQuestion.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
 import { WorkflowEngine } from "../workflow/engine.js";
@@ -41,6 +40,7 @@ import { buildMcpListChoice, buildMcpServerChoice, buildMcpToolDetailChoice, bui
 import type { SelectImageAttachment } from "./components/CustomSelect/index.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./components/PromptInput/types.js";
 import { ResultPanel } from "./components/ResultPanel.js";
+import { MainScrollBar } from "./components/MainScrollBar.js";
 import { RunLogPanel } from "./components/RunLogPanel.js";
 import { availableStatusLineElements, defaultStatusLineElements, StatusLine } from "./components/StatusLine.js";
 import type { StatusLineElement } from "./components/StatusLine.js";
@@ -70,6 +70,8 @@ export function TuiApp({
   editQuestionText = (text: string) => editTextInExternalEditor(text, cwd),
   planSavedMessageDurationMs = 5000,
   settings,
+  promptHistoryStore,
+  sessionStore: providedSessionStore,
   mcpRuntime,
   skillRuntime,
   diagnostics,
@@ -90,6 +92,8 @@ export function TuiApp({
   editQuestionText?: ExternalTextEditor;
   planSavedMessageDurationMs?: number;
   settings?: ResolvedAgentTeamSettings;
+  promptHistoryStore?: PromptHistoryStore;
+  sessionStore?: SessionStore;
   mcpRuntime?: McpRuntime;
   skillRuntime?: SkillRuntime;
   diagnostics?: RuntimeDiagnostics;
@@ -146,8 +150,9 @@ export function TuiApp({
   const planQuestionImageIdRef = useRef(1);
   const [planQuestionImages, setPlanQuestionImages] = useState<Record<string, SelectImageAttachment[]>>({});
   const sessionStoreRef = useRef<SessionStore>();
-  if (!sessionStoreRef.current) sessionStoreRef.current = new SessionStore(join(cwd, ".session"));
+  if (!sessionStoreRef.current) sessionStoreRef.current = providedSessionStore ?? new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
   const sessionStore = sessionStoreRef.current;
+  const currentSessionIdRef = useRef(promptHistoryStore?.sessionId ?? randomUUID());
   const listeningSessionRef = useRef<WorkflowSession>();
   const abandonedRunIdsRef = useRef<Set<string>>(new Set());
   const lastWorkflowPromptRef = useRef("");
@@ -316,6 +321,7 @@ export function TuiApp({
   }, [stdin, state.mode, hasSelection, selection]);
   const resetSession = () => {
     sessionRef.current = undefined;
+    currentSessionIdRef.current = randomUUID();
     planSessionRef.current = undefined;
     resetPlanApprovalFeedback();
     resetPlanQuestionImages();
@@ -342,6 +348,9 @@ export function TuiApp({
   };
   const attachSession = (session: WorkflowSession, nextWorkflowId: string, options: { preserveLogs?: boolean; inputPermissionMode?: PermissionMode } = {}) => {
     sessionRef.current = session;
+    const sessionId = session.sessionId ?? currentSessionIdRef.current;
+    currentSessionIdRef.current = sessionId;
+    if (providedSessionStore) void sessionStore.attachRun(sessionId, session.runId).catch((error) => failUi(error));
     mainScrollRef.current?.scrollToBottom();
     setState((current) => resetTuiRunState(current, { workflowId: nextWorkflowId, runId: session.runId, preserveLogs: options.preserveLogs === true, inputPermissionMode: options.inputPermissionMode }));
     listenSession(session, nextWorkflowId);
@@ -361,7 +370,7 @@ export function TuiApp({
       });
   };
 
-  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean; preserveLogs?: boolean; inputPermissionMode?: PermissionMode; sessionId?: string; sessionDir?: string } = {}) => {
+  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean; preserveLogs?: boolean; inputPermissionMode?: PermissionMode; sessionId?: string } = {}) => {
     if (!config || !engine) {
       failUi("TUI is missing workflow configuration");
       return;
@@ -374,12 +383,8 @@ export function TuiApp({
       const session = await engine.startInteractive(config, selectedWorkflowId, input, {
         permissionMode: options.permissionMode ?? workflowPermissionMode(state.inputPermissionMode),
         ...(options.clearContext === true ? { clearContext: true } : {}),
-        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
-        ...(options.sessionDir ? { sessionDir: options.sessionDir } : {})
+        sessionId: options.sessionId ?? currentSessionIdRef.current
       });
-      if (options.sessionId) {
-        void sessionStore.saveMetadata(options.sessionId, { workflowRunId: session.runId, runId: session.runId, workflowId: selectedWorkflowId }).catch((error) => failUi(error));
-      }
       attachSession(session, selectedWorkflowId, { preserveLogs: options.preserveLogs === true, inputPermissionMode: options.inputPermissionMode });
     } catch (error) {
       failUi(error);
@@ -387,7 +392,7 @@ export function TuiApp({
   };
   const startRun = async (text: string) => {
     lastWorkflowPromptRef.current = text;
-    await startWorkflowInput({ request: text, images: [] });
+    await startWorkflowInput({ request: text, images: [] }, { sessionId: currentSessionIdRef.current });
   };
 
   const resumeRun = async (runId: string) => {
@@ -397,6 +402,7 @@ export function TuiApp({
     }
     try {
       const session = await engine.resumeInteractive(config, runId);
+      currentSessionIdRef.current = session.sessionId ?? currentSessionIdRef.current;
       setSelectedWorkflowId(session.state.workflow_id);
       attachSession(session, session.state.workflow_id);
     } catch (error) {
@@ -417,6 +423,16 @@ export function TuiApp({
     listenSession(session, nextWorkflowId);
     void continuation.catch((error) => failUi(error));
   };
+  const resumeSession = (text: string) => {
+    const session = sessionRef.current;
+    if (!session) {
+      void startRun(text);
+      return;
+    }
+    lastWorkflowPromptRef.current = text;
+    setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
+    void session.resumeWithUserInput({ answer: text }).catch((error) => failUi(error));
+  };
   const savePlanSession = (plan: PlanSessionState) => {
     void sessionStore.savePlanState(plan.sessionId, plan).catch((error) => failUi(error));
   };
@@ -433,8 +449,13 @@ export function TuiApp({
   const enterGlobalPlanMode = () => {
     const previousPlan = planSessionRef.current;
     const reentry = Boolean(previousPlan?.mode === "inactive" && previousPlan.approvedPlan?.trim());
+    const sessionId = reentry ? previousPlan?.sessionId ?? currentSessionIdRef.current : currentSessionIdRef.current;
+    currentSessionIdRef.current = sessionId;
+    const planFilePath = reentry && previousPlan?.planFilePath
+      ? previousPlan.planFilePath
+      : join(sessionStore.sessionDir(sessionId), "plans", "plan.md");
     const entered = enterPlanMode({
-      sessionId: reentry ? previousPlan?.sessionId ?? randomUUID() : randomUUID(),
+      sessionId,
       cwd,
       originalInput: { request: "" },
       permissions: {
@@ -443,7 +464,7 @@ export function TuiApp({
         ask: [],
         deny: [],
         source: persistedDefaultExecutionModeRef.current === state.defaultExecutionMode ? "settings" : "session",
-        ...(reentry ? { planFilePath: previousPlan?.planFilePath } : {})
+        planFilePath
       },
       reentry
     });
@@ -703,15 +724,6 @@ export function TuiApp({
       ...current,
       error: undefined,
       logMessages: [...current.logMessages, { ...statusLog(result.text, result.detailText), detailVisible: true }]
-    }));
-    requestMainScrollToBottom();
-  };
-  const showDiagnostics = () => {
-    const currentDiagnostics = collectDiagnostics?.() ?? diagnostics;
-    setState((current) => ({
-      ...current,
-      error: undefined,
-      logMessages: [...current.logMessages, { ...statusLog("Runtime diagnostics", diagnosticsDetailText(currentDiagnostics)), detailVisible: true }]
     }));
     requestMainScrollToBottom();
   };
@@ -1135,7 +1147,6 @@ ${message.detailText}` : ""}` }
       inputPermissionMode: execution.permissionMode,
       preserveLogs: true,
       sessionId: nextPlan.sessionId,
-      sessionDir: sessionDirFromPlanFilePath(nextPlan.planFilePath),
       ...(execution.clearContext ? { clearContext: true } : {})
     });
     return true;
@@ -1154,19 +1165,21 @@ ${message.detailText}` : ""}` }
   };
   const restorePlanSession = async (sessionId: string) => {
     const metadata = await sessionStore.loadMetadata(sessionId);
+    currentSessionIdRef.current = sessionId;
     const transcript = await sessionStore.loadTranscript(sessionId);
     let plan = metadata?.plan;
     if (!plan) {
       plan = await recoverMissingPlanSession({
         sessionId,
         cwd,
+        planFilePath: join(sessionStore.sessionDir(sessionId), "plans", "plan.md"),
         messages: transcript.map((entry) => entry.message)
       });
       if (plan) savePlanSession(plan);
     }
     if (!plan) {
-      if (metadata?.workflowRunId) {
-        await resumeRun(metadata.workflowRunId);
+      if (metadata?.currentRunId) {
+        await resumeRun(metadata.currentRunId);
         return;
       }
       setState((current) => ({ ...current, mode: "input", error: `Session ${sessionId} has no resumable state` }));
@@ -1216,7 +1229,7 @@ ${message.detailText}` : ""}` }
       return;
     }
 
-    if (metadata?.workflowRunId) await resumeRun(metadata.workflowRunId);
+    if (metadata?.currentRunId) await resumeRun(metadata.currentRunId);
     else setState((current) => ({ ...current, mode: "input", error: `Session ${sessionId} is not waiting for resume` }));
   };
   const resumeById = async (id: string) => {
@@ -1229,41 +1242,44 @@ ${message.detailText}` : ""}` }
       return;
     }
     const metadata = await sessionStore.loadMetadata(id);
-    if (metadata?.plan || metadata?.workflowRunId) await restorePlanSession(id);
+    if (metadata?.plan || metadata?.currentRunId) await restorePlanSession(id);
     else await resumeRun(id);
   };
 
   const openResumePicker = async () => {
     try {
       const runs = engine ? await engine.listRuns({ limit: 30 }) : [];
-      const index = new SessionIndex(join(cwd, ".session"));
-      const indexedSessions = await index.list();
-      const sessions = indexedSessions.length ? indexedSessions : await index.rebuildFromMetadata();
-      const sessionEntries = (await Promise.all(sessions.map(async (entry) => {
-        const metadata = await sessionStore.loadMetadata(entry.sessionId).catch(() => undefined);
-        let plan = metadata?.plan;
-        if (!plan && !metadata?.workflowRunId) {
-          const transcript = await sessionStore.loadTranscript(entry.sessionId).catch(() => []);
+      const runById = new Map(runs.map((run) => [run.runId, run]));
+      const sessions = await sessionStore.listSessions({ limit: 30 });
+      const sessionEntries = (await Promise.all(sessions.map(async (metadata) => {
+        let plan = metadata.plan;
+        if (!plan && !metadata.currentRunId) {
+          const transcript = await sessionStore.loadTranscript(metadata.sessionId).catch(() => []);
           plan = await recoverMissingPlanSession({
-            sessionId: entry.sessionId,
+            sessionId: metadata.sessionId,
             cwd,
+            planFilePath: join(sessionStore.sessionDir(metadata.sessionId), "plans", "plan.md"),
             messages: transcript.map((item) => item.message)
           });
           if (plan) savePlanSession(plan);
         }
+        const run = metadata.currentRunId ? runById.get(metadata.currentRunId) : undefined;
         return {
           kind: "session" as const,
-          id: `session:${entry.sessionId}`,
-          sessionId: entry.sessionId,
-          status: plan?.mode ?? metadata?.status ?? entry.status,
-          workflowRunId: metadata?.workflowRunId ?? entry.workflowRunId,
-          updatedAt: entry.updatedAt,
-          inputPreview: plan ? inputPreview(plan.originalInput) : metadata?.workflowRunId ?? entry.sessionId,
+          id: `session:${metadata.sessionId}`,
+          sessionId: metadata.sessionId,
+          status: plan?.mode ?? run?.status ?? "session",
+          workflowRunId: metadata.currentRunId,
+          updatedAt: metadata.lastActivityAt,
+          inputPreview: plan ? inputPreview(plan.originalInput) : metadata.inputPreview ?? run?.inputPreview ?? metadata.currentRunId ?? metadata.sessionId,
           planMode: plan?.mode
         };
       }))).filter((entry) => entry.planMode === "planning" || entry.planMode === "waiting_approval" || entry.workflowRunId);
-      const runEntries = runs.map((run) => ({ ...run, kind: "run" as const, id: `run:${run.runId}` }));
-      const resumeRuns = [...sessionEntries, ...runEntries].slice(0, 30);
+      const linkedRunIds = new Set(sessionEntries.flatMap((entry) => entry.workflowRunId ? [entry.workflowRunId] : []));
+      const orphanRunEntries = runs
+        .filter((run) => !linkedRunIds.has(run.runId))
+        .map((run) => ({ ...run, kind: "run" as const, id: `run:${run.runId}` }));
+      const resumeRuns = [...sessionEntries, ...orphanRunEntries].slice(0, 30);
       if (!resumeRuns.length) {
         setState((current) => ({ ...current, mode: "input", resumeRuns: [], error: "No sessions found" }));
         return;
@@ -1279,9 +1295,9 @@ ${message.detailText}` : ""}` }
     }
     if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || isPlanSessionAcceptingInput(planSessionRef.current)) {
       enqueuePlanTurn(content);
-    } else if (state.mode === "paused" && state.runId) {
-      continueSession(content);
-    } else if (state.runId || state.mode === "completed" || state.mode === "failed" || state.mode === "interrupted") {
+    } else if ((state.mode === "paused" || state.mode === "interrupted") && state.runId) {
+      resumeSession(content);
+    } else if (state.runId || state.mode === "completed" || state.mode === "failed") {
       continueSession(content);
     } else {
       void startRun(content);
@@ -1414,9 +1430,6 @@ ${message.detailText}` : ""}` }
       if (event.name === "statusline") {
         updateStatusline(event.args);
       }
-      if (event.name === "diagnostics") {
-        showDiagnostics();
-      }
       if (event.name === "new") {
         if (isActiveSessionMode(state.mode)) setState((current) => ({ ...current, mode: "confirm_new", modeBeforeConfirmation: current.mode }));
         else resetSession();
@@ -1461,10 +1474,7 @@ ${message.detailText}` : ""}` }
     }
     if (planQuestionRef.current || state.mode === "question") {
       if (planQuestionRef.current) void continuePlanQuestion(freeformQuestionAnswer(nextQuestionSlice(planQuestionRef.current.questions, planQuestionRef.current.index), event.text)).catch((error) => failUi(error));
-      else {
-        setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
-        void sessionRef.current?.resumeWithUserInput({ answer: event.text }).catch((error) => failUi(error));
-      }
+      else resumeSession(event.text);
       return;
     }
     if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || isPlanSessionAcceptingInput(planSessionRef.current)) {
@@ -1472,11 +1482,11 @@ ${message.detailText}` : ""}` }
       return;
     }
     if (state.mode === "permission" || state.mode === "confirm_interrupt" || state.mode === "confirm_new" || state.mode === "confirm_resume" || state.mode === "resume_picker" || state.mode === "select_workflow") return;
-    if (state.mode === "paused" && state.runId) {
-      continueSession(event.text);
+    if ((state.mode === "paused" || state.mode === "interrupted") && state.runId) {
+      resumeSession(event.text);
       return;
     }
-    if (state.runId || state.mode === "completed" || state.mode === "failed" || state.mode === "interrupted") {
+    if (state.runId || state.mode === "completed" || state.mode === "failed") {
       continueSession(event.text);
       return;
     }
@@ -1794,20 +1804,29 @@ ${message.detailText}` : ""}` }
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
       <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
-      <ScrollBox ref={mainScrollRef} flexDirection="column" height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
-        {planApprovalOverlayVisible && state.pendingReview ? (
-          <PlanApprovalOverlay review={state.pendingReview} planFilePath={planApprovalPlanFilePath} editorName={externalEditorDisplayName()} maxDocumentLines={planApprovalDocumentMaxLines} scrollOffset={planApprovalDocumentOffset} />
-        ) : (
-          <>
-            {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
-            <RunLogPanel
-              items={logMessages}
-              detailMode={transcriptMode}
-            />
-            <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
-          </>
-        )}
-      </ScrollBox>
+      <Box flexDirection="row" height={layout.mainHeight}>
+        <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
+          {planApprovalOverlayVisible && state.pendingReview ? (
+            <PlanApprovalOverlay review={state.pendingReview} planFilePath={planApprovalPlanFilePath} editorName={externalEditorDisplayName()} maxDocumentLines={planApprovalDocumentMaxLines} scrollOffset={planApprovalDocumentOffset} />
+          ) : (
+            <>
+              {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
+              <RunLogPanel
+                items={logMessages}
+                detailMode={transcriptMode}
+              />
+              <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
+            </>
+          )}
+        </ScrollBox>
+        <MainScrollBar
+          scrollRef={mainScrollRef}
+          height={layout.mainHeight}
+          contentRevision={logMessages}
+          layoutRevision={transcriptMode + ":" + state.mode}
+          enabled={!planApprovalOverlayVisible}
+        />
+      </Box>
       <InteractionArea
         choice={activeChoice}
         mode={promptMode}
@@ -1818,6 +1837,7 @@ ${message.detailText}` : ""}` }
         questions={state.questions}
         isLoading={isLoading}
         permissionMode={state.inputPermissionMode}
+        historyStore={promptHistoryStore}
         hasSelection={hasSelection}
         promptText={promptText}
         inputDisabled={transcriptMode}
@@ -2717,7 +2737,7 @@ export function buildCommandMenuChoice(input: {
 function helpDetailText(): string {
   return [
     "Keyboard shortcuts:",
-    "  Enter submit · Alt+Enter newline",
+    "  Enter submit · Shift+Enter/Ctrl+Enter newline",
     "  Shift+Tab cycle mode or approve selected action",
     "  Ctrl+O transcript · Ctrl+G edit plan/focused text",
     "  Esc cancel · Ctrl+C stop current run or copy selection",
@@ -2725,9 +2745,8 @@ function helpDetailText(): string {
     "Slash commands:",
     "  /help show this help",
     "  /plan [open|text] Plan Mode, show/open plan, or send plan text",
-    "  /diagnostics show MCP and skill runtime diagnostics",
     "  /skills list available skills",
-    "  /mcp manage MCP servers",
+    "  /mcp list and manage MCP servers",
     "  /mcp enable|disable [server-name] toggle MCP servers",
     "  /mcp reconnect <server-name> reconnect an MCP server",
     "  /statusline [elements|default] customize the bottom statusline",
@@ -2736,28 +2755,6 @@ function helpDetailText(): string {
   ].join("\n");
 }
 
-function diagnosticsDetailText(diagnostics: RuntimeDiagnostics | undefined): string {
-  const mcp = diagnostics?.mcp ?? [];
-  const skills = diagnostics?.skills ?? [];
-  return [
-    `MCP servers: ${mcp.length}`,
-    ...mcp.map((server) => [
-      server.name,
-      server.state,
-      server.source,
-      server.error,
-      `tools=${server.toolCount}`,
-      `resources=${server.resourceCount}`,
-      `prompts=${server.promptCount}`
-    ].filter(Boolean).join(" ")),
-    `Skills: ${skills.length}`,
-    ...skills.map((skill) => [
-      skill.name,
-      skill.source,
-      skill.mode
-    ].join(" ")),
-  ].join("\n");
-}
 
 function parseStatuslineArgs(args: string[], current: StatusLineElement[]): { elements?: StatusLineElement[]; text: string; detailText: string } {
   const raw = args.join(" ").trim();
@@ -2976,9 +2973,10 @@ function displayPlanFilePath(planFilePath: string, cwd: string): string {
 async function recoverMissingPlanSession(input: {
   sessionId: string;
   cwd: string;
+  planFilePath: string;
   messages: ModelMessage[];
 }): Promise<PlanSessionState | undefined> {
-  const planFilePath = getPlanFilePath(input.sessionId, input.cwd);
+  const planFilePath = input.planFilePath;
   const document = await readPlanOrRecoverFromTranscript({ planFilePath, cwd: input.cwd, messages: input.messages });
   if (document === undefined) return undefined;
   return {

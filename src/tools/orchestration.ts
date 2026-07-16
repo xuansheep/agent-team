@@ -1,17 +1,19 @@
 import { ModelToolCall } from "../providers/types.js";
+import { executeTool, toolFailureResult } from "./errors.js";
 import { ToolRegistry } from "./registry.js";
 import { ToolContext, ToolResult } from "./types.js";
 
 export type ToolCallExecution = {
   call: ModelToolCall;
   result?: ToolResult;
+  failure?: ToolResult;
   error?: string;
 };
 
 export type ToolCallExecutionHooks = {
   onToolStart?: (call: ModelToolCall) => void | Promise<void>;
   onToolComplete?: (call: ModelToolCall, result: ToolResult) => void | Promise<void>;
-  onToolError?: (call: ModelToolCall, error: string) => void | Promise<void>;
+  onToolError?: (call: ModelToolCall, error: string, failure?: ToolResult) => void | Promise<void>;
 };
 
 export async function executeToolCalls(
@@ -30,7 +32,7 @@ export async function executeToolCalls(
 
     const group = await nextConcurrencySafeGroup(calls, index, registry);
     if (group.length > 0) {
-      results.push(...await Promise.all(group.map((call) => executeOne(call, registry, context, hooks))));
+      results.push(...await Promise.all(group.map((item) => executeOne(item, registry, context, hooks))));
       index += group.length;
       continue;
     }
@@ -44,8 +46,8 @@ export async function executeToolCalls(
 async function nextConcurrencySafeGroup(calls: ModelToolCall[], start: number, registry: ToolRegistry): Promise<ModelToolCall[]> {
   const group: ModelToolCall[] = [];
   for (let index = start; index < calls.length; index += 1) {
-    const tool = registry.get(calls[index].name);
-    if (await tool.requiresUserInteraction?.(calls[index].input)) break;
+    const tool = registry.has(calls[index].name) ? registry.get(calls[index].name) : undefined;
+    if (!tool || await tool.requiresUserInteraction?.(calls[index].input)) break;
     if (!tool.isConcurrencySafe?.()) break;
     group.push(calls[index]);
   }
@@ -53,6 +55,7 @@ async function nextConcurrencySafeGroup(calls: ModelToolCall[], start: number, r
 }
 
 async function requiresUserInteraction(call: ModelToolCall, registry: ToolRegistry): Promise<boolean> {
+  if (!registry.has(call.name)) return false;
   return await registry.get(call.name).requiresUserInteraction?.(call.input) === true;
 }
 
@@ -73,7 +76,8 @@ async function executeOne(
   });
   await hooks.onToolStart?.(call);
   try {
-    const result = await registry.get(call.name).execute(call.input, context);
+    if (!registry.has(call.name)) throw new Error(`No such tool available: ${call.name}`);
+    const result = await executeTool(registry.get(call.name), call.input, context);
     await context.auditSink?.({
       type: "tool_result",
       session_id: context.sessionId,
@@ -87,7 +91,8 @@ async function executeOne(
     await hooks.onToolComplete?.(call, result);
     return { call, result };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const failure = toolFailureResult(error);
+    const message = failure.error ?? "Tool failed";
     await context.auditSink?.({
       type: "tool_result",
       session_id: context.sessionId,
@@ -96,9 +101,10 @@ async function executeOne(
       attempt: context.attempt,
       tool: call.name,
       status: "failed",
-      error: message
+      error: message,
+      result: failure
     });
-    await hooks.onToolError?.(call, message);
-    return { call, error: message };
+    await hooks.onToolError?.(call, message, failure);
+    return { call, error: message, failure };
   }
 }

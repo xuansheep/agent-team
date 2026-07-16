@@ -16,14 +16,14 @@ describe("agentsMemory", () => {
     const nested = join(cwd, "packages", "app");
     await mkdir(join(home, ".einsteins"), { recursive: true });
     await mkdir(join(cwd, ".git"), { recursive: true });
-    await mkdir(join(cwd, ".agents"), { recursive: true });
-    await mkdir(join(nested, ".agents"), { recursive: true });
     await mkdir(join(cwd, ".einsteins"), { recursive: true });
+    await mkdir(join(nested, ".einsteins"), { recursive: true });
+    await mkdir(join(cwd, ".agents"), { recursive: true });
     await writeFile(join(home, ".einsteins", "AGENTS.md"), "User instructions.\n", "utf8");
-    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Root project instructions.\n", "utf8");
-    await writeFile(join(nested, ".agents", "AGENTS.md"), "Nested project instructions.\n", "utf8");
+    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Root project instructions.\n", "utf8");
+    await writeFile(join(nested, ".einsteins", "AGENTS.md"), "Nested project instructions.\n", "utf8");
     await writeFile(join(cwd, "AGENTS.md"), "Ignored root instructions.\n", "utf8");
-    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Ignored old project instructions.\n", "utf8");
+    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Ignored legacy project instructions.\n", "utf8");
 
     const files = await getAgentsMemoryFiles({ cwd: nested, homeDir: home });
 
@@ -38,9 +38,9 @@ describe("agentsMemory", () => {
   it("loads includes before including files and skips cycles", async () => {
     const cwd = await workspace();
     await mkdir(join(cwd, ".git"));
-    await mkdir(join(cwd, ".agents"));
-    await writeFile(join(cwd, ".agents", "extra.md"), "Included instructions.\n", "utf8");
-    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Before @./extra.md\nAfter.\n", "utf8");
+    await mkdir(join(cwd, ".einsteins"));
+    await writeFile(join(cwd, ".einsteins", "extra.md"), "Included instructions.\n", "utf8");
+    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Before @./extra.md\nAfter.\n", "utf8");
 
     const files = await getAgentsMemoryFiles({ cwd });
 
@@ -54,10 +54,10 @@ describe("agentsMemory", () => {
     const cwd = await workspace();
     const external = await workspace();
     await mkdir(join(cwd, ".git"));
-    await mkdir(join(cwd, ".agents"));
+    await mkdir(join(cwd, ".einsteins"));
     await writeFile(join(external, "outside.md"), "External instructions.\n", "utf8");
     const externalInclude = join(external, "outside.md").replaceAll("\\", "/");
-    await writeFile(join(cwd, ".agents", "AGENTS.md"), `@${externalInclude}\nProject instructions.\n`, "utf8");
+    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), `@${externalInclude}\nProject instructions.\n`, "utf8");
 
     const blocked = await getAgentsMemoryFiles({ cwd });
     const approved = await getAgentsMemoryFiles({ cwd, settings: { hasAgentsMdExternalIncludesApproved: true } });

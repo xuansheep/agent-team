@@ -25,18 +25,21 @@ describe("command registry", () => {
 
   it("keeps unknown slash commands unhandled", () => {
     assert.equal(parseCommandAction("/run delivery"), undefined);
+    assert.equal(parseCommandAction("/diagnostics"), undefined);
     assert.equal(parseCommandAction("/unknown"), undefined);
   });
 
   it("exposes stable command names for TUI completion", () => {
-    assert.deepEqual(commandNames(), ["clear", "diagnostics", "help", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline"]);
+    assert.deepEqual(commandNames(), ["clear", "help", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline"]);
   });
 
   it("documents /plan open in the command hint", () => {
     assert.equal(commandDefinitions().find((command) => command.name === "plan")?.argumentHint, "[open|<description>]");
   });
 
-  it("documents /mcp actions in the command hint", () => {
-    assert.equal(commandDefinitions().find((command) => command.name === "mcp")?.argumentHint, "[enable|disable|reconnect [server-name]]");
+  it("documents /mcp list and actions", () => {
+    const definition = commandDefinitions().find((command) => command.name === "mcp");
+    assert.equal(definition?.description, "List and manage MCP servers");
+    assert.equal(definition?.argumentHint, "[enable|disable|reconnect [server-name]]");
   });
 });

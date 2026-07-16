@@ -31,6 +31,7 @@ type AnthropicContentBlock = {
   source?: unknown;
   tool_use_id?: string;
   content?: string;
+  is_error?: boolean;
   cache_control?: typeof cacheControl;
 };
 
@@ -277,7 +278,8 @@ function toAnthropicContent(message: ModelMessage): AnthropicContentBlock[] {
     return [{
       type: "tool_result",
       tool_use_id: message.tool_call_id ?? "",
-      content: contentAsText(message.content)
+      content: contentAsText(message.content),
+      ...(message.is_error === true ? { is_error: true } : {})
     }];
   }
 

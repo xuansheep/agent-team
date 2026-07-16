@@ -1,186 +1,84 @@
 import { describe, it } from "node:test";
 
-
-
 import assert from "node:assert/strict";
-
-
 
 import { WorkflowEngine, workflowConfigFingerprint } from "../../src/workflow/engine.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { RunStore } from "../../src/storage/runStore.js";
 
-
-
-
 describe("WorkflowSession", () => {
-
-
 
   it("streams events and resolves a completed result", async () => {
 
-
-
     const provider: ModelProvider = {
-
-
 
       async generate() {
 
-
-
         return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
-
-
 
       }
 
-
-
     };
-
-
 
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-runs" });
 
-
-
     const session = await engine.startInteractive(config(), "flow", { request: "x" });
-
-
-
-
-
-
 
     const seen: string[] = [];
 
-
-
     for await (const event of session.events) {
-
-
 
       seen.push(event.type);
 
-
-
       if (event.type === "node_completed") break;
-
-
 
     }
 
-
-
-
-
-
-
     const result = await session.result;
-
-
 
     assert.equal(result.status, "completed");
 
-
-
     assert.equal(seen.includes("node_started"), true);
-
-
 
     assert.equal(seen.includes("node_completed"), true);
 
-
-
   });
-
-
-
-
-
-
 
   it("marks a running session waiting for user input when interrupted", async () => {
     let release!: () => void;
 
-
-
     const provider: ModelProvider = {
-
-
 
       async generate() {
 
-
-
         await new Promise<void>((resolve) => {
-
-
 
           release = resolve;
 
-
-
         });
-
-
 
         return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
 
-
-
       }
-
-
 
     };
 
-
-
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-interrupt-runs" });
-
-
 
     const session = await engine.startInteractive(config(), "flow", { request: "x" });
 
-
-
-
-
-
-
     for await (const event of session.events) {
-
-
 
       if (event.type === "node_started") break;
 
-
-
     }
 
-
-
-
-
-
-
-    await session.interrupt();
-
-
-
+    await waitUntil(() => typeof release === "function");
+    const interruption = session.interrupt();
     release();
-
-
-
-
-
-
+    await interruption;
 
     await promiseSettlesSoon(session.result);
-
-
 
     const store = new RunStore(".tmp/session-interrupt-runs");
     const state = await store.loadState(session.runId);
@@ -188,6 +86,68 @@ describe("WorkflowSession", () => {
     assert.equal(state.attempts.at(-1)?.status, "waiting_user");
   });
 
+  it("aborts the active provider and emits one pause event", async () => {
+    let providerStarted = false;
+    let providerAborted = false;
+    const runRoot = `.tmp/session-provider-abort-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const provider: ModelProvider = {
+      async generate(request) {
+        providerStarted = true;
+        await new Promise<never>((_resolve, reject) => {
+          const abort = () => {
+            providerAborted = true;
+            reject(request.signal?.reason);
+          };
+          if (request.signal?.aborted) abort();
+          else request.signal?.addEventListener("abort", abort, { once: true });
+        });
+        throw new Error("Provider continued after abort");
+      }
+    };
+    const session = await new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot })
+      .startInteractive(config(), "flow", { request: "x" });
+    await waitUntil(() => providerStarted);
+    await session.interrupt();
+    const store = new RunStore(runRoot);
+    const events = await store.loadEvents(session.runId);
+    const state = await store.loadState(session.runId);
+    assert.equal(providerAborted, true);
+    assert.equal(state.status, "paused");
+    assert.equal(events.filter((event) => event.type === "node_waiting_user").length, 1);
+    assert.equal(events.some((event) => event.type === "node_completed" && event.status === "failure"), false);
+  });
+  it("queues immediate user input while interruption is converging", async () => {
+    let calls = 0;
+    let providerStarted = false;
+    const runRoot = `.tmp/session-immediate-resume-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls > 1) {
+          return { content: JSON.stringify({ direction: "forward", summary: "resumed", handoff: { instruction: "done" } }) };
+        }
+        providerStarted = true;
+        await new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(request.signal?.reason);
+          if (request.signal?.aborted) abort();
+          else request.signal?.addEventListener("abort", abort, { once: true });
+        });
+        throw new Error("Provider continued after abort");
+      }
+    };
+    const session = await new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot })
+      .startInteractive(config(), "flow", { request: "x" });
+    await waitUntil(() => providerStarted);
+    const interruption = session.interrupt();
+    const resumption = session.resumeWithUserInput({ answer: "continue now" });
+    await Promise.all([interruption, resumption]);
+    const result = await session.result;
+    const events = await new RunStore(runRoot).loadEvents(session.runId);
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(events.filter((event) => event.type === "node_waiting_user").length, 1);
+    assert.deepEqual(events.filter((event) => event.type === "user_message").map((event) => event.text), ["continue now"]);
+  });
   it("continues an interrupted session from the checkpoint node", async () => {
     let calls = 0;
     let release!: () => void;
@@ -216,8 +176,10 @@ describe("WorkflowSession", () => {
       if (event.type === "node_started" && event.node_id === "dev") break;
     }
 
-    await session.interrupt();
+    await waitUntil(() => typeof release === "function");
+    const interruption = session.interrupt();
     release();
+    await interruption;
     await promiseSettlesSoon(session.result);
     const interruptedState = await new RunStore(runRoot).loadState(session.runId);
     assert.equal(interruptedState.status, "paused");
@@ -244,135 +206,64 @@ describe("WorkflowSession", () => {
 
   it("streams permission requests from runtime events so TUI can resolve them", async () => {
 
-
-
     const provider: ModelProvider = {
 
-
-
       async generate() {
-
-
 
         return { tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] };
 
-
-
       }
 
-
-
     };
-
-
 
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-permission-stream-runs" });
 
-
-
     const session = await engine.startInteractive(config(), "flow", { request: "x" });
-
-
 
     const iterator = session.events[Symbol.asyncIterator]();
 
-
-
-
-
-
-
     let requestId = "";
-
-
 
     for (;;) {
 
-
-
       const event = await nextEventWithTimeout(iterator);
-
-
 
       if (event.type === "permission_requested") {
 
-
-
         requestId = event.request_id;
-
-
 
         break;
 
-
-
       }
-
-
 
     }
 
-
-
-
-
-
-
     assert.equal(session.permissions.hasPending(requestId), true);
-
-
 
     await session.interrupt();
 
-
-
     await promiseSettlesSoon(session.result);
-
-
 
   });
 
-
   it("marks provider errors as a failed node waiting for user input", async () => {
-
-
 
     const cause = Object.assign(new Error("connect reset"), { code: "ECONNRESET" });
 
-
-
     const provider: ModelProvider = {
-
-
 
       async generate() {
 
-
-
         throw new Error("Provider network request failed after 3 attempts: fetch failed", { cause });
-
-
 
       }
 
-
-
     };
-
-
 
     const runRoot = `.tmp/session-failure-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
-
-
     const session = await engine.startInteractive(config(), "flow", { request: "x" });
-
-
-
-
-
-
 
     const seen: string[] = [];
     for await (const event of session.events) {
@@ -380,14 +271,10 @@ describe("WorkflowSession", () => {
       if (event.type === "node_waiting_user") break;
     }
 
-
-
     await promiseSettlesSoon(session.result);
     const store = new RunStore(runRoot);
     const state = await store.loadState(session.runId);
     const events = await store.loadEvents(session.runId);
-
-
 
     assert.equal(state.status, "paused");
     assert.equal(state.current_node_id, "dev");
@@ -397,145 +284,65 @@ describe("WorkflowSession", () => {
     assert.equal(events.some((event) => event.type === "run_failed"), false);
     assert.equal(seen.includes("node_waiting_user"), true);
 
-
-
   });
 
-
-
-
-
-
-
   it("resumes an interactive session after user input is requested", async () => {
-
-
 
     let calls = 0;
     const requests: unknown[] = [];
 
-
-
     const provider: ModelProvider = {
-
-
 
       async generate(request) {
         requests.push(request);
 
-
-
         calls += 1;
-
-
 
         if (calls === 1) {
 
-
-
           return { content: JSON.stringify({ direction: "backward", summary: "need detail", questions: [{ id: "q1", text: "Target?", required: true }] }) };
-
-
 
         }
 
-
-
         return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
-
-
 
       }
 
-
-
     };
-
-
 
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: ".tmp/session-resume-runs" });
 
-
-
     const session = await engine.startInteractive(config(), "flow", { request: "x" });
-
-
 
     const iterator = session.events[Symbol.asyncIterator]();
 
-
-
-
-
-
-
     for (;;) {
 
-
-
       const next = await iterator.next();
-
-
 
       if (next.done || next.value.type === "node_waiting_user") break;
 
-
-
     }
-
-
-
-
-
-
 
     await session.resumeWithUserInput({ answer: "operators" });
 
-
-
-
-
-
-
     const seen: string[] = [];
-
-
 
     for (;;) {
 
-
-
       const next = await iterator.next();
-
-
 
       if (next.done) break;
 
-
-
       seen.push(next.value.type);
-
-
 
       if (next.value.type === "node_completed") break;
 
-
-
     }
-
-
-
-
-
-
 
     const result = await session.result;
 
-
-
     assert.equal(result.status, "completed");
-
-
 
     assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(seen.includes("node_started"), true);
@@ -544,151 +351,67 @@ describe("WorkflowSession", () => {
     assert.match(resumedMessages, /need detail/);
     assert.match(resumedMessages, /operators/);
 
-
-
     assert.equal(seen.includes("user_message"), true);
 
-
-
   });
-
-
-
-
-
-
 
   it("replays a completed run without invoking the provider again", async () => {
 
-
-
     let calls = 0;
-
-
 
     const provider: ModelProvider = {
 
-
-
       async generate() {
-
-
 
         calls += 1;
 
-
-
         return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
-
-
 
       }
 
-
-
     };
-
-
 
     const runRoot = ".tmp/session-resume-completed-runs";
 
-
-
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
-
-
 
     const original = await engine.startInteractive(config(), "flow", { request: "x" });
 
-
-
     const completed = await original.result;
-
-
-
-
-
-
 
     assert.equal(completed.status, "completed");
 
-
-
     assert.equal(calls, 1);
-
-
-
-
-
-
 
     const replayEngine = new WorkflowEngine({
 
-
-
       providerFactory: () => ({
-
-
 
         async generate() {
 
-
-
           throw new Error("provider should not be called for completed resume");
-
-
 
         }
 
-
-
       }),
-
-
 
       cwd: process.cwd(),
 
-
-
       runRoot
-
-
 
     });
 
-
-
     const resumed = await replayEngine.resumeInteractive(config(), original.runId);
-
-
 
     const events: string[] = [];
 
-
-
     for await (const event of resumed.events) events.push(event.type);
-
-
-
-
-
-
 
     assert.equal((await resumed.result).status, "completed");
 
-
-
     assert.deepEqual(events.filter((event) => event === "run_started"), ["run_started"]);
 
-
-
   });
-
-
-
-
-
-
 
   it("restores a stale running session as waiting for user input without invoking the provider", async () => {
     let calls = 0;
@@ -794,8 +517,10 @@ describe("WorkflowSession", () => {
     for await (const event of session.events) {
       if (event.type === "node_started") break;
     }
-    await session.interrupt();
+    await waitUntil(() => typeof release === "function");
+    const interruption = session.interrupt();
     release();
+    await interruption;
     await promiseSettlesSoon(session.result);
 
     const resumed = await new WorkflowEngine({
@@ -826,67 +551,35 @@ describe("WorkflowSession", () => {
 
 });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for provider execution");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
 async function promiseSettlesSoon<T>(promise: Promise<T>): Promise<T | undefined> {
   return Promise.race([
     promise,
-    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 50))
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 500))
   ]);
 }
-
 
 async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
 
-
-
   const result = await Promise.race([
-
-
 
     iterator.next(),
 
-
-
     new Promise<IteratorResult<T>>((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for session event")), 250))
-
-
 
   ]);
 
-
-
   if (result.done) throw new Error("Session event stream ended unexpectedly");
-
-
 
   return result.value;
 
-
-
 }
-
-
-
-
-
-
-
-
-
-
 
 function twoNodeConfig() {
   return {
@@ -902,22 +595,12 @@ function twoNodeConfig() {
 function config() {
   return {
 
-
-
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
-
-
 
     roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
 
-
-
     workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
 
-
-
   };
-
-
 
 }

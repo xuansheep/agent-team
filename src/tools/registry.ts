@@ -11,6 +11,7 @@ import { powerShellTool } from "./local/powershell.js";
 import { todoWriteTool } from "./local/todoWrite.js";
 import { attachImageTool } from "./local/attachImage.js";
 import { artifactWriteTool } from "./local/artifactWrite.js";
+import { artifactReadTool } from "./local/artifactRead.js";
 import { webFetchTool } from "./local/webFetch.js";
 import { webSearchTool } from "./local/webSearch.js";
 import { enterPlanModeTool } from "./local/enterPlanMode.js";
@@ -66,6 +67,7 @@ export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skil
     powerShellTool,
     todoWriteTool,
     artifactWriteTool,
+    artifactReadTool,
     attachImageTool,
     webFetchTool,
     webSearchTool,

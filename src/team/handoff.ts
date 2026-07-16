@@ -4,6 +4,9 @@ export type HandoffContext = {
   from?: string;
   to: string;
   instruction: string;
+  must_follow: string[];
+  known_risks: string[];
+  open_questions: string[];
   references: Array<{ node_id: string; summary: string; artifact_ids: string[] }>;
   feedback?: NodeResult["feedback"];
   iteration: number;
@@ -14,6 +17,9 @@ export function buildHandoff(to: string, from: string | undefined, result: NodeR
     from,
     to,
     instruction: result.handoff.instruction || result.summary,
+    must_follow: result.handoff.must_follow,
+    known_risks: result.handoff.known_risks,
+    open_questions: result.handoff.open_questions,
     references: [{
       node_id: from ?? "input",
       summary: result.summary,

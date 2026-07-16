@@ -320,9 +320,9 @@ workflows:
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-agents-home-"));
     await mkdir(join(homeDir, ".einsteins"), { recursive: true });
     await mkdir(join(dir, ".git"), { recursive: true });
-    await mkdir(join(dir, ".agents"), { recursive: true });
+    await mkdir(join(dir, ".einsteins"), { recursive: true });
     await writeFile(join(homeDir, ".einsteins", "AGENTS.md"), "User instructions.\n", "utf8");
-    await writeFile(join(dir, ".agents", "AGENTS.md"), "Project instructions.\n", "utf8");
+    await writeFile(join(dir, ".einsteins", "AGENTS.md"), "Project instructions.\n", "utf8");
     await writeFile(join(dir, "GLOBAL.md"), "Configured instructions.\n", "utf8");
     const configFile = join(dir, "agent-team.yaml");
     await writeFile(configFile, `
@@ -344,7 +344,7 @@ workflows:
     assert.match(config.global_prompt ?? "", /Configured instructions[\s\S]*User instructions[\s\S]*Project instructions/);
     assert.match(config.global_prompt ?? "", /never override or weaken/);
     assert.deepEqual(config.global_prompt_metadata?.sources.map((source) => source.kind), ["configured_file", "user_agents", "project_agents"]);
-    assert.equal(config.global_prompt_metadata?.sources[2]?.path, join(dir, ".agents", "AGENTS.md"));
+    assert.equal(config.global_prompt_metadata?.sources[2]?.path, join(dir, ".einsteins", "AGENTS.md"));
     assert.match(config.global_prompt_metadata?.sha256 ?? "", /^[a-f0-9]{64}$/);
     assert.equal(JSON.stringify(config.global_prompt_metadata).includes("Project instructions"), false);
   });

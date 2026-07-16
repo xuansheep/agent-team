@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdin, useStdout } from "../ink.js";
 import { OptionWithDescription, Select, SelectImageAttachment, SelectMulti } from "./CustomSelect/index.js";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
+import type { PromptHistoryStore } from "../../storage/promptHistoryStore.js";
 import { PromptInput } from "./PromptInput/PromptInput.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./PromptInput/types.js";
 import { UserQuestionPrompt } from "./UserQuestionPrompt.js";
@@ -53,6 +54,7 @@ export function InteractionArea({
   questions = [],
   isLoading,
   permissionMode = "default",
+  historyStore,
   hasSelection = false,
   promptText = "",
   inputDisabled = false,
@@ -70,6 +72,7 @@ export function InteractionArea({
   questions?: unknown[];
   isLoading: boolean;
   permissionMode?: PermissionMode;
+  historyStore?: PromptHistoryStore;
   hasSelection?: boolean;
   promptText?: string;
   inputDisabled?: boolean;
@@ -357,6 +360,7 @@ export function InteractionArea({
           skills={skills}
           isLoading={isLoading}
           permissionMode={permissionMode}
+          historyStore={historyStore}
           inputBlocked={inputDisabled || (Boolean(choice) && (choice?.multiSelect || !choice?.allowPromptInput || (hasPreview && !previewNotesActive)))}
           textInputBlocked={blockPromptTextInput}
           hasSelection={hasSelection}

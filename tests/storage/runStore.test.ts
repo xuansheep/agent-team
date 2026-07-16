@@ -7,16 +7,19 @@ import { RunStore } from "../../src/storage/runStore.js";
 import type { WorkflowState } from "../../src/workflow/state.js";
 
 describe("RunStore", () => {
-  it("uses .session as the default storage root", () => {
-    const store = new RunStore();
-
-    assert.match(store.runDir("session-1"), new RegExp(String.raw`[.]session[\\/]\d{6}[\\/]\d{2}T\d{6}-session-1-[a-f0-9]{12}$`));
+  it("stores runs directly below the owning session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-run-layout-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("delivery", { request: "build it" }, { sessionId: "session-1" });
+    assert.equal(run.runDir, join(root, "session-1", "runs", run.runId));
   });
-
   it("creates a run directory and appends ndjson events", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runs-"));
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "build it" });
+    assert.equal(run.sessionId, run.runId);
+    assert.match(run.sessionId, /^[a-f0-9-]{36}$/);
+    assert.doesNotMatch(run.sessionId, /^\d{2}T\d{6}-/);
 
     await store.appendEvent(run.runId, { type: "node_started", node_id: "product", attempt: 1 });
     await store.saveState(run.runId, workflowState({ status: "running", workflow_id: "delivery", current_node_id: "product" }));
@@ -27,6 +30,11 @@ describe("RunStore", () => {
 
     const state = JSON.parse(await readFile(join(run.runDir, "state.json"), "utf8"));
     assert.equal(state.current_node_id, "product");
+    assert.equal(state.version, 3);
+    assert.equal(state.session_id, run.sessionId);
+    assert.equal(state.run_id, run.runId);
+    assert.equal(state.revision, 1);
+    assert.equal(typeof state.updated_at, "string");
   });
 
   it("lists run summaries newest first and skips unreadable runs", async () => {

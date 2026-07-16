@@ -3,6 +3,7 @@ import { StoredEvent } from "../harness/events.js";
 import { WorkflowState } from "./state.js";
 
 export type WorkflowSession = {
+  sessionId: string;
   runId: string;
   state: WorkflowState;
   events: AsyncIterable<StoredEvent>;

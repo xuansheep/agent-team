@@ -5,14 +5,25 @@ import { resolveWorkspacePath } from "./path.js";
 export function writesSessionPlanFile(input: unknown, context: ToolContext): boolean {
   const filePath = (input as { file_path?: unknown }).file_path;
   if (typeof filePath !== "string") return false;
-  const target = resolveWorkspacePath(context.cwd, filePath);
-  const currentPlanFile = (context as { planFilePath?: unknown }).planFilePath;
-  if (typeof currentPlanFile === "string") {
-    const planPath = resolveWorkspacePath(context.cwd, currentPlanFile);
-    const relativePath = relative(planPath, target);
-    return relativePath === "" || relativePath === ".";
+  const currentPlanFile = (context as ToolContext & { planFilePath?: unknown }).planFilePath;
+  if (typeof currentPlanFile !== "string") return false;
+  return samePath(resolveToolPath(context.cwd, filePath), resolveToolPath(context.cwd, currentPlanFile));
+}
+
+export function resolvePlanAwareWritePath(context: ToolContext, filePath: string): string {
+  const target = resolveToolPath(context.cwd, filePath);
+  const currentPlanFile = (context as ToolContext & { planFilePath?: unknown }).planFilePath;
+  if (typeof currentPlanFile === "string" && samePath(target, resolveToolPath(context.cwd, currentPlanFile))) {
+    return target;
   }
-  const plansDir = resolve(context.cwd, ".session", "plans");
-  const pathFromPlans = relative(plansDir, target);
-  return pathFromPlans !== "" && !pathFromPlans.startsWith("..") && !isAbsolute(pathFromPlans);
+  return resolveWorkspacePath(context.cwd, filePath);
+}
+
+function resolveToolPath(cwd: string, path: string): string {
+  return isAbsolute(path) ? resolve(path) : resolve(cwd, path);
+}
+
+function samePath(left: string, right: string): boolean {
+  const fromRight = relative(right, left);
+  return fromRight === "" || fromRight === ".";
 }

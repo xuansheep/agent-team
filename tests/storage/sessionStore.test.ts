@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SessionIndex } from "../../src/storage/sessionIndex.js";
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { PlanSessionState } from "../../src/plans/planSession.js";
@@ -26,16 +25,18 @@ describe("SessionStore", () => {
     assert.equal(transcript[0]?.message.content, "hello");
   });
 
-  it("rebuilds the session index from metadata when the root index is missing", async () => {
+  it("lists sessions directly from session metadata", async () => {
     const root = await workspace();
     const store = new SessionStore(root);
-    await store.saveMetadata("session-1", { workflowRunId: "run-1", status: "planning" });
-    await store.saveMetadata("session-2", { workflowRunId: "run-2", status: "completed" });
+    await store.saveMetadata("session-1", { inputPreview: "first" });
+    await store.saveMetadata("session-2", { inputPreview: "second" });
+    await store.attachRun("session-1", "run-1");
+    await store.attachRun("session-2", "run-2");
 
-    const entries = await new SessionIndex(root).rebuildFromMetadata();
+    const entries = await store.listSessions();
 
     assert.deepEqual(entries.map((entry) => entry.sessionId).sort(), ["session-1", "session-2"]);
-    assert.equal((await new SessionIndex(root).list()).length, 2);
+    assert.deepEqual(entries.map((entry) => entry.currentRunId).sort(), ["run-1", "run-2"]);
   });
 
   it("recovers Plan Mode state from session metadata", async () => {
@@ -110,7 +111,7 @@ describe("SessionStore", () => {
           sha256: "global-hash",
           chars: 23,
           lines: 1,
-          sources: [{ kind: "project_agents", path: join(root, ".agents", "AGENTS.md"), sha256: "source-hash", chars: 23, lines: 1 }]
+          sources: [{ kind: "project_agents", path: join(root, ".einsteins", "AGENTS.md"), sha256: "source-hash", chars: 23, lines: 1 }]
         }
       }
     });
@@ -123,8 +124,8 @@ describe("SessionStore", () => {
   });
 });
 
-describe("RunStore index", () => {
-  it("lists runs from the root index before scanning session directories", async () => {
+describe("RunStore session hierarchy", () => {
+  it("lists a run using the durable state backup when the primary state is corrupt", async () => {
     const root = await workspace();
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "indexed request" });
@@ -139,13 +140,11 @@ describe("RunStore index", () => {
     assert.match(runs[0]?.inputPreview ?? "", /indexed request/);
   });
 
-  it("falls back to scanning session directories when no run index exists", async () => {
+  it("lists runs by scanning nested session directories", async () => {
     const root = await workspace();
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "scanned request" });
     await store.saveState(run.runId, { version: 2, status: "waiting_user", workflow_id: "delivery", current_node_id: "product", attempts: [], node_checkpoints: {}, suspended_stack: [], rework_count: 0, rework_limit: 10 });
-    await writeFile(join(root, "index.json"), JSON.stringify({ version: 1, sessions: [] }, null, 2), "utf8");
-
     const runs = await store.listRuns();
 
     assert.equal(runs[0]?.runId, run.runId);

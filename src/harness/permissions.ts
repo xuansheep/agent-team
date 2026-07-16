@@ -33,7 +33,7 @@ export function mergePermissions(base: PermissionSet, node: PermissionSet): Perm
 
 function matchesRule(rule: string, tool: string, specifier: string): boolean {
   const parsed = parseRule(rule);
-  if (parsed.tool !== tool) return false;
+  if (parsed.tool !== "*" && parsed.tool !== tool) return false;
   if (!parsed.specifier) return true;
   if (parsed.specifier.toLowerCase().startsWith("prompt:")) {
     return matchesPromptRule(tool, parsed.specifier.slice("prompt:".length), specifier);
@@ -42,7 +42,7 @@ function matchesRule(rule: string, tool: string, specifier: string): boolean {
 }
 
 function parseRule(rule: string): ParsedRule {
-  const match = /^(?<tool>[A-Za-z][A-Za-z0-9_]*)(?:\((?<specifier>.*)\))?$/.exec(rule.trim());
+  const match = /^(?<tool>\*|[A-Za-z][A-Za-z0-9_]*)(?:\((?<specifier>.*)\))?$/.exec(rule.trim());
   if (!match?.groups) throw new Error(`Invalid permission rule ${rule}`);
   return { tool: match.groups.tool, specifier: match.groups.specifier };
 }

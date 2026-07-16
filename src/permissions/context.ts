@@ -7,6 +7,7 @@ export type ToolPermissionContext = {
   allow: string[];
   ask: string[];
   deny: string[];
+  transientAllow?: string[];
   source?: "workflow" | "session" | "settings";
   planFilePath?: string;
 };

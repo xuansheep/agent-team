@@ -48,6 +48,40 @@ export function moveRight(buffer: PromptBuffer): PromptBuffer {
   return { ...buffer, cursor: nextGraphemeOffset(buffer.text, buffer.cursor), selectionAnchor: undefined };
 }
 
+export function isCursorOnFirstLine(buffer: PromptBuffer): boolean {
+  return lineStart(buffer) === 0;
+}
+
+export function isCursorOnLastLine(buffer: PromptBuffer): boolean {
+  return lineEnd(buffer) === buffer.text.length;
+}
+
+export function moveUp(buffer: PromptBuffer): PromptBuffer {
+  const currentStart = lineStart(buffer);
+  if (currentStart === 0) return buffer;
+  const previousEnd = currentStart - 1;
+  const previousStart = buffer.text.lastIndexOf("\n", Math.max(0, previousEnd - 1)) + 1;
+  return {
+    ...buffer,
+    cursor: cursorAtSameGraphemeColumn(buffer.text, currentStart, buffer.cursor, previousStart, previousEnd),
+    selectionAnchor: undefined
+  };
+}
+
+export function moveDown(buffer: PromptBuffer): PromptBuffer {
+  const currentStart = lineStart(buffer);
+  const currentEnd = lineEnd(buffer);
+  if (currentEnd === buffer.text.length) return buffer;
+  const nextStart = currentEnd + 1;
+  const nextBreak = buffer.text.indexOf("\n", nextStart);
+  const nextEnd = nextBreak === -1 ? buffer.text.length : nextBreak;
+  return {
+    ...buffer,
+    cursor: cursorAtSameGraphemeColumn(buffer.text, currentStart, buffer.cursor, nextStart, nextEnd),
+    selectionAnchor: undefined
+  };
+}
+
 export function moveHome(buffer: PromptBuffer): PromptBuffer {
   return { ...buffer, cursor: lineStart(buffer), selectionAnchor: undefined };
 }
@@ -67,6 +101,12 @@ function lineStart(buffer: PromptBuffer): number {
 function lineEnd(buffer: PromptBuffer): number {
   const index = buffer.text.indexOf("\n", buffer.cursor);
   return index === -1 ? buffer.text.length : index;
+}
+
+function cursorAtSameGraphemeColumn(text: string, currentStart: number, cursor: number, targetStart: number, targetEnd: number): number {
+  const currentColumn = graphemeBoundaries(text.slice(currentStart, cursor)).length - 1;
+  const targetBoundaries = graphemeBoundaries(text.slice(targetStart, targetEnd));
+  return targetStart + (targetBoundaries[Math.min(currentColumn, targetBoundaries.length - 1)] ?? 0);
 }
 
 function replaceRange(buffer: PromptBuffer, start: number, end: number, value: string): PromptBuffer {

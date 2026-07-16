@@ -46,6 +46,15 @@ describe("executeToolCalls", () => {
     ]);
   });
 
+  it("returns unknown tools as structured model-visible failures", async () => {
+    const registry = new ToolRegistry();
+    const results = await executeToolCalls([{ id: "missing-1", name: "Missing", input: {} }], registry, { cwd: process.cwd() });
+
+    assert.equal(results[0]?.result, undefined);
+    assert.equal(results[0]?.failure?.is_error, true);
+    assert.match(results[0]?.failure?.error ?? "", /tool.*Missing/i);
+  });
+
   it("stops after a user-interaction tool and does not execute later tools", async () => {
     const events: string[] = [];
     const registry = new ToolRegistry();

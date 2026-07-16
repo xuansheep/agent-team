@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_USER_SETTINGS } from "../../src/settings/loadSettings.js";
 import { prepareTuiRuntime, selectDefaultWorkflow } from "../../src/tui/launchTui.js";
 import { writeProjectConfig } from "../helpers/projectConfig.js";
 
@@ -38,14 +39,42 @@ describe("TUI startup workflow selection", () => {
     assert.equal(runtime.config.workflows.delivery.nodes[0]?.role, "product");
     const settings = JSON.parse(await readFile(join(homeDir, ".einsteins", "settings.json"), "utf8")) as { providers: { default: { effort: string } } };
     assert.equal(settings.providers.default.effort, "medium");
+    assert.equal(runtime.promptHistoryStore.path, join(homeDir, ".einsteins", "history.jsonl"));
+    assert.deepEqual(runtime.promptHistoryStore.entries, []);
+  });
+
+  it("loads disabled MCP servers from user and project settings", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-mcp-settings-"));
+    const homeDir = await mkdtemp(join(tmpdir(), "agent-team-tui-home-"));
+    const templateRoot = await mkdtemp(join(tmpdir(), "agent-team-tui-template-"));
+    const templateConfigDir = await writeProjectConfig(templateRoot);
+    await mkdir(join(homeDir, ".einsteins"), { recursive: true });
+    await mkdir(join(cwd, ".einsteins"), { recursive: true });
+    await writeFile(join(homeDir, ".einsteins", "settings.json"), JSON.stringify({
+      ...JSON.parse(DEFAULT_USER_SETTINGS),
+      mcpServers: {
+        shared: { type: "stdio", command: "user", disabled: true },
+        userOnly: { type: "stdio", command: "user-only", disabled: true }
+      }
+    }), "utf8");
+    await writeFile(join(cwd, ".einsteins", "settings.json"), JSON.stringify({
+      mcpServers: {
+        shared: { type: "stdio", command: "project", disabled: true }
+      }
+    }), "utf8");
+
+    const runtime = await prepareTuiRuntime({ cwd, homeDir, templateConfigDir });
+
+    assert.equal(runtime.diagnostics.mcp.find((server) => server.name === "shared")?.source, "project");
+    assert.equal(runtime.diagnostics.mcp.find((server) => server.name === "userOnly")?.source, "user");
   });
 
   it("discovers project skills during bootstrap", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-skills-"));
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-tui-home-"));
     await mkdir(join(cwd, ".git"), { recursive: true });
-    await mkdir(join(cwd, ".agents", "skills", "reviewer"), { recursive: true });
-    await writeFile(join(cwd, ".agents", "skills", "reviewer", "SKILL.md"), `---
+    await mkdir(join(cwd, ".einsteins", "skills", "reviewer"), { recursive: true });
+    await writeFile(join(cwd, ".einsteins", "skills", "reviewer", "SKILL.md"), `---
 name: reviewer
 ---
 Review carefully.

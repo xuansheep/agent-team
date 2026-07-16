@@ -1,26 +1,29 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ModelMessage } from "../providers/types.js";
 import { PlanSessionState } from "../plans/planSession.js";
 import { addModelUsage, ModelUsage, ModelUsageTotals } from "../model/usage.js";
-import { readRootIndex, SessionIndex } from "./sessionIndex.js";
-import { cachedSessionDir, createSessionDir, rememberSessionDir, sessionDirFromPlanFilePath } from "./sessionPaths.js";
 import type { PromptInjectionRecord } from "../runtime/types.js";
+import { readJsonWithBackup, updateJsonAtomic } from "./atomicJson.js";
+import { acquireFileLease } from "./fileLease.js";
+import { projectDirectory, projectPath, ProjectStorageContext, sessionDirectory } from "./projectStorage.js";
 
 export type TranscriptEntry = {
   ts: string;
   message: ModelMessage;
+  runId?: string;
 };
 
 export type SessionMetadata = {
+  version: 1;
   sessionId: string;
-  sessionDir?: string;
+  projectPath: string;
   createdAt: string;
   updatedAt: string;
-  status?: "planning" | "waiting_approval" | "running" | "pending" | "completed";
-  runId?: string;
-  workflowRunId?: string;
-  workflowId?: string;
+  lastActivityAt: string;
+  currentRunId?: string;
+  runIds: string[];
+  inputPreview?: string;
   plan?: PlanSessionState;
   usage?: ModelUsageTotals;
   promptInjection?: {
@@ -28,32 +31,33 @@ export type SessionMetadata = {
   };
 };
 
-export type SaveSessionMetadataInput = Omit<Partial<SessionMetadata>, "sessionId" | "createdAt" | "updatedAt" | "sessionDir">;
+export type SaveSessionMetadataInput = Omit<
+  Partial<SessionMetadata>,
+  "version" | "sessionId" | "projectPath" | "createdAt" | "updatedAt" | "runIds" | "currentRunId"
+>;
 
 export class SessionStore {
-  private readonly metadataWriteQueues = new Map<string, Promise<SessionMetadata>>();
-
-  constructor(private readonly rootDir = ".session") {}
+  constructor(private readonly storage: ProjectStorageContext | string) {}
 
   sessionDir(sessionId: string): string {
-    return cachedSessionDir(this.rootDir, sessionId) ?? createSessionDir(this.rootDir, sessionId);
+    return sessionDirectory(this.storage, sessionId);
   }
 
-  async appendTranscript(sessionId: string, message: ModelMessage): Promise<void> {
-    const sessionDir = await this.resolveSessionDir(sessionId);
-    const transcriptPath = join(sessionDir, "transcript.jsonl");
-    await mkdir(dirname(transcriptPath), { recursive: true });
-    const entry: TranscriptEntry = { ts: new Date().toISOString(), message };
-    await appendFile(transcriptPath, `${JSON.stringify(entry)}\n`, "utf8");
-    await this.saveMetadata(sessionId, {});
+  async appendTranscript(sessionId: string, message: ModelMessage, runId?: string): Promise<void> {
+    const transcriptPath = join(this.sessionDir(sessionId), "transcript.jsonl");
+    await appendJsonLine(transcriptPath, {
+      ts: new Date().toISOString(),
+      message,
+      ...(runId ? { runId } : {})
+    } satisfies TranscriptEntry);
+    await this.touch(sessionId);
   }
 
   async loadTranscript(sessionId: string): Promise<TranscriptEntry[]> {
-    const sessionDir = await this.findExistingSessionDir(sessionId);
-    if (!sessionDir) return [];
     try {
-      const text = await readFile(join(sessionDir, "transcript.jsonl"), "utf8");
-      return text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line) as TranscriptEntry) : [];
+      const text = await readFile(join(this.sessionDir(sessionId), "transcript.jsonl"), "utf8");
+      if (!text.trim()) return [];
+      return text.trim().split("\n").map((line) => JSON.parse(line) as TranscriptEntry);
     } catch (error) {
       if (isErrno(error, "ENOENT")) return [];
       throw error;
@@ -61,49 +65,42 @@ export class SessionStore {
   }
 
   async saveMetadata(sessionId: string, input: SaveSessionMetadataInput): Promise<SessionMetadata> {
-    const previous = this.metadataWriteQueues.get(sessionId) ?? Promise.resolve(undefined as unknown as SessionMetadata);
-    const next = previous.catch(() => undefined).then(() => this.writeMetadata(sessionId, input));
-    this.metadataWriteQueues.set(sessionId, next);
-    try {
-      return await next;
-    } finally {
-      if (this.metadataWriteQueues.get(sessionId) === next) this.metadataWriteQueues.delete(sessionId);
-    }
-  }
-
-  private async writeMetadata(sessionId: string, input: SaveSessionMetadataInput): Promise<SessionMetadata> {
-    const now = new Date().toISOString();
-    const sessionDir = await this.resolveSessionDir(sessionId, input);
-    const existing = await this.loadMetadataFromDir(sessionDir);
-    const metadata: SessionMetadata = {
-      ...existing,
-      sessionId,
-      sessionDir,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      ...input
-    };
-    const metadataPath = join(sessionDir, "metadata.json");
-    await mkdir(dirname(metadataPath), { recursive: true });
-    await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
-    await new SessionIndex(this.rootDir).upsert({
-      sessionId,
-      sessionDir,
-      metadataPath,
-      updatedAt: metadata.updatedAt,
-      ...(metadata.status ? { status: metadata.status } : {}),
-      ...(metadata.workflowRunId ? { workflowRunId: metadata.workflowRunId } : {})
-    });
-    return metadata;
+    return this.updateMetadata(sessionId, (metadata) => ({ ...metadata, ...input }));
   }
 
   async loadMetadata(sessionId: string): Promise<SessionMetadata | undefined> {
-    const sessionDir = await this.findExistingSessionDir(sessionId);
-    return sessionDir ? this.loadMetadataFromDir(sessionDir) : undefined;
+    const metadata = await readJsonWithBackup<SessionMetadata>(join(this.sessionDir(sessionId), "session.json"));
+    if (!metadata) return undefined;
+    assertSessionMetadata(metadata, sessionId);
+    return metadata;
+  }
+
+  async listSessions(options: { limit?: number } = {}): Promise<SessionMetadata[]> {
+    let entries;
+    try {
+      entries = await readdir(projectDirectory(this.storage), { withFileTypes: true });
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return [];
+      throw error;
+    }
+    const sessions = (await Promise.all(entries
+      .filter((entry) => entry.isDirectory() && entry.name !== ".lease-history")
+      .map((entry) => this.loadMetadata(entry.name).catch(() => undefined))))
+      .filter((entry): entry is SessionMetadata => Boolean(entry))
+      .sort((left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt) || right.sessionId.localeCompare(left.sessionId));
+    return sessions.slice(0, options.limit ?? sessions.length);
+  }
+
+  async attachRun(sessionId: string, runId: string): Promise<SessionMetadata> {
+    return this.updateMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      currentRunId: runId,
+      runIds: metadata.runIds.includes(runId) ? metadata.runIds : [...metadata.runIds, runId]
+    }));
   }
 
   async savePlanState(sessionId: string, plan: PlanSessionState): Promise<SessionMetadata> {
-    return this.saveMetadata(sessionId, { status: plan.mode === "inactive" ? "completed" : plan.mode, plan });
+    return this.saveMetadata(sessionId, { plan });
   }
 
   async loadPlanState(sessionId: string): Promise<PlanSessionState | undefined> {
@@ -111,67 +108,70 @@ export class SessionStore {
   }
 
   async recordUsage(sessionId: string, usage: ModelUsage): Promise<SessionMetadata> {
-    const existing = await this.loadMetadata(sessionId);
-    return this.saveMetadata(sessionId, { usage: addModelUsage(existing?.usage, usage) });
+    return this.updateMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      usage: addModelUsage(metadata.usage, usage)
+    }));
   }
 
-  private async resolveSessionDir(sessionId: string, input?: SaveSessionMetadataInput): Promise<string> {
-    const planFilePath = input?.plan?.planFilePath;
-    if (typeof planFilePath === "string" && planFilePath.trim()) {
-      const sessionDir = sessionDirFromPlanFilePath(planFilePath);
-      rememberSessionDir(this.rootDir, sessionId, sessionDir);
-      return sessionDir;
-    }
-    const existing = await this.findExistingSessionDir(sessionId);
-    if (existing) return existing;
-    return createSessionDir(this.rootDir, sessionId);
+  async touch(sessionId: string): Promise<SessionMetadata> {
+    return this.updateMetadata(sessionId, (metadata) => metadata);
   }
 
-  private async findExistingSessionDir(sessionId: string): Promise<string | undefined> {
-    const cached = cachedSessionDir(this.rootDir, sessionId);
-    if (cached) return cached;
-    const index = await readRootIndex(this.rootDir).catch(() => undefined);
-    const session = index?.sessions?.find((entry) => entry.sessionId === sessionId);
-    if (session?.sessionDir) {
-      rememberSessionDir(this.rootDir, sessionId, session.sessionDir);
-      return session.sessionDir;
-    }
-    const runSession = index?.sessions?.find((entry) => entry.workflowRunId === sessionId);
-    if (runSession?.sessionDir) {
-      rememberSessionDir(this.rootDir, runSession.sessionId, runSession.sessionDir);
-      return runSession.sessionDir;
-    }
-    const run = index?.runs?.find((entry) => entry.runId === sessionId);
-    if (run?.runDir) return run.runDir;
-    return undefined;
+  private async updateMetadata(
+    sessionId: string,
+    update: (metadata: SessionMetadata) => SessionMetadata
+  ): Promise<SessionMetadata> {
+    const path = join(this.sessionDir(sessionId), "session.json");
+    return updateJsonAtomic<SessionMetadata>(path, (current) => {
+      const now = new Date().toISOString();
+      const base: SessionMetadata = current ?? {
+        version: 1,
+        sessionId,
+        projectPath: projectPath(this.storage),
+        createdAt: now,
+        updatedAt: now,
+        lastActivityAt: now,
+        runIds: []
+      };
+      assertSessionMetadata(base, sessionId);
+      const next = update(base);
+      return {
+        ...next,
+        version: 1,
+        sessionId,
+        projectPath: base.projectPath,
+        createdAt: base.createdAt,
+        updatedAt: now,
+        lastActivityAt: now,
+        runIds: next.runIds.slice()
+      };
+    });
   }
+}
 
-  private async loadMetadataFromDir(sessionDir: string): Promise<SessionMetadata | undefined> {
-    const metadataPath = join(sessionDir, "metadata.json");
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        const text = await readFile(metadataPath, "utf8");
-        if (!text.trim()) throw new SyntaxError("Empty metadata");
-        const metadata = JSON.parse(text) as SessionMetadata;
-        if (metadata.sessionId) rememberSessionDir(this.rootDir, metadata.sessionId, sessionDir);
-        return metadata;
-      } catch (error) {
-        if (isErrno(error, "ENOENT")) return undefined;
-        if (error instanceof SyntaxError && attempt < 4) {
-          await delay(10);
-          continue;
-        }
-        throw error;
-      }
+async function appendJsonLine(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const lease = await acquireFileLease(`${path}.lease`, `Transcript ${path}`, { wait: true });
+  try {
+    const handle = await open(path, "a", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
     }
-    return undefined;
+  } finally {
+    await lease.release();
+  }
+}
+
+function assertSessionMetadata(metadata: SessionMetadata, sessionId: string): void {
+  if (metadata.version !== 1 || metadata.sessionId !== sessionId || !Array.isArray(metadata.runIds)) {
+    throw new Error(`Invalid session metadata for ${sessionId}`);
   }
 }
 
 function isErrno(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === code);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

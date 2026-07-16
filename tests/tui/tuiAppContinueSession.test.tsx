@@ -59,6 +59,56 @@ describe("TuiApp session continuation", () => {
     output.unmount();
     output.cleanup();
   });
+
+  it("routes an immediate prompt after Escape through interactive resume", async () => {
+    const resumed: unknown[] = [];
+    const continued: unknown[] = [];
+    let interrupts = 0;
+    const state = { status: "running" as const, workflow_id: "delivery", current_node_id: "dev", attempts: [], handoff: undefined };
+    const events = new CountingEventStream();
+    events.push({ type: "run_started", workflow_id: "delivery", input: { request: "first request" }, ts: "2026-06-26T00:00:00.000Z", seq: 1 });
+    events.push({ type: "node_started", node_id: "dev", attempt: 1, activation: 1, ts: "2026-06-26T00:00:01.000Z", seq: 2 });
+    const session = {
+      runId: "run-interrupted",
+      state,
+      events,
+      permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
+      interrupt: async () => {
+        interrupts += 1;
+      },
+      resumeWithUserInput: async (input: unknown) => {
+        resumed.push(input);
+        events.push({ type: "user_message", text: "continue after interrupt", node_id: "dev", attempt: 1, ts: "2026-06-26T00:00:02.000Z", seq: 3 });
+        events.push({ type: "model_stream_delta", node_id: "dev", attempt: 1, text: "节点已恢复执行。", ts: "2026-06-26T00:00:03.000Z", seq: 4 });
+      },
+      continueWithInput: async (input: unknown) => {
+        continued.push(input);
+      },
+      result: new Promise<never>(() => undefined)
+    };
+    const engine = {
+      async startInteractive() {
+        return session;
+      }
+    };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={config as never} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
+    await sendTuiLine(output, "first request");
+
+    output.stdin.write("\u001b");
+    await settleTuiWork();
+    await sendTuiLine(output, "continue after interrupt");
+    await settleTuiWork();
+
+    assert.equal(interrupts, 1);
+    assert.deepEqual(resumed, [{ answer: "continue after interrupt" }]);
+    assert.deepEqual(continued, []);
+    assert.match(output.lastFrame() ?? "", /continue after interrupt/);
+    assert.match(output.lastFrame() ?? "", /节点已恢复执行/);
+
+    output.unmount();
+    output.cleanup();
+  });
 });
 
 async function sendTuiLine(output: { stdin: { write(value: string): void } }, text: string): Promise<void> {

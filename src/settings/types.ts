@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { providerSchema } from "../config/schema.js";
+import { mcpServersSettingsSchema } from "../mcp/schema.js";
 
 export const settingsPermissionModeSchema = z.enum(["default", "fullAccess", "plan"]);
 
@@ -23,16 +24,29 @@ const settingsShape = {
   showClearContextOnPlanAccept: z.boolean().optional()
 };
 
-export const projectSettingsSchema = z.object(settingsShape).strict();
+export const mcpProjectStateSchema = z.object({
+  disabledMcpServers: z.array(z.string().min(1)).optional(),
+  enabledMcpServers: z.array(z.string().min(1)).optional()
+}).strict();
+
+export const projectSettingsSchema = z.object({
+  ...settingsShape,
+  mcpServers: mcpServersSettingsSchema.optional()
+}).strict();
+
 export const settingsSchema = z.object({
   ...settingsShape,
-  providers: z.record(providerSchema).optional()
+  providers: z.record(providerSchema).optional(),
+  mcpServers: mcpServersSettingsSchema.optional(),
+  projects: z.record(mcpProjectStateSchema).optional()
 }).strict();
 
 export type AgentTeamSettings = z.infer<typeof settingsSchema>;
 export type ProjectAgentTeamSettings = z.infer<typeof projectSettingsSchema>;
 
-export type ResolvedAgentTeamSettings = Omit<AgentTeamSettings, "permissions"> & {
+export type McpProjectState = z.infer<typeof mcpProjectStateSchema>;
+
+export type ResolvedAgentTeamSettings = Omit<AgentTeamSettings, "permissions" | "mcpServers" | "projects"> & {
   permissions?: {
     defaultMode?: PermissionMode;
   };

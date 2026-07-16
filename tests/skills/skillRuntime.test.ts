@@ -10,27 +10,34 @@ import { SkillRuntime } from "../../src/skills/runtime.js";
 import { parseSkillMarkdown } from "../../src/skills/skillLoader.js";
 
 describe("SkillRuntime", () => {
-  it("discovers project and user skills with project precedence", async () => {
+  it("discovers project and user skills with configured precedence", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-skill-runtime-"));
     const userRoot = await mkdtemp(join(tmpdir(), "agent-team-user-skills-"));
+    const legacyUserRoot = await mkdtemp(join(tmpdir(), "agent-team-legacy-user-skills-"));
     await mkdir(join(cwd, ".git"));
-    await writeSkill(join(userRoot, "shared"), "shared", "user");
+    await writeSkill(join(legacyUserRoot, "legacy-only"), "legacy-only", "legacy-only");
+    await writeSkill(join(legacyUserRoot, "user-shared"), "user-shared", "legacy-user");
     await writeSkill(join(userRoot, "user-only"), "user-only", "user-only");
-    await writeSkill(join(cwd, ".agents", "skills", "project"), "project", "project");
-    await writeSkill(join(cwd, ".agents", "skills", "shared"), "shared", "project-agents");
-    await writeSkill(join(cwd, ".einsteins", "skills", "ignored"), "ignored", "old-project-path");
+    await writeSkill(join(userRoot, "user-shared"), "user-shared", "einsteins-user");
+    await writeSkill(join(cwd, ".einsteins", "skills", "project"), "project", "project");
+    await writeSkill(join(cwd, ".einsteins", "skills", "shared"), "shared", "project-einsteins");
+    await writeSkill(join(cwd, ".agents", "skills", "ignored"), "ignored", "legacy-project");
 
     const runtime = await SkillRuntime.discover({
       cwd,
-      userSkillRoot: userRoot
+      userSkillRoot: userRoot,
+      legacyUserSkillRoot: legacyUserRoot
     });
 
     assert.deepEqual(runtime.listSkills().map((skill) => `${skill.name}:${skill.source}`), [
+      "legacy-only:user",
       "project:project",
       "shared:project",
-      "user-only:user"
+      "user-only:user",
+      "user-shared:user"
     ]);
-    assert.equal(runtime.getSkill("shared")?.prompt.trim(), "project-agents");
+    assert.equal(runtime.getSkill("shared")?.prompt.trim(), "project-einsteins");
+    assert.equal(runtime.getSkill("user-shared")?.prompt.trim(), "einsteins-user");
     assert.equal(runtime.getSkill("ignored"), undefined);
   });
 
@@ -40,11 +47,11 @@ describe("SkillRuntime", () => {
     const nested = join(root, "packages", "app");
     await mkdir(join(root, ".git"), { recursive: true });
     await mkdir(nested, { recursive: true });
-    await writeSkill(join(parent, ".agents", "skills", "outside"), "outside", "outside");
-    await writeSkill(join(root, ".agents", "skills", "shared"), "shared", "root");
-    await writeSkill(join(nested, ".agents", "skills", "shared"), "shared", "nested");
+    await writeSkill(join(parent, ".einsteins", "skills", "outside"), "outside", "outside");
+    await writeSkill(join(root, ".einsteins", "skills", "shared"), "shared", "root");
+    await writeSkill(join(nested, ".einsteins", "skills", "shared"), "shared", "nested");
 
-    const runtime = await SkillRuntime.discover({ cwd: nested, userSkillRoot: join(parent, "user-skills") });
+    const runtime = await SkillRuntime.discover({ cwd: nested, userSkillRoot: join(parent, "user-skills"), legacyUserSkillRoot: join(parent, "legacy-user-skills") });
 
     assert.equal(runtime.getSkill("shared")?.prompt.trim(), "nested");
     assert.equal(runtime.getSkill("outside"), undefined);
@@ -78,8 +85,8 @@ Review carefully.
   it("activates inline skills as system context", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-inline-skill-"));
     await mkdir(join(cwd, ".git"));
-    await writeSkill(join(cwd, ".agents", "skills", "planner"), "planner", "Always plan first.");
-    const runtime = await SkillRuntime.discover({ cwd });
+    await writeSkill(join(cwd, ".einsteins", "skills", "planner"), "planner", "Always plan first.");
+    const runtime = await SkillRuntime.discover({ cwd, userSkillRoot: join(cwd, "missing-user-skills"), legacyUserSkillRoot: join(cwd, "missing-legacy-user-skills") });
 
     const result = await runtime.activateSkill("planner", {
       mode: "inline",
@@ -91,14 +98,14 @@ Review carefully.
     assert.match(result.messages.at(-1)?.content as string, /Always plan first/);
   });
 
-  it("runs fork skills through a constrained child model request", async () => {
+  it("keeps fork tool schemas visible and treats allowed-tools as permission metadata", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-fork-skill-"));
     await mkdir(join(cwd, ".git"));
-    await writeSkill(join(cwd, ".agents", "skills", "reviewer"), "reviewer", "Review only.", {
+    await writeSkill(join(cwd, ".einsteins", "skills", "reviewer"), "reviewer", "Review only.", {
       mode: "fork",
       allowedTools: ["Read"]
     });
-    const runtime = await SkillRuntime.discover({ cwd });
+    const runtime = await SkillRuntime.discover({ cwd, userSkillRoot: join(cwd, "missing-user-skills"), legacyUserSkillRoot: join(cwd, "missing-legacy-user-skills") });
     const requests: ModelRequest[] = [];
     const provider: ModelProvider = {
       async generate(request) {
@@ -121,24 +128,24 @@ Review carefully.
 
     assert.equal(result.mode, "fork");
     assert.equal(result.output, "review result");
-    assert.deepEqual(requests[0]?.tools.map((item) => item.name), ["Read"]);
+    assert.deepEqual(requests[0]?.tools.map((item) => item.name), ["Read", "Write"]);
     assert.equal(result.permissionMode, "default");
   });
 
   it("reports skill diagnostics for later TUI surfaces", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-skill-diagnostics-"));
     await mkdir(join(cwd, ".git"));
-    await writeSkill(join(cwd, ".agents", "skills", "planner"), "planner", "Plan.", {
+    await writeSkill(join(cwd, ".einsteins", "skills", "planner"), "planner", "Plan.", {
       mode: "inline",
       allowedTools: ["Read"]
     });
-    const runtime = await SkillRuntime.discover({ cwd });
+    const runtime = await SkillRuntime.discover({ cwd, userSkillRoot: join(cwd, "missing-user-skills"), legacyUserSkillRoot: join(cwd, "missing-legacy-user-skills") });
 
     assert.deepEqual(runtime.getDiagnostics(), [{
       name: "planner",
       source: "project",
       mode: "inline",
-      path: join(cwd, ".agents", "skills", "planner", "SKILL.md"),
+      path: join(cwd, ".einsteins", "skills", "planner", "SKILL.md"),
       description: undefined,
       whenToUse: undefined,
       allowedTools: ["Read"],

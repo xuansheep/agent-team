@@ -29,14 +29,16 @@ export function resolvePlansDirectory(cwd: string, plansDirectory: string): stri
   return target;
 }
 
-function mergeSettings(userSettings: AgentTeamSettings, projectSettings: ProjectAgentTeamSettings): AgentTeamSettings {
+function mergeSettings(userSettings: AgentTeamSettings, projectSettings: ProjectAgentTeamSettings): ResolvedAgentTeamSettings {
+  const { mcpServers: _userMcpServers, projects: _projects, ...userRuntimeSettings } = userSettings;
+  const { mcpServers: _projectMcpServers, ...projectRuntimeSettings } = projectSettings;
   return {
-    ...userSettings,
-    ...projectSettings,
-    providers: userSettings.providers,
-    permissions: mergeObject(userSettings.permissions, projectSettings.permissions),
-    models: mergeModels(userSettings.models, projectSettings.models),
-    planMode: mergeObject(userSettings.planMode, projectSettings.planMode)
+    ...userRuntimeSettings,
+    ...projectRuntimeSettings,
+    providers: userRuntimeSettings.providers,
+    permissions: mergeObject(userRuntimeSettings.permissions, projectRuntimeSettings.permissions),
+    models: mergeModels(userRuntimeSettings.models, projectRuntimeSettings.models),
+    planMode: mergeObject(userRuntimeSettings.planMode, projectRuntimeSettings.planMode)
   };
 }
 

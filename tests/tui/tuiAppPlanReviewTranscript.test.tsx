@@ -13,7 +13,7 @@ describe("TuiApp plan review transcript", () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-plan-transcript-"));
     const planFilePath = getPlanFilePath("session-plan-transcript", cwd);
     await writePlan(planFilePath, "# Plan\nreview from restored session\n");
-    await new SessionStore(join(cwd, ".session")).savePlanState("session-plan-transcript", {
+    await new SessionStore(join(cwd, ".einsteins", "projects", "tui")).savePlanState("session-plan-transcript", {
       mode: "waiting_approval",
       sessionId: "session-plan-transcript",
       planFilePath,

@@ -31,7 +31,12 @@ export type PendingInteraction =
   | { type: "rework_limit"; node_id: string; questions: unknown[]; result: unknown };
 
 export type WorkflowState = {
-  version?: 2;
+  version?: 2 | 3;
+  session_id?: string;
+  run_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  revision?: number;
   status: RunStatus;
   workflow_id: string;
   config_fingerprint?: string;

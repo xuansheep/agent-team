@@ -279,8 +279,8 @@ describe("RuntimeTurnExecutor", () => {
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-runtime-project-agents-home-"));
     await mkdir(join(cwd, ".einsteins"), { recursive: true });
     await mkdir(join(cwd, ".git"), { recursive: true });
-    await mkdir(join(cwd, ".agents"), { recursive: true });
-    await writeFile(join(cwd, ".agents", "AGENTS.md"), "Project AGENTS instructions.\n", "utf8");
+    await mkdir(join(cwd, ".einsteins"), { recursive: true });
+    await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Project AGENTS instructions.\n", "utf8");
     const configFile = await writeProjectConfig(cwd);
     const settings = settingsSchema.parse({ providers: { default: {
       type: "openai-compatible",
