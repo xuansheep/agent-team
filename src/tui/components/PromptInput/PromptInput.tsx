@@ -42,8 +42,8 @@ export function PromptInput(props: {
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [imageAttachments, setImageAttachments] = useState<PromptInputImageAttachment[]>([]);
   const [dismissedCompletionFor, setDismissedCompletionFor] = useState<string>();
-  const rawSuggestions = useMemo(() => slashCommandSuggestions(buffer.text, { workflows: props.workflows, skills: props.skills }), [buffer.text, props.workflows]);
-  const suggestions = dismissedCompletionFor === buffer.text ? [] : rawSuggestions;
+  const rawSuggestions = useMemo(() => slashCommandSuggestions(buffer.text, { workflows: props.workflows, skills: props.skills }), [buffer.text, props.workflows, props.skills]);
+  const suggestions = history.index !== undefined || dismissedCompletionFor === buffer.text ? [] : rawSuggestions;
   const argumentHint = commandArgumentHint(buffer.text);
 
   useEffect(() => {
@@ -116,8 +116,12 @@ export function PromptInput(props: {
 
   return (
     <Box flexDirection="column" flexShrink={0}>
-      <PromptInputSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
-      <Box ref={cursorRef}>
+      <Box ref={cursorRef} position="relative">
+        {suggestions.length > 0 ? (
+          <Box position="absolute" bottom="100%" left={0} right={0} flexDirection="column" opaque>
+            <PromptInputSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
+          </Box>
+        ) : null}
         <Text>&gt; </Text>
         <PromptBufferView text={visibleText} placeholder={promptPlaceholder} />
         {imageAttachments.length ? <Text dimColor> {imageAttachments.length} image{imageAttachments.length === 1 ? "" : "s"} attached</Text> : null}

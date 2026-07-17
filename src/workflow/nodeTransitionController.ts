@@ -40,6 +40,19 @@ export class NodeTransitionController {
     const navigation = this.navigation(input.workflow, input.nodeId);
     this.assertResultForBoundary(navigation, input.result);
 
+    if (input.result.direction === "retry") {
+      if (!input.bypassReworkLimit && input.reworkCount >= input.reworkLimit) {
+        return { type: "rework_limit", suspended_stack: input.suspendedStack, rework_count: input.reworkCount };
+      }
+      return {
+        type: "node",
+        target_node_id: input.nodeId,
+        suspended_stack: input.suspendedStack,
+        rework_count: input.reworkCount + 1,
+        resume: true
+      };
+    }
+
     if (input.result.direction === "backward") {
       if (navigation.previous.kind === "user") {
         return { type: "user", suspended_stack: input.suspendedStack, rework_count: input.reworkCount };
@@ -78,6 +91,16 @@ export class NodeTransitionController {
   private assertResultForBoundary(navigation: NodeNavigation, result: NodeResult): void {
     if (result.direction === "forward" && result.questions.length) {
       throw new Error("forward node results must not contain user questions");
+    }
+    if (result.direction === "retry") {
+      if (result.questions.length) throw new Error("retry node results must not contain user questions");
+      if (!result.feedback.defects.length && !result.feedback.change_requests.length) {
+        throw new Error("retry node results must include a defect or change request");
+      }
+      if (!result.handoff.instruction.trim()) {
+        throw new Error("retry node results must include a handoff instruction");
+      }
+      return;
     }
     if (result.direction !== "backward") return;
     if (navigation.previous.kind === "user") {

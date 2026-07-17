@@ -14,6 +14,7 @@ type BaseLogMessage = {
   parentLogId?: string;
   nodeId?: string;
   attempt?: number;
+  activation?: number;
 };
 
 export type TuiUserLogMessage = BaseLogMessage & {

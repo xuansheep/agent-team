@@ -25,6 +25,24 @@ describe("SessionStore", () => {
     assert.equal(transcript[0]?.message.content, "hello");
   });
 
+  it("labels plan entries and deduplicates workflow transcript entries", async () => {
+    const root = await workspace();
+    const store = new SessionStore(root);
+    const workflowEntry = {
+      message: { role: "assistant" as const, content: "workflow result" },
+      runId: "run-1",
+      entryId: "workflow:run-1:node:dev:attempt:1:message:0"
+    };
+
+    await store.appendTranscript("session-1", { role: "user", content: "plan request" });
+    await store.appendWorkflowTranscriptEntries("session-1", [workflowEntry]);
+    await store.appendWorkflowTranscriptEntries("session-1", [workflowEntry]);
+
+    const transcript = await store.loadTranscript("session-1");
+    assert.deepEqual(transcript.map((entry) => entry.phase), ["plan", "workflow"]);
+    assert.equal(transcript.filter((entry) => entry.entryId === workflowEntry.entryId).length, 1);
+  });
+
   it("lists sessions directly from session metadata", async () => {
     const root = await workspace();
     const store = new SessionStore(root);
@@ -125,6 +143,49 @@ describe("SessionStore", () => {
 });
 
 describe("RunStore session hierarchy", () => {
+  it("links runs to sessions, records workflow dialogue once, and ignores stream deltas for activity time", async () => {
+    const root = await workspace();
+    const runs = new RunStore(root);
+    const sessions = new SessionStore(root);
+    const run = await runs.createRun("delivery", { request: "session request" }, { sessionId: "session-workflow" });
+
+    const createdMetadata = await sessions.loadMetadata("session-workflow");
+    assert.equal(createdMetadata?.currentRunId, run.runId);
+    assert.deepEqual(createdMetadata?.runIds, [run.runId]);
+
+    const initialTranscript = await sessions.loadTranscript("session-workflow");
+    assert.equal(initialTranscript[0]?.phase, "workflow");
+    assert.equal(initialTranscript[0]?.message.content, "session request");
+    const activityBeforeDelta = createdMetadata?.lastActivityAt;
+
+    await runs.appendEvent(run.runId, { type: "model_stream_delta", node_id: "dev", attempt: 1, text: "partial" });
+    assert.equal((await sessions.loadMetadata("session-workflow"))?.lastActivityAt, activityBeforeDelta);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await runs.appendEvent(run.runId, { type: "node_started", node_id: "dev", attempt: 1 });
+    const activityAfterNodeStart = (await sessions.loadMetadata("session-workflow"))?.lastActivityAt;
+    assert.equal(activityAfterNodeStart, activityBeforeDelta);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await runs.appendEvent(run.runId, { type: "run_completed", result: { status: "completed" } });
+    const activityAfterCompletion = (await sessions.loadMetadata("session-workflow"))?.lastActivityAt;
+    assert.ok(Date.parse(activityAfterCompletion ?? "") > Date.parse(activityBeforeDelta ?? ""));
+
+    const dialogue = [
+      { role: "system" as const, content: "internal prompt" },
+      { role: "assistant" as const, content: "working" },
+      { role: "user" as const, content: "internal repair prompt" },
+      { role: "tool" as const, tool_call_id: "call-1", content: "done" }
+    ];
+    await runs.syncWorkflowDialogue(run.runId, "dev", 1, dialogue);
+    await runs.syncWorkflowDialogue(run.runId, "dev", 1, dialogue);
+
+    const transcript = await sessions.loadTranscript("session-workflow");
+    assert.deepEqual(transcript.map((entry) => entry.message.role), ["user", "assistant", "tool"]);
+    assert.equal(transcript.some((entry) => entry.message.content === "internal prompt"), false);
+    assert.equal(transcript.some((entry) => entry.message.content === "internal repair prompt"), false);
+  });
+
   it("lists a run using the durable state backup when the primary state is corrupt", async () => {
     const root = await workspace();
     const store = new RunStore(root);

@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 type LeaseRecord = {
@@ -67,7 +67,11 @@ export async function acquireFileLease(path: string, purpose: string, options: {
       clearInterval(timer);
       await heartbeatWrite;
       const current = await readLease(path);
-      if (current?.record?.owner_id === ownerId) await retireLease(path, "released");
+      if (current?.record?.owner_id === ownerId) {
+        await unlink(path).catch((error: unknown) => {
+          if (!isErrno(error, "ENOENT")) throw error;
+        });
+      }
     }
   };
 }
@@ -103,7 +107,7 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-async function retireLease(path: string, status: "released" | "stale"): Promise<void> {
+async function retireLease(path: string, status: "stale"): Promise<void> {
   const historyDir = join(dirname(path), ".lease-history");
   await mkdir(historyDir, { recursive: true });
   await rename(path, join(historyDir, `${Date.now()}-${status}-${randomUUID()}.json`));

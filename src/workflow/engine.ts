@@ -12,6 +12,7 @@ import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { ModelMessage, ModelProvider } from "../providers/types.js";
 import { modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
+import { formatRunError } from "../runtime/errorFormatting.js";
 import { ArtifactStore } from "../storage/artifacts.js";
 import { RunStore, RunSummary } from "../storage/runStore.js";
 import { prepareProjectStorage, type ProjectStorageContext } from "../storage/projectStorage.js";
@@ -56,6 +57,7 @@ type ContinueOptions = {
         attempt: number;
         activation?: number;
         dialogueMessages: ModelMessage[];
+        dialogueCursor?: number;
         handoff?: unknown;
     };
     runPermissionMode?: WorkflowRunPermissionMode;
@@ -333,17 +335,12 @@ export class WorkflowEngine {
                 }
                 const checkpointResume = resumeFromCheckpoint(latestState, input);
                 if (checkpointResume) {
-                    await this.appendEvent(store, runId, {
-                        type: "user_message",
-                        text: checkpointResume.userText,
-                        node_id: checkpointResume.nodeId,
-                        attempt: checkpointResume.attempt
-                    }, (event) => stream.push(event));
+                    await this.persistCheckpointResume(store, runId, checkpointResume, (event) => stream.push(event));
                     const nextState = await runSegment({
                         startNodeId: checkpointResume.nodeId,
                         initialHandoff: checkpointResume.handoff,
                         attempts: latestState.attempts,
-                        resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages }
+                        resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages, dialogueCursor: checkpointResume.dialogueCursor }
                     });
                     finishWhenTerminal(nextState);
                     return;
@@ -372,17 +369,12 @@ export class WorkflowEngine {
                 if (latestState.resume_checkpoint) {
                     const checkpointResume = resumeFromCheckpoint(latestState, input);
                     if (checkpointResume) {
-                        await this.appendEvent(store, runId, {
-                            type: "user_message",
-                            text: checkpointResume.userText,
-                            node_id: checkpointResume.nodeId,
-                            attempt: checkpointResume.attempt
-                        }, (event) => stream.push(event));
+                        await this.persistCheckpointResume(store, runId, checkpointResume, (event) => stream.push(event));
                         const nextState = await runSegment({
                             startNodeId: checkpointResume.nodeId,
                             initialHandoff: checkpointResume.handoff,
                             attempts: latestState.attempts,
-                            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages }
+                            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages, dialogueCursor: checkpointResume.dialogueCursor }
                         });
                         finishWhenTerminal(nextState);
                         return;
@@ -435,7 +427,7 @@ export class WorkflowEngine {
         let activeRun: Promise<WorkflowState> | undefined;
         let activeAbortController: AbortController | undefined;
         let latestState: WorkflowState = {
-            version: 3,
+            version: 4,
             status: "running",
             workflow_id: workflowId,
             config_fingerprint: workflowConfigFingerprint(config, workflowId),
@@ -590,17 +582,12 @@ export class WorkflowEngine {
                 }
                 const checkpointResume = resumeFromCheckpoint(latestState, input);
                 if (checkpointResume) {
-                    await this.appendEvent(store, run.runId, {
-                        type: "user_message",
-                        text: checkpointResume.userText,
-                        node_id: checkpointResume.nodeId,
-                        attempt: checkpointResume.attempt
-                    }, (event) => stream.push(event));
+                    await this.persistCheckpointResume(store, run.runId, checkpointResume, (event) => stream.push(event));
                     const state = await runSegment({
                         startNodeId: checkpointResume.nodeId,
                         initialHandoff: checkpointResume.handoff,
                         attempts: latestState.attempts,
-                        resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages }
+                        resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages, dialogueCursor: checkpointResume.dialogueCursor }
                     });
                     finishWhenTerminal(state);
                     return;
@@ -629,17 +616,12 @@ export class WorkflowEngine {
                 if (latestState.resume_checkpoint) {
                     const checkpointResume = resumeFromCheckpoint(latestState, input);
                     if (checkpointResume) {
-                        await this.appendEvent(store, run.runId, {
-                            type: "user_message",
-                            text: checkpointResume.userText,
-                            node_id: checkpointResume.nodeId,
-                            attempt: checkpointResume.attempt
-                        }, (event) => stream.push(event));
+                        await this.persistCheckpointResume(store, run.runId, checkpointResume, (event) => stream.push(event));
                         const state = await runSegment({
                             startNodeId: checkpointResume.nodeId,
                             initialHandoff: checkpointResume.handoff,
                             attempts: latestState.attempts,
-                            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages }
+                            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages, dialogueCursor: checkpointResume.dialogueCursor }
                         });
                         finishWhenTerminal(state);
                         return;
@@ -671,6 +653,20 @@ export class WorkflowEngine {
             result
         };
     }
+    private async persistCheckpointResume(
+        store: RunStore,
+        runId: string,
+        resume: NonNullable<ReturnType<typeof resumeFromCheckpoint>>,
+        eventSink?: (event: StoredEvent) => void
+    ): Promise<void> {
+        resume.dialogueCursor = await store.syncWorkflowDialogue(runId, resume.nodeId, resume.attempt, resume.dialogueMessages);
+        await this.appendEvent(store, runId, {
+            type: "user_message",
+            text: resume.userText,
+            node_id: resume.nodeId,
+            attempt: resume.attempt
+        }, eventSink);
+    }
     private async continueSavedCheckpointWithInput(input: {
         config: AgentTeamConfig;
         workflowId: string;
@@ -683,12 +679,7 @@ export class WorkflowEngine {
         const checkpointResume = resumeFromCheckpoint(input.state, input.input);
         if (!checkpointResume)
             return undefined;
-        await this.appendEvent(input.store, input.runId, {
-            type: "user_message",
-            text: checkpointResume.userText,
-            node_id: checkpointResume.nodeId,
-            attempt: checkpointResume.attempt
-        });
+        await this.persistCheckpointResume(input.store, input.runId, checkpointResume);
         return this.continueFrom({
             config: input.config,
             workflowId: input.workflowId,
@@ -702,7 +693,7 @@ export class WorkflowEngine {
             suspendedStack: input.state.suspended_stack,
             reworkCount: input.state.rework_count,
             reworkLimit: input.state.rework_limit,
-            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages },
+            resume: { nodeId: checkpointResume.nodeId, attempt: checkpointResume.attempt, activation: checkpointResume.activation, handoff: checkpointResume.handoff, dialogueMessages: checkpointResume.dialogueMessages, dialogueCursor: checkpointResume.dialogueCursor },
             runPermissionMode: input.state.run_permission_mode,
             planRequestedPermissionRules: input.state.plan_requested_permission_rules
         });
@@ -733,7 +724,7 @@ export class WorkflowEngine {
             options.reworkLimit = reworkLimit;
         };
         const stateBase = () => ({
-            version: 3 as const,
+            version: 4 as const,
             workflow_id: options.workflowId,
             config_fingerprint: configFingerprint,
             node_checkpoints: { ...nodeCheckpoints },
@@ -760,6 +751,7 @@ export class WorkflowEngine {
             const attempt = resume?.attempt ?? (attemptIndex >= 0 ? attempts[attemptIndex]!.attempt : 1) ?? 1;
             const activation = resume?.activation ?? (attemptIndex >= 0 ? (attempts[attemptIndex]!.activation ?? 0) + 1 : 1);
             let dialogueMessages = resume?.dialogueMessages ?? [];
+            let dialogueCursor = resume?.dialogueCursor ?? dialogueMessages.length;
             const activationState = { activation, status: "running" as const };
             if (attemptIndex < 0) {
                 attempts.push({ node_id: node.id, attempt, activation, status: "running", activations: [activationState] });
@@ -779,7 +771,7 @@ export class WorkflowEngine {
             pendingResume = undefined;
             options.resume = undefined;
             const checkpoint = () => {
-                const value = { node_id: node.id, handoff, attempt, activation, dialogue_messages: dialogueMessages };
+                const value = { node_id: node.id, handoff, attempt, activation, dialogue_cursor: dialogueCursor, dialogue_messages: dialogueMessages };
                 nodeCheckpoints[node.id] = value;
                 return value;
             };
@@ -815,18 +807,9 @@ export class WorkflowEngine {
                     eventSink: options.eventSink,
                     abortSignal: options.abortSignal,
                     dialogueMessages,
-                    onDialogueMessages: async (messages) => {
-                        dialogueMessages = messages;
-                        const state: WorkflowState = {
-                            status: "running",
-                            ...stateBase(),
-                            current_node_id: node.id,
-                            attempts,
-                            handoff,
-                            resume_checkpoint: checkpoint()
-                        };
-                        options.onState?.(state);
-                        await options.store.saveState(options.runId, state);
+                    onDialogueMessage: async (message) => {
+                        dialogueMessages.push(message);
+                        dialogueCursor = await options.store.syncWorkflowDialogue(options.runId, node.id, attempt, dialogueMessages);
                     }
                 });
             }
@@ -880,7 +863,7 @@ export class WorkflowEngine {
                     const finalState: WorkflowState = { status: "completed", ...stateBase(), attempts, handoff };
                     options.onState?.(finalState);
                     await options.store.saveState(options.runId, finalState);
-                    await this.appendEvent(options.store, options.runId, { type: "run_completed", result: finalState }, options.eventSink);
+                    await this.appendEvent(options.store, options.runId, { type: "run_completed", result: { status: finalState.status, workflow_id: finalState.workflow_id } }, options.eventSink);
                     return finalState;
                 }
                 suspendedStack = resolution.suspended_stack;
@@ -892,8 +875,8 @@ export class WorkflowEngine {
                     attempts,
                     attemptIndex,
                     activation,
-                    result.direction === "backward" ? "suspended" : "completed",
-                    result.direction === "backward" ? "returned" : "forwarded",
+                    result.direction === "retry" ? "running" : result.direction === "backward" ? "suspended" : "completed",
+                    result.direction === "retry" ? "retrying" : result.direction === "backward" ? "returned" : "forwarded",
                     result
                 );
                 await this.appendEvent(options.store, options.runId, {
@@ -901,29 +884,32 @@ export class WorkflowEngine {
                     node_id: node.id,
                     attempt,
                     activation,
-                    status: result.direction === "backward" ? "suspended" : "completed",
+                    status: result.direction === "retry" ? "retrying" : result.direction === "backward" ? "suspended" : "completed",
                     result
                 }, options.eventSink);
                 await this.appendEvent(options.store, options.runId, { type: "transition", from: node.id, to: target, reason: result.direction, activation }, options.eventSink);
                 const savedTarget = nodeCheckpoints[target];
                 if (resolution.resume && savedTarget) {
                     const resumedMessages = [...savedTarget.dialogue_messages ?? [], controllerReturnMessage(node.id, result, targetHandoff)];
+                    const resumedAttempt = savedTarget.attempt ?? 1;
+                    const resumedCursor = await options.store.syncWorkflowDialogue(options.runId, target, resumedAttempt, resumedMessages);
                     pendingResume = {
                         nodeId: target,
-                        attempt: savedTarget.attempt ?? 1,
+                        attempt: resumedAttempt,
                         activation: (savedTarget.activation ?? 0) + 1,
                         handoff: savedTarget.handoff,
-                        dialogueMessages: resumedMessages
+                        dialogueMessages: resumedMessages,
+                        dialogueCursor: resumedCursor
                     };
-                    handoff = savedTarget.handoff;
+                    handoff = result.direction === "retry" ? targetHandoff : savedTarget.handoff;
                 }
                 else {
                     pendingResume = undefined;
                     handoff = targetHandoff;
                 }
                 const nextCheckpoint = pendingResume
-                    ? { node_id: target, handoff, attempt: pendingResume.attempt, activation: pendingResume.activation ?? 1, dialogue_messages: pendingResume.dialogueMessages }
-                    : { node_id: target, handoff, attempt: 1, activation: 1, dialogue_messages: [] };
+                    ? { node_id: target, handoff, attempt: pendingResume.attempt, activation: pendingResume.activation ?? 1, dialogue_cursor: pendingResume.dialogueCursor, dialogue_messages: pendingResume.dialogueMessages }
+                    : { node_id: target, handoff, attempt: 1, activation: 1, dialogue_cursor: 0, dialogue_messages: [] };
                 nodeCheckpoints[target] = nextCheckpoint;
                 const transitionState: WorkflowState = {
                     status: "running",
@@ -967,12 +953,19 @@ export class WorkflowEngine {
             await this.appendEvent(input.store, input.runId, { type: "run_cancelled", reason: "用户在返工上限处终止工作流" });
             return resolution.state;
         }
+        if (resolution.resume) {
+            const cursor = await input.store.syncWorkflowDialogue(input.runId, resolution.resume.nodeId, resolution.resume.attempt, resolution.resume.dialogueMessages);
+            resolution.resume.dialogueCursor = cursor;
+            if (resolution.state.resume_checkpoint) resolution.state.resume_checkpoint.dialogue_cursor = cursor;
+            const targetCheckpoint = resolution.state.node_checkpoints?.[resolution.targetNodeId];
+            if (targetCheckpoint) targetCheckpoint.dialogue_cursor = cursor;
+        }
         await input.store.saveState(input.runId, resolution.state);
         await this.appendEvent(input.store, input.runId, {
             type: "transition",
             from: resolution.fromNodeId,
             to: resolution.targetNodeId,
-            reason: "backward",
+            reason: resolution.reason,
             activation: resolution.activation
         });
         return this.continueFrom({
@@ -1000,7 +993,7 @@ export class WorkflowEngine {
         const attemptIndex = findLatestAttemptIndex(attempts, nodeId);
         if (attemptIndex >= 0) setAttemptOutcome(attempts, attemptIndex, activation, "failure", "failed", result);
         await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: nodeId, attempt, activation, status: "failure", result }, options.eventSink);
-        const checkpoint = resumeCheckpoint ?? { node_id: nodeId, handoff, attempt, activation, dialogue_messages: [] };
+        const checkpoint = resumeCheckpoint ?? { node_id: nodeId, handoff, attempt, activation, dialogue_cursor: 0, dialogue_messages: [] };
         const questions = result.questions;
         const state: WorkflowState = {
             status: "paused",
@@ -1024,7 +1017,7 @@ export class WorkflowEngine {
         const questions = waitingQuestions(reason);
         const attempt = latestAttemptForNode(updatedAttempts, nodeId);
         const activation = latestActivationForNode(updatedAttempts, nodeId);
-        const checkpoint = resumeCheckpoint ?? { node_id: nodeId, handoff, attempt, activation, dialogue_messages: [] };
+        const checkpoint = resumeCheckpoint ?? { node_id: nodeId, handoff, attempt, activation, dialogue_cursor: 0, dialogue_messages: [] };
         const state: WorkflowState = {
             status: "paused",
             workflow_id: options.workflowId,
@@ -1065,7 +1058,7 @@ export class WorkflowEngine {
             current_node_id: nodeId,
             attempts,
             handoff,
-            resume_checkpoint: checkpoint ? { ...checkpoint, node_id: nodeId, handoff } : { node_id: nodeId, handoff, attempt: latestAttemptForNode(attempts, nodeId), activation: latestActivationForNode(attempts, nodeId), dialogue_messages: [] },
+            resume_checkpoint: checkpoint ? { ...checkpoint, node_id: nodeId, handoff } : { node_id: nodeId, handoff, attempt: latestAttemptForNode(attempts, nodeId), activation: latestActivationForNode(attempts, nodeId), dialogue_cursor: 0, dialogue_messages: [] },
             pending_interaction: { type: "node_user", node_id: nodeId, questions }
         };
         await this.appendEvent(input.store, input.runId, { type: "node_waiting_user", node_id: nodeId, questions }, input.eventSink);
@@ -1261,71 +1254,47 @@ function requireDocument(node: WorkflowNodeConfig, result: NodeResult): string {
         throw new Error(`${node.mode} node ${node.id} must return document`);
     return document;
 }
-function formatRunError(error: unknown): {
-    message: string;
-    detail?: string;
-} {
-    const message = error instanceof Error ? error.message : String(error);
-    const detail = [explicitErrorDetail(error), causeErrorDetail(error)].filter(Boolean).join("\n");
-    return { message, ...(detail ? { detail } : {}) };
-}
-function explicitErrorDetail(error: unknown): string | undefined {
-    if (!error || typeof error !== "object")
-        return undefined;
-    const detail = (error as {
-        detail?: unknown;
-    }).detail;
-    return typeof detail === "string" && detail.trim() ? detail : undefined;
-}
-function causeErrorDetail(error: unknown): string | undefined {
-    if (!(error instanceof Error) || !("cause" in error))
-        return undefined;
-    const cause = (error as {
-        cause?: unknown;
-    }).cause;
-    if (!cause)
-        return undefined;
-    return errorDetailLines("cause", cause).join("\n");
-}
-function errorDetailLines(prefix: string, value: unknown): string[] {
-    if (value instanceof Error) {
-        const code = (value as Error & {
-            code?: unknown;
-        }).code;
-        return [
-            `${prefix}.name: ${value.name}`,
-            `${prefix}.message: ${value.message}`,
-            ...(typeof code === "string" || typeof code === "number" ? [`${prefix}.code: ${String(code)}`] : [])
-        ];
-    }
-    if (value && typeof value === "object") {
-        const record = value as Record<string, unknown>;
-        return ["name", "message", "code"]
-            .filter((key) => typeof record[key] === "string" || typeof record[key] === "number")
-            .map((key) => `${prefix}.${key}: ${String(record[key])}`);
-    }
-    return [`${prefix}.message: ${String(value)}`];
-}
 function resumeFromCheckpoint(state: WorkflowState, input: unknown): {
     nodeId: string;
     handoff: unknown;
     attempt: number;
     activation: number;
     dialogueMessages: ModelMessage[];
+    dialogueCursor: number;
     userText: string;
 } | undefined {
     const checkpoint = state.resume_checkpoint;
     if (!checkpoint || checkpoint.node_id !== state.current_node_id || typeof checkpoint.attempt !== "number" || !Array.isArray(checkpoint.dialogue_messages))
         return undefined;
+    const dialogueMessages = [...checkpoint.dialogue_messages];
+    const legacyError = legacyRuntimeFailureMessage(state, checkpoint.node_id, checkpoint.attempt);
+    if (legacyError && !dialogueMessages.some((message) => message.role === "assistant" && message.is_error === true)) {
+        dialogueMessages.push({ role: "assistant", content: legacyError, is_error: true });
+    }
     const userText = userMessageText(input);
     return {
         nodeId: checkpoint.node_id,
         handoff: checkpoint.handoff,
         attempt: checkpoint.attempt,
         activation: (checkpoint.activation ?? 0) + 1,
-        dialogueMessages: [...checkpoint.dialogue_messages, { role: "user", content: userText }],
+        dialogueMessages: [...dialogueMessages, { role: "user", content: userText }],
+        dialogueCursor: checkpoint.dialogue_cursor ?? dialogueMessages.length,
         userText
     };
+}
+
+function legacyRuntimeFailureMessage(state: WorkflowState, nodeId: string, attempt: number): string | undefined {
+    const failed = [...state.attempts].reverse().find((item) =>
+        item.node_id === nodeId && item.attempt === attempt && item.status === "failure"
+    );
+    if (!failed?.result || typeof failed.result !== "object") return undefined;
+    const result = failed.result as Record<string, unknown>;
+    const handoff = result.handoff as Record<string, unknown> | undefined;
+    if (handoff?.instruction !== "等待用户处理节点失败后继续执行。") return undefined;
+    const feedback = result.feedback as Record<string, unknown> | undefined;
+    const defects = feedback?.defects;
+    if (Array.isArray(defects) && typeof defects[0] === "string" && defects[0].trim()) return defects[0];
+    return typeof result.summary === "string" && result.summary.trim() ? result.summary : undefined;
 }
 function latestAttemptForNode(attempts: WorkflowState["attempts"], nodeId: string): number {
     for (let index = attempts.length - 1; index >= 0; index -= 1) {
@@ -1405,11 +1374,11 @@ function stableJson(value: unknown): string {
 function reworkLimitQuestions(limit: number): NodeResult["questions"] {
     return [{
         id: "rework_limit",
-        text: `工作流已达到 ${limit} 次节点退回上限。是否允许本次退回并将本次运行上限增加 ${limit} 次？`,
+        text: `工作流已达到 ${limit} 次节点返工或重试上限。是否允许本次操作并将本次运行上限增加 ${limit} 次？`,
         required: true,
         allow_freeform: false,
         options: [
-            { label: "继续返工", value: "continue", description: `批准本次退回并增加 ${limit} 次额度` },
+            { label: "继续执行", value: "continue", description: `批准本次返工或重试并增加 ${limit} 次额度` },
             { label: "终止工作流", value: "cancel", description: "取消待处理退回并终止本次运行" }
         ]
     }];
@@ -1418,7 +1387,7 @@ function continuationStateFields(options: ContinueOptions, checkpoint: WorkflowS
     const nodeCheckpoints = { ...options.nodeCheckpoints };
     if (checkpoint) nodeCheckpoints[checkpoint.node_id] = checkpoint;
     return {
-        version: 3 as const,
+        version: 4 as const,
         config_fingerprint: options.configFingerprint ?? workflowConfigFingerprint(options.config, options.workflowId),
         node_checkpoints: nodeCheckpoints,
         suspended_stack: [...options.suspendedStack ?? []],
@@ -1428,7 +1397,7 @@ function continuationStateFields(options: ContinueOptions, checkpoint: WorkflowS
 }
 type ReworkLimitResolution =
   | { type: "cancel"; state: WorkflowState }
-  | { type: "continue"; state: WorkflowState; targetNodeId: string; handoff: unknown; resume?: ContinueOptions["resume"]; fromNodeId: string; activation: number };
+  | { type: "continue"; state: WorkflowState; targetNodeId: string; handoff: unknown; resume?: ContinueOptions["resume"]; fromNodeId: string; activation: number; reason: "backward" | "retry" };
 function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig, input: unknown): ReworkLimitResolution | undefined {
     if (state.pending_interaction?.type !== "rework_limit" || !state.current_node_id || !state.resume_checkpoint) return undefined;
     const decision = reworkDecision(input);
@@ -1437,7 +1406,7 @@ function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig,
         return { type: "cancel", state: { ...state, status: "cancelled", pending_interaction: undefined } };
     }
     const result = state.pending_interaction.result as NodeResult;
-    if (!result || (result.direction !== "forward" && result.direction !== "backward")) throw new Error("Saved rework transition result is invalid");
+    if (!result || (result.direction !== "backward" && result.direction !== "retry")) throw new Error("Saved rework transition result is invalid");
     const controller = new NodeTransitionController();
     const resolved = controller.resolve({
         workflow,
@@ -1448,11 +1417,13 @@ function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig,
         reworkLimit: state.rework_limit ?? workflow.max_rework_cycles ?? 10,
         bypassReworkLimit: true
     });
-    if (resolved.type !== "node") throw new Error("Approved rework did not resolve to an upstream node");
+    if (resolved.type !== "node") throw new Error("Approved rework did not resolve to a workflow node");
     const attempts = state.attempts.map((attempt) => ({ ...attempt, activations: [...attempt.activations ?? []] }));
     const attemptIndex = findLatestAttemptIndex(attempts, state.current_node_id);
     const activation = state.resume_checkpoint.activation ?? latestActivationForNode(attempts, state.current_node_id);
-    if (attemptIndex >= 0) setAttemptOutcome(attempts, attemptIndex, activation, "suspended", "returned", result);
+    if (attemptIndex >= 0) {
+        setAttemptOutcome(attempts, attemptIndex, activation, result.direction === "retry" ? "running" : "suspended", result.direction === "retry" ? "retrying" : "returned", result);
+    }
     const nodeCheckpoints = { ...state.node_checkpoints, [state.current_node_id]: state.resume_checkpoint };
     const targetHandoff = buildHandoff(resolved.target_node_id, state.current_node_id, result, 1);
     const savedTarget = nodeCheckpoints[resolved.target_node_id];
@@ -1461,17 +1432,18 @@ function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig,
         attempt: savedTarget.attempt ?? 1,
         activation: (savedTarget.activation ?? 0) + 1,
         handoff: savedTarget.handoff,
-        dialogueMessages: [...savedTarget.dialogue_messages ?? [], controllerReturnMessage(state.current_node_id, result, targetHandoff)]
+        dialogueMessages: [...savedTarget.dialogue_messages ?? [], controllerReturnMessage(state.current_node_id, result, targetHandoff)],
+        dialogueCursor: savedTarget.dialogue_cursor
     } : undefined;
-    const handoff = resume ? savedTarget!.handoff : targetHandoff;
+    const handoff = resume ? (result.direction === "retry" ? targetHandoff : savedTarget!.handoff) : targetHandoff;
     const checkpoint = resume
-        ? { node_id: resolved.target_node_id, handoff, attempt: resume.attempt, activation: resume.activation ?? 1, dialogue_messages: resume.dialogueMessages }
-        : { node_id: resolved.target_node_id, handoff, attempt: 1, activation: 1, dialogue_messages: [] };
+        ? { node_id: resolved.target_node_id, handoff, attempt: resume.attempt, activation: resume.activation ?? 1, dialogue_cursor: resume.dialogueCursor, dialogue_messages: resume.dialogueMessages }
+        : { node_id: resolved.target_node_id, handoff, attempt: 1, activation: 1, dialogue_cursor: 0, dialogue_messages: [] };
     nodeCheckpoints[resolved.target_node_id] = checkpoint;
     const extension = workflow.max_rework_cycles ?? 10;
     const nextState: WorkflowState = {
         ...state,
-        version: 3,
+        version: 4,
         status: "running",
         current_node_id: resolved.target_node_id,
         attempts,
@@ -1483,7 +1455,7 @@ function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig,
         rework_limit: (state.rework_limit ?? extension) + extension,
         pending_interaction: undefined
     };
-    return { type: "continue", state: nextState, targetNodeId: resolved.target_node_id, handoff, resume, fromNodeId: state.current_node_id, activation };
+    return { type: "continue", state: nextState, targetNodeId: resolved.target_node_id, handoff, resume, fromNodeId: state.current_node_id, activation, reason: result.direction };
 }
 function reworkDecision(input: unknown): "continue" | "cancel" | undefined {
     const value = JSON.stringify(input).toLowerCase();

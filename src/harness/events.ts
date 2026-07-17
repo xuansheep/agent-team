@@ -8,17 +8,17 @@ export type HarnessEvent =
   | { type: "node_started"; node_id: string; attempt: number; activation?: number }
   | { type: "node_waiting_user"; node_id: string; attempt?: number; activation?: number; questions: unknown[] }
   | { type: "complete_summary_available"; node_id: string; attempt: number; activation?: number; document: string }
-  | { type: "model_thinking_delta"; node_id: string; attempt: number; text: string }
-  | { type: "model_stream_delta"; node_id: string; attempt: number; text: string }
-  | { type: "model_usage_recorded"; node_id: string; attempt: number; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
+  | { type: "model_thinking_delta"; node_id: string; attempt: number; activation?: number; text: string }
+  | { type: "model_stream_delta"; node_id: string; attempt: number; activation?: number; text: string }
+  | { type: "model_usage_recorded"; node_id: string; attempt: number; activation?: number; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "tool_invoked"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; input: unknown }
   | { type: "tool_completed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; result: unknown }
   | { type: "tool_failed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; error: string; result?: unknown }
   | { type: "artifact_read"; node_id: string; attempt?: number; artifact_id: string; offset: number; bytes_read: number; total_bytes: number; truncated: boolean; source: "handoff" | "tool" }
   | { type: "skill_activated"; node_id: string; attempt?: number; activation?: number; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }
   | { type: "artifact_created"; node_id: string; artifact_id: string; path: string }
-  | { type: "node_completed"; node_id: string; attempt?: number; activation?: number; status: "success" | "failure" | "completed" | "suspended"; result: unknown }
-  | { type: "transition"; from: string; to: string; reason: "success" | "failure" | "forward" | "backward"; activation?: number }
+  | { type: "node_completed"; node_id: string; attempt?: number; activation?: number; status: "success" | "failure" | "completed" | "suspended" | "retrying"; result: unknown }
+  | { type: "transition"; from: string; to: string; reason: "success" | "failure" | "forward" | "backward" | "retry"; activation?: number }
   | { type: "permission_requested"; request_id: string; node_id: string; attempt: number; tool_call_id: string; tool: string; input: unknown; rule?: string; specifier: string }
   | { type: "permission_resolved"; request_id: string; node_id: string; attempt: number; tool_call_id: string; decision: "allow_once" | "deny_once" }
   | { type: "node_interrupted"; node_id: string; attempt: number }

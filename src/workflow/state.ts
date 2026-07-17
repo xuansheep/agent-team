@@ -5,7 +5,7 @@ export type RunStatus = "running" | "waiting_user" | "paused" | "completed" | "f
 
 export type NodeActivationState = {
   activation: number;
-  status: "running" | "forwarded" | "returned" | "waiting_user" | "interrupted" | "failed";
+  status: "running" | "forwarded" | "returned" | "retrying" | "waiting_user" | "interrupted" | "failed";
   result?: unknown;
 };
 
@@ -23,6 +23,7 @@ export type ResumeCheckpoint = {
   handoff: unknown;
   attempt?: number;
   activation?: number;
+  dialogue_cursor?: number;
   dialogue_messages?: ModelMessage[];
 };
 
@@ -31,7 +32,7 @@ export type PendingInteraction =
   | { type: "rework_limit"; node_id: string; questions: unknown[]; result: unknown };
 
 export type WorkflowState = {
-  version?: 2 | 3;
+  version?: 2 | 3 | 4;
   session_id?: string;
   run_id?: string;
   created_at?: string;

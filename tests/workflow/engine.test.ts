@@ -6,6 +6,7 @@ import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
 import { RunStore } from "../../src/storage/runStore.js";
+import { SessionStore } from "../../src/storage/sessionStore.js";
 
 class FakeProvider implements ModelProvider {
   async generate() {
@@ -163,13 +164,14 @@ describe("WorkflowEngine", () => {
     }, "flow", { request: "x" });
 
     const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; node_id?: string; attempt?: number; model?: string; usage?: unknown; stop_reason?: string; ts: string; seq: number });
+    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; node_id?: string; attempt?: number; activation?: number; model?: string; usage?: unknown; stop_reason?: string; ts: string; seq: number });
     const usageEvent = events.find((event) => event.type === "model_usage_recorded");
 
     assert.deepEqual(usageEvent, {
       type: "model_usage_recorded",
       node_id: "a",
       attempt: 1,
+      activation: 1,
       model: "gpt-test",
       usage: { inputTokens: 11, outputTokens: 13, totalTokens: 24 },
       stop_reason: "stop",
@@ -478,9 +480,14 @@ describe("WorkflowEngine", () => {
     assert.doesNotMatch(firstSystem, /## Auto Mode Active/);
 
     const runId = await latestRunId(runRoot);
-    const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string });
+    const runDir = await runDirForRun(runRoot, runId);
+    const events = (await readFile(join(runDir, "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; tool?: string; result?: { attempts?: unknown[] } });
     assert.equal(events.some((event) => event.type === "permission_requested"), false);
     assert.equal(events.some((event) => event.type === "tool_completed" && event.tool === "ArtifactWrite"), true);
+    assert.equal(events.find((event) => event.type === "run_completed")?.result?.attempts, undefined);
+    const persisted = JSON.parse(await readFile(join(runDir, "state.json"), "utf8")) as { revision?: number; resume_checkpoint?: { dialogue_messages?: unknown[] } };
+    assert.equal(persisted.revision, 2);
+    assert.equal(persisted.resume_checkpoint?.dialogue_messages, undefined);
   });
 
   it("completes only after a complete node returns a summary document", async () => {
@@ -756,14 +763,17 @@ describe("WorkflowEngine", () => {
     assert.match(devText, /add unit tests and retry/);
   });
 
-  it("resumes a provider-error headless run from the saved checkpoint", async () => {
+  it("resumes a provider-error headless run with the real failure before the user's next turn", async () => {
     const runRoot = `.tmp/headless-checkpoint-error-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let calls = 0;
+    const requests: ModelRequest[] = [];
+    const cause = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
     const provider: ModelProvider = {
-      async generate() {
+      async generate(request) {
         calls += 1;
-        if (calls === 1) throw new Error("provider exploded");
-        return { content: JSON.stringify({ direction: "forward", summary: "recovered", handoff: { instruction: "done" } }) };
+        requests.push(request);
+        if (calls === 1) throw new Error("provider exploded", { cause });
+        return { content: JSON.stringify({ direction: "forward", summary: "explained without retrying tools", handoff: { instruction: "done" } }) };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -778,17 +788,49 @@ describe("WorkflowEngine", () => {
     assert.equal(waiting.attempts.at(-1)?.status, "failure");
 
     const runId = await latestRunId(runRoot);
-    const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; resume_checkpoint?: { node_id: string } };
+    const checkpointError = waiting.resume_checkpoint?.dialogue_messages?.find((message) => message.role === "assistant" && message.is_error);
+    assert.match(String(checkpointError?.content), /provider exploded/);
+    assert.match(String(checkpointError?.content), /cause\.code: ECONNRESET/);
 
+    const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as {
+      status: string;
+      resume_checkpoint?: { node_id: string; dialogue_cursor?: number; dialogue_messages?: Array<{ role: string; content: string; is_error?: boolean }> };
+    };
     assert.equal(persisted.status, "paused");
     assert.equal(persisted.resume_checkpoint?.node_id, "dev");
+    assert.equal(persisted.resume_checkpoint?.dialogue_messages, undefined);
+    assert.ok((persisted.resume_checkpoint?.dialogue_cursor ?? 0) > 0);
+    const runStore = new RunStore(runRoot);
+    const hydrated = await runStore.loadState(runId);
+    assert.equal(hydrated.resume_checkpoint?.dialogue_messages?.some((message) => message.role === "assistant" && message.is_error), true);
 
-    const resumed = await engine.resume(config, "flow", runId, { answer: "try again" });
+    const transcriptBeforeResume = await new SessionStore(runRoot).loadTranscript(runId);
+    assert.equal(transcriptBeforeResume.some((entry) =>
+      entry.phase === "workflow" && entry.message.role === "assistant" && entry.message.is_error && String(entry.message.content).includes("ECONNRESET")
+    ), true);
+
+    const resumed = await engine.resume(config, "flow", runId, { answer: "为什么执行失败了" });
 
     assert.equal(resumed.status, "completed");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(resumed.resume_checkpoint, undefined);
     assert.equal(calls, 2);
+
+    const resumedMessages = requests[1]?.messages ?? [];
+    const errorIndex = resumedMessages.findIndex((message) => message.role === "assistant" && message.is_error);
+    const questionIndex = resumedMessages.findIndex((message) => message.role === "user" && requestMessageText(message).includes("为什么执行失败了"));
+    assert.ok(errorIndex >= 0);
+    assert.ok(questionIndex > errorIndex);
+
+    const events = await runStore.loadEvents(runId);
+    assert.equal(events.some((event) => event.type === "tool_invoked"), false);
+
+    const transcriptAfterResume = await new SessionStore(runRoot).loadTranscript(runId);
+    const transcriptErrorIndex = transcriptAfterResume.findIndex((entry) => entry.message.role === "assistant" && entry.message.is_error);
+    const transcriptQuestionIndex = transcriptAfterResume.findIndex((entry) => entry.message.role === "user" && String(entry.message.content).includes("为什么执行失败了"));
+    assert.ok(transcriptErrorIndex >= 0);
+    assert.ok(transcriptQuestionIndex > transcriptErrorIndex);
+    assert.equal(transcriptAfterResume.filter((entry) => entry.message.role === "assistant" && entry.message.is_error).length, 1);
   });
 
 });

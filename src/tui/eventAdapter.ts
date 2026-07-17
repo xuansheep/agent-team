@@ -83,10 +83,14 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
 to：${event.to}
 reason：${event.reason}`
       }, event);
-    case "model_thinking_delta":
-      return appendThinkingLog(next, event.node_id, event.attempt, event.text, event);
-    case "model_stream_delta":
-      return appendAssistantStreamLog(appendModelStream(next, event.node_id, event.attempt, event.text), event.node_id, event.attempt, event);
+    case "model_thinking_delta": {
+      const activation = event.activation ?? findActivation(next, event.node_id);
+      return appendThinkingLog(next, event.node_id, event.attempt, activation, event.text, event);
+    }
+    case "model_stream_delta": {
+      const activation = event.activation ?? findActivation(next, event.node_id);
+      return appendAssistantStreamLog(appendModelStream(next, event.node_id, event.attempt, activation, event.text), event.node_id, event.attempt, activation, event);
+    }
     case "node_completed": {
       const attempt = event.attempt ?? findAttempt(next, event.node_id);
       const activation = event.activation ?? findActivation(next, event.node_id);
@@ -121,6 +125,7 @@ reason：${event.reason}`
           {
             nodeId: event.node_id,
             attempt,
+            activation: event.activation ?? findActivation(next, event.node_id),
             toolCallId,
             tool: event.tool,
             status: "running" as const,
@@ -129,8 +134,9 @@ reason：${event.reason}`
           }
         ]
       };
-      const parentLogId = findToolParentAssistantLog(withTool, event.node_id, attempt);
-      return appendToolLog(withTool, event, attempt, toolCallId, parentLogId);
+      const activation = event.activation ?? findActivation(next, event.node_id);
+      const parentLogId = findToolParentAssistantLog(withTool, event.node_id, attempt, activation);
+      return appendToolLog(withTool, event, attempt, activation, toolCallId, parentLogId);
     }
     case "tool_completed":
       return updateToolLog(updateTool(next, event.tool_call_id, "completed", event.result), event.tool_call_id, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result));
@@ -192,42 +198,42 @@ function upsertNode(state: TuiState, nodeId: string, attempt: number, activation
   nodes[existing] = node;
   return { ...state, nodes };
 }
-function appendModelStream(state: TuiState, nodeId: string, attempt: number, text: string): TuiState {
-  const existing = state.modelStreams.findIndex((stream) => stream.nodeId === nodeId && stream.attempt === attempt);
+function appendModelStream(state: TuiState, nodeId: string, attempt: number, activation: number, text: string): TuiState {
+  const existing = state.modelStreams.findIndex((stream) => stream.nodeId === nodeId && stream.attempt === attempt && (stream.activation ?? 1) === activation);
   const stream: TuiModelStreamState = existing === -1
-    ? { nodeId, attempt, text }
+    ? { nodeId, attempt, activation, text }
     : { ...state.modelStreams[existing], text: `${state.modelStreams[existing].text}${text}` };
   if (existing === -1) return { ...state, modelStreams: [...state.modelStreams, stream] };
   const modelStreams = [...state.modelStreams];
   modelStreams[existing] = stream;
   return { ...state, modelStreams };
 }
-function appendAssistantStreamLog(state: TuiState, nodeId: string, attempt: number, event: StoredEvent): TuiState {
-  const stream = state.modelStreams.find((s) => s.nodeId === nodeId && s.attempt === attempt);
+function appendAssistantStreamLog(state: TuiState, nodeId: string, attempt: number, activation: number, event: StoredEvent): TuiState {
+  const stream = state.modelStreams.find((s) => s.nodeId === nodeId && s.attempt === attempt && (s.activation ?? 1) === activation);
   const streamText = visibleAssistantStreamText(stream?.text ?? "");
   if (!streamText) return state;
-  const previousEnd = currentAssistantStreamEnd(state.logMessages, nodeId, attempt);
-  if (streamText.length < previousEnd) return trimAssistantStreamLog(state, nodeId, attempt, streamText, previousEnd);
+  const previousEnd = currentAssistantStreamEnd(state.logMessages, nodeId, attempt, activation);
+  if (streamText.length < previousEnd) return trimAssistantStreamLog(state, nodeId, attempt, activation, streamText, previousEnd);
   if (streamText.length === previousEnd) return state;
   const delta = streamText.slice(previousEnd);
   const last = [...state.logMessages].reverse().find(
-    (item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.source === "model_stream"
+    (item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream"
   );
   if (!last || hasChildLog(state.logMessages, last.id)) {
-    return appendConversation(state, { kind: "assistant", nodeId, attempt, text: delta, source: "model_stream", streamEnd: streamText.length }, event);
+    return appendConversation(state, { kind: "assistant", nodeId, attempt, activation, text: delta, source: "model_stream", streamEnd: streamText.length }, event);
   }
   const text = `${last.text}${delta}`;
   return {
     ...state,
-    conversation: updateAssistantConversation(state.conversation, nodeId, attempt, text, streamText.length),
+    conversation: updateAssistantConversation(state.conversation, nodeId, attempt, activation, text, streamText.length),
     logMessages: state.logMessages.map((item) => item.id === last.id ? { ...item, text, streamEnd: streamText.length } : item)
   };
 }
-function appendThinkingLog(state: TuiState, nodeId: string, attempt: number, text: string, event: StoredEvent): TuiState {
+function appendThinkingLog(state: TuiState, nodeId: string, attempt: number, activation: number, text: string, event: StoredEvent): TuiState {
   if (!text) return state;
   for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
     const item = state.logMessages[index];
-    if (item.kind !== "status" || item.nodeId !== nodeId || item.attempt !== attempt || item.text !== "Reasoning") continue;
+    if (item.kind !== "status" || item.nodeId !== nodeId || item.attempt !== attempt || item.activation !== activation || item.text !== "Reasoning") continue;
     const logMessages = [...state.logMessages];
     logMessages[index] = { ...item, detailText: `${item.detailText ?? ""}${text}`, detailVisible: true };
     return { ...state, logMessages };
@@ -241,6 +247,7 @@ function appendThinkingLog(state: TuiState, nodeId: string, attempt: number, tex
         kind: "status",
         nodeId,
         attempt,
+        activation,
         text: "Reasoning",
         detailText: text,
         detailVisible: true
@@ -263,14 +270,15 @@ function conversationToLogMessage(item: TuiConversationItem, event: StoredEvent)
     detailVisible: item.detailVisible,
     nodeId: item.nodeId,
     attempt: item.attempt,
+    activation: item.activation,
     source: item.source,
     streamEnd: item.streamEnd
   };
 }
-function findToolParentAssistantLog(state: TuiState, nodeId: string, attempt: number): string | undefined {
+function findToolParentAssistantLog(state: TuiState, nodeId: string, attempt: number, activation: number): string | undefined {
   for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
     const item = state.logMessages[index];
-    if (item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt) return item.id;
+    if (item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation) return item.id;
     if (item.parentLogId) continue;
     if (isPermissionFlowLog(item, nodeId, attempt)) continue;
     if (isThinkingFlowLog(item, nodeId, attempt)) continue;
@@ -286,29 +294,29 @@ function isThinkingFlowLog(item: TuiLogMessage, nodeId: string, attempt: number)
   if (item.nodeId !== nodeId || item.attempt !== attempt) return false;
   return item.kind === "status" && item.text === "Reasoning";
 }
-function updateAssistantConversation(items: TuiConversationItem[], nodeId: string, attempt: number, text: string, streamEnd: number): TuiConversationItem[] {
-  const index = [...items].reverse().findIndex((item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.source === "model_stream");
+function updateAssistantConversation(items: TuiConversationItem[], nodeId: string, attempt: number, activation: number, text: string, streamEnd: number): TuiConversationItem[] {
+  const index = [...items].reverse().findIndex((item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream");
   if (index === -1) return items;
   const actualIndex = items.length - 1 - index;
   const next = [...items];
   next[actualIndex] = { ...next[actualIndex], text, streamEnd };
   return next;
 }
-function trimAssistantStreamLog(state: TuiState, nodeId: string, attempt: number, streamText: string, previousEnd: number): TuiState {
-  const last = [...state.logMessages].reverse().find((item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.source === "model_stream");
+function trimAssistantStreamLog(state: TuiState, nodeId: string, attempt: number, activation: number, streamText: string, previousEnd: number): TuiState {
+  const last = [...state.logMessages].reverse().find((item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream");
   if (!last || last.kind !== "assistant") return state;
   const lastEnd = last.streamEnd ?? previousEnd;
   const lastStart = Math.max(0, lastEnd - last.text.length);
   const text = streamText.slice(lastStart);
   return {
     ...state,
-    conversation: updateAssistantConversation(state.conversation, nodeId, attempt, text, streamText.length),
+    conversation: updateAssistantConversation(state.conversation, nodeId, attempt, activation, text, streamText.length),
     logMessages: state.logMessages.map((item) => item.id === last.id ? { ...item, text, streamEnd: streamText.length } : item)
   };
 }
-function currentAssistantStreamEnd(items: TuiLogMessage[], nodeId: string, attempt: number): number {
+function currentAssistantStreamEnd(items: TuiLogMessage[], nodeId: string, attempt: number, activation: number): number {
   return items.reduce((max, item) => {
-    if (item.kind !== "assistant" || item.nodeId !== nodeId || item.attempt !== attempt || item.source !== "model_stream") return max;
+    if (item.kind !== "assistant" || item.nodeId !== nodeId || item.attempt !== attempt || item.activation !== activation || item.source !== "model_stream") return max;
     return Math.max(max, item.streamEnd ?? 0);
   }, 0);
 }
@@ -318,12 +326,13 @@ function hasChildLog(items: TuiLogMessage[], parentLogId: string): boolean {
 function visibleAssistantStreamText(text: string): string {
   return visibleAssistantTextBeforeNodeResult(text);
 }
-function appendToolLog(state: TuiState, event: Extract<StoredEvent, { type: "tool_invoked" }>, attempt: number, toolCallId: string, parentLogId?: string): TuiState {
+function appendToolLog(state: TuiState, event: Extract<StoredEvent, { type: "tool_invoked" }>, attempt: number, activation: number, toolCallId: string, parentLogId?: string): TuiState {
   const tool: TuiToolLogMessage = {
     id: logId(event, toolCallId),
     kind: "tool",
     nodeId: event.node_id,
     attempt,
+    activation,
     toolCallId,
     parentLogId,
     tool: event.tool,
@@ -401,9 +410,9 @@ function inputText(input: unknown): string {
   }
   return readableValue(input);
 }
-function nodeCompletedLog(nodeId: string, status: "success" | "failure" | "completed" | "suspended", result: unknown): { text: string; detailText: string } {
+function nodeCompletedLog(nodeId: string, status: "success" | "failure" | "completed" | "suspended" | "retrying", result: unknown): { text: string; detailText: string } {
   const summary = resultSummary(result);
-  const statusText = status === "success" || status === "completed" ? "已完成" : status === "suspended" ? "已挂起并退回" : "执行失败";
+  const statusText = status === "success" || status === "completed" ? "已完成" : status === "suspended" ? "已挂起并退回" : status === "retrying" ? "保持当前节点并重试" : "执行失败";
   return {
     text: summary ? `${nodeId} ${statusText}：${summary}` : `${nodeId} ${statusText}`,
     detailText: nodeResultDetail(result)

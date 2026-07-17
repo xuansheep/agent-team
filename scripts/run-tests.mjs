@@ -2,24 +2,24 @@ import { readdir } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { run } from "node:test";
 
-async function collectTests(dir) {
+async function collectSourceTests(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...await collectTests(path));
-    if (entry.isFile() && entry.name.endsWith(".test.js")) files.push(path);
+    if (entry.isDirectory()) files.push(...await collectSourceTests(path));
+    if (entry.isFile() && /[.]test[.]tsx?$/.test(entry.name)) files.push(path);
   }
   return files;
 }
 
-process.env.EINSTEINS_HOME ??= resolve(".tmp", "test-home", String(process.pid));
+process.env.EINSTEINS_HOME = resolve(".tmp", "test-home", String(process.pid));
 
-const root = resolve("dist-test", "tests");
 const requested = process.argv.slice(2);
 const files = requested.length > 0
   ? requested.map(toCompiledTestPath)
-  : await collectTests(root);
+  : (await collectSourceTests(resolve("tests")))
+    .map((path) => toCompiledTestPath(relative(resolve(), path)));
 files.sort();
 
 if (files.length === 0) throw new Error("No test files found");

@@ -47,6 +47,7 @@ type ServerRecord = {
 export class McpRuntime {
   private readonly servers = new Map<string, ServerRecord>();
   private readonly catalogListeners = new Set<(kind: "tools" | "resources" | "prompts", server: string) => void | Promise<void>>();
+  private catalogRevision = 0;
 
   constructor(private readonly options: McpRuntimeOptions) {}
 
@@ -55,6 +56,7 @@ export class McpRuntime {
     await Promise.all([...this.servers.keys()].filter((name) => !nextNames.has(name)).map(async (name) => {
       await closeClient(this.servers.get(name)?.client);
       this.servers.delete(name);
+      this.bumpCatalogRevision();
     }));
     await Promise.all(configs.map((config) => this.reconnect(config)));
   }
@@ -70,6 +72,7 @@ export class McpRuntime {
       prompts: []
     };
     this.servers.set(config.name, record);
+    this.bumpCatalogRevision();
     if (config.disabled) return;
 
     let client: McpClient | undefined;
@@ -79,9 +82,9 @@ export class McpRuntime {
       record.client = client;
       record.metadata = client.getMetadata?.() ?? {};
       client.onListChanged?.({
-        tools: async (tools) => { record.tools = runtimeTools(config.name, tools); await this.notifyCatalog("tools", config.name); },
-        resources: async (resources) => { record.resources = resources.slice(); record.resourceTemplates = await client!.listResourceTemplates?.() ?? []; await this.notifyCatalog("resources", config.name); },
-        prompts: async (prompts) => { record.prompts = prompts.slice(); await this.notifyCatalog("prompts", config.name); }
+        tools: async (tools) => { record.tools = runtimeTools(config.name, tools); this.bumpCatalogRevision(); await this.notifyCatalog("tools", config.name); },
+        resources: async (resources) => { record.resources = resources.slice(); record.resourceTemplates = await client!.listResourceTemplates?.() ?? []; this.bumpCatalogRevision(); await this.notifyCatalog("resources", config.name); },
+        prompts: async (prompts) => { record.prompts = prompts.slice(); this.bumpCatalogRevision(); await this.notifyCatalog("prompts", config.name); }
       });
       const [tools, resources, resourceTemplates, prompts] = await Promise.all([client.listTools(), client.listResources(), client.listResourceTemplates?.() ?? [], client.listPrompts()]);
       record.tools = runtimeTools(config.name, tools);
@@ -89,10 +92,12 @@ export class McpRuntime {
       record.resourceTemplates = resourceTemplates;
       record.prompts = prompts;
       record.status = { name: config.name, state: "connected" };
+      this.bumpCatalogRevision();
     } catch (error) {
       await closeClient(client);
       record.client = undefined;
       record.status = { name: config.name, state: "failed", error: errorMessage(error) };
+      this.bumpCatalogRevision();
     }
   }
 
@@ -106,6 +111,7 @@ export class McpRuntime {
     record.resourceTemplates = [];
     record.prompts = [];
     record.status = closeError ? { name, state, error: closeError } : { name, state };
+    this.bumpCatalogRevision();
     if (closeError) throw new Error(closeError);
   }
 
@@ -126,6 +132,10 @@ export class McpRuntime {
 
   listServerStatuses(): McpServerStatus[] {
     return [...this.servers.values()].map((record) => record.status);
+  }
+
+  getCatalogRevision(): number {
+    return this.catalogRevision;
   }
 
   getDiagnostics(): McpRuntimeDiagnostic[] {
@@ -211,6 +221,10 @@ export class McpRuntime {
 
   private async notifyCatalog(kind: "tools" | "resources" | "prompts", server: string): Promise<void> {
     await Promise.all([...this.catalogListeners].map((listener) => listener(kind, server)));
+  }
+
+  private bumpCatalogRevision(): void {
+    this.catalogRevision += 1;
   }
 }
 

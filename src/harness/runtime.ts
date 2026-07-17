@@ -12,6 +12,7 @@ import { NodeResult, nodeResultJsonSchema, nodeResultSchema, parseNodeResult, vi
 import { PermissionDecision, PermissionRequest } from "./permissionController.js";
 import { HarnessEvent, StoredEvent } from "./events.js";
 import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
+import { formatRunErrorText } from "../runtime/errorFormatting.js";
 import type { ToolPermissionContext } from "../permissions/context.js";
 import { checkToolPermission } from "../permissions/checkToolPermission.js";
 import type { NodeNavigation } from "../workflow/nodeTransitionController.js";
@@ -34,6 +35,7 @@ export type NodeRuntimeOptions = {
   attempt?: number;
   activation?: number;
   dialogueMessages?: ModelMessage[];
+  onDialogueMessage?: (message: ModelMessage) => Promise<void> | void;
   onDialogueMessages?: (messages: ModelMessage[]) => Promise<void> | void;
   interaction?: RuntimeInteraction;
   eventSink?: (event: StoredEvent) => void;
@@ -68,14 +70,14 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   const turnExecutor = new RuntimeTurnExecutor();
   let resultRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
-  const persistDialogueMessages = async () => {
-    await options.onDialogueMessages?.(messages.slice(baseMessageCount));
-  };
   const appendDialogueMessage = async (message: ModelMessage) => {
     messages.push(message);
-    await persistDialogueMessages();
+    await options.onDialogueMessage?.(message);
+    await options.onDialogueMessages?.(messages.slice(baseMessageCount));
   };
-  if (await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables)) await persistDialogueMessages();
+  if (await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables)) {
+    await options.onDialogueMessages?.(messages.slice(baseMessageCount));
+  }
   for (;;) {
     options.abortSignal?.throwIfAborted();
     assertResolvedToolCallHistory(messages);
@@ -97,20 +99,24 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         promptCacheKey: promptCacheKey(options.runId, options.node.id)
       }
     };
-    let streamEventWrites: Promise<unknown> = Promise.resolve();
-    const { streamed, response } = await turnExecutor.requestModel({
-      provider: options.provider,
-      request,
-      onStreamEvent(event) {
-        streamEventWrites = streamEventWrites.then(() => appendRuntimeEvent(options, {
-          type: event.type === "thinking_delta" ? "model_thinking_delta" : "model_stream_delta",
-          node_id: options.node.id,
-          attempt,
-          text: event.text
-        }));
+    const streamBatcher = new RuntimeStreamBatcher(options, attempt);
+    const { streamed, response } = await (async () => {
+      try {
+        return await turnExecutor.requestModel({
+          provider: options.provider,
+          request,
+          onStreamEvent(event) {
+            streamBatcher.push(event.type === "thinking_delta" ? "thinking" : "content", event.text);
+          }
+        });
+      } catch (error) {
+        await streamBatcher.drain();
+        if (options.abortSignal?.aborted || isAbortLikeError(error)) throw error;
+        await appendDialogueMessage({ role: "assistant", content: formatRunErrorText(error), is_error: true });
+        throw error;
       }
-    });
-    await streamEventWrites;
+    })();
+    await streamBatcher.drain();
     options.abortSignal?.throwIfAborted();
     await appendModelUsageEvent(options, attempt, options.model, response);
     if (!streamed) await appendNonStreamingResponseEvents(options, attempt, response);
@@ -254,7 +260,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
 }
 const submitNodeResultTool: Tool = {
   name: "SubmitNodeResult",
-  description: "Submit the final NodeResult and explicitly move forward or backward in the ordered workflow.",
+  description: "Submit the final NodeResult and explicitly move forward, backward, or retry the current node.",
   input_schema: nodeResultJsonSchema as unknown as Record<string, unknown>,
   async execute() {
     return { error: "SubmitNodeResult is handled by the runtime", exit_code: 1 };
@@ -344,6 +350,52 @@ function toolPreambleRepairPrompt(content: string | undefined, toolCalls: ModelT
 function promptExcerpt(text: string): string {
   return text.length > 1000 ? `${text.slice(0, 1000)}...` : text;
 }
+class RuntimeStreamBatcher {
+  private type?: "thinking" | "content";
+  private text = "";
+  private timer?: NodeJS.Timeout;
+  private writes: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly options: NodeRuntimeOptions, private readonly attempt: number) {}
+
+  push(type: "thinking" | "content", text: string): void {
+    if (!text) return;
+    if (this.type && this.type !== type) this.flush();
+    this.type = type;
+    this.text += text;
+    if (this.text.length >= 512) {
+      this.flush();
+      return;
+    }
+    if (!this.timer) {
+      this.timer = setTimeout(() => this.flush(), 32);
+      this.timer.unref();
+    }
+  }
+
+  async drain(): Promise<void> {
+    this.flush();
+    await this.writes;
+  }
+
+  private flush(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    if (!this.type || !this.text) return;
+    const type = this.type;
+    const text = this.text;
+    this.type = undefined;
+    this.text = "";
+    this.writes = this.writes.then(() => appendRuntimeEvent(this.options, {
+      type: type === "thinking" ? "model_thinking_delta" : "model_stream_delta",
+      node_id: this.options.node.id,
+      attempt: this.attempt,
+      activation: this.options.activation,
+      text
+    }));
+  }
+}
+
 async function appendRuntimeEvent(options: NodeRuntimeOptions, event: HarnessEvent): Promise<StoredEvent> {
   const stored = await options.store.appendEvent(options.runId, event);
   options.eventSink?.(stored);
@@ -351,17 +403,21 @@ async function appendRuntimeEvent(options: NodeRuntimeOptions, event: HarnessEve
 }
 async function appendModelUsageEvent(options: NodeRuntimeOptions, attempt: number, model: string, response: ModelResponse): Promise<void> {
   if (!hasModelUsage(response.usage)) return;
-  await appendRuntimeEvent(options, { type: "model_usage_recorded", node_id: options.node.id, attempt, model, usage: response.usage, stop_reason: response.stopReason });
+  await appendRuntimeEvent(options, { type: "model_usage_recorded", node_id: options.node.id, attempt, activation: options.activation, model, usage: response.usage, stop_reason: response.stopReason });
 }
 
 async function appendNonStreamingResponseEvents(options: NodeRuntimeOptions, attempt: number, response: { content?: string; thinking?: string }): Promise<void> {
   if (response.thinking) {
-    await appendRuntimeEvent(options, { type: "model_thinking_delta", node_id: options.node.id, attempt, text: response.thinking });
+    await appendRuntimeEvent(options, { type: "model_thinking_delta", node_id: options.node.id, attempt, activation: options.activation, text: response.thinking });
   }
   if (response.content) {
-    await appendRuntimeEvent(options, { type: "model_stream_delta", node_id: options.node.id, attempt, text: response.content });
+    await appendRuntimeEvent(options, { type: "model_stream_delta", node_id: options.node.id, attempt, activation: options.activation, text: response.content });
   }
 }
+function isAbortLikeError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError");
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -408,6 +464,7 @@ async function reconcileInterruptedToolCalls(options: NodeRuntimeOptions, attemp
     }
     if (recovered.length) {
       messages.splice(index + 1, 0, ...recovered);
+      for (const message of recovered) await options.onDialogueMessage?.(message);
       index += recovered.length;
       changed = true;
     }

@@ -13,9 +13,13 @@ export class ShellExecutionError extends ToolExecutionError {
     readonly stderr: string,
     readonly code: number,
     readonly interrupted: boolean,
+    readonly timedOut: boolean,
     readonly executor: "bash" | "powershell",
     readonly executable: string,
     readonly fallback: boolean,
+    readonly truncated: boolean,
+    readonly persistedOutputPath?: string,
+    readonly persistedOutputSize?: number,
     readonly interpretation?: string
   ) {
     super("Shell command failed");
@@ -46,6 +50,10 @@ export function toolFailureResult(error: unknown): ToolResult {
         executable: error.executable,
         fallback: error.fallback,
         interrupted: error.interrupted,
+        timed_out: error.timedOut,
+        truncated: error.truncated,
+        persisted_output_path: error.persistedOutputPath,
+        persisted_output_size: error.persistedOutputSize,
         return_code_interpretation: error.interpretation
       }
     };
@@ -61,6 +69,7 @@ export function formatToolError(error: unknown): string {
   if (error instanceof ShellExecutionError) {
     content = [
       `Exit code ${error.code}`,
+      error.timedOut ? "Command timed out before completion" : "",
       error.interrupted ? "Command was aborted before completion" : "",
       error.stderr,
       error.stdout

@@ -3,12 +3,12 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 export async function projectDirectoriesToGitRoot(cwd: string, homeDir = homedir()): Promise<string[]> {
-  const home = normalized(resolve(homeDir));
+  const boundaries = new Set([normalized(resolve(homeDir)), normalized(resolve(homedir()))]);
   const directories: string[] = [];
   let current = resolve(cwd);
 
   for (;;) {
-    if (normalized(current) === home) break;
+    if (boundaries.has(normalized(current))) break;
     directories.push(current);
     if (await exists(join(current, ".git"))) break;
     const parent = dirname(current);

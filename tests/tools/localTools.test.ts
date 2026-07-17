@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 import { normalizeGlobPatternForFastGlob } from "../../src/tools/local/glob.js";
-import { executeBash } from "../../src/tools/local/shellProvider.js";
+import { cleanPowerShellOutput, encodePowerShellCommand, executeBash } from "../../src/tools/local/shellProvider.js";
 
 async function workspace() {
   return mkdtemp(join(tmpdir(), "agent-team-tools-"));
@@ -62,7 +62,16 @@ describe("local tools", () => {
     const tools = createLocalToolRegistry();
 
     assert.equal(tools.get("Bash").name, "Bash");
-    assert.equal(tools.get("PowerShell").name, "PowerShell");
+    assert.equal(tools.has("PowerShell"), process.platform === "win32");
+  });
+
+  it("encodes PowerShell commands as UTF-16LE and cleans CLIXML errors", () => {
+    const encoded = encodePowerShellCommand('Write-Output "中文"');
+    const decoded = Buffer.from(encoded, "base64").toString("utf16le");
+
+    assert.match(decoded, /Write-Output "中文"/);
+    assert.match(decoded, /LASTEXITCODE/);
+    assert.equal(cleanPowerShellOutput('#< CLIXML\n<S S="Error">bad_x000D__x000A_more &amp; detail</S>'), "bad\nmore & detail");
   });
 
   it("finds hidden AGENTS files with absolute platform paths", async () => {
@@ -90,7 +99,7 @@ describe("local tools", () => {
       assert.equal(tools.get(name).isConcurrencySafe?.(), true, `${name} should be concurrency-safe`);
     }
 
-    for (const name of ["Write", "Edit", "MultiEdit", "Bash", "PowerShell"]) {
+    for (const name of ["Write", "Edit", "MultiEdit", "Bash", ...(process.platform === "win32" ? ["PowerShell"] : [])]) {
       assert.equal(tools.get(name).isConcurrencySafe?.(), false, `${name} should stay serial`);
     }
 
@@ -99,7 +108,31 @@ describe("local tools", () => {
     assert.equal(await tools.get("Write").writesPlanFile?.({ file_path: "src/index.ts" }, { cwd }), false);
     assert.equal(await tools.get("Bash").isDestructive?.({ command: "rm -rf dist" }), true);
     assert.equal(await tools.get("Bash").isDestructive?.({ command: "npm test" }), false);
-    assert.equal(await tools.get("PowerShell").isDestructive?.({ command: "Remove-Item foo" }), true);
+    if (process.platform === "win32") {
+      assert.equal(await tools.get("PowerShell").isDestructive?.({ command: "Remove-Item foo" }), true);
+    }
+  });
+
+  it("persists large Bash output once without duplicating the threshold chunk", async () => {
+    const cwd = await workspace();
+    const outputDir = join(cwd, "shell-output");
+
+    const result = await executeBash("printf '%0200d' 0", { cwd, timeoutMs: 3000, outputDir, maxOutputLength: 100 });
+
+    assert.equal(result.code, 0);
+    assert.equal(result.truncated, true);
+    assert.equal(result.stdout.length, 100);
+    const persisted = await readFile(String(result.persistedOutputPath), "utf8");
+    assert.equal((persisted.match(/0/g) ?? []).length, 200);
+  });
+
+  it("returns exit code 124 when Bash times out", async () => {
+    const cwd = await workspace();
+    const result = await settlesWithin(executeBash("while :; do :; done", { cwd, timeoutMs: 50 }), 3000);
+
+    assert.equal(result.timedOut, true);
+    assert.equal(result.interrupted, false);
+    assert.equal(result.code, 124);
   });
 
   it("kills nested Bash process trees when aborted", async () => {

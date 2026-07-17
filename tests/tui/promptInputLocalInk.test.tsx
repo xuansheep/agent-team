@@ -6,6 +6,8 @@ import { PromptInput } from "../../src/tui/components/PromptInput/PromptInput.js
 import { PromptInputEvent } from "../../src/tui/components/PromptInput/types.js";
 import type { PromptHistoryStore } from "../../src/storage/promptHistoryStore.js";
 import { Box, Text, renderSync } from "../../src/tui/ink.js";
+import instances from "../../src/ink/instances.js";
+import { charInCellAt, type Screen } from "../../src/ink/screen.js";
 
 class FakeStdout extends PassThrough {
   isTTY: boolean;
@@ -45,6 +47,13 @@ class FakeTtyStdin extends Readable {
     this.push(input);
     this.emit("readable");
   }
+}
+
+function currentScreenText(stdout: NodeJS.WriteStream): string {
+  const screen = (instances.get(stdout) as unknown as { frontFrame: { screen: Screen } }).frontFrame.screen;
+  return Array.from({ length: screen.height }, (_, y) =>
+    Array.from({ length: screen.width }, (_, x) => charInCellAt(screen, x, y) ?? " ").join("").trimEnd()
+  ).join("\n");
 }
 
 describe("PromptInput with local Ink renderer", () => {
@@ -116,14 +125,16 @@ describe("PromptInput with local Ink renderer", () => {
     const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
     const stdout = new FakeStdout() as unknown as NodeJS.WriteStream & { output: string };
     const instance = renderSync(
-      <PromptInput
-        mode="input"
-        workflowId="delivery"
-        queued={[]}
-        workflows={["delivery"]}
-        isLoading={false}
-        onEvent={() => undefined}
-      />,
+      <Box height={10} flexDirection="column" justifyContent="flex-end">
+        <PromptInput
+          mode="input"
+          workflowId="delivery"
+          queued={[]}
+          workflows={["delivery"]}
+          isLoading={false}
+          onEvent={() => undefined}
+        />
+      </Box>,
       {
         stdin,
         stdout,
@@ -143,6 +154,56 @@ describe("PromptInput with local Ink renderer", () => {
       }
 
       assert.match(stripAnsi(stdout.output), /> \/permissions/);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+  it("removes slash suggestions without moving the prompt row", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const instance = renderSync(
+      <Box height={10} flexDirection="column" justifyContent="flex-end">
+        <PromptInput
+          mode="input"
+          workflowId="delivery"
+          queued={[]}
+          workflows={["delivery"]}
+          isLoading={false}
+          onEvent={() => undefined}
+        />
+        <Text>status</Text>
+      </Box>,
+      {
+        stdin,
+        stdout,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      const initialLines = currentScreenText(stdout).split("\n");
+      const initialPromptRow = initialLines.findIndex((line) => line.includes("Type a request or /help"));
+      const initialStatusRow = initialLines.findIndex((line) => line.trim() === "status");
+
+      stdin.send("/");
+      await settleTimers();
+      const suggestedLines = currentScreenText(stdout).split("\n");
+      assert.match(suggestedLines.join("\n"), /Show help/);
+      assert.equal(suggestedLines.findIndex((line) => line.trim() === "> /"), initialPromptRow);
+      assert.equal(suggestedLines.findIndex((line) => line.trim() === "status"), initialStatusRow);
+
+      stdin.send("\u007f");
+      await settleTimers();
+      const clearedScreen = currentScreenText(stdout);
+      const clearedLines = clearedScreen.split("\n");
+      assert.doesNotMatch(clearedScreen, /Show help/);
+      assert.equal(clearedLines.findIndex((line) => line.includes("Type a request or /help")), initialPromptRow);
+      assert.equal(clearedLines.findIndex((line) => line.trim() === "status"), initialStatusRow);
     } finally {
       instance.unmount();
       instance.cleanup();
@@ -228,6 +289,58 @@ describe("PromptInput with local Ink renderer", () => {
         { type: "submit", text: "first" },
         { type: "submit", text: "second" }
       ]);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+  it("keeps navigating history when the recalled entry is a slash command", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const events: PromptInputEvent[] = [];
+    const historyStore: PromptHistoryStore = {
+      path: "history.jsonl",
+      project: "project",
+      sessionId: "session",
+      entries: ["plain prompt", "/help"],
+      add: () => undefined,
+      flush: async () => undefined
+    };
+    const instance = renderSync(
+      <Box height={10} flexDirection="column" justifyContent="flex-end">
+        <PromptInput
+          mode="input"
+          workflowId="delivery"
+          queued={[]}
+          workflows={["delivery"]}
+          isLoading={false}
+          historyStore={historyStore}
+          onEvent={(event) => events.push(event)}
+        />
+      </Box>,
+      {
+        stdin,
+        stdout,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      await sendKeys(stdin, ["d", "r", "a", "f", "t"]);
+      stdin.send("\u001b[A");
+      await settleTimers();
+      const recalledSlashScreen = currentScreenText(stdout);
+      assert.match(recalledSlashScreen, /> \/help/);
+      assert.doesNotMatch(recalledSlashScreen, /Show help/);
+
+      await sendKeys(stdin, ["\u001b[A", "\u001b[B", "\u001b[B"]);
+      await sendKeys(stdin, ["\u001b[A", "\u001b[A", "\r"]);
+
+      assert.deepEqual(events, [{ type: "submit", text: "plain prompt" }]);
     } finally {
       instance.unmount();
       instance.cleanup();

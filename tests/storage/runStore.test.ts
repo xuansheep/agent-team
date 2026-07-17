@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunStore } from "../../src/storage/runStore.js";
@@ -30,7 +30,7 @@ describe("RunStore", () => {
 
     const state = JSON.parse(await readFile(join(run.runDir, "state.json"), "utf8"));
     assert.equal(state.current_node_id, "product");
-    assert.equal(state.version, 3);
+    assert.equal(state.version, 4);
     assert.equal(state.session_id, run.sessionId);
     assert.equal(state.run_id, run.runId);
     assert.equal(state.revision, 1);
@@ -80,6 +80,40 @@ describe("RunStore", () => {
 
     assert.equal(recovered.status, "running");
     assert.equal(recovered.current_node_id, "product");
+  });
+
+  it("migrates v3 embedded dialogue to a v4 journal without retaining normal leases", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-state-v3-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("delivery", { request: "x" });
+    const messages = [
+      { role: "assistant" as const, content: "working" },
+      { role: "tool" as const, tool_call_id: "call-1", content: "done" }
+    ];
+    await writeFile(join(run.runDir, "state.json"), `${JSON.stringify({
+      version: 3,
+      status: "paused",
+      workflow_id: "delivery",
+      current_node_id: "product",
+      attempts: [],
+      resume_checkpoint: { node_id: "product", handoff: {}, attempt: 1, activation: 1, dialogue_messages: messages },
+      node_checkpoints: {},
+      suspended_stack: [],
+      rework_count: 0,
+      rework_limit: 10
+    })}\n`, "utf8");
+
+    const migrated = await store.loadState(run.runId);
+    const persisted = JSON.parse(await readFile(join(run.runDir, "state.json"), "utf8")) as WorkflowState;
+    const entries = await readdir(run.runDir);
+
+    assert.equal(migrated.version, 4);
+    assert.deepEqual(migrated.resume_checkpoint?.dialogue_messages, messages);
+    assert.equal(persisted.version, 4);
+    assert.equal(persisted.resume_checkpoint?.dialogue_messages, undefined);
+    assert.equal(persisted.resume_checkpoint?.dialogue_cursor, 2);
+    assert.equal(entries.includes("run.lease"), false);
+    assert.equal(entries.includes(".lease-history"), false);
   });
 
   it("prevents a second store from acquiring the same active run lease", async () => {

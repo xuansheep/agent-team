@@ -1167,13 +1167,14 @@ ${message.detailText}` : ""}` }
     const metadata = await sessionStore.loadMetadata(sessionId);
     currentSessionIdRef.current = sessionId;
     const transcript = await sessionStore.loadTranscript(sessionId);
+    const planTranscript = transcript.filter((entry) => entry.phase !== "workflow");
     let plan = metadata?.plan;
     if (!plan) {
       plan = await recoverMissingPlanSession({
         sessionId,
         cwd,
         planFilePath: join(sessionStore.sessionDir(sessionId), "plans", "plan.md"),
-        messages: transcript.map((entry) => entry.message)
+        messages: planTranscript.map((entry) => entry.message)
       });
       if (plan) savePlanSession(plan);
     }
@@ -1187,7 +1188,7 @@ ${message.detailText}` : ""}` }
     }
 
     planSessionRef.current = plan;
-    planMessagesRef.current = transcript.map((entry) => entry.message);
+    planMessagesRef.current = planTranscript.map((entry) => entry.message);
     const transcriptLogs = planLogMessagesFromTranscript(planMessagesRef.current);
     const base = (current: TuiState) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
@@ -1259,7 +1260,7 @@ ${message.detailText}` : ""}` }
             sessionId: metadata.sessionId,
             cwd,
             planFilePath: join(sessionStore.sessionDir(metadata.sessionId), "plans", "plan.md"),
-            messages: transcript.map((item) => item.message)
+            messages: transcript.filter((item) => item.phase !== "workflow").map((item) => item.message)
           });
           if (plan) savePlanSession(plan);
         }

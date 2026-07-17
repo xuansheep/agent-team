@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { runNode } from "../../src/harness/runtime.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
-import { ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
+import { ModelMessage, ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
 describe("runNode interactive permissions", () => {
   it("recovers a completed tool result from the event ledger without executing it again", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-recover-tool-"));
@@ -626,6 +626,41 @@ describe("runNode interactive permissions", () => {
     assert.equal(events.some((event) => event.type === "tool_failed" && event.tool_call_id === "tool-abort"), false);
   });
 });
+describe("runNode provider failures", () => {
+  it("does not persist AbortError as an assistant failure message", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-abort-error-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const abortError = new Error("cancelled");
+    abortError.name = "AbortError";
+    const provider: ModelProvider = {
+      async generate() {
+        throw abortError;
+      }
+    };
+    let dialogueMessages: ModelMessage[] = [];
+
+    await assert.rejects(() => runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      onDialogueMessages(messages) {
+        dialogueMessages = messages;
+      }
+    }), (error: unknown) => error instanceof Error && error.name === "AbortError");
+
+    assert.equal(dialogueMessages.some((message) => message.role === "assistant" && message.is_error), false);
+  });
+});
+
 describe("runNode streaming", () => {
   it("stores model stream deltas and still returns the final node result", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-stream-"));
@@ -666,13 +701,50 @@ describe("runNode streaming", () => {
       runId: run.runId,
       store,
       handoff: { request: "x" },
-      attempt: 1
+      attempt: 1,
+      activation: 2
     });
     assert.equal(result.direction, "forward");
-    const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
-    assert.match(eventsText, /model_stream_delta/);
-    assert.match(eventsText, /summary/);
+    const events = await store.loadEvents(run.runId);
+    const deltas = events.filter((event) => event.type === "model_stream_delta");
+    assert.equal(deltas.length, 1);
+    assert.equal(deltas[0]?.text, "{\"direction\":\"forward\",\"summary\":\"done\"}");
+    assert.equal(deltas[0]?.activation, 2);
   });
+  it("flushes the final stream fragment before surfacing provider errors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-stream-error-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("generate should not be used when stream is available");
+      },
+      async stream(_request, onEvent) {
+        onEvent({ type: "content_delta", text: "tail-fragment" });
+        throw new Error("stream failed");
+      }
+    };
+
+    await assert.rejects(() => runNode({
+      node: { id: "product", role: "product", provider: "default", permission_mode: "default" },
+      systemPrompt: "Product",
+      model: "gpt-test",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 3
+    }), /stream failed/);
+
+    const delta = (await store.loadEvents(run.runId)).find((event) => event.type === "model_stream_delta");
+    assert.equal(delta?.text, "tail-fragment");
+    assert.equal(delta?.activation, 3);
+  });
+
   it("stores model thinking deltas separately from response deltas", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-thinking-"));
     const store = new RunStore(root);

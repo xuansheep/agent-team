@@ -26,7 +26,7 @@ export type TuiNodeState = {
   nodeId: string;
   attempt: number;
   activation?: number;
-  status: "running" | "completed" | "suspended" | "success" | "failure" | "waiting_user" | "interrupted";
+  status: "running" | "completed" | "suspended" | "retrying" | "success" | "failure" | "waiting_user" | "interrupted";
 };
 
 export type TuiWorkflowNodeState = {
@@ -39,6 +39,7 @@ export type TuiWorkflowNodeState = {
 export type TuiToolState = {
   nodeId: string;
   attempt: number;
+  activation?: number;
   toolCallId: string;
   tool: string;
   status: "running" | "completed" | "failed";
@@ -75,6 +76,7 @@ export type TuiPlanReviewState = {
 export type TuiModelStreamState = {
   nodeId: string;
   attempt: number;
+  activation?: number;
   text: string;
 };
 
@@ -85,6 +87,7 @@ export type TuiConversationItem = {
   detailVisible?: boolean;
   nodeId?: string;
   attempt?: number;
+  activation?: number;
   source?: "model_stream";
   streamEnd?: number;
 };

@@ -46,12 +46,13 @@ const textExtensions = new Set([
 export async function getAgentsMemoryFiles(options: AgentsMemoryLoadOptions): Promise<AgentsMemoryFile[]> {
   const cwd = resolve(options.cwd);
   const includeExternal = options.includeExternal ?? options.settings?.hasAgentsMdExternalIncludesApproved ?? false;
+  const homeDir = options.homeDir ?? process.env.EINSTEINS_HOME ?? homedir();
   const processed = new Set<string>();
   const files: AgentsMemoryFile[] = [];
 
-  files.push(...await processAgentsMemoryFile(join(options.homeDir ?? homedir(), ".einsteins", "AGENTS.md"), "User", processed, cwd, true, options.settings));
+  files.push(...await processAgentsMemoryFile(join(homeDir, ".einsteins", "AGENTS.md"), "User", processed, cwd, true, options.settings));
 
-  const projectDirectories = await projectDirectoriesToGitRoot(cwd, options.homeDir);
+  const projectDirectories = await projectDirectoriesToGitRoot(cwd, homeDir);
   for (const dir of projectDirectories.reverse()) {
     files.push(...await processAgentsMemoryFile(join(dir, ".einsteins", "AGENTS.md"), "Project", processed, cwd, includeExternal, options.settings));
   }

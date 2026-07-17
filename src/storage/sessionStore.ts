@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ModelMessage } from "../providers/types.js";
 import { PlanSessionState } from "../plans/planSession.js";
@@ -8,10 +8,21 @@ import { readJsonWithBackup, updateJsonAtomic } from "./atomicJson.js";
 import { acquireFileLease } from "./fileLease.js";
 import { projectDirectory, projectPath, ProjectStorageContext, sessionDirectory } from "./projectStorage.js";
 
+export type TranscriptPhase = "plan" | "workflow";
+
 export type TranscriptEntry = {
   ts: string;
   message: ModelMessage;
   runId?: string;
+  phase?: TranscriptPhase;
+  entryId?: string;
+};
+
+export type WorkflowTranscriptEntryInput = {
+  ts?: string;
+  message: ModelMessage;
+  runId: string;
+  entryId: string;
 };
 
 export type SessionMetadata = {
@@ -36,6 +47,10 @@ export type SaveSessionMetadataInput = Omit<
   "version" | "sessionId" | "projectPath" | "createdAt" | "updatedAt" | "runIds" | "currentRunId"
 >;
 
+const transcriptIndexes = new Map<string, { size: number; entryIds: Set<string> }>();
+const lastSessionTouches = new Map<string, number>();
+const sessionTouchIntervalMs = 1_000;
+
 export class SessionStore {
   constructor(private readonly storage: ProjectStorageContext | string) {}
 
@@ -45,12 +60,26 @@ export class SessionStore {
 
   async appendTranscript(sessionId: string, message: ModelMessage, runId?: string): Promise<void> {
     const transcriptPath = join(this.sessionDir(sessionId), "transcript.jsonl");
-    await appendJsonLine(transcriptPath, {
+    await appendJsonLines(transcriptPath, [{
       ts: new Date().toISOString(),
       message,
+      phase: "plan",
       ...(runId ? { runId } : {})
-    } satisfies TranscriptEntry);
+    } satisfies TranscriptEntry]);
     await this.touch(sessionId);
+  }
+
+  async appendWorkflowTranscriptEntries(sessionId: string, entries: WorkflowTranscriptEntryInput[]): Promise<void> {
+    if (!entries.length) return;
+    const transcriptPath = join(this.sessionDir(sessionId), "transcript.jsonl");
+    const appended = await appendJsonLines(transcriptPath, entries.map((entry) => ({
+      ts: entry.ts ?? new Date().toISOString(),
+      message: entry.message,
+      runId: entry.runId,
+      phase: "workflow" as const,
+      entryId: entry.entryId
+    })), true);
+    if (appended) await this.touch(sessionId);
   }
 
   async loadTranscript(sessionId: string): Promise<TranscriptEntry[]> {
@@ -114,8 +143,17 @@ export class SessionStore {
     }));
   }
 
-  async touch(sessionId: string): Promise<SessionMetadata> {
-    return this.updateMetadata(sessionId, (metadata) => metadata);
+  async touch(sessionId: string, options: { force?: boolean } = {}): Promise<SessionMetadata> {
+    const key = this.sessionDir(sessionId);
+    const now = Date.now();
+    const previous = lastSessionTouches.get(key) ?? 0;
+    if (!options.force && now - previous < sessionTouchIntervalMs) {
+      const current = await this.loadMetadata(sessionId);
+      if (current) return current;
+    }
+    const metadata = await this.updateMetadata(sessionId, (current) => current);
+    lastSessionTouches.set(key, now);
+    return metadata;
   }
 
   private async updateMetadata(
@@ -150,17 +188,40 @@ export class SessionStore {
   }
 }
 
-async function appendJsonLine(path: string, value: unknown): Promise<void> {
+async function appendJsonLines(path: string, values: TranscriptEntry[], deduplicate = false): Promise<boolean> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const lease = await acquireFileLease(`${path}.lease`, `Transcript ${path}`, { wait: true });
   try {
+    const currentSize = await stat(path).then((info) => info.size).catch((error: unknown) => {
+      if (isErrno(error, "ENOENT")) return 0;
+      throw error;
+    });
+    let index = transcriptIndexes.get(path);
+    if (!index || index.size !== currentSize) {
+      const existing = currentSize > 0 ? await readFile(path, "utf8") : "";
+      index = {
+        size: currentSize,
+        entryIds: new Set(existing.trim()
+          ? existing.trim().split("\n").map((line) => (JSON.parse(line) as TranscriptEntry).entryId).filter((entryId): entryId is string => Boolean(entryId))
+          : [])
+      };
+      transcriptIndexes.set(path, index);
+    }
+    const pending = deduplicate
+      ? values.filter((entry) => !entry.entryId || !index!.entryIds.has(entry.entryId))
+      : values;
+    if (!pending.length) return false;
+    const content = pending.map((value) => `${JSON.stringify(value)}\n`).join("");
     const handle = await open(path, "a", 0o600);
     try {
-      await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+      await handle.writeFile(content, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
     }
+    index.size += Buffer.byteLength(content, "utf8");
+    for (const entry of pending) if (entry.entryId) index.entryIds.add(entry.entryId);
+    return true;
   } finally {
     await lease.release();
   }

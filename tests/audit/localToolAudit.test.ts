@@ -20,7 +20,9 @@ describe("local tool audit", () => {
     const context = { cwd, sessionId: "session-local", runId: "run-local", auditSink: (event: AuditEvent) => { auditEvents.push(event); } };
 
     await tools.get("Write").execute({ file_path: "a.txt", content: "hello" }, context);
-    const shellResult = await tools.get("Bash").execute({ command: "node -v", timeout_ms: 30000 }, context);
+    const shellName = process.platform === "win32" ? "PowerShell" : "Bash";
+    const command = process.platform === "win32" ? "Write-Output audit" : "printf audit";
+    const shellResult = await tools.get(shellName).execute({ command, timeout_ms: 30000 }, context);
 
     assert.equal(typeof shellResult.exit_code, "number");
     const fileWrite = auditEvents.find((event) => event.type === "file_write");
@@ -28,7 +30,7 @@ describe("local tool audit", () => {
     assert.match(fileWrite?.path ?? "", /a[.]txt$/);
 
     const shell = auditEvents.find((event) => event.type === "shell_command");
-    assert.equal(shell?.tool, "Bash");
+    assert.equal(shell?.tool, shellName);
     assert.equal(shell?.destructive, false);
   });
 

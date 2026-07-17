@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { AuditEvent, normalizeAuditEvent } from "./auditEvent.js";
 import { acquireFileLease } from "../storage/fileLease.js";
 
 const GENESIS_HASH = "0".repeat(64);
 const writeQueues = new Map<string, Promise<unknown>>();
+const verifiedHeads = new Map<string, { size: number; mtimeMs: number; verification: AuditVerification }>();
 
 export type AuditRecord = AuditEvent & {
   seq: number;
@@ -33,25 +34,36 @@ export class AuditStore {
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       const lease = await acquireFileLease(`${this.path}.lease`, `Audit log ${this.path}`, { wait: true });
       try {
-        const current = await this.readRecords();
-        const verification = verifyRecords(current);
-        if (!verification.valid) {
-          throw new Error(`Audit chain verification failed before append: ${verification.error}`);
+        const metadata = await auditFileMetadata(this.path);
+        let cached = verifiedHeads.get(key);
+        if (!cached || cached.size !== metadata.size || cached.mtimeMs !== metadata.mtimeMs) {
+          const verification = verifyRecords(await this.readRecords());
+          if (!verification.valid) {
+            throw new Error(`Audit chain verification failed before append: ${verification.error}`);
+          }
+          cached = { ...metadata, verification };
+          verifiedHeads.set(key, cached);
         }
         const normalized = normalizeAuditEvent(event);
         const body = {
           ...normalized,
-          seq: current.length + 1,
-          prev_hash: verification.lastHash
+          seq: cached.verification.count + 1,
+          prev_hash: cached.verification.lastHash
         };
         const record: AuditRecord = { ...body, hash: hashRecordBody(body) };
+        const content = `${JSON.stringify(record)}\n`;
         const handle = await open(this.path, "a", 0o600);
         try {
-          await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+          await handle.writeFile(content, "utf8");
           await handle.sync();
         } finally {
           await handle.close();
         }
+        const updated = await auditFileMetadata(this.path);
+        verifiedHeads.set(key, {
+          ...updated,
+          verification: { valid: true, count: record.seq, lastHash: record.hash }
+        });
         return record;
       } finally {
         await lease.release();
@@ -65,7 +77,11 @@ export class AuditStore {
 
   async verify(): Promise<AuditVerification> {
     try {
-      return verifyRecords(await this.readRecords());
+      const verification = verifyRecords(await this.readRecords());
+      if (verification.valid) {
+        verifiedHeads.set(resolve(this.path), { ...(await auditFileMetadata(this.path)), verification });
+      }
+      return verification;
     } catch (error) {
       return {
         valid: false,
@@ -98,6 +114,13 @@ export class AuditStore {
     }
     return records;
   }
+}
+
+async function auditFileMetadata(path: string): Promise<{ size: number; mtimeMs: number }> {
+  return stat(path).then((info) => ({ size: info.size, mtimeMs: info.mtimeMs })).catch((error: unknown) => {
+    if (isErrno(error, "ENOENT")) return { size: 0, mtimeMs: 0 };
+    throw error;
+  });
 }
 
 function verifyRecords(records: AuditRecord[]): AuditVerification {

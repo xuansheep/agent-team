@@ -2650,6 +2650,11 @@ describe("TuiApp global Plan Mode", () => {
     });
     await store.appendTranscript("session-planning-transcript", { role: "user", content: "Previously sent in Plan Mode." });
     await store.appendTranscript("session-planning-transcript", { role: "assistant", content: "Previously acknowledged." });
+    await store.appendWorkflowTranscriptEntries("session-planning-transcript", [{
+      message: { role: "assistant", content: "Workflow-only transcript entry." },
+      runId: "run-workflow",
+      entryId: "workflow:run-workflow:node:dev:attempt:1:message:0"
+    }]);
     let starts = 0;
     const engine = {
       async listRuns() { return []; },
@@ -2665,6 +2670,7 @@ describe("TuiApp global Plan Mode", () => {
 
     await waitForFrame(output, /Previously sent in Plan Mode\./);
     assert.match(output.lastFrame() ?? "", /Previously acknowledged\./);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Workflow-only transcript entry\./);
     assert.equal(starts, 0);
 
     output.unmount();

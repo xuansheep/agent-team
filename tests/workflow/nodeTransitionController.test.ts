@@ -42,6 +42,22 @@ describe("NodeTransitionController", () => {
     );
   });
 
+  it("retries the current node without changing the suspended stack", () => {
+    const controller = new NodeTransitionController();
+    const retry = controller.resolve({ workflow, nodeId: "ui", result: result("retry"), suspendedStack: ["developer"], reworkCount: 2, reworkLimit: 10 });
+
+    assert.deepEqual(retry, { type: "node", target_node_id: "ui", suspended_stack: ["developer"], rework_count: 3, resume: true });
+  });
+
+  it("requires actionable feedback for retry and shares the rework limit", () => {
+    const controller = new NodeTransitionController();
+    assert.throws(
+      () => controller.resolve({ workflow, nodeId: "ui", result: { ...result("retry"), feedback: { defects: [], change_requests: [] } }, suspendedStack: [], reworkCount: 0, reworkLimit: 10 }),
+      /retry node results must include/
+    );
+    assert.equal(controller.resolve({ workflow, nodeId: "ui", result: result("retry"), suspendedStack: [], reworkCount: 10, reworkLimit: 10 }).type, "rework_limit");
+  });
+
   it("pauses a backward transition at the configured rework limit", () => {
     const controller = new NodeTransitionController();
     assert.equal(controller.resolve({ workflow, nodeId: "ui", result: result("backward"), suspendedStack: [], reworkCount: 10, reworkLimit: 10 }).type, "rework_limit");
@@ -54,8 +70,8 @@ function result(direction: NodeResult["direction"]): NodeResult {
     summary: "done",
     document: direction === "forward" ? "# Result" : "",
     deliverables: [],
-    feedback: direction === "backward" ? { defects: ["PRD缺少异常流程"], change_requests: [] } : { defects: [], change_requests: [] },
+    feedback: direction === "backward" || direction === "retry" ? { defects: ["PRD缺少异常流程"], change_requests: [] } : { defects: [], change_requests: [] },
     questions: [],
-    handoff: { instruction: direction === "backward" ? "补充异常流程" : "继续", must_follow: [], known_risks: [], open_questions: [] }
+    handoff: { instruction: direction === "backward" || direction === "retry" ? "补充异常流程" : "继续", must_follow: [], known_risks: [], open_questions: [] }
   };
 }

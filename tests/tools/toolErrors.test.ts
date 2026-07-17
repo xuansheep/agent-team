@@ -18,7 +18,7 @@ describe("tool failure protocol", () => {
   });
 
   it("preserves shell stdout, stderr, exit code and executor metadata", () => {
-    const result = toolFailureResult(new ShellExecutionError("out", "err", 9, false, "powershell", "pwsh.exe", true, "ordinary failure"));
+    const result = toolFailureResult(new ShellExecutionError("out", "err", 9, false, false, "powershell", "pwsh.exe", true, true, "shell.log", 42, "ordinary failure"));
 
     assert.deepEqual(result, {
       is_error: true,
@@ -31,6 +31,10 @@ describe("tool failure protocol", () => {
         executable: "pwsh.exe",
         fallback: true,
         interrupted: false,
+        timed_out: false,
+        truncated: true,
+        persisted_output_path: "shell.log",
+        persisted_output_size: 42,
         return_code_interpretation: "ordinary failure"
       }
     });

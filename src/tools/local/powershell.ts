@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { z } from "zod";
 import { ShellExecutionError } from "../errors.js";
 import { Tool } from "../types.js";
@@ -22,7 +23,12 @@ export const powerShellTool: Tool = {
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     if (process.platform !== "win32") throw new Error("PowerShell is only supported on Windows");
-    const result = await executePowerShell(parsed.command, { cwd: context.cwd, timeoutMs: parsed.timeout_ms, signal: context.abortSignal });
+    const result = await executePowerShell(parsed.command, {
+      cwd: context.cwd,
+      timeoutMs: parsed.timeout_ms,
+      signal: context.abortSignal,
+      outputDir: context.runDir ? join(context.runDir, "shell-output") : undefined
+    });
     const interpretation = interpretPowerShellCommand(parsed.command, result.code, result.stdout, result.stderr);
     await context.auditSink?.({
       type: "shell_command",
@@ -38,8 +44,8 @@ export const powerShellTool: Tool = {
       fallback: false,
       exit_code: result.code
     });
-    if (interpretation.isError || result.interrupted) {
-      throw new ShellExecutionError(result.stdout, result.stderr, result.code, result.interrupted, "powershell", result.executable, false, interpretation.message);
+    if (interpretation.isError || result.interrupted || result.timedOut) {
+      throw new ShellExecutionError(result.stdout, result.stderr, result.code, result.interrupted, result.timedOut, "powershell", result.executable, false, result.truncated, result.persistedOutputPath, result.persistedOutputSize, interpretation.message);
     }
     return {
       output: result.stdout,
@@ -49,6 +55,10 @@ export const powerShellTool: Tool = {
         executor: "powershell",
         executable: result.executable,
         fallback: false,
+        timed_out: result.timedOut,
+        truncated: result.truncated,
+        persisted_output_path: result.persistedOutputPath,
+        persisted_output_size: result.persistedOutputSize,
         semantic_success: true,
         return_code_interpretation: interpretation.message
       }

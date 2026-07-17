@@ -18,7 +18,7 @@ import { enterPlanModeTool } from "./local/enterPlanMode.js";
 import { exitPlanModeTool } from "./local/exitPlanMode.js";
 import { askUserQuestionTool } from "./local/askUserQuestion.js";
 import type { McpRuntime } from "../mcp/runtime.js";
-import { createMcpToolSearchTool } from "../mcp/deferredTools.js";
+import { createMcpToolSearchTool, syncMcpRegistry } from "../mcp/deferredTools.js";
 import { createListMcpResourcesTool, createReadMcpResourceTool } from "../mcp/resourceTools.js";
 import { createGetMcpPromptTool, createListMcpPromptsTool, createRunMcpPromptTool } from "../mcp/promptTools.js";
 import type { SkillRuntime } from "../skills/runtime.js";
@@ -26,6 +26,8 @@ import { createListSkillsTool, createUseSkillTool } from "../skills/skillTools.j
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
+  private beforeList?: () => void;
+  private refreshing = false;
 
   constructor(readonly skillRuntime?: SkillRuntime) {}
 
@@ -38,6 +40,18 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
+  remove(name: string): void {
+    this.tools.delete(name);
+  }
+
+  names(): string[] {
+    return [...this.tools.keys()];
+  }
+
+  setBeforeList(refresh: () => void): void {
+    this.beforeList = refresh;
+  }
+
   get(name: string): Tool {
     const tool = this.tools.get(name);
     if (!tool) throw new Error(`Unknown tool ${name}`);
@@ -45,6 +59,14 @@ export class ToolRegistry {
   }
 
   list(): Tool[] {
+    if (this.beforeList && !this.refreshing) {
+      this.refreshing = true;
+      try {
+        this.beforeList();
+      } finally {
+        this.refreshing = false;
+      }
+    }
     return [...this.tools.values()];
   }
 
@@ -64,7 +86,7 @@ export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skil
     globTool,
     grepTool,
     bashTool,
-    powerShellTool,
+    ...(process.platform === "win32" ? [powerShellTool] : []),
     todoWriteTool,
     artifactWriteTool,
     artifactReadTool,
@@ -79,6 +101,7 @@ export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skil
   }
   if (options.mcpRuntime) {
     registry.add(createMcpToolSearchTool(options.mcpRuntime));
+    registry.setBeforeList(() => syncMcpRegistry(registry, options.mcpRuntime!));
     registry.add(createListMcpResourcesTool(options.mcpRuntime));
     registry.add(createReadMcpResourceTool(options.mcpRuntime));
     registry.add(createListMcpPromptsTool(options.mcpRuntime));

@@ -2,6 +2,7 @@ import { appendFile, mkdir, open, readFile, readdir, stat } from "node:fs/promis
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { HarnessEvent, StoredEvent } from "../harness/events.js";
+import { ModelMessage } from "../providers/types.js";
 import { WorkflowState } from "../workflow/state.js";
 import { readJsonWithBackup, updateJsonAtomic, writeJsonAtomic } from "./atomicJson.js";
 import { projectDirectory, ProjectStorageContext, runDirectory } from "./projectStorage.js";
@@ -9,6 +10,7 @@ import { acquireFileLease, FileLease } from "./fileLease.js";
 import { AuditStore } from "../audit/auditStore.js";
 import type { AuditEvent } from "../audit/auditEvent.js";
 import { isDestructiveShellCommand } from "../security/shellSafety.js";
+import { SessionStore } from "./sessionStore.js";
 
 export type RunMetadata = {
   version: 1;
@@ -51,9 +53,13 @@ export class RunStore {
   private readonly runDirs = new Map<string, string>();
   private readonly runSessions = new Map<string, string>();
   private readonly nextSeq = new Map<string, number>();
+  private readonly dialogueCounts = new Map<string, number>();
   private readonly pendingPermissions = new Map<string, { tool: string; nodeId: string; attempt: number; rule?: string }>();
+  private readonly sessionStore: SessionStore;
 
-  constructor(private readonly storage: ProjectStorageContext | string) {}
+  constructor(private readonly storage: ProjectStorageContext | string) {
+    this.sessionStore = new SessionStore(storage);
+  }
 
   async createRun(workflowId: string, input: unknown, options: CreateRunOptions = {}): Promise<{ sessionId: string; runId: string; runDir: string }> {
     const generatedRunId = randomUUID();
@@ -81,6 +87,7 @@ export class RunStore {
     };
     await writeJsonAtomic(join(runDir, "run.json"), metadata, { backupPath: false });
     await writeJsonAtomic(join(runDir, "run.backup.json"), metadata, { backupPath: false });
+    await this.sessionStore.attachRun(sessionId, runId);
     await this.appendEvent(runId, { type: "run_started", workflow_id: workflowId, input });
     return { sessionId, runId, runDir };
   }
@@ -123,8 +130,53 @@ export class RunStore {
         await appendFile(eventsPath, line, "utf8");
       }
       if (isAuditableEvent(event)) await this.appendAuditRecords(runId, runDir, event);
+      await this.recordSessionEvent(runId, event, stored);
       return stored;
     });
+  }
+
+  async syncWorkflowDialogue(runId: string, nodeId: string, attempt: number, messages: ModelMessage[]): Promise<number> {
+    return this.enqueueRunWrite(runId, async () => {
+      const runDir = await this.resolveRunDir(runId);
+      const path = dialogueJournalPath(runDir, nodeId, attempt);
+      const key = `${runId}:${nodeId}:${attempt}`;
+      let count = this.dialogueCounts.get(key);
+      if (count === undefined) {
+        count = (await readDialogueJournal(path)).length;
+        this.dialogueCounts.set(key, count);
+      }
+      if (messages.length < count) {
+        throw new Error(`Dialogue for ${nodeId} attempt ${attempt} moved backward from ${count} to ${messages.length} messages`);
+      }
+      const pending = messages.slice(count);
+      if (!pending.length) return count;
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      const content = pending.map((message) => `${JSON.stringify(message)}\n`).join("");
+      const handle = await open(path, "a", 0o600);
+      try {
+        await handle.writeFile(content, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const previousCount = count;
+      count += pending.length;
+      this.dialogueCounts.set(key, count);
+      const sessionId = this.runSessions.get(runId) ?? (await this.metadata(runId)).sessionId;
+      const entries = pending.flatMap((message, index) =>
+        message.role === "assistant" || message.role === "tool"
+          ? [{ message, runId, entryId: `workflow:${runId}:node:${nodeId}:attempt:${attempt}:message:${previousCount + index}` }]
+          : []
+      );
+      await this.sessionStore.appendWorkflowTranscriptEntries(sessionId, entries);
+      return count;
+    });
+  }
+
+  async loadWorkflowDialogue(runId: string, nodeId: string, attempt: number, cursor?: number): Promise<ModelMessage[]> {
+    const runDir = await this.resolveRunDir(runId);
+    const messages = await readDialogueJournal(dialogueJournalPath(runDir, nodeId, attempt));
+    return cursor === undefined ? messages : messages.slice(0, cursor);
   }
 
   async loadEvents(runId: string): Promise<StoredEvent[]> {
@@ -153,15 +205,15 @@ export class RunStore {
       const metadata = await this.metadata(runId);
       await updateJsonAtomic<WorkflowState>(join(runDir, "state.json"), (current) => {
         const now = new Date().toISOString();
-        return {
+        return persistedWorkflowState({
           ...state,
-          version: 3,
+          version: 4,
           session_id: metadata.sessionId,
           run_id: runId,
           created_at: current?.created_at ?? metadata.createdAt,
           updated_at: now,
           revision: (current?.revision ?? 0) + 1
-        };
+        });
       });
     });
   }
@@ -187,12 +239,51 @@ export class RunStore {
 
   async loadState(runId: string): Promise<WorkflowState> {
     const runDir = await this.resolveRunDir(runId);
-    const state = await readJsonWithBackup<WorkflowState>(join(runDir, "state.json"));
+    let state = await readJsonWithBackup<WorkflowState>(join(runDir, "state.json"));
     if (!state) throw new Error(`Run ${runId} has no workflow state`);
-    if (state.version !== 3) {
+    if (state.version === 3) {
+      const lease = await this.acquireRunLease(runId);
+      try {
+        const migrateCheckpoint = async (checkpoint: WorkflowState["resume_checkpoint"]) => {
+          if (!checkpoint) return checkpoint;
+          const messages = checkpoint.dialogue_messages ?? [];
+          const cursor = checkpoint.attempt === undefined ? 0 : await this.syncWorkflowDialogue(runId, checkpoint.node_id, checkpoint.attempt, messages);
+          return { ...checkpoint, dialogue_cursor: cursor, dialogue_messages: undefined };
+        };
+        const nodeCheckpoints: NonNullable<WorkflowState["node_checkpoints"]> = {};
+        for (const [nodeId, checkpoint] of Object.entries(state.node_checkpoints ?? {})) {
+          nodeCheckpoints[nodeId] = (await migrateCheckpoint(checkpoint))!;
+        }
+        state = {
+          ...state,
+          version: 4,
+          resume_checkpoint: await migrateCheckpoint(state.resume_checkpoint),
+          node_checkpoints: nodeCheckpoints
+        };
+        await this.saveState(runId, state);
+      } finally {
+        await lease.release();
+      }
+    }
+    if (state.version !== 4) {
       throw new Error(`Unsupported workflow state version ${String((state as { version?: unknown }).version ?? "legacy")}; start a new run`);
     }
-    return state;
+    const hydrateCheckpoint = async (checkpoint: WorkflowState["resume_checkpoint"]) => {
+      if (!checkpoint || checkpoint.attempt === undefined) return checkpoint;
+      return {
+        ...checkpoint,
+        dialogue_messages: await this.loadWorkflowDialogue(runId, checkpoint.node_id, checkpoint.attempt, checkpoint.dialogue_cursor)
+      };
+    };
+    const nodeCheckpoints: NonNullable<WorkflowState["node_checkpoints"]> = {};
+    for (const [nodeId, checkpoint] of Object.entries(state.node_checkpoints ?? {})) {
+      nodeCheckpoints[nodeId] = (await hydrateCheckpoint(checkpoint))!;
+    }
+    return {
+      ...state,
+      resume_checkpoint: await hydrateCheckpoint(state.resume_checkpoint),
+      node_checkpoints: nodeCheckpoints
+    };
   }
 
   async listRuns(options: { limit?: number } = {}): Promise<RunSummary[]> {
@@ -271,6 +362,21 @@ export class RunStore {
       }
     }
     return results;
+  }
+
+  private async recordSessionEvent(runId: string, event: HarnessEvent, stored: StoredEvent): Promise<void> {
+    const sessionId = this.runSessions.get(runId) ?? (await this.metadata(runId)).sessionId;
+    const message = workflowUserMessage(event);
+    if (message) {
+      await this.sessionStore.appendWorkflowTranscriptEntries(sessionId, [{
+        ts: stored.ts,
+        message,
+        runId,
+        entryId: `workflow:${runId}:event:${stored.seq}:user`
+      }]);
+      return;
+    }
+    if (isSessionActivityEvent(event)) await this.sessionStore.touch(sessionId, { force: isTerminalEvent(event) });
   }
 
   private async appendAuditRecords(runId: string, runDir: string, event: HarnessEvent): Promise<void> {
@@ -375,6 +481,41 @@ export class RunStore {
   }
 }
 
+function dialogueJournalPath(runDir: string, nodeId: string, attempt: number): string {
+  return join(runDir, "dialogue", `${encodeURIComponent(nodeId)}-attempt-${attempt}.ndjson`);
+}
+
+async function readDialogueJournal(path: string): Promise<ModelMessage[]> {
+  const text = await readFile(path, "utf8").catch((error: unknown) => {
+    if (isErrno(error, "ENOENT")) return "";
+    throw error;
+  });
+  if (!text.trim()) return [];
+  const lines = text.split("\n");
+  const messages: ModelMessage[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line) continue;
+    try {
+      messages.push(JSON.parse(line) as ModelMessage);
+    } catch (error) {
+      if (index === lines.length - 1 && !text.endsWith("\n")) break;
+      throw error;
+    }
+  }
+  return messages;
+}
+
+function persistedWorkflowState(state: WorkflowState): WorkflowState {
+  const checkpoint = (value: WorkflowState["resume_checkpoint"]) => value ? { ...value, dialogue_messages: undefined } : value;
+  return {
+    ...state,
+    version: 4,
+    resume_checkpoint: checkpoint(state.resume_checkpoint),
+    node_checkpoints: Object.fromEntries(Object.entries(state.node_checkpoints ?? {}).map(([nodeId, value]) => [nodeId, checkpoint(value)!]))
+  };
+}
+
 function inputPreview(input: unknown): string {
   let text = "";
   if (typeof input === "string") text = input;
@@ -385,6 +526,33 @@ function inputPreview(input: unknown): string {
     else text = JSON.stringify(value);
   } else if (input !== undefined) text = String(input);
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+function workflowUserMessage(event: HarnessEvent): ModelMessage | undefined {
+  if (event.type === "user_message") return { role: "user", content: event.text };
+  if (event.type !== "run_started" && event.type !== "run_continued") return undefined;
+  return { role: "user", content: workflowInputText(event.input) };
+}
+
+function workflowInputText(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (input && typeof input === "object") {
+    const value = input as Record<string, unknown>;
+    if (typeof value.request === "string") return value.request;
+    if (typeof value.answer === "string") return value.answer;
+    return JSON.stringify(value);
+  }
+  return input === undefined ? "" : String(input);
+}
+
+function isSessionActivityEvent(event: HarnessEvent): boolean {
+  return event.type !== "model_thinking_delta"
+    && event.type !== "model_stream_delta"
+    && event.type !== "model_usage_recorded";
+}
+
+function isTerminalEvent(event: HarnessEvent): boolean {
+  return event.type === "run_completed" || event.type === "run_cancelled" || event.type === "run_failed";
 }
 
 function isAuditableEvent(event: HarnessEvent): boolean {

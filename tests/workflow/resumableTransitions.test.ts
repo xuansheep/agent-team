@@ -61,6 +61,33 @@ describe("resumable workflow transitions", () => {
     assert.equal(state.attempts.find((attempt) => attempt.node_id === "tester")?.activation, 2);
   });
 
+  it("retries the current node in the same attempt with a new activation", async () => {
+    const requests: ModelRequest[] = [];
+    let call = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        call += 1;
+        if (call === 1) return response("retry", "需要继续完善 PRD", "补充验收标准", ["缺少验收标准"]);
+        if (call === 2) return response("forward", "PRD 已完善", "进入验收");
+        return response("forward", "验收通过", "交付", [], "# 结果\n\n已完成。");
+      }
+    };
+    const retryConfig = config();
+    retryConfig.workflows.delivery.nodes = [retryConfig.workflows.delivery.nodes[0]!, { ...retryConfig.workflows.delivery.nodes[3]!, id: "tester" }];
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/retry-current-node-${Date.now()}` });
+    const state = await engine.run(retryConfig, "delivery", { request: "完善并验收" });
+
+    assert.equal(state.status, "completed");
+    assert.equal(state.rework_count, 1);
+    assert.deepEqual(state.suspended_stack, []);
+    const product = state.attempts.find((item) => item.node_id === "product");
+    assert.equal(product?.attempt, 1);
+    assert.equal(product?.activation, 2);
+    assert.deepEqual(product?.activations?.map((item) => item.status), ["retrying", "forwarded"]);
+    assert.match(JSON.stringify(requests[1]?.messages), /补充验收标准/);
+  });
+
   it("waits for the user only at the first node and resumes its conversation", async () => {
     const requests: ModelRequest[] = [];
     let call = 0;
@@ -173,7 +200,7 @@ function assertResolvedToolCalls(messages: ModelRequest["messages"]): void {
   }
 }
 
-function response(direction: "forward" | "backward", summary: string, instruction: string, defects: string[] = [], document = "") {
+function response(direction: "forward" | "backward" | "retry", summary: string, instruction: string, defects: string[] = [], document = "") {
   return {
     content: JSON.stringify({
       direction,

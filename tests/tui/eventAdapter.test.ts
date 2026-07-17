@@ -188,7 +188,7 @@ describe("TUI event adapter", () => {
 
 
 
-    assert.deepEqual(state.modelStreams, [{ nodeId: "product", attempt: 1, text: "{\"direction\":\"forward\"}" }]);
+    assert.deepEqual(state.modelStreams, [{ nodeId: "product", attempt: 1, activation: 1, text: "{\"direction\":\"forward\"}" }]);
 
     assert.equal(state.logMessages.some((item) => item.kind === "assistant"), false);
 
