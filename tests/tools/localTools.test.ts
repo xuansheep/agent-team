@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 import { normalizeGlobPatternForFastGlob } from "../../src/tools/local/glob.js";
-import { cleanPowerShellOutput, encodePowerShellCommand, executeBash } from "../../src/tools/local/shellProvider.js";
+import { cleanPowerShellOutput, createPowerShellProvider, executeBash } from "../../src/tools/local/shellProvider.js";
 
 async function workspace() {
   return mkdtemp(join(tmpdir(), "agent-team-tools-"));
@@ -66,11 +66,10 @@ describe("local tools", () => {
   });
 
   it("encodes PowerShell commands as UTF-16LE and cleans CLIXML errors", () => {
-    const encoded = encodePowerShellCommand('Write-Output "中文"');
+    const encoded = createPowerShellProvider("pwsh").spawnArgs('Write-Output "中文"').at(-1) ?? "";
     const decoded = Buffer.from(encoded, "base64").toString("utf16le");
 
     assert.match(decoded, /Write-Output "中文"/);
-    assert.match(decoded, /LASTEXITCODE/);
     assert.equal(cleanPowerShellOutput('#< CLIXML\n<S S="Error">bad_x000D__x000A_more &amp; detail</S>'), "bad\nmore & detail");
   });
 

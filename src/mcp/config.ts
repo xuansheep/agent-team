@@ -12,11 +12,6 @@ export type McpConfigSourceOptions = {
   managedMcpPath?: string;
 };
 
-export type McpConfigSources = {
-  managed?: McpServersConfig;
-  user?: McpServersConfig;
-  project?: McpServersConfig;
-};
 
 export type McpConfigSourceFormat = "json";
 export type McpConfigSourceDetail = {
@@ -28,14 +23,6 @@ export type McpConfigSourceDetail = {
 
 export type McpUserSettings = Pick<AgentTeamSettings, "mcpServers" | "projects">;
 
-export async function loadMcpConfigSources(options: McpConfigSourceOptions): Promise<McpConfigSources> {
-  const details = await loadMcpConfigSourceDetails(options);
-  return {
-    managed: mergedDetails(details, "managed"),
-    user: mergedDetails(details, "user"),
-    project: mergedDetails(details, "project")
-  };
-}
 
 export async function loadMcpConfigSourceDetails(options: McpConfigSourceOptions): Promise<McpConfigSourceDetail[]> {
   const userPath = options.userSettingsPath ?? defaultUserSettingsPath();
@@ -53,13 +40,6 @@ export async function loadMcpConfigSourceDetails(options: McpConfigSourceOptions
   ];
 }
 
-export function mergeMcpServers(sources: McpConfigSources): ResolvedMcpServerConfig[] {
-  return mergeMcpServersWithSourceDetails([
-    { source: "managed", path: defaultManagedMcpPath(), format: "json", servers: sources.managed },
-    { source: "user", path: defaultUserSettingsPath(), format: "json", servers: sources.user },
-    { source: "project", path: "", format: "json", servers: sources.project }
-  ]);
-}
 
 export function mergeMcpServersWithSourceDetails(details: McpConfigSourceDetail[]): ResolvedMcpServerConfig[] {
   const merged = new Map<string, ResolvedMcpServerConfig>();
@@ -71,9 +51,6 @@ export function mergeMcpServersWithSourceDetails(details: McpConfigSourceDetail[
   return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export async function loadMergedMcpServers(options: McpConfigSourceOptions): Promise<ResolvedMcpServerConfig[]> {
-  return loadMergedMcpServersWithSourceDetails(options);
-}
 
 export async function loadMergedMcpServersWithSourceDetails(options: McpConfigSourceOptions): Promise<ResolvedMcpServerConfig[]> {
   const servers = mergeMcpServersWithSourceDetails(await loadMcpConfigSourceDetails(options));
@@ -87,13 +64,7 @@ export async function loadMergedMcpServersWithSourceDetails(options: McpConfigSo
   }));
 }
 
-export function defaultUserMcpPath(): string {
-  return defaultUserSettingsPath();
-}
 
-export function defaultProjectMcpPath(cwd: string): string {
-  return defaultProjectSettingsPath(cwd);
-}
 
 export function defaultManagedMcpPath(): string {
   if (process.env.AGENT_TEAM_MANAGED_MCP_PATH) return resolve(process.env.AGENT_TEAM_MANAGED_MCP_PATH);
@@ -167,11 +138,6 @@ function expandEnvironment(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, expandEnvironment(entry)]));
 }
 
-function mergedDetails(details: McpConfigSourceDetail[], source: McpConfigSource): McpServersConfig | undefined {
-  const matches = details.filter((detail) => detail.source === source && detail.servers !== undefined);
-  if (!matches.length) return undefined;
-  return Object.assign({}, ...matches.map((detail) => detail.servers));
-}
 
 function normalizedProjectKey(path: string): string {
   return resolve(path).replaceAll("\\", "/").replace(/\/$/, "").toLowerCase();

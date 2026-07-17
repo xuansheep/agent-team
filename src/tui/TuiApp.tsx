@@ -12,7 +12,7 @@ import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } fro
 import { QueryEngine } from "../kernel/queryEngine.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
-import { getPlanFilePath, readPlan } from "../plans/planFiles.js";
+import { readPlan } from "../plans/planFiles.js";
 import { getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import type { ModelUsage } from "../model/usage.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
@@ -2050,32 +2050,6 @@ function findPlanToolParentAssistantLog(state: TuiState): string | undefined {
 }
 const planRuntimeNodeId = "global-plan";
 const planRuntimeAttempt = 1;
-function compactActiveInteractionLogs(messages: TuiLogMessage[], maxMessages: number): TuiLogMessage[] {
-  if (messages.length <= maxMessages) return messages;
-  let lastUserIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.kind === "user") {
-      lastUserIndex = index;
-      break;
-    }
-  }
-  const start = Math.max(lastUserIndex, messages.length - maxMessages, 0);
-  return messages.slice(start).slice(-maxMessages);
-}
-function compactRejectedPlanLogs(messages: TuiLogMessage[]): TuiLogMessage[] {
-  let rejectedIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.kind === "plan" && message.status === "rejected") {
-      rejectedIndex = index;
-      break;
-    }
-  }
-  if (rejectedIndex < 0) return messages;
-  const contextBefore = messages.slice(Math.max(0, rejectedIndex - 1), rejectedIndex);
-  const contextAfter = messages.slice(rejectedIndex + 1).slice(-4);
-  return [...contextBefore, messages[rejectedIndex], ...contextAfter];
-}
 function planApprovalKernelSession(input: {
   cwd: string;
   plan: PlanSessionState;

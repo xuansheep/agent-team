@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { loadMcpConfigSources, loadMergedMcpServersWithSourceDetails, mergeMcpServers } from "../../src/mcp/config.js";
+import { loadMergedMcpServersWithSourceDetails, mergeMcpServersWithSourceDetails } from "../../src/mcp/config.js";
 import { setMcpServerDisabledState } from "../../src/mcp/configMutations.js";
 import { mcpServersSchema } from "../../src/mcp/schema.js";
 
@@ -60,10 +60,10 @@ describe("MCP config schema", () => {
   });
 
   it("merges project MCP servers with precedence over user servers", () => {
-    const merged = mergeMcpServers({
-      user: { shared: { type: "stdio", command: "user" }, userOnly: { type: "stdio", command: "user-only" } },
-      project: { shared: { type: "stdio", command: "project" }, projectOnly: { type: "http", url: "https://project.example.test" } }
-    });
+    const merged = mergeMcpServersWithSourceDetails([
+      { source: "user", path: "user-settings.json", format: "json", servers: { shared: { type: "stdio", command: "user" }, userOnly: { type: "stdio", command: "user-only" } } },
+      { source: "project", path: "project-settings.json", format: "json", servers: { shared: { type: "stdio", command: "project" }, projectOnly: { type: "http", url: "https://project.example.test" } } }
+    ]);
 
     assert.equal(merged.find((server) => server.name === "shared")?.source, "project");
     assert.equal((merged.find((server) => server.name === "shared") as { command?: string }).command, "project");
@@ -71,18 +71,6 @@ describe("MCP config schema", () => {
     assert.equal(merged.find((server) => server.name === "userOnly")?.source, "user");
   });
 
-  it("loads MCP servers from user and project settings", async () => {
-    const cwd = await tempWorkspace();
-    const userPath = join(cwd, "user-settings.json");
-    const projectPath = join(cwd, ".einsteins", "settings.json");
-    await writeJson(userPath, { mcpServers: { userServer: { type: "stdio", command: "user" } } });
-    await writeJson(projectPath, { mcpServers: { projectServer: { type: "http", url: "https://project.example.test" } } });
-
-    const sources = await loadMcpConfigSources({ cwd, userSettingsPath: userPath, projectSettingsPath: projectPath });
-
-    assert.equal(sources.user?.userServer?.type, "stdio");
-    assert.equal(sources.project?.projectServer?.type, "http");
-  });
 
   it("returns source paths for merged MCP servers", async () => {
     const cwd = await tempWorkspace();

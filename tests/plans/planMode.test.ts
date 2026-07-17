@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { checkToolPermission } from "../../src/permissions/checkToolPermission.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
-import { approvePlan, buildApprovedPlanHandoff, enterPlanMode, exitPlanMode, readPlanOrRecoverFromTranscript, recoverPlanFromTranscript, resolvePlanApproval, runWorkflowAfterPlanApproval } from "../../src/plans/planSession.js";
+import { approvePlan, buildApprovedPlanHandoff, enterPlanMode, exitPlanMode, readPlanOrRecoverFromTranscript, recoverPlanFromTranscript, resolvePlanApproval } from "../../src/plans/planSession.js";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 import { PlanSessionState } from "../../src/plans/planSession.js";
 
@@ -88,22 +88,6 @@ describe("Plan Mode V2", () => {
     assert.deepEqual(result.event, { type: "plan_mode_entered", session_id: "session-1", plan_file_path: result.state.planFilePath });
   });
 
-  it("does not run workflow before plan approval", async () => {
-    const cwd = await workspace();
-    const { state } = enterPlanMode({
-      sessionId: "session-1",
-      cwd,
-      originalInput: { request: "build" },
-      permissions: { mode: "default", allow: [], ask: [], deny: [] }
-    });
-    let workflowRuns = 0;
-
-    await assert.rejects(() => runWorkflowAfterPlanApproval(state, async () => {
-      workflowRuns += 1;
-      return "ran";
-    }), /approved/);
-    assert.equal(workflowRuns, 0);
-  });
 
   it("allows only current plan file writes in plan mode", async () => {
     const cwd = await workspace();
@@ -215,17 +199,6 @@ describe("Plan Mode V2", () => {
       plan_file_path: entered.state.planFilePath
     });
 
-    let workflowRuns = 0;
-    const result = await runWorkflowAfterPlanApproval(resolved.state, async (handoff) => {
-      workflowRuns += 1;
-      return handoff;
-    });
-    assert.equal(workflowRuns, 1);
-    assert.deepEqual(result, {
-      original_input: { request: "build" },
-      approved_plan: "# Plan\nBuild it.",
-      plan_file_path: entered.state.planFilePath
-    });
   });
 
   it("carries approval feedback into the workflow handoff", async () => {

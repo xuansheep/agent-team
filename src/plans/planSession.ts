@@ -112,12 +112,6 @@ export function buildApprovedPlanHandoff(state: PlanSessionState): unknown {
   };
 }
 
-export async function runWorkflowAfterPlanApproval<T>(state: PlanSessionState, startWorkflow: (handoff: unknown) => Promise<T>): Promise<T> {
-  if (state.mode !== "inactive" || (!state.approvedPlan?.trim() && !state.emptyPlanApproved)) {
-    throw new Error("Plan must be approved before workflow execution starts");
-  }
-  return startWorkflow(buildApprovedPlanHandoff(state));
-}
 
 export function stripInternalPlanModeHandoffMarkers(handoff: unknown): unknown {
   if (!handoff || typeof handoff !== "object" || Array.isArray(handoff)) return handoff;

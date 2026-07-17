@@ -279,9 +279,6 @@ class ShellOutputCollector {
   }
 }
 
-export function encodePowerShellCommand(command: string): string {
-  return encodePowerShellText(powerShellWrapper(command));
-}
 
 function encodePowerShellText(command: string): string {
   return Buffer.from(command, "utf16le").toString("base64");

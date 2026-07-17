@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { isPastedImagePath, resolveImagePaste } from "../../src/tui/imagePaste.js";
+import { resolveImagePaste } from "../../src/tui/imagePaste.js";
 
 describe("TUI image paste helpers", () => {
   it("extracts image data URLs from pasted text", async () => {
@@ -33,10 +33,6 @@ describe("TUI image paste helpers", () => {
     assert.equal(result.images[0]?.media_type, "image/webp");
   });
 
-  it("detects image-looking paths without reading files", () => {
-    assert.equal(isPastedImagePath("\"/tmp/screenshot.jpeg\""), true);
-    assert.equal(isPastedImagePath("/tmp/report.txt"), false);
-  });
 });
 
 async function makeProjectTmpCwd(prefix: string): Promise<string> {

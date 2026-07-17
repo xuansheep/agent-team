@@ -3,8 +3,6 @@ import assert from "node:assert/strict";
 import {
   createKernelSession,
   reduceKernelSession,
-  restoreKernelSession,
-  snapshotKernelSession,
   type KernelIntent
 } from "../../src/kernel/session.js";
 import { projectKernelAppState } from "../../src/kernel/appState.js";
@@ -12,7 +10,7 @@ import { projectKernelAppState } from "../../src/kernel/appState.js";
 const permissions = { mode: "default" as const, allow: [], ask: [], deny: [] };
 
 describe("KernelSession", () => {
-  it("stores pending plan approval as restorable kernel state", () => {
+  it("stores pending plan approval in kernel state", () => {
     const session = createKernelSession({ id: "s1", cwd: process.cwd(), permissions });
     const next = reduceKernelSession(session, {
       type: "pending_interaction_set",
@@ -26,7 +24,7 @@ describe("KernelSession", () => {
       }
     });
 
-    const restored = restoreKernelSession(snapshotKernelSession(next));
+    const restored = next;
     assert.equal(restored.status, "waiting_plan_approval");
     assert.equal(restored.pendingInteraction?.type, "plan_approval");
     assert.equal(projectKernelAppState(restored).pendingInteraction?.type, "plan_approval");

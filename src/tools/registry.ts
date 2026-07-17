@@ -115,31 +115,9 @@ export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skil
   return registry;
 }
 
-
 function candidatePaths(input: unknown): string[] {
   if (!input || typeof input !== "object" || Array.isArray(input)) return [];
   const record = input as Record<string, unknown>;
   return [record.file_path, record.path, record.cwd, record.directory]
     .flatMap((value) => typeof value === "string" && value.trim() ? [value] : []);
-}
-
-export function createPlanModeToolRegistry(): ToolRegistry {
-  const registry = new ToolRegistry();
-  for (const tool of [
-    readTool,
-    writeTool,
-    editTool,
-    multiEditTool,
-    lsTool,
-    globTool,
-    grepTool,
-    webFetchTool,
-    webSearchTool,
-    todoWriteTool,
-    askUserQuestionTool,
-    exitPlanModeTool
-  ]) {
-    registry.add(tool);
-  }
-  return registry;
 }

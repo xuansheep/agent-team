@@ -1,16 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { shouldLaunchTui, dispatchCli } from "../../src/cli/dispatch.js";
+import { dispatchCli } from "../../src/cli/dispatch.js";
 
 describe("CLI dispatch", () => {
-  it("launches TUI for every invocation", () => {
-    assert.equal(shouldLaunchTui(["node", "agent-team"]), true);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "run"]), true);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "status", "run-id"]), true);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "inspect", "run-id"]), true);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "resume", "run-id"]), true);
-    assert.equal(shouldLaunchTui(["node", "agent-team", "init"]), true);
-  });
 
   it("always calls the TUI launcher", async () => {
     const launched: string[] = [];

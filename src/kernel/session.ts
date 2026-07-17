@@ -70,7 +70,6 @@ export type KernelAction =
   | { type: "pending_interaction_cleared"; status?: KernelStatus }
   | { type: "intent_applied"; intent: KernelIntent };
 
-export type KernelSessionSnapshot = KernelSession;
 
 export function createKernelSession(input: {
   id: string;
@@ -103,13 +102,7 @@ export function reduceKernelSession(session: KernelSession, action: KernelAction
   return applyIntent(session, action.intent);
 }
 
-export function snapshotKernelSession(session: KernelSession): KernelSessionSnapshot {
-  return JSON.parse(JSON.stringify(session)) as KernelSessionSnapshot;
-}
 
-export function restoreKernelSession(snapshot: KernelSessionSnapshot): KernelSession {
-  return { ...snapshot, messages: snapshot.messages.slice() };
-}
 
 export function projectAppState(session: KernelSession) {
   return projectKernelAppState(session);

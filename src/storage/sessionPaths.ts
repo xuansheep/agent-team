@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename, dirname, join } from "node:path";
-
-const sessionDirCache = new Map<string, string>();
+import { join } from "node:path";
 
 export function getSessionSlug(sessionId: string): string {
   const normalized = sessionId.normalize("NFC");
@@ -12,29 +10,6 @@ export function getSessionSlug(sessionId: string): string {
   return `${safe}-${hash}`;
 }
 
-export function createSessionDir(rootDir: string, sessionId: string): string {
-  const path = join(rootDir, getSessionSlug(sessionId));
-  sessionDirCache.set(cacheKey(rootDir, sessionId), path);
-  return path;
-}
-
-export function rememberSessionDir(rootDir: string, sessionId: string, sessionDir: string): void {
-  sessionDirCache.set(cacheKey(rootDir, sessionId), sessionDir);
-}
-
-export function cachedSessionDir(rootDir: string, sessionId: string): string | undefined {
-  return sessionDirCache.get(cacheKey(rootDir, sessionId));
-}
-
 export function planFilePathForSessionDir(sessionDir: string): string {
   return join(sessionDir, "plans", "plan.md");
-}
-
-export function sessionDirFromPlanFilePath(planFilePath: string): string {
-  const planDir = dirname(planFilePath);
-  return basename(planDir) === "plans" ? dirname(planDir) : planDir;
-}
-
-function cacheKey(rootDir: string, sessionId: string): string {
-  return `${rootDir}\0${sessionId}`;
 }

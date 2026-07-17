@@ -3,7 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import yaml from "js-yaml";
-import type { GlobalPromptMetadata, GlobalPromptSourceKind, GlobalPromptSourceMetadata } from "../config/schema.js";
+import type { GlobalPromptMetadata, GlobalPromptSourceKind } from "../config/schema.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { projectDirectoriesToGitRoot } from "./projectDirectories.js";
 
@@ -86,9 +86,6 @@ export function getExternalAgentsMdIncludes(files: AgentsMemoryFile[], cwd: stri
     : []);
 }
 
-export async function hasExternalAgentsMdIncludes(options: AgentsMemoryLoadOptions): Promise<boolean> {
-  return getExternalAgentsMdIncludes(await getAgentsMemoryFiles({ ...options, includeExternal: true }), options.cwd).length > 0;
-}
 
 async function processAgentsMemoryFile(
   path: string,

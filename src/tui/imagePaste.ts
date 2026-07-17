@@ -34,9 +34,6 @@ export function parsePastedDataUrls(value: string): ResolvedImagePaste {
   return { text, images };
 }
 
-export function isPastedImagePath(value: string): boolean {
-  return imagePathFromText(value) !== undefined;
-}
 
 async function readImagesFromPastedPaths(value: string, cwd: string): Promise<ResolvedImagePaste> {
   const parts = pastedPathParts(value);

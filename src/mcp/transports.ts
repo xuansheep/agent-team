@@ -35,7 +35,7 @@ class SdkMcpClient implements McpClient {
   constructor(
     private readonly server: ResolvedMcpServerConfig,
     private readonly transport: Transport,
-    private readonly options: McpTransportFactoryOptions
+    options: McpTransportFactoryOptions
   ) {
     const capabilities = {
       ...(options.roots ? { roots: { listChanged: true } } : {}),

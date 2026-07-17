@@ -39,9 +39,6 @@ export type SkillDirectoryLoadResult = {
   errors: SkillLoadError[];
 };
 
-export async function loadLocalSkills(root: string): Promise<LoadedSkill[]> {
-  return (await loadSkillsDirectory(root)).skills;
-}
 
 export async function loadSkillsDirectory(root: string, source: Exclude<SkillSource, "mcp"> = "local"): Promise<SkillDirectoryLoadResult> {
   let entries;

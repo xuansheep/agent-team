@@ -114,30 +114,6 @@ export function createUseSkillTool(runtime: SkillRuntime): Tool {
   };
 }
 
-export async function activateUserInvokedSkill(
-  runtime: SkillRuntime,
-  name: string,
-  args: string,
-  context: Parameters<Tool["execute"]>[1]
-): Promise<ToolResult> {
-  const skill = runtime.getSkill(name);
-  if (!skill || skill.userInvocable === false) throw new Error(`Unknown user-invocable skill ${name}`);
-  const activation = await runtime.activateSkill(name, {
-    args,
-    prompt: args,
-    cwd: context.cwd,
-    sessionId: context.sessionId ?? "global",
-    provider: context.provider,
-    model: context.model,
-    tools: context.toolRegistry,
-    parentPermissionMode: context.permissionMode,
-    signal: context.abortSignal
-  });
-  const systemMessage = activation.mode === "inline"
-    ? activation.messages.at(-1)
-    : { role: "system" as const, content: `SKILL ${activation.skill.name}\n\n${activation.output}` };
-  return skillActivationResult(activation.skill, activation.mode, systemMessage);
-}
 
 export function skillActivationFromToolResult(result: ToolResult | undefined): SkillActivationRecord | undefined {
   const data = skillActivationData(result);

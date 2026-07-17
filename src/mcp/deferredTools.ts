@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "../tools/types.js";
+import type { Tool } from "../tools/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { McpServerStatus, RuntimeMcpTool } from "./runtime.js";
 import type { McpToolCallResult } from "./types.js";

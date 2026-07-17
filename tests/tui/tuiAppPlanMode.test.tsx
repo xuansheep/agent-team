@@ -9,7 +9,6 @@ import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
-import { SkillRuntime } from "../../src/skills/runtime.js";
 
 const config = {
   providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
@@ -2749,29 +2748,6 @@ function recordingPlanProviderFactory(requests: ModelRequest[]): () => ModelProv
   return () => planProvider(requests);
 }
 
-function skillPlanProviderFactory(): ModelProvider {
-  return {
-    async generate(request: ModelRequest) {
-      const userText = [...request.messages].reverse().find((message) => message.role === "user" && typeof message.content === "string" && !message.content.includes("ATTACHMENT plan_mode"))?.content;
-      if (typeof userText === "string" && userText.includes("Use reviewer skill")) {
-        if (!request.messages.some((message) => message.role === "assistant" && message.tool_calls?.some((call) => call.name === "UseSkill"))) {
-          return { content: "Activating reviewer.", tool_calls: [{ id: "tool-use-skill", name: "UseSkill", input: { name: "reviewer" } }] };
-        }
-        if (!request.messages.some((message) => message.role === "assistant" && message.tool_calls?.some((call) => call.name === "Write"))) {
-          return {
-            content: "Writing reviewed plan.",
-            tool_calls: [{ id: "tool-write-plan", name: "Write", input: { file_path: planFilePathFromRequest(request), content: "Reviewed plan." } }]
-          };
-        }
-        return { content: "Plan draft saved." };
-      }
-      if (typeof userText === "string" && userText.includes("Ready for approval")) {
-        return { content: "Requesting approval.", tool_calls: [{ id: "tool-exit-plan", name: "ExitPlanMode", input: {} }] };
-      }
-      return { content: "Waiting for plan input." };
-    }
-  };
-}
 
 function hangingPlanProviderFactory(): ModelProvider {
   return {

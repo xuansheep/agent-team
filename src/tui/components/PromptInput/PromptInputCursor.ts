@@ -1,25 +1,5 @@
-import { useEffect } from "react";
-import { useStdout } from "../../ink.js";
 import { PromptInputMode } from "./types.js";
 
-export function PromptInputCursor(props: {
-  terminalRows: number;
-  promptTop?: number;
-  mode: PromptInputMode;
-  text: string;
-  cursor: number;
-  suggestions: number;
-  queued: number;
-  hasStash: boolean;
-  history: number;
-}) {
-  const { stdout } = useStdout();
-  const position = promptCursorPosition(props);
-
-  useEffect(() => schedulePromptCursorMove(stdout, position), [position.x, position.y, stdout]);
-
-  return null;
-}
 
 export function promptCursorPosition(input: {
   terminalRows: number;

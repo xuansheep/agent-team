@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { commandDefinitions, commandNames, parseCommandAction } from "../../src/commands/registry.js";
+import { commandDefinitions, parseCommandAction } from "../../src/commands/registry.js";
 
 describe("command registry", () => {
   it("parses /plan without creating a query", () => {
@@ -30,7 +30,7 @@ describe("command registry", () => {
   });
 
   it("exposes stable command names for TUI completion", () => {
-    assert.deepEqual(commandNames(), ["clear", "help", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline"]);
+    assert.deepEqual(commandDefinitions().map((command) => command.name).sort(), ["clear", "help", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline"]);
   });
 
   it("documents /plan open in the command hint", () => {

@@ -38,9 +38,6 @@ export function commandDefinitions(): CommandDefinition[] {
   return definitions.slice();
 }
 
-export function commandNames(): CommandName[] {
-  return definitions.map((definition) => definition.name).sort();
-}
 
 export function parseCommandAction(input: string): CommandAction | undefined {
   const parsed = parseCommandLine(input);
