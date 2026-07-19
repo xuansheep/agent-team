@@ -8115,6 +8115,127 @@ describe("TuiApp", () => {
 
 
 
+  it("aligns selection copying and clearing with tui-code", async () => {
+    const previous = instances.get(process.stdout);
+    let copied = 0;
+    let autoCopied = 0;
+    let cleared = 0;
+    let exited = 0;
+    const fakeInk = {
+      selected: false,
+      selection: { isDragging: false },
+      listeners: new Set<() => void>(),
+      hasTextSelection(this: { selected: boolean }) {
+        return this.selected;
+      },
+      subscribeToSelectionChange(this: { listeners: Set<() => void> }, cb: () => void) {
+        this.listeners.add(cb);
+        return () => this.listeners.delete(cb);
+      },
+      copySelection(this: { selected: boolean }) {
+        copied += 1;
+        this.selected = false;
+        for (const listener of fakeInk.listeners) listener();
+        return "selected text";
+      },
+      copySelectionNoClear() {
+        autoCopied += 1;
+        return "selected text";
+      },
+      clearTextSelection(this: { selected: boolean }) {
+        if (!this.selected) return;
+        cleared += 1;
+        this.selected = false;
+        for (const listener of fakeInk.listeners) listener();
+      }
+    };
+
+    instances.set(process.stdout, fakeInk as never);
+    const output = render(
+      <TuiApp
+        cwd="D:\\CodeAI\\agent-team"
+        workflows={["delivery"]}
+        workflowId="delivery"
+        onExit={() => {
+          exited += 1;
+        }}
+      />
+    );
+
+    try {
+      output.stdin.write("\u001b[99;9u");
+      await settleTerminalEscape();
+      assert.equal(copied, 0);
+      assert.equal(exited, 0);
+
+      fakeInk.selected = true;
+      fakeInk.selection.isDragging = true;
+      for (const listener of fakeInk.listeners) listener();
+      assert.equal(autoCopied, 0);
+
+      fakeInk.selection.isDragging = false;
+      for (const listener of fakeInk.listeners) listener();
+      await settleInkInput();
+      assert.equal(autoCopied, 1);
+      assert.equal(fakeInk.selected, true);
+      assert.match(output.lastFrame() ?? "", /selection active/);
+
+      output.stdin.write("\u001b[99;9u");
+      await settleTerminalEscape();
+      assert.equal(copied, 1);
+      assert.equal(exited, 0);
+      assert.equal(fakeInk.selected, false);
+      assert.doesNotMatch(output.lastFrame() ?? "", /selection active/);
+
+      fakeInk.selected = true;
+      for (const listener of fakeInk.listeners) listener();
+      await settleInkInput();
+      output.stdin.write("x");
+      await settleInkInput();
+      assert.equal(cleared, 1);
+      assert.equal(fakeInk.selected, false);
+      assert.match(output.lastFrame() ?? "", /x/);
+
+      fakeInk.selected = true;
+      for (const listener of fakeInk.listeners) listener();
+      await settleInkInput();
+      output.stdin.write("\u0003");
+      await settleInkInput();
+      assert.equal(copied, 2);
+      assert.equal(fakeInk.selected, false);
+
+      fakeInk.selected = true;
+      for (const listener of fakeInk.listeners) listener();
+      await settleInkInput();
+      output.stdin.write("\u001b");
+      await settleTerminalEscape();
+      assert.equal(cleared, 2);
+      assert.equal(fakeInk.selected, false);
+      assert.equal(exited, 0);
+
+      fakeInk.selected = true;
+      for (const listener of fakeInk.listeners) listener();
+      await settleInkInput();
+      output.stdin.write("\u001b[1;2D");
+      await settleTerminalEscape();
+      assert.equal(fakeInk.selected, true);
+
+      output.stdin.write("\u001b[<64;1;1M");
+      await settleInkInput();
+      assert.equal(cleared, 3);
+      assert.equal(fakeInk.selected, false);
+    } finally {
+      output.unmount();
+      output.cleanup();
+      if (previous) instances.set(process.stdout, previous);
+      else instances.delete(process.stdout);
+    }
+  });
+
+
+
+
+
   it("exits after interrupt confirmation when Ctrl+C is pressed again", async () => {
 
     let interrupted = 0;

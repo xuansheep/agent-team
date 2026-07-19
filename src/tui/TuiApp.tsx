@@ -3,6 +3,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { useEffect, useRef, useState } from "react";
 import { Box, ScrollBox, Text, useApp, useHasSelection, useInput, useSelection, useStdin, useStdout } from "./ink.js";
 import type { ScrollBoxHandle } from "./ink.js";
+import { useCopyOnSelect } from "../ink/hooks/use-copy-on-select.js";
 import { AgentTeamConfig } from "../config/schema.js";
 import type { RuntimeDiagnostics } from "../diagnostics/runtimeDiagnostics.js";
 import { enterPlanMode, readPlanOrRecoverFromTranscript } from "../plans/planSession.js";
@@ -109,6 +110,8 @@ export function TuiApp({
   const { stdout } = useStdout();
   const selection = useSelection();
   const hasSelection = useHasSelection();
+  const selectionEscapeConsumedRef = useRef(false);
+  useCopyOnSelect(selection, settings?.copyOnSelect ?? true);
   ensureRefableStdin(stdin);
   const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
   const terminalColumns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
@@ -1712,13 +1715,18 @@ ${message.detailText}` : ""}` }
     const handleEscapeData = (value: unknown) => {
       const text = typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
       if (text !== "" || transcriptMode) return;
+      if (selection.hasSelection()) {
+        selection.clearSelection();
+        selectionEscapeConsumedRef.current = true;
+        return;
+      }
       if (!cancelCurrentInteraction()) interruptActiveWork();
     };
     stdin.on?.("data", handleEscapeData);
     return () => {
       stdin.off?.("data", handleEscapeData);
     };
-  }, [stdin, cancelCurrentInteraction, transcriptMode]);
+  }, [stdin, cancelCurrentInteraction, transcriptMode, selection]);
   const layout = layoutMetrics({ terminalRows, choice: activeChoice, activityStatusVisible: Boolean(activityStatus && !activeChoice) });
   const planApprovalDocumentMaxLines = state.pendingReview ? planApprovalOverlayMaxDocumentLines(state.pendingReview, layout.mainHeight) : 0;
   const scrollPlanApprovalDocument = (delta: number): boolean => {
@@ -1734,6 +1742,45 @@ ${message.detailText}` : ""}` }
     if (planApprovalOverlayVisible) mainScrollRef.current?.scrollTo(0);
   }, [planApprovalOverlayVisible, state.pendingReview?.document, state.pendingReview?.planFilePath]);
   useInput((input, key, event) => {
+    if (key.escape && selectionEscapeConsumedRef.current) {
+      selectionEscapeConsumedRef.current = false;
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    const isCommandCopy = key.super && event.keypress.name === "c";
+    const isCtrlShiftCopy = key.ctrl && key.shift && event.keypress.name === "c";
+    if (isCommandCopy || isCtrlShiftCopy) {
+      if (selection.hasSelection()) selection.copySelection();
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    if (selection.hasSelection()) {
+      if (key.escape) {
+        selection.clearSelection();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (key.ctrl && !key.shift && !key.meta && input === "c") {
+        selection.copySelection();
+        event.stopImmediatePropagation();
+        return;
+      }
+
+      const isNavigation =
+        key.leftArrow ||
+        key.rightArrow ||
+        key.upArrow ||
+        key.downArrow ||
+        key.home ||
+        key.end ||
+        key.pageUp ||
+        key.pageDown;
+      const preservesSelection = isNavigation && (key.shift || key.meta || key.super);
+      if (key.wheelUp || key.wheelDown || !preservesSelection) selection.clearSelection();
+    }
+
     if (planApprovalActive && isPlanApprovalToggleInput(input) && !key.ctrl && !key.meta) {
       setPlanApprovalCollapsed((current) => !current);
       event.stopImmediatePropagation();
@@ -2735,7 +2782,7 @@ function helpDetailText(): string {
     "  Enter submit · Shift+Enter/Ctrl+Enter newline",
     "  Shift+Tab cycle mode or approve selected action",
     "  Ctrl+O transcript · Ctrl+G edit plan/focused text",
-    "  Esc cancel · Ctrl+C stop current run or copy selection",
+    "  Esc cancel · Ctrl+C stop current run or copy selection · Ctrl+Shift+C/terminal Cmd+C copy selection",
     "",
     "Slash commands:",
     "  /help show this help",

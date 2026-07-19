@@ -186,6 +186,13 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     key.shift = true
   }
 
+  // Cmd+C is a shortcut, not text input. Keep the parsed key name available
+  // to shortcut handlers while preventing the CSI-u payload from inserting a
+  // literal "c" into whichever TUI input happens to be focused.
+  if (keypress.super && keypress.name === 'c') {
+    input = ''
+  }
+
   return [key, input]
 }
 

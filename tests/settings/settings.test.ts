@@ -158,6 +158,7 @@ describe("settings", () => {
         contextWindows: { "shared-model": 1000 }
       },
       planMode: { defaultEntry: false },
+      copyOnSelect: true,
       showClearContextOnPlanAccept: false,
       mcpServers: { shared: { type: "stdio", command: "user" } }
     });
@@ -170,6 +171,7 @@ describe("settings", () => {
         contextWindows: { "shared-model": 2000 }
       },
       planMode: { defaultEntry: true },
+      copyOnSelect: false,
       showClearContextOnPlanAccept: true,
       mcpServers: { shared: { type: "stdio", command: "project" } }
     });
@@ -182,6 +184,7 @@ describe("settings", () => {
     assert.deepEqual(settings.models?.aliases, { shared: "project-model", "user-only": "user-model" });
     assert.deepEqual(settings.models?.contextWindows, { "shared-model": 2000 });
     assert.equal(settings.planMode?.defaultEntry, true);
+    assert.equal(settings.copyOnSelect, false);
     assert.equal(settings.showClearContextOnPlanAccept, true);
     assert.equal(Object.hasOwn(settings, "mcpServers"), false);
     assert.equal(Object.hasOwn(settings, "projects"), false);

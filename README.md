@@ -68,6 +68,8 @@ The TUI reads roles and workflows from `~/.einsteins`, selects workflow `deliver
 
 Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Use Shift+Enter or Ctrl+Enter to insert a newline; Alt+Enter is ignored.
 
+Text selections are copied to the clipboard when selection finishes while the highlight remains visible. Set the top-level `copyOnSelect` setting to `false` to disable this behavior. `Ctrl+C`, `Ctrl+Shift+C`, or a terminal-reported `Cmd+C` copies and clears an active selection; terminals such as Apple Terminal consume `Cmd+C` before the TUI can observe it.
+
 The `/permissions` menu persists the selected default execution mode to `~/.einsteins/settings.json`. New TUI sessions read that value during startup. A project-level `.einsteins/settings.json` can still override the user default for that project.
 
 ## Test Progress

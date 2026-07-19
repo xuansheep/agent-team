@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { WorkflowEngine, workflowConfigFingerprint } from "../../src/workflow/engine.js";
+import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { RunStore } from "../../src/storage/runStore.js";
 
@@ -405,7 +405,9 @@ describe("WorkflowSession", () => {
 
     });
 
-    const resumed = await replayEngine.resumeInteractive(config(), original.runId);
+    const changedConfig = config();
+    changedConfig.roles.dev = { ...changedConfig.roles.dev, system_prompt: "current role prompt" };
+    const resumed = await replayEngine.resumeInteractive(changedConfig, original.runId);
 
     const events: string[] = [];
 
@@ -538,7 +540,6 @@ describe("WorkflowSession", () => {
       version: 2,
       status: "running",
       workflow_id: "flow",
-      config_fingerprint: workflowConfigFingerprint(teamConfig, "flow"),
       current_node_id: "dev",
       attempts: [{ node_id: "dev", attempt: 1, activation: 1, status: "running", activations: [{ activation: 1, status: "running" }] }],
       handoff: { request: "x" },

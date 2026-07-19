@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentTeamConfig } from "../../src/config/schema.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
-import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { WorkflowEngine, workflowConfigFingerprint } from "../../src/workflow/engine.js";
 
 describe("resumable workflow transitions", () => {
   it("resumes product and UI in the same attempts after UI returns a PRD issue", async () => {
@@ -146,10 +146,15 @@ describe("resumable workflow transitions", () => {
     assert.equal(call, 4);
   });
 
-  it("rejects resume when the workflow role configuration changed", async () => {
+  it("resumes with the current role and global prompt after configuration changes", async () => {
+    const requests: ModelRequest[] = [];
+    let call = 0;
     const provider: ModelProvider = {
-      async generate() {
-        return response("backward", "需要确认", "询问用户");
+      async generate(request) {
+        requests.push(request);
+        call += 1;
+        if (call === 1) return response("backward", "需要确认", "询问用户");
+        return response("forward", "确认完成", "交付", [], "# 最终结果\n\n已按当前配置完成。");
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/config-fingerprint-${Date.now()}` });
@@ -158,10 +163,17 @@ describe("resumable workflow transitions", () => {
     await engine.run(original, "delivery", { request: "定义范围" });
     const changed = config();
     changed.workflows.delivery.nodes = changed.workflows.delivery.nodes.slice(0, 1);
-    changed.roles.product = { ...changed.roles.product, system_prompt: "changed" };
+    changed.global_prompt = "current global prompt";
+    changed.roles.product = { ...changed.roles.product, system_prompt: "current role prompt" };
     const runId = await latestRunId(engine);
 
-    await assert.rejects(() => engine.resume(changed, "delivery", runId, { answer: "继续" }), /configuration changed/);
+    const resumed = await engine.resume(changed, "delivery", runId, { answer: "继续" });
+
+    assert.equal(resumed.status, "completed");
+    assert.equal(requests.length, 2);
+    assert.match(JSON.stringify(requests[1]?.messages), /current global prompt/);
+    assert.match(JSON.stringify(requests[1]?.messages), /current role prompt/);
+    assert.equal(resumed.config_fingerprint, workflowConfigFingerprint(changed, "delivery"));
   });
 });
 

@@ -21,6 +21,7 @@ const settingsShape = {
   agentsMdExcludes: z.array(z.string().min(1)).optional(),
   hasAgentsMdExternalIncludesApproved: z.boolean().optional(),
   hasAgentsMdExternalIncludesWarningShown: z.boolean().optional(),
+  copyOnSelect: z.boolean().optional(),
   showClearContextOnPlanAccept: z.boolean().optional()
 };
 

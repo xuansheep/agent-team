@@ -106,7 +106,6 @@ export class WorkflowEngine {
             throw new Error(`Unknown workflow ${workflowId}`);
         const store = await this.runStore();
         const state = await store.loadState(runId);
-        assertWorkflowConfigFingerprint(state, config, workflowId);
         const lease = await store.acquireRunLease(runId);
         try {
         const guarded = await this.continueReworkLimitWithInput({ config, workflowId, workflow, store, runId, state, input: userInput });
@@ -171,7 +170,6 @@ export class WorkflowEngine {
         const store = await this.runStore();
         const state = await store.loadState(runId);
         const workflowId = state.workflow_id;
-        assertWorkflowConfigFingerprint(state, config, workflowId);
         const workflow = config.workflows[workflowId];
         if (!workflow)
             throw new Error(`Unknown workflow ${workflowId}`);
@@ -1354,13 +1352,6 @@ function controllerReturnMessage(fromNodeId: string, result: NodeResult, handoff
             handoff
         }, null, 2)
     };
-}
-function assertWorkflowConfigFingerprint(state: WorkflowState, config: AgentTeamConfig, workflowId: string): void {
-    const expected = workflowConfigFingerprint(config, workflowId);
-    if (!state.config_fingerprint)
-        throw new Error(`Run state has no workflow configuration fingerprint; start a new run`);
-    if (state.config_fingerprint !== expected)
-        throw new Error(`Workflow or role configuration changed since this run was created; start a new run or restore the original configuration`);
 }
 export function workflowConfigFingerprint(config: AgentTeamConfig, workflowId: string): string {
     const workflow = config.workflows[workflowId];

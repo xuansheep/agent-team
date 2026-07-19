@@ -1225,7 +1225,7 @@ export default class Ink {
   copySelectionNoClear(): string {
     if (!hasSelection(this.selection)) return ''
     const text = getSelectedText(this.selection, this.frontFrame.screen)
-    if (text) {
+    if (text.trim()) {
       // Raw OSC 52, or DCS-passthrough-wrapped OSC 52 inside tmux (tmux
       // drops it silently unless allow-passthrough is on — no regression).
       void setClipboard(text).then(raw => {
