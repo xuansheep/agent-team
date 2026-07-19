@@ -198,7 +198,11 @@ describe("WorkflowSession", () => {
     assert.equal(userMessages[0]?.node_id, "dev");
     assert.equal(userMessages[0]?.attempt, 1);
     assert.equal(state.status, "completed");
-    assert.equal(state.resume_checkpoint, undefined);
+    assert.equal(state.current_node_id, "dev");
+    assert.equal(state.resume_checkpoint?.node_id, "dev");
+    assert.equal(state.resume_checkpoint?.attempt, 1);
+    assert.equal(state.resume_checkpoint?.activation, 2);
+    assert.ok((state.resume_checkpoint?.dialogue_cursor ?? 0) > 0);
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "product").length, 1);
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(calls, 3);
@@ -411,6 +415,117 @@ describe("WorkflowSession", () => {
 
     assert.deepEqual(events.filter((event) => event === "run_started"), ["run_started"]);
 
+  });
+
+  it("continues a restored completed run from the final node checkpoint", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const runRoot = `.tmp/session-continue-completed-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) return { content: "not a node result" };
+        return {
+          content: JSON.stringify({
+            direction: "forward",
+            summary: calls === 2 ? "initial delivery" : "follow-up delivery",
+            handoff: { instruction: "done" }
+          })
+        };
+      }
+    };
+    const teamConfig = config();
+    const original = await new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot })
+      .startInteractive(teamConfig, "flow", { request: "initial request" });
+    const firstCompletion = await original.result;
+    const firstCursor = firstCompletion.resume_checkpoint?.dialogue_cursor ?? 0;
+
+    assert.equal(firstCompletion.status, "completed");
+    assert.equal(firstCompletion.current_node_id, "dev");
+    assert.ok(firstCursor > 1);
+
+    const restored = await new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot })
+      .resumeInteractive(teamConfig, original.runId);
+    await restored.result;
+    for await (const _event of restored.events) {
+      // Drain replayed events before subscribing to the continuation.
+    }
+    const continuation = restored.continueWithInput({ request: "follow-up request" });
+    const firstContinuationEvent = await restored.events[Symbol.asyncIterator]().next();
+    await continuation;
+
+    const store = new RunStore(runRoot);
+    const state = await store.loadState(original.runId);
+    const events = await store.loadEvents(original.runId);
+    const devAttempt = state.attempts.find((attempt) => attempt.node_id === "dev");
+
+    assert.equal(restored.runId, original.runId);
+    assert.equal(firstContinuationEvent.done, false);
+    assert.equal(firstContinuationEvent.value?.type, "user_message");
+    assert.equal(state.status, "completed");
+    assert.equal(state.current_node_id, "dev");
+    assert.equal(devAttempt?.attempt, 1);
+    assert.equal(devAttempt?.activation, 2);
+    assert.ok((state.resume_checkpoint?.dialogue_cursor ?? 0) > firstCursor);
+    assert.match(JSON.stringify(requests.at(-1)?.messages), /follow-up request/);
+    assert.equal(events.filter((event) => event.type === "run_started").length, 1);
+    assert.equal(events.filter((event) => event.type === "run_continued").length, 0);
+    assert.equal(events.filter((event) => event.type === "run_completed").length, 2);
+    assert.deepEqual(events.filter((event) => event.type === "user_message").map((event) => event.text), ["follow-up request"]);
+    assert.equal(events.some((event) => event.type === "node_completed" && event.status === "failure"), false);
+  });
+
+  it("lets a reactivated completed node route backward and return in the same run", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const runRoot = `.tmp/session-route-completed-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) return { content: JSON.stringify({ direction: "forward", summary: "planned", handoff: { instruction: "build" } }) };
+        if (calls === 2) return { content: JSON.stringify({ direction: "forward", summary: "initial delivery", handoff: { instruction: "done" } }) };
+        if (calls === 3) {
+          return {
+            content: JSON.stringify({
+              direction: "backward",
+              summary: "follow-up requires upstream work",
+              feedback: { defects: [], change_requests: ["apply the follow-up"] },
+              handoff: { instruction: "apply the follow-up" }
+            })
+          };
+        }
+        if (calls === 4) return { content: JSON.stringify({ direction: "forward", summary: "follow-up applied", handoff: { instruction: "verify" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "follow-up verified", handoff: { instruction: "done" } }) };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const session = await engine.startInteractive(twoNodeConfig(), "flow", { request: "initial request" });
+    await session.result;
+    for await (const _event of session.events) {
+      // Drain the first completed segment before subscribing to the next one.
+    }
+    const continuation = session.continueWithInput({ request: "follow-up request" });
+    const firstContinuationEvent = await session.events[Symbol.asyncIterator]().next();
+    await continuation;
+
+    const store = new RunStore(runRoot);
+    const state = await store.loadState(session.runId);
+    const events = await store.loadEvents(session.runId);
+
+    assert.equal(state.status, "completed");
+    assert.equal(firstContinuationEvent.done, false);
+    assert.equal(firstContinuationEvent.value?.type, "user_message");
+    assert.equal(state.rework_count, 1);
+    assert.deepEqual(state.suspended_stack, []);
+    assert.deepEqual(requests.map((request) => request.context?.nodeId), ["product", "dev", "dev", "product", "dev"]);
+    assert.deepEqual(state.attempts.map((attempt) => [attempt.node_id, attempt.attempt, attempt.activation]), [
+      ["product", 1, 2],
+      ["dev", 1, 3]
+    ]);
+    assert.equal(events.filter((event) => event.type === "run_started").length, 1);
+    assert.equal(events.filter((event) => event.type === "run_completed").length, 2);
   });
 
   it("restores a stale running session as waiting for user input without invoking the provider", async () => {

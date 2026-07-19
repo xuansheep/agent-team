@@ -8,7 +8,7 @@ export const nodeResultJsonSchema = {
 
   properties: {
 
-    direction: { type: "string", enum: ["forward", "backward"] },
+    direction: { type: "string", enum: ["forward", "backward", "retry"] },
 
     summary: { type: "string" },
 

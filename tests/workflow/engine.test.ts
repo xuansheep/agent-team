@@ -716,7 +716,10 @@ describe("WorkflowEngine", () => {
 
     assert.equal(resumed.status, "completed");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
-    assert.equal(resumed.resume_checkpoint, undefined);
+    assert.equal(resumed.current_node_id, "dev");
+    assert.equal(resumed.resume_checkpoint?.node_id, "dev");
+    assert.equal(resumed.resume_checkpoint?.attempt, 1);
+    assert.equal(resumed.resume_checkpoint?.activation, 2);
     assert.equal(calls, 2);
 
     const resumedUserMessages = requests[1]?.messages.filter((m) => m.role === "user");
@@ -813,7 +816,10 @@ describe("WorkflowEngine", () => {
 
     assert.equal(resumed.status, "completed");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
-    assert.equal(resumed.resume_checkpoint, undefined);
+    assert.equal(resumed.current_node_id, "dev");
+    assert.equal(resumed.resume_checkpoint?.node_id, "dev");
+    assert.equal(resumed.resume_checkpoint?.attempt, 1);
+    assert.equal(resumed.resume_checkpoint?.activation, 2);
     assert.equal(calls, 2);
 
     const resumedMessages = requests[1]?.messages ?? [];

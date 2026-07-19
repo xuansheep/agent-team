@@ -10,6 +10,10 @@ describe("nodeResultJsonSchema", () => {
     assert.deepEqual(required, properties);
   });
 
+  it("exposes forward, backward, and retry directions to the model", () => {
+    assert.deepEqual([...nodeResultJsonSchema.properties.direction.enum].sort(), ["backward", "forward", "retry"]);
+  });
+
   it("defaults document to an empty string when omitted", () => {
     const result = parseNodeResult(JSON.stringify({ direction: "forward", summary: "done" }));
 

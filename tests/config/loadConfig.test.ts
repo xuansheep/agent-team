@@ -262,9 +262,16 @@ workflows:
     assert.deepEqual(workflow.nodes.map((node) => node.id), ["product", "ui", "developer", "tester"]);
     assert.equal(workflow.nodes.every((node) => node.provider === "default"), true);
     assert.equal(workflow.nodes.find((node) => node.id === "tester")?.mode, "complete");
-    assert.equal(workflow.max_rework_cycles, 10);
+    assert.equal(workflow.max_rework_cycles, 99);
     assert.equal(workflow.edges.length, 0);
     assert.equal(workflow.edges.some((edge) => edge.from === "user_acceptance" || edge.to === "user_acceptance"), false);
+  });
+
+  it("defaults workflow rework cycles to 99", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-team-default-rework-"));
+    const config = await loadTestConfig(await writeProjectConfig(dir));
+
+    assert.equal(config.workflows.delivery.max_rework_cycles, 99);
   });
 
   it("loads provider user_agent override", async () => {

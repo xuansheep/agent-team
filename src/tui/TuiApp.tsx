@@ -58,6 +58,7 @@ export type CommandMenuState =
   | { kind: "mcp:toolDetail"; serverName: string; toolName: string };
 
 type McpActionResult = { title: string; detail: string };
+type QueuedPrompt = { text: string; images: PromptInputImageAttachment[] };
 export function TuiApp({
   cwd,
   initialError,
@@ -119,7 +120,7 @@ export function TuiApp({
     mode: initialWorkflowId ? "input" as const : workflows.length > 1 ? "select_workflow" as const : "input" as const,
     workflowId: initialWorkflowId
   }));
-  const [queued, setQueued] = useState<string[]>([]);
+  const [queued, setQueued] = useState<QueuedPrompt[]>([]);
   const [promptText, setPromptText] = useState("");
   const [statuslineElements, setStatuslineElements] = useState<StatusLineElement[]>(defaultStatusLineElements);
   const [planWorkCount, setPlanWorkCount] = useState(0);
@@ -154,6 +155,8 @@ export function TuiApp({
   const sessionStore = sessionStoreRef.current;
   const currentSessionIdRef = useRef(promptHistoryStore?.sessionId ?? randomUUID());
   const listeningSessionRef = useRef<WorkflowSession>();
+  const sessionResultGenerationRef = useRef(0);
+  const queuedContinuationRef = useRef(false);
   const abandonedRunIdsRef = useRef<Set<string>>(new Set());
   const lastWorkflowPromptRef = useRef("");
   const canceledChoiceKeyRef = useRef<string>();
@@ -320,6 +323,8 @@ export function TuiApp({
     };
   }, [stdin, state.mode, hasSelection, selection]);
   const resetSession = () => {
+    sessionResultGenerationRef.current += 1;
+    queuedContinuationRef.current = false;
     sessionRef.current = undefined;
     currentSessionIdRef.current = randomUUID();
     planSessionRef.current = undefined;
@@ -347,6 +352,7 @@ export function TuiApp({
     })();
   };
   const attachSession = (session: WorkflowSession, nextWorkflowId: string, options: { preserveLogs?: boolean; inputPermissionMode?: PermissionMode } = {}) => {
+    const resultGeneration = ++sessionResultGenerationRef.current;
     sessionRef.current = session;
     const sessionId = session.sessionId ?? currentSessionIdRef.current;
     currentSessionIdRef.current = sessionId;
@@ -356,7 +362,7 @@ export function TuiApp({
     listenSession(session, nextWorkflowId);
     void session.result
       .then((result) => {
-        if (abandonedRunIdsRef.current.has(session.runId)) return;
+        if (abandonedRunIdsRef.current.has(session.runId) || sessionResultGenerationRef.current !== resultGeneration) return;
         setState((current) => ({
           ...current,
           mode: workflowResultMode(result.status),
@@ -365,7 +371,7 @@ export function TuiApp({
         }));
       })
       .catch((error) => {
-        if (abandonedRunIdsRef.current.has(session.runId)) return;
+        if (abandonedRunIdsRef.current.has(session.runId) || sessionResultGenerationRef.current !== resultGeneration) return;
         failUi(error);
       });
   };
@@ -390,9 +396,9 @@ export function TuiApp({
       failUi(error);
     }
   };
-  const startRun = async (text: string) => {
+  const startRun = async (text: string, images: PromptInputImageAttachment[] = []) => {
     lastWorkflowPromptRef.current = text;
-    await startWorkflowInput({ request: text, images: [] }, { sessionId: currentSessionIdRef.current });
+    await startWorkflowInput({ request: text, images }, { sessionId: currentSessionIdRef.current });
   };
 
   const resumeRun = async (runId: string) => {
@@ -410,18 +416,18 @@ export function TuiApp({
       setState((current) => ({ ...current, mode: "input", error: message, resumeRuns: [], pendingResumeRunId: undefined, modeBeforeConfirmation: undefined }));
     }
   };
-  const continueSession = (text: string) => {
+  const continueSession = (text: string, images: PromptInputImageAttachment[] = []): Promise<void> => {
     const session = sessionRef.current;
     const nextWorkflowId = state.workflowId ?? selectedWorkflowId ?? session?.state.workflow_id;
     if (!session || !nextWorkflowId) {
-      void startRun(text);
-      return;
+      return startRun(text, images);
     }
+    sessionResultGenerationRef.current += 1;
     lastWorkflowPromptRef.current = text;
     setState((current) => ({ ...current, mode: "running", error: undefined }));
-    const continuation = session.continueWithInput({ request: text, images: [] });
+    const continuation = session.continueWithInput({ request: text, images });
     listenSession(session, nextWorkflowId);
-    void continuation.catch((error) => failUi(error));
+    return continuation;
   };
   const resumeSession = (text: string) => {
     const session = sessionRef.current;
@@ -433,6 +439,20 @@ export function TuiApp({
     setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
     void session.resumeWithUserInput({ answer: text }).catch((error) => failUi(error));
   };
+  useEffect(() => {
+    if (state.mode !== "completed") {
+      queuedContinuationRef.current = false;
+      return;
+    }
+    const next = queued[0];
+    if (!next || queuedContinuationRef.current) return;
+    queuedContinuationRef.current = true;
+    setQueued((current) => current.slice(1));
+    void continueSession(next.text, next.images).catch((error) => {
+      setQueued((current) => [next, ...current]);
+      failUi(error);
+    });
+  }, [queued, state.mode]);
   const savePlanSession = (plan: PlanSessionState) => {
     void sessionStore.savePlanState(plan.sessionId, plan).catch((error) => failUi(error));
   };
@@ -1299,7 +1319,7 @@ ${message.detailText}` : ""}` }
     } else if ((state.mode === "paused" || state.mode === "interrupted") && state.runId) {
       resumeSession(content);
     } else if (state.runId || state.mode === "completed" || state.mode === "failed") {
-      continueSession(content);
+      void continueSession(content).catch((error) => failUi(error));
     } else {
       void startRun(content);
     }
@@ -1363,7 +1383,7 @@ ${message.detailText}` : ""}` }
         enqueuePlanTurn(event.text, event.images);
         return;
       }
-      setQueued((current) => [...current, event.text]);
+      setQueued((current) => [...current, { text: event.text, images: event.images ?? [] }]);
       setState((current) => ({ ...current, timeline: [...current.timeline, `queued:${event.text}`] }));
       return;
     }
@@ -1488,10 +1508,10 @@ ${message.detailText}` : ""}` }
       return;
     }
     if (state.runId || state.mode === "completed" || state.mode === "failed") {
-      continueSession(event.text);
+      void continueSession(event.text, event.images ?? []).catch((error) => failUi(error));
       return;
     }
-    void startRun(event.text);
+    void startRun(event.text, event.images ?? []);
   };
   const workflowNodes = selectedWorkflowId
     ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => {
@@ -1832,7 +1852,7 @@ ${message.detailText}` : ""}` }
         choice={activeChoice}
         mode={promptMode}
         workflowId={state.workflowId}
-        queued={queued}
+        queued={queued.map((item) => item.text)}
         workflows={workflows}
         skills={[...(skillRuntime?.listSkills().map((skill) => ({ name: skill.name, description: skill.description, argumentHint: skill.argumentHint })) ?? []), ...(mcpRuntime?.listPromptCommands().map((command) => ({ name: command.name, description: command.description, argumentHint: command.argumentHint })) ?? [])]}
         questions={state.questions}

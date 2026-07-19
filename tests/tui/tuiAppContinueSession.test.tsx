@@ -11,7 +11,7 @@ const config = {
 };
 
 describe("TuiApp session continuation", () => {
-  it("does not subscribe to the same session events stream again when continuing after completion", async () => {
+  it("receives continuation events when the provider work starts asynchronously", async () => {
     let starts = 0;
     const continued: unknown[] = [];
     const state = { status: "completed" as const, workflow_id: "delivery", attempts: [], handoff: undefined };
@@ -26,12 +26,17 @@ describe("TuiApp session continuation", () => {
       permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
       interrupt: async () => undefined,
       resumeWithUserInput: async () => undefined,
-      continueWithInput: async (input: unknown) => {
+      continueWithInput: (input: unknown) => {
         continued.push(input);
         events.reopen();
-        events.push({ type: "user_message", text: "second request", node_id: "dev", attempt: 1, ts: "2026-06-26T00:00:02.000Z", seq: 3 });
-        events.push({ type: "model_stream_delta", node_id: "dev", attempt: 1, text: "我继续处理第二轮。", ts: "2026-06-26T00:00:03.000Z", seq: 4 });
-        events.end();
+        return (async () => {
+          await settleTuiWork();
+          events.push({ type: "user_message", text: "second request", node_id: "dev", attempt: 1, ts: "2026-06-26T00:00:02.000Z", seq: 3 });
+          events.push({ type: "node_started", node_id: "dev", attempt: 1, activation: 2, ts: "2026-06-26T00:00:03.000Z", seq: 4 });
+          events.push({ type: "model_stream_delta", node_id: "dev", attempt: 1, activation: 2, text: "我继续处理第二轮。", ts: "2026-06-26T00:00:04.000Z", seq: 5 });
+          events.push({ type: "run_completed", result: state, ts: "2026-06-26T00:00:05.000Z", seq: 6 });
+          events.end();
+        })();
       },
       result: Promise.resolve(state)
     };
@@ -55,6 +60,119 @@ describe("TuiApp session continuation", () => {
     assert.deepEqual(continued, [{ request: "second request", images: [] }]);
     assert.equal(events.subscriptions, 2);
     assert.match(output.lastFrame() ?? "", /我继续处理第二轮。/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("automatically drains queued prompts in FIFO order after each completed segment", async () => {
+    let starts = 0;
+    let sequence = 2;
+    const continued: unknown[] = [];
+    const completedState = { status: "completed" as const, workflow_id: "delivery", attempts: [], handoff: undefined };
+    let resolveInitialResult!: (value: typeof completedState) => void;
+    const events = new CountingEventStream();
+    const result = new Promise<typeof completedState>((resolve) => {
+      resolveInitialResult = resolve;
+    });
+    const session = {
+      runId: "run-queued",
+      state: { ...completedState, status: "running" as const },
+      events,
+      permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
+      interrupt: async () => undefined,
+      resumeWithUserInput: async () => undefined,
+      continueWithInput: (input: unknown) => {
+        continued.push(input);
+        events.reopen();
+        const request = (input as { request?: string }).request ?? "";
+        return (async () => {
+          await settleTuiWork();
+          events.push({ type: "user_message", text: request, node_id: "dev", attempt: 1, ts: `2026-06-26T00:00:0${sequence++}.000Z`, seq: sequence });
+          events.push({ type: "node_started", node_id: "dev", attempt: 1, activation: continued.length + 1, ts: `2026-06-26T00:00:0${sequence++}.000Z`, seq: sequence });
+          events.push({ type: "model_stream_delta", node_id: "dev", attempt: 1, activation: continued.length + 1, text: `processed ${request}`, ts: `2026-06-26T00:00:0${sequence++}.000Z`, seq: sequence });
+          events.push({ type: "run_completed", result: completedState, ts: `2026-06-26T00:00:0${sequence++}.000Z`, seq: sequence });
+          events.end();
+        })();
+      },
+      result
+    };
+    const engine = {
+      async startInteractive() {
+        starts += 1;
+        return session;
+      }
+    };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={config as never} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
+    await sendTuiLine(output, "first request");
+    await sendTuiLine(output, "queued one");
+    await sendTuiLine(output, "queued two");
+
+    assert.match(output.lastFrame() ?? "", /queued 1: queued one/);
+    assert.match(output.lastFrame() ?? "", /queued 2: queued two/);
+
+    events.push({ type: "run_completed", result: completedState, ts: "2026-06-26T00:00:01.000Z", seq: 1 });
+    events.end();
+    resolveInitialResult(completedState);
+
+    await waitFor(() => continued.length === 2 && /processed queued two/.test(output.lastFrame() ?? ""));
+
+    assert.equal(starts, 1);
+    assert.deepEqual(continued, [
+      { request: "queued one", images: [] },
+      { request: "queued two", images: [] }
+    ]);
+    assert.doesNotMatch(output.lastFrame() ?? "", /queued [12]:/);
+    assert.match(output.lastFrame() ?? "", /processed queued one/);
+    assert.match(output.lastFrame() ?? "", /processed queued two/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("restores a queued prompt when continuation fails", async () => {
+    const continued: unknown[] = [];
+    const completedState = { status: "completed" as const, workflow_id: "delivery", attempts: [], handoff: undefined };
+    let resolveInitialResult!: (value: typeof completedState) => void;
+    const events = new CountingEventStream();
+    const result = new Promise<typeof completedState>((resolve) => {
+      resolveInitialResult = resolve;
+    });
+    const session = {
+      runId: "run-queue-failure",
+      state: { ...completedState, status: "running" as const },
+      events,
+      permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
+      interrupt: async () => undefined,
+      resumeWithUserInput: async () => undefined,
+      continueWithInput: (input: unknown) => {
+        continued.push(input);
+        events.reopen();
+        return Promise.reject(new Error("continuation failed"));
+      },
+      result
+    };
+    const engine = {
+      async startInteractive() {
+        return session;
+      }
+    };
+
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={config as never} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
+    await sendTuiLine(output, "first request");
+    await sendTuiLine(output, "keep this request");
+
+    events.push({ type: "run_completed", result: completedState, ts: "2026-06-26T00:00:01.000Z", seq: 1 });
+    events.end();
+    resolveInitialResult(completedState);
+
+    await waitFor(() => continued.length === 1);
+    await settleTuiWork();
+
+    assert.deepEqual(continued, [{ request: "keep this request", images: [] }]);
+    assert.match(output.lastFrame() ?? "", /continuation failed/);
+    assert.match(output.lastFrame() ?? "", /queued 1: keep this request/);
 
     output.unmount();
     output.cleanup();
@@ -120,6 +238,14 @@ async function sendTuiLine(output: { stdin: { write(value: string): void } }, te
 
 function settleTuiWork(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (condition()) return;
+    await settleTuiWork();
+  }
+  throw new Error("Timed out waiting for TUI continuation");
 }
 
 class CountingEventStream extends EventStream<any> {

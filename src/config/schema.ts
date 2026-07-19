@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const DEFAULT_MAX_REWORK_CYCLES = 99;
+
 export const permissionSetSchema = z.object({
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
@@ -102,14 +104,14 @@ export const edgeSchema = z.object({
 export const workflowSchema = z.object({
   nodes: z.array(nodeSchema).min(1),
   edges: z.array(edgeSchema).default([]),
-  max_rework_cycles: z.number().int().positive().default(10),
+  max_rework_cycles: z.number().int().positive().default(DEFAULT_MAX_REWORK_CYCLES),
   workflow_permissions: permissionSetSchema.optional()
 });
 
 export const workflowFileSchema = z.object({
   name: z.string().trim().min(1),
   nodes: z.array(nodeSchema).min(1),
-  max_rework_cycles: z.number().int().positive().default(10),
+  max_rework_cycles: z.number().int().positive().default(DEFAULT_MAX_REWORK_CYCLES),
   workflow_permissions: permissionSetSchema.optional()
 }).strict();
 

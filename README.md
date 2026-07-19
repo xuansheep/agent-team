@@ -58,7 +58,7 @@ The runtime never reads roles or workflows from the current project's `config/` 
 
 Project-specific instructions may be added in `.einsteins/AGENTS.md`; they supplement but cannot override the bundled prompt or active role prompt. Skill precedence is nearest project `.einsteins/skills`, user `~/.einsteins/skills`, then legacy user `~/.agents/skills`. Project `.agents` directories are not read. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt.
 
-Each workflow JSON file contains `name`, `nodes`, optional `max_rework_cycles` (default `10`), and optional `workflow_permissions`. Workflows follow node order, so workflow files do not accept an `edges` field.
+Each workflow JSON file contains `name`, `nodes`, optional `max_rework_cycles` (default `99`), and optional `workflow_permissions`. Workflows follow node order, so workflow files do not accept an `edges` field.
 
 ## Interactive TUI
 
@@ -115,10 +115,10 @@ MVP 支持：
 - Responses API、OpenAI-compatible 和 Anthropic Provider
 - Claude Code 风格 `allow`、`ask`、`deny` 权限规则
 - 本地工具集：`Read`、`Write`、`Edit`、`MultiEdit`、`LS`、`Glob`、`Grep`、`Bash`、`PowerShell`、`TodoWrite`、`AttachImage`、`WebFetch`、`WebSearch`
-- 默认按 `nodes` 顺序执行，节点必须显式提交 `forward` 或 `backward`；退回节点与上游节点保持原 attempt，并以新的 activation 从对话检查点继续
+- 默认按 `nodes` 顺序执行，节点必须显式提交 `forward`、`backward` 或 `retry`；退回节点与上游节点保持原 attempt，并以新的 activation 从对话检查点继续
 - 只有首节点可以 `backward` 到用户；用户回答后首节点原位继续，末节点 `forward` 到用户后完成工作流
 - 默认 `delivery` 为 `product -> ui -> developer -> tester`，全部使用 `default` Provider，tester 兼任最终交付
-- 默认最多执行 10 次节点间退回，达到上限后由控制器暂停并请求用户决定
+- 默认最多执行 99 次节点间退回或原节点重试，达到上限后由控制器暂停并请求用户决定
 - TUI session 状态控制：首次普通输入启动当前工作流；存在恢复检查点时，停止后进入 `paused`，后续普通输入从检查点节点继续；已完成或不可恢复失败后则作为同一 session 的新一轮；`/new` 显式重置，`/resume [run_id]` 仅恢复历史状态
 - 图片 artifact 输入和 vision capability 检查
 - 同名 artifact 使用不可变 revision 和 SHA-256 索引，旧版本不会被覆盖
