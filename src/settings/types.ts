@@ -27,7 +27,8 @@ const settingsShape = {
 
 export const mcpProjectStateSchema = z.object({
   disabledMcpServers: z.array(z.string().min(1)).optional(),
-  enabledMcpServers: z.array(z.string().min(1)).optional()
+  enabledMcpServers: z.array(z.string().min(1)).optional(),
+  disabledSkills: z.array(z.string().min(1)).optional()
 }).strict();
 
 export const projectSettingsSchema = z.object({

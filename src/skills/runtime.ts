@@ -16,6 +16,7 @@ export type SkillRuntimeDiscoverOptions = {
   cwd: string;
   userSkillRoot?: string;
   legacyUserSkillRoot?: string;
+  disabledSkillNames?: string[];
 };
 
 export type SkillActivationOptions = {
@@ -49,6 +50,7 @@ export type SkillRuntimeDiagnostic = {
   userInvocable?: boolean;
   disableModelInvocation?: boolean;
   paths?: string[];
+  disabled?: boolean;
   error?: string;
 };
 
@@ -61,8 +63,10 @@ export class SkillRuntime {
   private errors: Array<SkillLoadError & { source: Exclude<SkillSource, "mcp"> }> = [];
   private readonly activatedConditionalNames = new Set<string>();
   private readonly activatedBySession = new Map<string, Set<string>>();
+  private disabledSkillNames = new Set<string>();
 
   constructor(skills: LoadedSkill[], private readonly discoverOptions?: SkillRuntimeDiscoverOptions, errors: Array<SkillLoadError & { source: Exclude<SkillSource, "mcp"> }> = []) {
+    this.setDisabledSkillNames(discoverOptions?.disabledSkillNames ?? []);
     this.replaceSkills(skills, errors);
   }
 
@@ -77,19 +81,31 @@ export class SkillRuntime {
     this.replaceSkills(result.skills, result.errors);
   }
 
-  listSkills(input: { includeHidden?: boolean; includeConditional?: boolean } = {}): LoadedSkill[] {
+  listSkills(input: { includeHidden?: boolean; includeConditional?: boolean; includeDisabled?: boolean } = {}): LoadedSkill[] {
     const visible = input.includeConditional ? this.skills : this.skills.filter((skill) => !skill.paths?.length || this.activatedConditionalNames.has(skill.name));
-    return visible.filter((skill) => input.includeHidden || skill.userInvocable !== false).slice();
+    return visible
+      .filter((skill) => input.includeDisabled || !this.isSkillDisabled(skill.name))
+      .filter((skill) => input.includeHidden || skill.userInvocable !== false)
+      .slice();
   }
 
   listModelInvocableSkills(): LoadedSkill[] {
-    return this.skills.filter((skill) => (!skill.paths?.length || this.activatedConditionalNames.has(skill.name)) && skill.disableModelInvocation !== true);
+    return this.skills.filter((skill) => !this.isSkillDisabled(skill.name) && (!skill.paths?.length || this.activatedConditionalNames.has(skill.name)) && skill.disableModelInvocation !== true);
   }
 
-  getSkill(name: string): LoadedSkill | undefined {
+  getSkill(name: string, input: { includeDisabled?: boolean } = {}): LoadedSkill | undefined {
     const skill = this.skillByName.get(stripLeadingSlash(name));
-    if (!skill?.paths?.length || this.activatedConditionalNames.has(skill.name)) return skill;
+    if (!skill || (!input.includeDisabled && this.isSkillDisabled(skill.name))) return undefined;
+    if (!skill.paths?.length || this.activatedConditionalNames.has(skill.name)) return skill;
     return undefined;
+  }
+
+  isSkillDisabled(name: string): boolean {
+    return this.disabledSkillNames.has(stripLeadingSlash(name));
+  }
+
+  setDisabledSkillNames(names: string[]): void {
+    this.disabledSkillNames = new Set(names.map(stripLeadingSlash).filter(Boolean));
   }
 
   getDiagnostics(): SkillRuntimeDiagnostic[] {
@@ -105,7 +121,8 @@ export class SkillRuntime {
       version: skill.version,
       userInvocable: skill.userInvocable,
       disableModelInvocation: skill.disableModelInvocation,
-      paths: skill.paths
+      paths: skill.paths,
+      disabled: this.isSkillDisabled(skill.name)
     }));
     const errors = this.errors.map((error) => ({
       name: `<invalid:${basename(dirname(error.path))}>`,
@@ -120,7 +137,7 @@ export class SkillRuntime {
   activateForPaths(paths: string[], cwd = this.discoverOptions?.cwd ?? process.cwd()): string[] {
     const activated: string[] = [];
     for (const skill of this.conditionalByName.values()) {
-      if (this.activatedConditionalNames.has(skill.name)) continue;
+      if (this.isSkillDisabled(skill.name) || this.activatedConditionalNames.has(skill.name)) continue;
       if (!paths.some((path) => matchesAnySkillPath(path, cwd, skill.paths ?? []))) continue;
       this.activatedConditionalNames.add(skill.name);
       activated.push(skill.name);
@@ -180,6 +197,7 @@ export class SkillRuntime {
 
   private requireSkill(name: string): LoadedSkill {
     const normalized = stripLeadingSlash(name);
+    if (this.isSkillDisabled(normalized)) throw new Error(`Skill ${normalized} is disabled for this project`);
     const skill = this.getSkill(normalized);
     if (!skill) throw new Error(`Unknown or inactive skill ${normalized}`);
     return skill;

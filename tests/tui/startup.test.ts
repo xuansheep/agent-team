@@ -81,10 +81,17 @@ Review carefully.
 `, "utf8");
     const templateRoot = await mkdtemp(join(tmpdir(), "agent-team-tui-template-"));
     const templateConfigDir = await writeProjectConfig(templateRoot);
+    await mkdir(join(homeDir, ".einsteins"), { recursive: true });
+    await writeFile(join(homeDir, ".einsteins", "settings.json"), JSON.stringify({
+      ...JSON.parse(DEFAULT_USER_SETTINGS),
+      projects: { [cwd]: { disabledSkills: ["reviewer"] } }
+    }), "utf8");
 
     const runtime = await prepareTuiRuntime({ cwd, homeDir, templateConfigDir });
 
-    assert.equal(runtime.skillRuntime?.getSkill("reviewer")?.source, "project");
+    assert.equal(runtime.skillRuntime.getSkill("reviewer"), undefined);
+    assert.equal(runtime.diagnostics.skills.find((skill) => skill.name === "reviewer")?.source, "project");
+    assert.equal(runtime.diagnostics.skills.find((skill) => skill.name === "reviewer")?.disabled, true);
     const settings = JSON.parse(await readFile(join(homeDir, ".einsteins", "settings.json"), "utf8")) as { providers: { default: { effort: string } } };
     assert.equal(settings.providers.default.effort, "medium");
   });

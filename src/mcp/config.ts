@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { defaultProjectSettingsPath, defaultUserSettingsPath } from "../settings/loadSettings.js";
-import { projectSettingsSchema, settingsSchema, type AgentTeamSettings, type McpProjectState } from "../settings/types.js";
+import { currentProjectKey, currentProjectState } from "../settings/projectState.js";
+import { projectSettingsSchema, settingsSchema, type AgentTeamSettings } from "../settings/types.js";
 import { mcpServersSchema, type McpConfigSource, type McpServersConfig, type ResolvedMcpServerConfig } from "./schema.js";
 
 export type McpConfigSourceOptions = {
@@ -90,15 +91,7 @@ async function readProjectMcpServers(path: string): Promise<McpServersConfig | u
   return servers === undefined ? undefined : parseServers(servers, path);
 }
 
-export function currentProjectState(config: McpUserSettings | undefined, cwd: string): McpProjectState | undefined {
-  const target = normalizedProjectKey(cwd);
-  return Object.entries(config?.projects ?? {}).find(([key]) => normalizedProjectKey(key) === target)?.[1];
-}
-
-export function currentProjectKey(config: McpUserSettings | undefined, cwd: string): string {
-  const target = normalizedProjectKey(cwd);
-  return Object.keys(config?.projects ?? {}).find((key) => normalizedProjectKey(key) === target) ?? resolve(cwd);
-}
+export { currentProjectKey, currentProjectState };
 
 async function readJsonMcpServers(path: string): Promise<McpServersConfig | undefined> {
   const parsed = await readJsonObject(path);
@@ -136,9 +129,4 @@ function expandEnvironment(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(expandEnvironment);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, expandEnvironment(entry)]));
-}
-
-
-function normalizedProjectKey(path: string): string {
-  return resolve(path).replaceAll("\\", "/").replace(/\/$/, "").toLowerCase();
 }

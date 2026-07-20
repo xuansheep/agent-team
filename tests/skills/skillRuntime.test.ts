@@ -132,6 +132,29 @@ Review carefully.
     assert.equal(result.permissionMode, "default");
   });
 
+  it("hides disabled skills from users and models and rejects activation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-disabled-skill-"));
+    await mkdir(join(cwd, ".git"));
+    await writeSkill(join(cwd, ".einsteins", "skills", "enabled"), "enabled", "Enabled.");
+    await writeSkill(join(cwd, ".einsteins", "skills", "disabled"), "disabled", "Disabled.");
+    const runtime = await SkillRuntime.discover({
+      cwd,
+      userSkillRoot: join(cwd, "missing-user-skills"),
+      legacyUserSkillRoot: join(cwd, "missing-legacy-user-skills"),
+      disabledSkillNames: ["disabled"]
+    });
+
+    assert.deepEqual(runtime.listSkills().map((skill) => skill.name), ["enabled"]);
+    assert.deepEqual(runtime.listModelInvocableSkills().map((skill) => skill.name), ["enabled"]);
+    assert.equal(runtime.getSkill("disabled"), undefined);
+    assert.equal(runtime.getSkill("disabled", { includeDisabled: true })?.name, "disabled");
+    assert.equal(runtime.getDiagnostics().find((skill) => skill.name === "disabled")?.disabled, true);
+    await assert.rejects(runtime.activateSkill("disabled"), /disabled for this project/);
+
+    runtime.setDisabledSkillNames([]);
+    assert.equal(runtime.getSkill("disabled")?.name, "disabled");
+  });
+
   it("reports skill diagnostics for later TUI surfaces", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-skill-diagnostics-"));
     await mkdir(join(cwd, ".git"));
@@ -153,7 +176,8 @@ Review carefully.
       version: undefined,
       userInvocable: true,
       disableModelInvocation: false,
-      paths: undefined
+      paths: undefined,
+      disabled: false
     }]);
   });
 });

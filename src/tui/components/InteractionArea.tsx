@@ -26,6 +26,7 @@ export type InteractionChoice = {
   hidePromptInput?: boolean;
   onCancel?: () => void;
   onSubmit: (value: string) => void;
+  onToggle?: (value: string) => void;
   onChangeValues?: (values: string[]) => void;
   onSubmitValues?: (values: string[]) => void;
   onPromptSubmit?: (text: string, focusedValue?: string, images?: PromptInputImageAttachment[]) => void;
@@ -319,6 +320,7 @@ export function InteractionArea({
                     enableVimNavigation={!choice.allowPromptInput}
                     onFocus={setFocusedChoiceValue}
                     onChange={choice.onSubmit}
+                    onSpace={choice.onToggle}
                     onCancel={choice.onCancel}
                     onDownFromLastItem={() => {
                       if (footerActions.length) setFooterFocused(true);

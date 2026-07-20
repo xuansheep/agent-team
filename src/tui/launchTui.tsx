@@ -14,6 +14,7 @@ import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { createPromptHistoryStore, type PromptHistoryStore } from "../storage/promptHistoryStore.js";
 import { prepareProjectStorage } from "../storage/projectStorage.js";
 import { SessionStore } from "../storage/sessionStore.js";
+import { loadDisabledSkillNames, type SkillAvailabilityOptions } from "../skills/availability.js";
 import { SkillRuntime } from "../skills/runtime.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { TuiApp } from "./TuiApp.js";
@@ -36,6 +37,7 @@ export type PreparedTuiRuntime = {
   skillRuntime: SkillRuntime;
   diagnostics: RuntimeDiagnostics;
   mcpConfigOptions: McpConfigSourceOptions;
+  skillConfigOptions: SkillAvailabilityOptions;
 };
 
 export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string; templateConfigDir?: string }): Promise<PreparedTuiRuntime> {
@@ -57,17 +59,19 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
   const workflows = Object.keys(config.workflows);
   const workflowId = selectDefaultWorkflow(workflows);
   const mcpConfigOptions = { cwd: options.cwd, userSettingsPath, projectSettingsPath };
+  const skillConfigOptions = { cwd: options.cwd, userSettingsPath };
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
   const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory({ roots: () => [{ uri: options.cwd }] }) });
   await mcpRuntime.connectAll(mcpServers);
   const skillRuntime = await SkillRuntime.discover({
     cwd: options.cwd,
     userSkillRoot: join(userConfigDir, "skills"),
-    legacyUserSkillRoot: join(options.homeDir ?? homedir(), ".agents", "skills")
+    legacyUserSkillRoot: join(options.homeDir ?? homedir(), ".agents", "skills"),
+    disabledSkillNames: await loadDisabledSkillNames(skillConfigOptions)
   });
   const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: projectStorage.projectDir, mcpRuntime, skillRuntime });
   const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
-  return { config, workflows, workflowId, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions };
+  return { config, workflows, workflowId, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions, skillConfigOptions };
 }
 
 export async function launchTui(options: { cwd: string }): Promise<void> {
@@ -83,6 +87,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
   let skillRuntime: SkillRuntime | undefined;
   let diagnostics: RuntimeDiagnostics | undefined;
   let mcpConfigOptions: McpConfigSourceOptions | undefined;
+  let skillConfigOptions: SkillAvailabilityOptions | undefined;
 
   try {
     const prepared = await prepareTuiRuntime(options);
@@ -97,6 +102,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     skillRuntime = prepared.skillRuntime;
     diagnostics = prepared.diagnostics;
     mcpConfigOptions = prepared.mcpConfigOptions;
+    skillConfigOptions = prepared.skillConfigOptions;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     initialError = message.includes("ENOENT") ? "Missing user roles/workflows or bundled config template" : message;
@@ -121,6 +127,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         saveDefaultPermissionMode={(mode) => setUserDefaultPermissionMode(mode, mcpConfigOptions?.userSettingsPath)}
         collectDiagnostics={() => collectRuntimeDiagnostics({ mcpRuntime, skillRuntime })}
         mcpConfigOptions={mcpConfigOptions}
+        skillConfigOptions={skillConfigOptions}
       />
     </AlternateScreen>,
     {

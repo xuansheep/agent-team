@@ -2996,6 +2996,28 @@ it("navigates CustomSelect with tui-code shortcut semantics", async () => {
 
 });
 
+it("invokes a CustomSelect space action without submitting", async () => {
+  const toggled: string[] = [];
+  const submitted: string[] = [];
+  const output = render(
+    <RefableStdinSelectProbe
+      options={[{ label: "Skill", value: "skill" }]}
+      defaultValue="skill"
+      onSpace={(value) => toggled.push(value)}
+      onChange={(value) => submitted.push(value)}
+    />
+  );
+
+  await settleInkInput();
+  output.stdin.write(" ");
+  await settleInkInput();
+
+  assert.deepEqual(toggled, ["skill"]);
+  assert.deepEqual(submitted, []);
+  output.unmount();
+  output.cleanup();
+});
+
 it("renders CustomSelect multi-select checkmarks without mutating option labels", async () => {
   const output = render(
     <RefableStdinSelectMultiProbe

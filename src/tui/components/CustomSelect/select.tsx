@@ -48,6 +48,7 @@ export function Select<T>({
   selectedValues,
   onCancel,
   onChange,
+  onSpace,
   onFocus,
   layout = "compact",
   inlineDescriptions = false,
@@ -73,6 +74,7 @@ export function Select<T>({
   selectedValues?: T[];
   onCancel?: () => void;
   onChange?: (value: T) => void;
+  onSpace?: (value: T) => void;
   onFocus?: (value: T) => void;
   layout?: "compact" | "expanded" | "compact-vertical";
   inlineDescriptions?: boolean;
@@ -103,7 +105,7 @@ export function Select<T>({
   }, [options]);
 
   const state = useSelectState({ visibleOptionCount, options, defaultValue, focusValue: defaultFocusValue, onChange, onCancel, onFocus });
-  useSelectInput({ isDisabled, disableSelection, enableVimNavigation, state, options, inputValues, onInputModeToggle, onUpFromFirstItem, onDownFromLastItem });
+  useSelectInput({ isDisabled, disableSelection, enableVimNavigation, state, options, inputValues, onSpace, onInputModeToggle, onUpFromFirstItem, onDownFromLastItem });
 
   const maxIndexWidth = hideIndexes ? 0 : String(options.length).length;
   return (

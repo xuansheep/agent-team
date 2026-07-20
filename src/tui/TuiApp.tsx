@@ -23,6 +23,7 @@ import type { RuntimeEvent } from "../runtime/types.js";
 import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
 import { setMcpServerDisabledState } from "../mcp/configMutations.js";
 import type { McpRuntime } from "../mcp/runtime.js";
+import { loadDisabledSkillNames, setSkillDisabledState, watchDisabledSkillNames, type SkillAvailabilityOptions } from "../skills/availability.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import type { PromptHistoryStore } from "../storage/promptHistoryStore.js";
@@ -61,6 +62,7 @@ export type CommandMenuState =
 
 type McpActionResult = { title: string; detail: string };
 type QueuedPrompt = { text: string; images: PromptInputImageAttachment[] };
+const SKILL_SETTINGS_RELOAD_ERROR_PREFIX = "Failed to reload skill settings: ";
 export function TuiApp({
   cwd,
   initialError,
@@ -80,6 +82,7 @@ export function TuiApp({
   diagnostics,
   collectDiagnostics,
   mcpConfigOptions,
+  skillConfigOptions,
   executeMcpActionForTest,
   saveDefaultPermissionMode,
   onExit
@@ -102,6 +105,7 @@ export function TuiApp({
   diagnostics?: RuntimeDiagnostics;
   collectDiagnostics?: () => RuntimeDiagnostics;
   mcpConfigOptions?: McpConfigSourceOptions;
+  skillConfigOptions?: SkillAvailabilityOptions;
   executeMcpActionForTest?: (action: McpMenuAction, serverName?: string) => Promise<McpActionResult>;
   saveDefaultPermissionMode?: (mode: TuiDefaultExecutionMode) => Promise<void>;
   onExit?: () => void;
@@ -137,6 +141,9 @@ export function TuiApp({
   const [transcriptMode, setTranscriptMode] = useState(false);
   const [choiceKey, setChoiceKey] = useState("");
   const [commandMenu, setCommandMenu] = useState<CommandMenuState | undefined>();
+  const [pendingSkillNames, setPendingSkillNames] = useState<string[]>([]);
+  const pendingSkillNamesRef = useRef(new Set<string>());
+  const [, setSkillAvailabilityRevision] = useState(0);
   const mainScrollRef = useRef<ScrollBoxHandle>(null);
   const sessionRef = useRef<WorkflowSession>();
   const planSessionRef = useRef<PlanSessionState>();
@@ -166,6 +173,17 @@ export function TuiApp({
   const canceledChoiceKeyRef = useRef<string>();
   const defaultPlanModeStartedRef = useRef(false);
   const scrollMainAfterRenderRef = useRef(false);
+  useEffect(() => {
+    if (!skillRuntime || !skillConfigOptions) return;
+    const apply = (disabledSkillNames: string[]) => {
+      skillRuntime.setDisabledSkillNames(disabledSkillNames);
+      setSkillAvailabilityRevision((current) => current + 1);
+      setState((current) => current.error?.startsWith(SKILL_SETTINGS_RELOAD_ERROR_PREFIX) ? { ...current, error: undefined } : current);
+    };
+    const reportError = (error: Error) => setState((current) => ({ ...current, error: `${SKILL_SETTINGS_RELOAD_ERROR_PREFIX}${error.message}` }));
+    void loadDisabledSkillNames(skillConfigOptions).then(apply).catch((error) => reportError(error instanceof Error ? error : new Error(String(error))));
+    return watchDisabledSkillNames(skillConfigOptions, { onChange: apply, onError: reportError });
+  }, [skillRuntime, skillConfigOptions?.cwd, skillConfigOptions?.userSettingsPath]);
   const resetPlanApprovalFeedback = () => {
     planApprovalFeedbackRef.current = "";
     planApprovalImagesRef.current = [];
@@ -759,6 +777,28 @@ export function TuiApp({
       logMessages: [...current.logMessages, statusLog(message)]
     }));
     requestMainScrollToBottom();
+  };
+  const toggleSkillAvailability = async (skillName: string, disabled: boolean) => {
+    if (!skillRuntime || !skillConfigOptions || pendingSkillNamesRef.current.has(skillName)) return;
+    const diagnostic = skillRuntime.getDiagnostics().find((skill) => skill.name === skillName);
+    if (!diagnostic || diagnostic.error) return;
+    pendingSkillNamesRef.current.add(skillName);
+    setPendingSkillNames((current) => current.includes(skillName) ? current : [...current, skillName]);
+    try {
+      await setSkillDisabledState(skillConfigOptions, skillName, disabled);
+      skillRuntime.setDisabledSkillNames(await loadDisabledSkillNames(skillConfigOptions));
+      setSkillAvailabilityRevision((current) => current + 1);
+      setState((current) => ({
+        ...current,
+        error: undefined,
+        logMessages: [...current.logMessages, statusLog(`Skill ${disabled ? "disabled" : "enabled"}: ${skillName}`)]
+      }));
+    } catch (error) {
+      setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      pendingSkillNamesRef.current.delete(skillName);
+      setPendingSkillNames((current) => current.filter((name) => name !== skillName));
+    }
   };
   const runMcpAction = async (action: McpMenuAction, serverName?: string) => {
     try {
@@ -1422,16 +1462,6 @@ ${message.detailText}` : ""}` }
       return;
     }
     if (event.type === "command") {
-      const mcpPromptCommand = mcpRuntime?.listPromptCommands().find((command) => command.name === event.name);
-      if (mcpPromptCommand) {
-        void runMcpPromptCommand(event.name, event.args);
-        return;
-      }
-      const invokedSkill = skillRuntime?.getSkill(event.name);
-      if (invokedSkill && invokedSkill.userInvocable !== false) {
-        void runUserSkillCommand(event.name, event.args);
-        return;
-      }
       if (event.name === "skills") {
         if (event.args[0] === "refresh") {
           void skillRuntime?.refresh().then(() => {
@@ -1441,6 +1471,16 @@ ${message.detailText}` : ""}` }
         } else {
           setCommandMenu({ kind: "skills:list" });
         }
+        return;
+      }
+      const mcpPromptCommand = mcpRuntime?.listPromptCommands().find((command) => command.name === event.name);
+      if (mcpPromptCommand) {
+        void runMcpPromptCommand(event.name, event.args);
+        return;
+      }
+      const invokedSkill = skillRuntime?.getSkill(event.name);
+      if (invokedSkill && invokedSkill.userInvocable !== false) {
+        void runUserSkillCommand(event.name, event.args);
         return;
       }
       if (event.name === "mcp") {
@@ -1548,7 +1588,9 @@ ${message.detailText}` : ""}` }
     setStatuslineElements,
     setCommandMenu,
     closeCommandMenu,
-    runMcpAction
+    runMcpAction,
+    pendingSkillNames,
+    toggleSkillAvailability
   }) : undefined;
   const activeChoice = commandMenuChoice ?? buildActiveChoice({
     mode: interactionMode,
@@ -2759,10 +2801,12 @@ export function buildCommandMenuChoice(input: {
   setCommandMenu: (state: CommandMenuState | undefined) => void;
   closeCommandMenu: (message: string) => void;
   runMcpAction: (action: McpMenuAction, serverName?: string) => Promise<void>;
+  pendingSkillNames?: string[];
+  toggleSkillAvailability?: (skillName: string, disabled: boolean) => Promise<void> | void;
 }): InteractionChoice | undefined {
   const state = input.state;
   if (state.kind === "skills:list") {
-    return buildSkillsListChoice({ skills: input.diagnostics.skills, onSelect: (skillName) => input.setCommandMenu({ kind: "skills:detail", skillName }), onCancel: () => input.closeCommandMenu("Skills dialog dismissed") });
+    return buildSkillsListChoice({ skills: input.diagnostics.skills, pendingSkillNames: input.pendingSkillNames, onSelect: (skillName) => input.setCommandMenu({ kind: "skills:detail", skillName }), onToggle: (skillName, disabled) => { void input.toggleSkillAvailability?.(skillName, disabled); }, onCancel: () => input.closeCommandMenu("Skills dialog dismissed") });
   }
   if (state.kind === "skills:detail") {
     const skill = input.diagnostics.skills.find((candidate) => candidate.name === state.skillName);

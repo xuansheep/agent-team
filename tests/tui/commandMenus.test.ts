@@ -10,7 +10,13 @@ describe("command menu builders", () => {
   it("builds skills list and detail choices", () => {
     const skills = [{ name: "planner", source: "project" as const, mode: "inline" as const, path: "SKILL.md", allowedTools: ["Read"], description: "Plan", whenToUse: "Use before coding" }];
 
-    assert.deepEqual(buildSkillsListChoice({ skills, onSelect: noop, onCancel: noop }).options.map((item) => item.value), ["planner"]);
+    const toggles: Array<{ name: string; disabled: boolean }> = [];
+    const choice = buildSkillsListChoice({ skills, onSelect: noop, onToggle: (name, disabled) => toggles.push({ name, disabled }), onCancel: noop });
+    assert.deepEqual(choice.options.map((item) => item.value), ["planner"]);
+    assert.equal(choice.options[0]?.prefix, "[✓]");
+    choice.onToggle?.("planner");
+    assert.deepEqual(toggles, [{ name: "planner", disabled: true }]);
+    assert.match(buildSkillsDetailChoice({ skill: { ...skills[0]!, disabled: true }, onBack: noop, onCancel: noop }).documentBlock?.text ?? "", /status: disabled/);
     assert.match(buildSkillsDetailChoice({ skill: skills[0]!, onBack: noop, onCancel: noop }).documentBlock?.text ?? "", /whenToUse: Use before coding/);
   });
 
