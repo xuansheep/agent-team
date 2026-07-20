@@ -10,6 +10,7 @@ import { ensureRefableStdin } from "../inkStdin.js";
 
 export type InteractionChoice = {
   title: string;
+  placement?: "bottom" | "half-screen";
   detail?: string;
   hideTitle?: boolean;
   documentBlock?: { title?: string; text: string; maxLines?: number; scrollable?: boolean };
@@ -85,8 +86,12 @@ export function InteractionArea({
   resolvePromptImagePaste?: (value: string) => Promise<{ text: string; images: PromptInputImageAttachment[] }>;
 }) {
   const { stdin } = useStdin();
+  const { stdout } = useStdout();
   const canUseInput = typeof (stdin as { ref?: unknown }).ref === "function";
   ensureRefableStdin(stdin);
+  const halfScreenChoice = choice?.placement === "half-screen";
+  const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
+  const visibleOptionCount = choice?.visibleOptionCount ?? (halfScreenChoice ? Math.max(1, Math.floor(terminalRows / 2) - 5) : 7);
   const promptHasText = promptText.trim().length > 0;
   const hasPreview = Boolean(!choice?.multiSelect && choice?.options.some((option) => typeof option.preview === "string" && option.preview.trim()));
   const editText = hasPreview ? choice?.editPromptText : undefined;
@@ -280,10 +285,16 @@ export function InteractionArea({
     onPromptEvent(event);
   };
   return (
-    <Box flexDirection="column" marginTop={1} flexShrink={0} opaque>
+    <Box
+      flexDirection="column"
+      marginTop={halfScreenChoice ? 0 : 1}
+      flexGrow={halfScreenChoice ? 1 : 0}
+      flexShrink={halfScreenChoice ? 1 : 0}
+      opaque
+    >
       {choice ? (
-        <Box borderStyle="single" paddingX={1} flexShrink={0} opaque>
-          <Box flexDirection="column">
+        <Box borderStyle="single" paddingX={1} flexGrow={halfScreenChoice ? 1 : 0} flexShrink={halfScreenChoice ? 1 : 0} opaque>
+          <Box flexDirection="column" flexGrow={halfScreenChoice ? 1 : 0} flexShrink={halfScreenChoice ? 1 : 0}>
             {choice.questionNavigation ? <QuestionNavigationBar navigation={choice.questionNavigation} /> : null}
             {choice.hideTitle ? null : <SelectHeader title={choice.title} detail={choice.documentBlock ? undefined : choice.detail} />}
             {choice.documentBlock ? <ChoiceDocumentBlock block={choice.documentBlock} scrollOffset={documentScrollOffset} /> : null}
@@ -295,7 +306,7 @@ export function InteractionArea({
                     isDisabled={!canUseInput || footerFocused}
                     options={renderedOptions}
                     defaultValue={choice.selectedValues}
-                    visibleOptionCount={choice.visibleOptionCount ?? 7}
+                    visibleOptionCount={visibleOptionCount}
                     submitButtonText={choice.submitButtonText ?? "Done"}
                     onChange={choice.onChangeValues}
                     onSubmit={(values) => choice.onSubmitValues?.(values)}
@@ -316,7 +327,7 @@ export function InteractionArea({
                     options={renderedOptions}
                     defaultValue={choice.selectedValue}
                     defaultFocusValue={focusedChoiceValue ?? choice.selectedValue}
-                    visibleOptionCount={choice.visibleOptionCount ?? 7}
+                    visibleOptionCount={visibleOptionCount}
                     disableSelection={hasPreview ? "numeric" : choice.allowPromptInput && promptHasText}
                     enableVimNavigation={!choice.allowPromptInput}
                     onFocus={(value) => {

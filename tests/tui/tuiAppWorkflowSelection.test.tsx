@@ -23,6 +23,7 @@ describe("TUI workflow selection guide", () => {
     assert.match(initialFrame, /Create new workflow/);
     assert.match(initialFrame, /Coming soon/);
     assert.doesNotMatch(initialFrame, /No description/);
+    assert.doesNotMatch(initialFrame, /bottom interaction area/);
 
     output.stdin.write("\u001b[B");
     await settle();

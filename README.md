@@ -64,7 +64,7 @@ Each workflow JSON file contains `name`, `nodes`, optional `description`, option
 
 Every `agent-team` invocation opens the interactive terminal UI. Former headless subcommands such as `run`, `resume`, `status`, and `inspect` are routed into the TUI instead of executing automation directly.
 
-The TUI reads roles and workflows from `~/.einsteins` and opens with a workflow picker. Moving through the list previews each workflow's node flow, and pressing Enter on a workflow opens the reusable conversation session with live node, tool, permission, log, and result status. The final disabled `Create new workflow` item is reserved for future TUI workflow creation. The current directory does not need a `config/` directory.
+The TUI reads roles and workflows from `~/.einsteins` and opens with a half-screen workflow picker directly below the preview flow chart. Moving through the list previews each workflow's node flow, and pressing Enter on a workflow opens the reusable conversation session with live node, tool, permission, log, and result status. The final disabled `Create new workflow` item is reserved for future TUI workflow creation. The current directory does not need a `config/` directory.
 
 Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Use Shift+Enter or Ctrl+Enter to insert a newline; Alt+Enter is ignored.
 

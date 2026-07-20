@@ -1782,7 +1782,12 @@ ${message.detailText}` : ""}` }
       stdin.off?.("data", handleEscapeData);
     };
   }, [stdin, cancelCurrentInteraction, transcriptMode, selection]);
-  const layout = layoutMetrics({ terminalRows, choice: activeChoice, activityStatusVisible: Boolean(activityStatus && !activeChoice) });
+  const halfScreenChoice = activeChoice?.placement === "half-screen";
+  const layout = layoutMetrics({
+    terminalRows,
+    choice: halfScreenChoice ? undefined : activeChoice,
+    activityStatusVisible: Boolean(activityStatus && !activeChoice)
+  });
   const planApprovalDocumentMaxLines = state.pendingReview ? planApprovalOverlayMaxDocumentLines(state.pendingReview, layout.mainHeight) : 0;
   const scrollPlanApprovalDocument = (delta: number): boolean => {
     const review = state.pendingReview;
@@ -1927,13 +1932,13 @@ ${message.detailText}` : ""}` }
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
       <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
-      <Box flexDirection="row" height={layout.mainHeight}>
-        <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
+      {halfScreenChoice ? null : (
+        <Box flexDirection="row" height={layout.mainHeight}>
+          <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
           {planApprovalOverlayVisible && state.pendingReview ? (
             <PlanApprovalOverlay review={state.pendingReview} planFilePath={planApprovalPlanFilePath} editorName={externalEditorDisplayName()} maxDocumentLines={planApprovalDocumentMaxLines} scrollOffset={planApprovalDocumentOffset} />
           ) : (
             <>
-              {state.mode === "select_workflow" ? <Text>Select workflow from the bottom interaction area</Text> : null}
               <RunLogPanel
                 items={logMessages}
                 detailMode={transcriptMode}
@@ -1941,15 +1946,16 @@ ${message.detailText}` : ""}` }
               <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
             </>
           )}
-        </ScrollBox>
-        <MainScrollBar
+          </ScrollBox>
+          <MainScrollBar
           scrollRef={mainScrollRef}
           height={layout.mainHeight}
           contentRevision={logMessages}
           layoutRevision={transcriptMode + ":" + state.mode}
           enabled={!planApprovalOverlayVisible}
-        />
-      </Box>
+          />
+        </Box>
+      )}
       <InteractionArea
         choice={activeChoice}
         mode={promptMode}
@@ -2636,6 +2642,7 @@ function buildActiveChoice(input: {
       : input.workflows[0];
     return {
       title: "Select workflow",
+      placement: "half-screen",
       options,
       selectedValue,
       onFocus: input.previewWorkflow,
