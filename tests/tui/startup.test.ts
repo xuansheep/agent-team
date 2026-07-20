@@ -4,39 +4,20 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_USER_SETTINGS } from "../../src/settings/loadSettings.js";
-import { prepareTuiRuntime, selectDefaultWorkflow } from "../../src/tui/launchTui.js";
+import { prepareTuiRuntime } from "../../src/tui/launchTui.js";
 import { writeProjectConfig } from "../helpers/projectConfig.js";
 
 
 describe("TUI startup workflow selection", () => {
-
-  it("prefers delivery workflow", () => {
-
-    assert.equal(selectDefaultWorkflow(["other", "delivery"]), "delivery");
-
-  });
-
-
-
-  it("uses the only workflow when delivery is absent", () => {
-
-    assert.equal(selectDefaultWorkflow(["single"]), "single");
-
-  });
-
-
-
-  it("requires selection when multiple non-delivery workflows exist", () => {
-    assert.equal(selectDefaultWorkflow(["a", "b"]), undefined);
-  });
-
-  it("initializes user config and starts without a project config directory", async () => {
+  it("initializes user config without committing a workflow selection", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-no-project-config-"));
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-tui-home-"));
     const runtime = await prepareTuiRuntime({ cwd, homeDir });
 
     assert.match(runtime.config.roles.developer.system_prompt, /development node/);
     assert.equal(runtime.config.workflows.delivery.nodes[0]?.role, "product");
+    assert.deepEqual(runtime.workflows, ["delivery"]);
+    assert.equal("workflowId" in runtime, false);
     const settings = JSON.parse(await readFile(join(homeDir, ".einsteins", "settings.json"), "utf8")) as { providers: { default: { effort: string } } };
     assert.equal(settings.providers.default.effort, "medium");
     assert.equal(runtime.promptHistoryStore.path, join(homeDir, ".einsteins", "history.jsonl"));

@@ -19,16 +19,9 @@ import { SkillRuntime } from "../skills/runtime.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { TuiApp } from "./TuiApp.js";
 
-export function selectDefaultWorkflow(workflows: string[]): string | undefined {
-  if (workflows.includes("delivery")) return "delivery";
-  if (workflows.length === 1) return workflows[0];
-  return undefined;
-}
-
 export type PreparedTuiRuntime = {
   config: AgentTeamConfig;
   workflows: string[];
-  workflowId: string | undefined;
   engine: WorkflowEngine;
   settings: ResolvedAgentTeamSettings;
   promptHistoryStore: PromptHistoryStore;
@@ -57,7 +50,6 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
     promptPath: join(templateConfigDir, "prompt.md")
   });
   const workflows = Object.keys(config.workflows);
-  const workflowId = selectDefaultWorkflow(workflows);
   const mcpConfigOptions = { cwd: options.cwd, userSettingsPath, projectSettingsPath };
   const skillConfigOptions = { cwd: options.cwd, userSettingsPath };
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
@@ -71,14 +63,13 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
   });
   const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: projectStorage.projectDir, mcpRuntime, skillRuntime });
   const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
-  return { config, workflows, workflowId, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions, skillConfigOptions };
+  return { config, workflows, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions, skillConfigOptions };
 }
 
 export async function launchTui(options: { cwd: string }): Promise<void> {
   let initialError: string | undefined;
   let config: AgentTeamConfig | undefined;
   let workflows: string[] = [];
-  let workflowId: string | undefined;
   let engine: WorkflowEngine | undefined;
   let settings: ResolvedAgentTeamSettings | undefined;
   let promptHistoryStore: PromptHistoryStore | undefined;
@@ -93,7 +84,6 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     const prepared = await prepareTuiRuntime(options);
     config = prepared.config;
     workflows = prepared.workflows;
-    workflowId = prepared.workflowId;
     engine = prepared.engine;
     settings = prepared.settings;
     promptHistoryStore = prepared.promptHistoryStore;
@@ -115,7 +105,6 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         initialError={initialError}
         config={config}
         workflows={workflows}
-        workflowId={workflowId}
         engine={engine}
         providerFactory={config ? (providerId) => createProvider(config!, providerId) : undefined}
         settings={settings}

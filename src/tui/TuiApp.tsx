@@ -121,11 +121,12 @@ export function TuiApp({
   const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
   const terminalColumns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
   const exitTui = onExit ?? exit;
-  const initialWorkflowId = workflowId ?? (workflows.length === 1 ? workflows[0] : undefined);
+  const initialWorkflowId = workflowId;
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(initialWorkflowId);
+  const [previewWorkflowId, setPreviewWorkflowId] = useState(initialWorkflowId ?? workflows[0]);
   const [state, setState] = useState<TuiState>(() => ({
     ...initialTuiState({ cwd, inputPermissionMode: settings?.permissions?.defaultMode ?? "default" }),
-    mode: initialWorkflowId ? "input" as const : workflows.length > 1 ? "select_workflow" as const : "input" as const,
+    mode: initialWorkflowId ? "input" as const : workflows.length ? "select_workflow" as const : "input" as const,
     workflowId: initialWorkflowId
   }));
   const [queued, setQueued] = useState<QueuedPrompt[]>([]);
@@ -302,6 +303,8 @@ export function TuiApp({
     return () => clearTimeout(timer);
   }, [planSavedMessageDurationMs, state.pendingReview?.attempt, state.pendingReview?.nodeId, state.pendingReview?.savedMessage]);
   const selectWorkflow = (workflow: string) => {
+    if (!config?.workflows[workflow]) return;
+    setPreviewWorkflowId(workflow);
     setSelectedWorkflowId(workflow);
     setState((current) => ({ ...current, workflowId: workflow, mode: "input" }));
   };
@@ -1558,8 +1561,9 @@ ${message.detailText}` : ""}` }
     }
     void startRun(event.text, event.images ?? []);
   };
-  const workflowNodes = selectedWorkflowId
-    ? config?.workflows[selectedWorkflowId]?.nodes.map((node) => {
+  const displayedWorkflowId = state.mode === "select_workflow" ? previewWorkflowId : selectedWorkflowId;
+  const workflowNodes = displayedWorkflowId
+    ? config?.workflows[displayedWorkflowId]?.nodes.map((node) => {
       const provider = config.providers[node.provider];
       const role = config.roles[node.role];
       const registry = modelRegistryFromProviderConfig(provider);
@@ -1595,6 +1599,11 @@ ${message.detailText}` : ""}` }
   const activeChoice = commandMenuChoice ?? buildActiveChoice({
     mode: interactionMode,
     workflows,
+    workflowConfigs: config?.workflows,
+    previewWorkflowId,
+    previewWorkflow: (workflow) => {
+      if (config?.workflows[workflow]) setPreviewWorkflowId(workflow);
+    },
     permission: state.permissionRequests[0],
     review: state.pendingReview,
     questions: state.questions,
@@ -2568,6 +2577,9 @@ function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiStat
 function buildActiveChoice(input: {
   mode: TuiState["mode"];
   workflows: string[];
+  workflowConfigs?: AgentTeamConfig["workflows"];
+  previewWorkflowId?: string;
+  previewWorkflow: (workflow: string) => void;
   permission?: TuiState["permissionRequests"][number];
   review?: TuiState["pendingReview"];
   questions: TuiState["questions"];
@@ -2606,9 +2618,29 @@ function buildActiveChoice(input: {
   resolveDefaultExecutionMode: (mode: TuiDefaultExecutionMode) => void;
 }): InteractionChoice | undefined {
   if (input.mode === "select_workflow" && input.workflows.length) {
-    const options = input.workflows.map((workflow) => ({ label: workflow, value: workflow }));
-    const selectedValue = options[0]?.value ?? "";
-    return { title: "Select workflow", options, selectedValue, onSubmit: input.selectWorkflow };
+    const options: InteractionChoice["options"] = input.workflows.map((workflow) => ({
+      label: workflow,
+      value: workflow,
+      description: input.workflowConfigs?.[workflow]?.description || undefined
+    }));
+    let createWorkflowValue = "__create_new_workflow__";
+    while (input.workflows.includes(createWorkflowValue)) createWorkflowValue = `_${createWorkflowValue}`;
+    options.push({
+      label: "Create new workflow",
+      value: createWorkflowValue,
+      description: "Coming soon",
+      disabled: true
+    });
+    const selectedValue = input.previewWorkflowId && input.workflows.includes(input.previewWorkflowId)
+      ? input.previewWorkflowId
+      : input.workflows[0];
+    return {
+      title: "Select workflow",
+      options,
+      selectedValue,
+      onFocus: input.previewWorkflow,
+      onSubmit: input.selectWorkflow
+    };
   }
   if (input.mode === "resume_picker" && input.resumeRuns.length) {
     const options = input.resumeRuns.map((run) => ({

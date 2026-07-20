@@ -7,6 +7,7 @@ export type TestRole = {
 };
 
 export type TestWorkflow = {
+  description?: string;
   nodes: unknown[];
   workflow_permissions?: unknown;
 };

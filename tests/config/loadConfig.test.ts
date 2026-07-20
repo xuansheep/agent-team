@@ -100,6 +100,31 @@ workflows:
     assert.equal(config.workflows.delivery.nodes[1]?.id, "final_delivery");
   });
 
+  it("preserves optional workflow descriptions without synthesizing missing values", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-team-workflow-description-"));
+    const configDir = await writeProjectConfig(dir, {
+      workflows: {
+        described: {
+          description: "  Deployment workflow  ",
+          nodes: [{ id: "dev", role: "dev", provider: "default" }]
+        },
+        undescribed: {
+          nodes: [{ id: "dev", role: "dev", provider: "default" }]
+        },
+        empty: {
+          description: "",
+          nodes: [{ id: "dev", role: "dev", provider: "default" }]
+        }
+      }
+    });
+
+    const config = await loadTestConfig(configDir);
+
+    assert.equal(config.workflows.described.description, "Deployment workflow");
+    assert.equal(config.workflows.undescribed.description, undefined);
+    assert.equal(config.workflows.empty.description, "");
+  });
+
   it("loads Responses API provider defaults", async () => {
     const file = await tempFile("agent-team.yaml", `
 roles:
@@ -259,6 +284,7 @@ workflows:
 
     assert.equal(config.roles.user_acceptance, undefined);
     assert.equal(workflow.nodes.some((node) => node.id === "user_acceptance" || node.role === "user_acceptance"), false);
+    assert.equal(workflow.description, "default workflow, contains product, ui, developer, tester nodes");
     assert.deepEqual(workflow.nodes.map((node) => node.id), ["product", "ui", "developer", "tester"]);
     assert.equal(workflow.nodes.every((node) => node.provider === "default"), true);
     assert.equal(workflow.nodes.find((node) => node.id === "tester")?.mode, "complete");

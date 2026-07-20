@@ -58,13 +58,13 @@ The runtime never reads roles or workflows from the current project's `config/` 
 
 Project-specific instructions may be added in `.einsteins/AGENTS.md`; they supplement but cannot override the bundled prompt or active role prompt. Skill precedence is nearest project `.einsteins/skills`, user `~/.einsteins/skills`, then legacy user `~/.agents/skills`. Project `.agents` directories are not read. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt.
 
-Each workflow JSON file contains `name`, `nodes`, optional `max_rework_cycles` (default `99`), and optional `workflow_permissions`. Workflows follow node order, so workflow files do not accept an `edges` field.
+Each workflow JSON file contains `name`, `nodes`, optional `description`, optional `max_rework_cycles` (default `99`), and optional `workflow_permissions`. Empty or omitted descriptions are not shown in the TUI. Workflows follow node order, so workflow files do not accept an `edges` field.
 
 ## Interactive TUI
 
 Every `agent-team` invocation opens the interactive terminal UI. Former headless subcommands such as `run`, `resume`, `status`, and `inspect` are routed into the TUI instead of executing automation directly.
 
-The TUI reads roles and workflows from `~/.einsteins`, selects workflow `delivery` when present, and lets you work in a reusable session with live node, tool, permission, log, and result status. The current directory does not need a `config/` directory.
+The TUI reads roles and workflows from `~/.einsteins` and opens with a workflow picker. Moving through the list previews each workflow's node flow, and pressing Enter on a workflow opens the reusable conversation session with live node, tool, permission, log, and result status. The final disabled `Create new workflow` item is reserved for future TUI workflow creation. The current directory does not need a `config/` directory.
 
 Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Use Shift+Enter or Ctrl+Enter to insert a newline; Alt+Enter is ignored.
 

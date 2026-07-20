@@ -1,5 +1,6 @@
 {
   "name": "delivery",
+  "description": "default workflow, contains product, ui, developer, tester nodes",
   "workflow_permissions": {
     "deny": [
       "Read(./.env)",

@@ -981,11 +981,11 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("starts workflow after approving a plan when only one workflow is available", async () => {
+  it("starts the selected workflow after approving a plan", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const inputs: unknown[] = [];
     const engine = { async startInteractive(_config: unknown, workflow: string, input: unknown) { inputs.push({ workflow, input }); return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} engine={engine as never} providerFactory={planProviderFactory} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Draft the migration first.");

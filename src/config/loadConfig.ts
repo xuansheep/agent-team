@@ -91,6 +91,7 @@ async function loadWorkflows(workflowsDir: string): Promise<AgentTeamConfig["wor
     const workflow = parseFile(workflowFileSchema, raw, path, "workflow");
     if (workflows[workflow.name]) throw new Error(`Duplicate workflow name ${workflow.name} in ${path}`);
     workflows[workflow.name] = {
+      ...(workflow.description !== undefined ? { description: workflow.description } : {}),
       nodes: workflow.nodes,
       edges: [],
       max_rework_cycles: workflow.max_rework_cycles,
