@@ -37,6 +37,7 @@ export type SessionMetadata = {
   inputPreview?: string;
   plan?: PlanSessionState;
   usage?: ModelUsageTotals;
+  modelRequestCount?: number;
   promptInjection?: {
     globalPrompt?: PromptInjectionRecord;
   };
@@ -140,6 +141,14 @@ export class SessionStore {
     return this.updateMetadata(sessionId, (metadata) => ({
       ...metadata,
       usage: addModelUsage(metadata.usage, usage)
+    }));
+  }
+
+  async recordModelResponse(sessionId: string, usage?: ModelUsage): Promise<SessionMetadata> {
+    return this.updateMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      modelRequestCount: (metadata.modelRequestCount ?? 0) + 1,
+      ...(usage ? { usage: addModelUsage(metadata.usage, usage) } : {})
     }));
   }
 

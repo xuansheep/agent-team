@@ -387,6 +387,8 @@ describe("PromptInput component", () => {
         workflowId="delivery"
         isLoading={false}
         hasSelection
+        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
+        modelRequestCount={0}
         elements={["mode", "workflow", "selection"]}
       />
     );
@@ -407,6 +409,8 @@ describe("PromptInput component", () => {
         workflowId="delivery"
         isLoading
         hasSelection={false}
+        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
+        modelRequestCount={0}
         elements={["mode", "workflow"]}
       />
     );
@@ -424,6 +428,8 @@ describe("PromptInput component", () => {
         workflowId="delivery"
         isLoading={false}
         hasSelection={false}
+        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
+        modelRequestCount={0}
         elements={["mode", "workflow"]}
       />
     );
@@ -440,6 +446,8 @@ describe("PromptInput component", () => {
         workflowId="delivery"
         isLoading={false}
         hasSelection={false}
+        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
+        modelRequestCount={0}
         elements={["mode", "workflow"]}
       />
     );
@@ -451,6 +459,27 @@ describe("PromptInput component", () => {
   });
 
 
+
+  it("renders current-session effective tokens and model response count", () => {
+    const output = render(
+      <StatusLine
+        mode="input"
+        permissionMode="default"
+        workflowId="delivery"
+        isLoading={false}
+        hasSelection={false}
+        sessionUsage={{ inputTokens: 15_000, cachedInputTokens: 3_000, outputTokens: 300, totalTokens: 15_300 }}
+        modelRequestCount={1_234}
+        elements={["tokens", "requests"]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /tokens 12\.3K/);
+    assert.match(frame, /requests 1,234/);
+    output.unmount();
+    output.cleanup();
+  });
 
   it("renders an empty shell prompt with placeholder text", () => {
 

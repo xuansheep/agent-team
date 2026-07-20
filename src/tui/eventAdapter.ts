@@ -1,3 +1,4 @@
+import { addModelUsage, emptyModelUsage } from "../model/usage.js";
 import { visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { StoredEvent } from "../harness/events.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
@@ -10,6 +11,8 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
     mode: "boot",
     inputPermissionMode: input.inputPermissionMode ?? "default",
     defaultExecutionMode: defaultExecutionModeFrom(input.inputPermissionMode),
+    sessionUsage: emptyModelUsage(),
+    modelRequestCount: 0,
     nodes: [],
     suspendedStack: [],
     tools: [],
@@ -38,6 +41,8 @@ export function resetTuiRunState(state: TuiState, input: { workflowId: string; r
   const reset: TuiState = {
     ...initialTuiState({ cwd: state.cwd, inputPermissionMode: input.inputPermissionMode ?? state.inputPermissionMode }),
     defaultExecutionMode: state.defaultExecutionMode,
+    sessionUsage: state.sessionUsage,
+    modelRequestCount: state.modelRequestCount,
     workflowId: input.workflowId,
     runId: input.runId,
     mode: "running"
@@ -53,6 +58,12 @@ export function resetTuiRunState(state: TuiState, input: { workflowId: string; r
 export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState {
   const next: TuiState = { ...state, timeline: [...state.timeline, event.type] };
   switch (event.type) {
+    case "model_response_recorded":
+      return {
+        ...next,
+        sessionUsage: addModelUsage(next.sessionUsage, event.usage),
+        modelRequestCount: next.modelRequestCount + 1
+      };
     case "run_started":
       return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) }, event);
     case "user_message":

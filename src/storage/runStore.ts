@@ -366,6 +366,10 @@ export class RunStore {
 
   private async recordSessionEvent(runId: string, event: HarnessEvent, stored: StoredEvent): Promise<void> {
     const sessionId = this.runSessions.get(runId) ?? (await this.metadata(runId)).sessionId;
+    if (event.type === "model_response_recorded") {
+      await this.sessionStore.recordModelResponse(sessionId, event.usage);
+      return;
+    }
     const message = workflowUserMessage(event);
     if (message) {
       await this.sessionStore.appendWorkflowTranscriptEntries(sessionId, [{

@@ -71,6 +71,7 @@ export class QueryEngine {
       const response = input.provider.stream
         ? await input.provider.stream(request, (event) => input.onStreamEvent?.(event))
         : await input.provider.generate(request);
+      await emit(input, { type: "runtime_model_response", session_id: session.id, run_id: session.workflowBinding?.runId, model: input.model, usage: response.usage, stop_reason: response.stopReason });
       if (hasModelUsage(response.usage)) await emit(input, { type: "runtime_model_usage", session_id: session.id, run_id: session.workflowBinding?.runId, model: input.model, usage: response.usage, stop_reason: response.stopReason });
 
       if (!response.tool_calls?.length) {

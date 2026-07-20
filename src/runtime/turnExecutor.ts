@@ -57,9 +57,16 @@ export class RuntimeTurnExecutor {
           signal: input.abortSignal
         }
       });
-      throwIfAborted(input.abortSignal);
-
+      await emit(input, {
+        type: "runtime_model_response",
+        session_id: input.sessionId,
+        run_id: input.runId,
+        model: input.model,
+        usage: response.usage,
+        stop_reason: response.stopReason
+      });
       await emitModelUsage(input, input.model, response);
+      throwIfAborted(input.abortSignal);
       if (!response.tool_calls?.length) {
         if (response.content !== undefined) {
           messages.push({ role: "assistant", content: response.content });

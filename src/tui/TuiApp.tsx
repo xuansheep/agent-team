@@ -15,6 +15,7 @@ import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
 import { getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
+import { addModelUsage, emptyModelUsage } from "../model/usage.js";
 import type { ModelUsage } from "../model/usage.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
@@ -154,6 +155,7 @@ export function TuiApp({
   const planAbortControllerRef = useRef<AbortController>();
   const planTurnGenerationRef = useRef(0);
   const planTranscriptWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const planAuditWriteRef = useRef<Promise<void>>(Promise.resolve());
   const planApprovalFeedbackRef = useRef("");
   const planApprovalImagesRef = useRef<SelectImageAttachment[]>([]);
   const planApprovalImageIdRef = useRef(1);
@@ -166,6 +168,7 @@ export function TuiApp({
   if (!sessionStoreRef.current) sessionStoreRef.current = providedSessionStore ?? new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
   const sessionStore = sessionStoreRef.current;
   const currentSessionIdRef = useRef(promptHistoryStore?.sessionId ?? randomUUID());
+  const sessionAuditGenerationRef = useRef(0);
   const listeningSessionRef = useRef<WorkflowSession>();
   const sessionResultGenerationRef = useRef(0);
   const queuedContinuationRef = useRef(false);
@@ -347,11 +350,23 @@ export function TuiApp({
       stdin.off?.("data", handleData);
     };
   }, [stdin, state.mode, hasSelection, selection]);
+  const refreshSessionAudit = async (sessionId: string) => {
+    const generation = sessionAuditGenerationRef.current + 1;
+    sessionAuditGenerationRef.current = generation;
+    const metadata = await sessionStore.loadMetadata(sessionId);
+    if (currentSessionIdRef.current !== sessionId || sessionAuditGenerationRef.current !== generation) return;
+    setState((current) => ({
+      ...current,
+      sessionUsage: metadata?.usage ?? emptyModelUsage(),
+      modelRequestCount: metadata?.modelRequestCount ?? 0
+    }));
+  };
   const resetSession = () => {
     sessionResultGenerationRef.current += 1;
     queuedContinuationRef.current = false;
     sessionRef.current = undefined;
     currentSessionIdRef.current = randomUUID();
+    sessionAuditGenerationRef.current += 1;
     planSessionRef.current = undefined;
     resetPlanApprovalFeedback();
     resetPlanQuestionImages();
@@ -369,6 +384,7 @@ export function TuiApp({
       try {
         for await (const event of session.events) {
           if (abandonedRunIdsRef.current.has(session.runId)) continue;
+          if (event.type === "model_response_recorded") sessionAuditGenerationRef.current += 1;
           setState((current) => reduceStoredEvent({ ...current, runId: session.runId, workflowId: nextWorkflowId }, event));
         }
       } finally {
@@ -382,6 +398,7 @@ export function TuiApp({
     const sessionId = session.sessionId ?? currentSessionIdRef.current;
     currentSessionIdRef.current = sessionId;
     if (providedSessionStore) void sessionStore.attachRun(sessionId, session.runId).catch((error) => failUi(error));
+    void refreshSessionAudit(sessionId).catch((error) => failUi(error));
     mainScrollRef.current?.scrollToBottom();
     setState((current) => resetTuiRunState(current, { workflowId: nextWorkflowId, runId: session.runId, preserveLogs: options.preserveLogs === true, inputPermissionMode: options.inputPermissionMode }));
     listenSession(session, nextWorkflowId);
@@ -599,10 +616,22 @@ export function TuiApp({
         globalPrompt: config?.global_prompt,
         globalPromptMetadata: config?.global_prompt_metadata,
             signal: abortController.signal,
-        eventSink: (event) => {
-          if (planTurnGenerationRef.current !== turnGeneration || abortController.signal.aborted) return;
+        eventSink: async (event) => {
+          if (planTurnGenerationRef.current !== turnGeneration) return;
+          if (abortController.signal.aborted && event.type !== "runtime_model_response") return;
           if (event.type === "runtime_prompt_injection") {
             void sessionStore.saveMetadata(currentPlan.sessionId, { promptInjection: { globalPrompt: event.record } }).catch((error) => failUi(error));
+          }
+          if (event.type === "runtime_model_response") {
+            sessionAuditGenerationRef.current += 1;
+            setState((current) => ({
+              ...current,
+              sessionUsage: addModelUsage(current.sessionUsage, event.usage),
+              modelRequestCount: current.modelRequestCount + 1
+            }));
+            planAuditWriteRef.current = planAuditWriteRef.current
+              .then(async () => { await sessionStore.recordModelResponse(currentPlan.sessionId, event.usage); })
+              .catch((error) => failUi(error));
           }
           if (event.type === "runtime_model_usage") lastUsage = event.usage;
           const detail = runtimeWorkStatusDetail(event);
@@ -1226,6 +1255,8 @@ ${message.detailText}` : ""}` }
       runId: current.runId,
       mode: current.mode === "planning" || current.mode === "waiting_plan_approval" ? current.mode : "input",
       planSession: current.planSession,
+      sessionUsage: current.sessionUsage,
+      modelRequestCount: current.modelRequestCount,
       pendingReview: current.mode === "waiting_plan_approval" ? current.pendingReview : undefined,
       error: undefined
     }));
@@ -1233,6 +1264,7 @@ ${message.detailText}` : ""}` }
   const restorePlanSession = async (sessionId: string) => {
     const metadata = await sessionStore.loadMetadata(sessionId);
     currentSessionIdRef.current = sessionId;
+    sessionAuditGenerationRef.current += 1;
     const transcript = await sessionStore.loadTranscript(sessionId);
     const planTranscript = transcript.filter((entry) => entry.phase !== "workflow");
     let plan = metadata?.plan;
@@ -1260,6 +1292,8 @@ ${message.detailText}` : ""}` }
     const base = (current: TuiState) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: current.workflowId ?? selectedWorkflowId,
+      sessionUsage: metadata?.usage ?? emptyModelUsage(),
+      modelRequestCount: metadata?.modelRequestCount ?? 0,
       planSession: plan,
       error: undefined
     });
@@ -1982,6 +2016,8 @@ ${message.detailText}` : ""}` }
         runId={state.runId}
         isLoading={isLoading}
         hasSelection={hasSelection}
+        sessionUsage={state.sessionUsage}
+        modelRequestCount={state.modelRequestCount}
         elements={statuslineElements}
         columns={terminalColumns}
       />
@@ -2900,7 +2936,7 @@ function parseStatuslineArgs(args: string[], current: StatusLineElement[]): { el
   if (!raw) {
     return {
       text: "Statusline",
-      detailText: `Current: ${current.join(", ") || "none"}\nAvailable: ${available}\nUsage: /statusline mode,permission,workflow,run,selection,loading\nUse /statusline default to reset.`
+      detailText: `Current: ${current.join(", ") || "none"}\nAvailable: ${available}\nUsage: /statusline ${available}\nUse /statusline default to reset.`
     };
   }
   if (raw === "default") {

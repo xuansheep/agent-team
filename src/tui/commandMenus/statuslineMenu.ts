@@ -9,6 +9,8 @@ const descriptions: Record<StatusLineElement, string> = {
   permission: "Current permission mode",
   workflow: "Selected workflow",
   run: "Current run ID",
+  tokens: "Current session effective tokens",
+  requests: "Current session model responses",
   selection: "Active text selection",
   loading: "Current running state"
 };

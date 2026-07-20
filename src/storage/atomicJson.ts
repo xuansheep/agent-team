@@ -72,11 +72,21 @@ async function writeTextAtomic(path: string, content: string): Promise<void> {
   } finally {
     await handle.close();
   }
-  try {
-    await rename(tempPath, path);
-  } catch (error) {
+  let renameError: unknown;
+  for (const delayMs of [0, 10, 25, 50, 100]) {
+    if (delayMs) await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+    try {
+      await rename(tempPath, path);
+      renameError = undefined;
+      break;
+    } catch (error) {
+      renameError = error;
+      if (!isErrno(error, "EPERM") && !isErrno(error, "EACCES") && !isErrno(error, "EBUSY")) break;
+    }
+  }
+  if (renameError) {
     await rename(tempPath, `${path}.failed-${Date.now()}-${randomUUID()}`).catch(() => undefined);
-    throw error;
+    throw renameError;
   }
 }
 

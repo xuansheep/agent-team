@@ -35,21 +35,31 @@ type AnthropicContentBlock = {
   cache_control?: typeof cacheControl;
 };
 
+type AnthropicUsage = {
+  input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  output_tokens?: number;
+};
+
 type AnthropicBody = {
   content?: AnthropicContentBlock[];
   stop_reason?: string;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: AnthropicUsage;
 };
 
 type AnthropicStreamChunk = {
   type?: string;
   index?: number;
+  message?: AnthropicBody;
+  usage?: AnthropicUsage;
   content_block?: AnthropicContentBlock;
   delta?: {
     type?: string;
     text?: string;
     thinking?: string;
     partial_json?: string;
+    stop_reason?: string;
   };
 };
 
@@ -99,9 +109,14 @@ export class AnthropicMessagesProvider implements ModelProvider {
     const thinking: string[] = [];
     const toolCalls: ModelToolCall[] = [];
     const blocks = new Map<number, StreamingBlock>();
+    let usage: AnthropicUsage | undefined;
+    let stopReason: string | undefined;
 
     await consumeSseBlocks(response.body, (data) => {
       const chunk = JSON.parse(data) as AnthropicStreamChunk;
+      if (chunk.message?.usage) usage = { ...(usage ?? {}), ...chunk.message.usage };
+      if (chunk.usage) usage = { ...(usage ?? {}), ...chunk.usage };
+      if (chunk.delta?.stop_reason) stopReason = chunk.delta.stop_reason;
       const index = chunk.index ?? 0;
       if (chunk.type === "content_block_start" && chunk.content_block) {
         if (chunk.content_block.type === "tool_use") {
@@ -158,7 +173,9 @@ export class AnthropicMessagesProvider implements ModelProvider {
     return {
       content: content.length ? content.join("") : undefined,
       thinking: thinking.length ? thinking.join("") : undefined,
-      tool_calls: toolCalls.length ? toolCalls : undefined
+      tool_calls: toolCalls.length ? toolCalls : undefined,
+      usage: anthropicUsage(usage),
+      stopReason: anthropicStopReason(stopReason)
     };
   }
 
@@ -327,11 +344,20 @@ function fromAnthropicBody(body: AnthropicBody): ModelResponse {
   };
 }
 
-function anthropicUsage(usage: AnthropicBody["usage"]): ModelUsage | undefined {
+function anthropicUsage(usage: AnthropicUsage | undefined): ModelUsage | undefined {
   if (!usage) return undefined;
-  const inputTokens = usage.input_tokens;
+  const inputTokens = usage.input_tokens === undefined
+    && usage.cache_creation_input_tokens === undefined
+    && usage.cache_read_input_tokens === undefined
+    ? undefined
+    : (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
   const outputTokens = usage.output_tokens;
-  return { inputTokens, outputTokens, totalTokens: inputTokens !== undefined || outputTokens !== undefined ? (inputTokens ?? 0) + (outputTokens ?? 0) : undefined };
+  return {
+    inputTokens,
+    ...(usage.cache_read_input_tokens !== undefined ? { cachedInputTokens: usage.cache_read_input_tokens } : {}),
+    outputTokens,
+    totalTokens: inputTokens !== undefined || outputTokens !== undefined ? (inputTokens ?? 0) + (outputTokens ?? 0) : undefined
+  };
 }
 
 function anthropicStopReason(reason: string | undefined): ModelStopReason | undefined {

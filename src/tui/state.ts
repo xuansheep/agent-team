@@ -1,3 +1,4 @@
+import type { ModelUsageTotals } from "../model/usage.js";
 import type { PlanSessionState } from "../plans/planSession.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RunSummary } from "../storage/runStore.js";
@@ -112,6 +113,8 @@ export type TuiState = {
   mode: TuiMode;
   inputPermissionMode: PermissionMode;
   defaultExecutionMode: TuiDefaultExecutionMode;
+  sessionUsage: ModelUsageTotals;
+  modelRequestCount: number;
   workflowId?: string;
   runId?: string;
   currentNodeId?: string;

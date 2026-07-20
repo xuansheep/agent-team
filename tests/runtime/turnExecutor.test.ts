@@ -74,15 +74,23 @@ describe("RuntimeTurnExecutor", () => {
 
   it("executes tool calls and appends tool results before the final assistant message", async () => {
     let calls = 0;
+    const events: RuntimeEvent[] = [];
     const provider: ModelProvider = {
       async generate(request) {
         calls += 1;
         if (calls === 1) {
-          return { content: "checking", tool_calls: [{ id: "call-1", name: "Echo", input: { value: "ok" } }] };
+          return {
+            content: "checking",
+            tool_calls: [{ id: "call-1", name: "Echo", input: { value: "ok" } }],
+            usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2, totalTokens: 12 }
+          };
         }
         assert.equal(request.messages.at(-1)?.role, "tool");
         assert.match(String(request.messages.at(-1)?.content), /ok/);
-        return { content: "done" };
+        return {
+          content: "done",
+          usage: { inputTokens: 20, cachedInputTokens: 5, outputTokens: 3, totalTokens: 23 }
+        };
       }
     };
     const tools = new ToolRegistry();
@@ -95,11 +103,22 @@ describe("RuntimeTurnExecutor", () => {
       tools,
       permissions: { mode: "default", allow: ["Echo"], ask: [], deny: [] },
       cwd: process.cwd(),
-      sessionId: "session-1"
+      sessionId: "session-1",
+      eventSink: (event) => { events.push(event); }
     });
 
     assert.equal(result.status, "completed");
     assert.equal(calls, 2);
+    assert.equal(events.filter((event) => event.type === "runtime_model_response").length, 2);
+    assert.deepEqual(
+      events
+        .filter((event): event is Extract<RuntimeEvent, { type: "runtime_model_response" }> => event.type === "runtime_model_response")
+        .map((event) => event.usage),
+      [
+        { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2, totalTokens: 12 },
+        { inputTokens: 20, cachedInputTokens: 5, outputTokens: 3, totalTokens: 23 }
+      ]
+    );
     assert.deepEqual(result.messages.map((message) => message.role), ["user", "assistant", "tool", "assistant"]);
     assert.equal(result.messages.at(-1)?.content, "done");
   });
@@ -1055,6 +1074,14 @@ describe("RuntimeTurnExecutor", () => {
       eventSink: (event) => { events.push(event); }
     });
 
+    assert.deepEqual(events.find((event) => (event as { type?: string }).type === "runtime_model_response"), {
+      type: "runtime_model_response",
+      session_id: "session-usage",
+      run_id: undefined,
+      model: "test-model",
+      usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+      stop_reason: "stop"
+    });
     assert.deepEqual(events.find((event) => (event as { type?: string }).type === "runtime_model_usage"), {
       type: "runtime_model_usage",
       session_id: "session-usage",
@@ -1063,6 +1090,38 @@ describe("RuntimeTurnExecutor", () => {
       usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
       stop_reason: "stop"
     });
+  });
+
+  it("emits one successful response event without usage and none for provider failures", async () => {
+    const events: RuntimeEvent[] = [];
+    const successful = await new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "hello" }],
+      model: "test-model",
+      provider: { async generate() { return { content: "ready" }; } },
+      tools: new ToolRegistry(),
+      permissions: { mode: "default", allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-no-usage",
+      eventSink: (event) => { events.push(event); }
+    });
+
+    assert.equal(successful.status, "completed");
+    assert.equal(events.filter((event) => event.type === "runtime_model_response").length, 1);
+    assert.equal(events.some((event) => event.type === "runtime_model_usage"), false);
+
+    const failedEvents: RuntimeEvent[] = [];
+    await assert.rejects(() => new RuntimeTurnExecutor().execute({
+      messages: [{ role: "user", content: "hello" }],
+      model: "test-model",
+      provider: { async generate() { throw new Error("provider failed"); } },
+      tools: new ToolRegistry(),
+      permissions: { mode: "default", allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-failed",
+      eventSink: (event) => { failedEvents.push(event); }
+    }), /provider failed/);
+
+    assert.equal(failedEvents.some((event) => event.type === "runtime_model_response"), false);
   });
 
   it("returns Plan Mode write denials as tool results and continues to plan approval", async () => {

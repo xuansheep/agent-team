@@ -28,7 +28,7 @@ describe("command menu builders", () => {
       onClose: noop
     });
 
-    assert.deepEqual(choice.options.map((item) => item.value), ["mode", "permission", "workflow", "run", "selection", "loading"]);
+    assert.deepEqual(choice.options.map((item) => item.value), ["mode", "permission", "workflow", "run", "tokens", "requests", "selection", "loading"]);
     assert.deepEqual(choice.selectedValues, ["mode", "workflow"]);
     assert.equal(choice.multiSelect, true);
     assert.equal(choice.submitButtonText, "Close");

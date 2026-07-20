@@ -155,6 +155,32 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("tracks effective tokens and successful model responses across clear", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          content: "Usage recorded.",
+          usage: { inputTokens: 15_000, cachedInputTokens: 3_000, outputTokens: 300, totalTokens: 15_300 }
+        };
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Audit this session.");
+    await waitForFrame(output, /tokens 12\.3K \| requests 1/);
+
+    await sendTuiLine(output, "/clear");
+    await settleTuiWork();
+    assert.match(output.lastFrame() ?? "", /tokens 12\.3K \| requests 1/);
+
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("configures the statusline interactively with immediate space toggles", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const engine = { async startInteractive() { return fakeSession(); } };
@@ -164,7 +190,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Space to enable or disable items/);
     let frame = output.lastFrame() ?? "";
 
-    for (const element of ["mode", "permission", "workflow", "run", "selection", "loading"]) {
+    for (const element of ["mode", "permission", "workflow", "run", "tokens", "requests", "selection", "loading"]) {
       assert.match(frame, new RegExp(`\\[[ ✓]\\] ${element}`));
     }
     assert.match(frame, /\[✓\] mode/);
@@ -2574,13 +2600,15 @@ describe("TuiApp global Plan Mode", () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-plan", cwd);
     await writePlan(planFilePath, "Saved plan.\n");
-    await new SessionStore(join(cwd, ".einsteins", "projects", "tui")).savePlanState("session-plan", {
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+    await store.savePlanState("session-plan", {
       mode: "waiting_approval",
       sessionId: "session-plan",
       planFilePath,
       prePlanMode: "default",
       originalInput: { request: "Resume this" }
     });
+    await store.recordModelResponse("session-plan", { inputTokens: 15_000, cachedInputTokens: 3_000, outputTokens: 300, totalTokens: 15_300 });
     let starts = 0;
     let resumes = 0;
     const engine = {
@@ -2598,6 +2626,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
     assert.equal(starts, 0);
     assert.equal(resumes, 0);
+    assert.match(output.lastFrame() ?? "", /tokens 12\.3K \| requests 1/);
 
     output.unmount();
     output.cleanup();

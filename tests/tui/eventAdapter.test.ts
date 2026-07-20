@@ -8,6 +8,34 @@ import { initialTuiState, reduceStoredEvent, resetTuiRunState } from "../../src/
 
 describe("TUI event adapter", () => {
 
+  it("accumulates successful workflow model responses and preserves them across run resets", () => {
+    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+    state = reduceStoredEvent(state, {
+      type: "model_response_recorded",
+      node_id: "dev",
+      attempt: 1,
+      model: "gpt-test",
+      usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2, totalTokens: 12 },
+      ts: "2026-06-23T00:00:00.000Z",
+      seq: 1
+    });
+    state = reduceStoredEvent(state, {
+      type: "model_response_recorded",
+      node_id: "dev",
+      attempt: 1,
+      model: "gpt-test",
+      ts: "2026-06-23T00:00:01.000Z",
+      seq: 2
+    });
+
+    assert.equal(state.modelRequestCount, 2);
+    assert.deepEqual(state.sessionUsage, { inputTokens: 10, cachedInputTokens: 4, outputTokens: 2, totalTokens: 12 });
+
+    const reset = resetTuiRunState(state, { workflowId: "delivery", runId: "next-run" });
+    assert.equal(reset.modelRequestCount, 2);
+    assert.deepEqual(reset.sessionUsage, state.sessionUsage);
+  });
+
   it("groups node attempts and tool calls by runtime events", () => {
 
     let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });

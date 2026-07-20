@@ -28,7 +28,15 @@ type OpenAiToolCallDelta = {
   };
 };
 
+type OpenAiUsage = {
+  prompt_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  completion_tokens?: number;
+  total_tokens?: number;
+};
+
 type OpenAiStreamChunk = {
+  usage?: OpenAiUsage;
   choices?: Array<{
     finish_reason?: string;
     delta?: {
@@ -97,7 +105,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
 
     const body = await response.json() as {
       choices?: Array<{ finish_reason?: string; message?: { content?: string; reasoning_content?: string; tool_calls?: OpenAiToolCall[] } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      usage?: OpenAiUsage;
     };
     const choice = body.choices?.[0] ?? {};
     const message = choice.message ?? {};
@@ -120,7 +128,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       method: "POST",
       headers: this.headers({ accept: "text/event-stream" }),
       signal: request.signal,
-      body: JSON.stringify({ ...toRequestBody(request, this.options), stream: true })
+      body: JSON.stringify({ ...toRequestBody(request, this.options), stream: true, stream_options: { include_usage: true } })
     });
 
     if (!response.ok) {
@@ -131,9 +139,11 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     const content: string[] = [];
     const thinking: string[] = [];
     const toolCalls = new Map<number, StreamingToolCall>();
+    let usage: OpenAiUsage | undefined;
 
     await consumeSseBlocks(response.body, (data) => {
       const chunk = JSON.parse(data) as OpenAiStreamChunk;
+      if (chunk.usage) usage = chunk.usage;
       for (const choice of chunk.choices ?? []) {
         const delta = choice.delta;
         if (!delta) continue;
@@ -156,7 +166,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       return false;
     });
 
-    return toStreamResponse(content, thinking, toolCalls);
+    return toStreamResponse(content, thinking, toolCalls, usage);
   }
 
   private endpoint(): string {
@@ -196,9 +206,14 @@ function toRequestBody(request: ModelRequest, options: OpenAiCompatibleOptions):
   return body;
 }
 
-function openAiUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): ModelUsage | undefined {
+function openAiUsage(usage: OpenAiUsage | undefined): ModelUsage | undefined {
   if (!usage) return undefined;
-  return { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, totalTokens: usage.total_tokens };
+  return {
+    inputTokens: usage.prompt_tokens,
+    ...(usage.prompt_tokens_details?.cached_tokens !== undefined ? { cachedInputTokens: usage.prompt_tokens_details.cached_tokens } : {}),
+    outputTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens
+  };
 }
 
 function openAiStopReason(reason: string | undefined): ModelStopReason | undefined {
@@ -210,7 +225,7 @@ function openAiStopReason(reason: string | undefined): ModelStopReason | undefin
   return "unknown";
 }
 
-function toStreamResponse(content: string[], thinking: string[], streamingToolCalls: Map<number, StreamingToolCall>): ModelResponse {
+function toStreamResponse(content: string[], thinking: string[], streamingToolCalls: Map<number, StreamingToolCall>, usage?: OpenAiUsage): ModelResponse {
   const tool_calls: ModelToolCall[] = [...streamingToolCalls.entries()]
     .sort(([left], [right]) => left - right)
     .map(([index, call]) => ({
@@ -222,6 +237,7 @@ function toStreamResponse(content: string[], thinking: string[], streamingToolCa
   return {
     content: content.length ? content.join("") : undefined,
     thinking: thinking.length ? thinking.join("") : undefined,
-    tool_calls: tool_calls.length ? tool_calls : undefined
+    tool_calls: tool_calls.length ? tool_calls : undefined,
+    usage: openAiUsage(usage)
   };
 }

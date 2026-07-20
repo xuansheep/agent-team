@@ -32,7 +32,7 @@ type ResponsesBody = {
   output?: ResponsesOutputItem[];
   status?: string;
   incomplete_details?: { reason?: string };
-  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+  usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number }; output_tokens?: number; total_tokens?: number };
 };
 
 type ResponsesStreamChunk = {
@@ -276,7 +276,12 @@ function mergeToolCalls(first: ModelToolCall[], second: ModelToolCall[] | undefi
 
 function responsesUsage(usage: ResponsesBody["usage"]): ModelUsage | undefined {
   if (!usage) return undefined;
-  return { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, totalTokens: usage.total_tokens };
+  return {
+    inputTokens: usage.input_tokens,
+    ...(usage.input_tokens_details?.cached_tokens !== undefined ? { cachedInputTokens: usage.input_tokens_details.cached_tokens } : {}),
+    outputTokens: usage.output_tokens,
+    totalTokens: usage.total_tokens
+  };
 }
 
 function responsesStopReason(body: ResponsesBody, toolCalls: ModelToolCall[]): ModelStopReason | undefined {

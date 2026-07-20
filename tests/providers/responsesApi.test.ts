@@ -116,13 +116,13 @@ describe("ResponsesApiProvider", () => {
     const server = await startJsonServer({
       output_text: "ok",
       status: "completed",
-      usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 }
+      usage: { input_tokens: 3, input_tokens_details: { cached_tokens: 2 }, output_tokens: 4, total_tokens: 7 }
     });
     const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
 
     const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
-    assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 4, totalTokens: 7 });
+    assert.deepEqual(result.usage, { inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, totalTokens: 7 });
     assert.equal(result.stopReason, "stop");
   });
 
@@ -204,7 +204,7 @@ describe("ResponsesApiProvider", () => {
           output: [
             { type: "function_call", call_id: "call-exit", name: "ExitPlanMode", arguments: "{}" }
           ],
-          usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+          usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 6 }, output_tokens: 2, total_tokens: 12 }
         }
       },
       "[DONE]"
@@ -217,7 +217,7 @@ describe("ResponsesApiProvider", () => {
     );
 
     assert.deepEqual(result?.tool_calls, [{ id: "call-exit", name: "ExitPlanMode", input: {} }]);
-    assert.deepEqual(result?.usage, { inputTokens: 10, outputTokens: 2, totalTokens: 12 });
+    assert.deepEqual(result?.usage, { inputTokens: 10, cachedInputTokens: 6, outputTokens: 2, totalTokens: 12 });
     assert.equal(result?.stopReason, "tool_call");
   });
 

@@ -166,13 +166,13 @@ describe("AnthropicMessagesProvider", () => {
     const server = await startJsonServer({
       content: [{ type: "text", text: "ok" }],
       stop_reason: "max_tokens",
-      usage: { input_tokens: 3, output_tokens: 4 }
+      usage: { input_tokens: 3, cache_creation_input_tokens: 2, cache_read_input_tokens: 5, output_tokens: 4 }
     });
     const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
 
     const result = await provider.generate({ model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
-    assert.deepEqual(result.usage, { inputTokens: 3, outputTokens: 4, totalTokens: 7 });
+    assert.deepEqual(result.usage, { inputTokens: 10, cachedInputTokens: 5, outputTokens: 4, totalTokens: 14 });
     assert.equal(result.stopReason, "length");
   });
 
@@ -209,6 +209,7 @@ describe("AnthropicMessagesProvider", () => {
 
   it("streams text deltas and tool input deltas", async () => {
     const server = await startSseServer([
+      { type: "message_start", message: { usage: { input_tokens: 3, cache_creation_input_tokens: 2, cache_read_input_tokens: 5, output_tokens: 0 } } },
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
       { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "{\"direction\":" } },
       { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "\"forward\"}" } },
@@ -217,6 +218,7 @@ describe("AnthropicMessagesProvider", () => {
       { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"command\":" } },
       { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "\"npm test\"}" } },
       { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 4 } },
       "[DONE]"
     ]);
     const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024, streaming: true });
@@ -230,6 +232,8 @@ describe("AnthropicMessagesProvider", () => {
     assert.deepEqual(deltas, ["{\"direction\":", "\"forward\"}"]);
     assert.equal(result?.content, "{\"direction\":\"forward\"}");
     assert.deepEqual(result?.tool_calls, [{ id: "toolu-1", name: "Bash", input: { command: "npm test" } }]);
+    assert.deepEqual(result?.usage, { inputTokens: 10, cachedInputTokens: 5, outputTokens: 4, totalTokens: 14 });
+    assert.equal(result?.stopReason, "tool_call");
     assert.equal(server.requestBody.stream, true);
     assert.deepEqual(server.requestBody.messages, [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }]);
   });

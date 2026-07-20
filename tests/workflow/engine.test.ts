@@ -165,8 +165,20 @@ describe("WorkflowEngine", () => {
 
     const runId = await latestRunId(runRoot);
     const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; node_id?: string; attempt?: number; activation?: number; model?: string; usage?: unknown; stop_reason?: string; ts: string; seq: number });
+    const responseEvent = events.find((event) => event.type === "model_response_recorded");
     const usageEvent = events.find((event) => event.type === "model_usage_recorded");
 
+    assert.deepEqual(responseEvent, {
+      type: "model_response_recorded",
+      node_id: "a",
+      attempt: 1,
+      activation: 1,
+      model: "gpt-test",
+      usage: { inputTokens: 11, outputTokens: 13, totalTokens: 24 },
+      stop_reason: "stop",
+      ts: responseEvent?.ts,
+      seq: responseEvent?.seq
+    });
     assert.deepEqual(usageEvent, {
       type: "model_usage_recorded",
       node_id: "a",
@@ -178,6 +190,9 @@ describe("WorkflowEngine", () => {
       ts: usageEvent?.ts,
       seq: usageEvent?.seq
     });
+    const sessionMetadata = await new SessionStore(runRoot).loadMetadata(runId);
+    assert.equal(sessionMetadata?.modelRequestCount, 1);
+    assert.deepEqual(sessionMetadata?.usage, { inputTokens: 11, cachedInputTokens: 0, outputTokens: 13, totalTokens: 24 });
   });
 
   it("applies Plan Mode requested Bash prompt permissions during workflow execution", async () => {

@@ -116,9 +116,18 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         throw error;
       }
     })();
+    await appendRuntimeEvent(options, {
+      type: "model_response_recorded",
+      node_id: options.node.id,
+      attempt,
+      activation: options.activation,
+      model: options.model,
+      usage: response.usage,
+      stop_reason: response.stopReason
+    });
+    await appendModelUsageEvent(options, attempt, options.model, response);
     await streamBatcher.drain();
     options.abortSignal?.throwIfAborted();
-    await appendModelUsageEvent(options, attempt, options.model, response);
     if (!streamed) await appendNonStreamingResponseEvents(options, attempt, response);
     if (response.tool_calls?.length) {
       const submittedResult = response.tool_calls.find((call) => call.name === submitNodeResultTool.name);
