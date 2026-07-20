@@ -155,6 +155,42 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("configures the statusline interactively with immediate space toggles", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
+
+    await sendTuiLine(output, "/statusline");
+    await waitForFrame(output, /Space to enable or disable items/);
+    let frame = output.lastFrame() ?? "";
+
+    for (const element of ["mode", "permission", "workflow", "run", "selection", "loading"]) {
+      assert.match(frame, new RegExp(`\\[[ ✓]\\] ${element}`));
+    }
+    assert.match(frame, /\[✓\] mode/);
+    assert.match(frame, /\[ \] permission/);
+
+    output.stdin.write(" ");
+    await waitForFrame(output, /\[ \] mode/);
+    frame = output.lastFrame() ?? "";
+    const statusLine = frame.split("\n").filter((line) => line.includes("workflow delivery")).at(-1) ?? "";
+    assert.match(statusLine, /workflow delivery/);
+    assert.doesNotMatch(statusLine, /mode Default/);
+
+    output.stdin.write("\u001b");
+    await waitForFrame(output, /Statusline dialog dismissed/);
+    frame = output.lastFrame() ?? "";
+    assert.doesNotMatch(frame, /Space to enable or disable items/);
+    assert.doesNotMatch(frame.split("\n").filter((line) => line.includes("workflow delivery")).at(-1) ?? "", /mode Default/);
+
+    await sendTuiLine(output, "/statusline");
+    await waitForFrame(output, /Space to enable or disable items/);
+    assert.match(output.lastFrame() ?? "", /\[ \] mode/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("cycles between the default execution mode and Plan Mode", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;

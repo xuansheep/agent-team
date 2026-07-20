@@ -33,6 +33,11 @@ describe("slash command completion", () => {
     assert.deepEqual(slashCommandSuggestions("/d", context), []);
   });
 
+  it("suggests /statusline without legacy argument completions", () => {
+    assert.deepEqual(slashCommandSuggestions("/sta", context).map((item) => item.value), ["/statusline"]);
+    assert.deepEqual(slashCommandSuggestions("/statusline ", context), []);
+  });
+
   it("suggests resume arguments", () => {
     assert.deepEqual(slashCommandSuggestions("/resume del", context).map((item) => item.value), ["/resume delivery-last"]);
   });

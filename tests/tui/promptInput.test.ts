@@ -106,14 +106,15 @@ describe("PromptInput core logic", () => {
   });
 
   it("navigates prompt history and restores the draft after the latest entry", () => {
-    let history = createHistory(["first", "second"]);
+    let history = createHistory(["first", "second", "second"]);
     history = pushHistory(history, "second");
+    assert.deepEqual(history.entries, ["first", "second"]);
 
     const previous = previousHistory(history, "draft text");
     assert.equal(previous.value, "second");
 
     const earlier = previousHistory(previous.history);
-    assert.equal(earlier.value, "second");
+    assert.equal(earlier.value, "first");
 
     const oldest = previousHistory(earlier.history);
     assert.equal(oldest.value, "first");
@@ -121,10 +122,7 @@ describe("PromptInput core logic", () => {
     const next = nextHistory(oldest.history);
     assert.equal(next.value, "second");
 
-    const duplicate = nextHistory(next.history);
-    assert.equal(duplicate.value, "second");
-
-    const draft = nextHistory(duplicate.history);
+    const draft = nextHistory(next.history);
     assert.equal(draft.value, "draft text");
     assert.equal(draft.history.index, undefined);
     assert.equal(draft.history.draft, undefined);
@@ -134,6 +132,10 @@ describe("PromptInput core logic", () => {
 
 
 
+
+  it("keeps matching non-adjacent prompt history entries", () => {
+    assert.deepEqual(createHistory(["repeat", "middle", "repeat"]).entries, ["repeat", "middle", "repeat"]);
+  });
 
   it("calculates the real terminal cursor position for IME candidate placement", () => {
     assert.deepEqual(

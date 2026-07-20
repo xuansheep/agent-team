@@ -1,0 +1,16 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { render } from "ink-testing-library";
+import { Header } from "../../src/tui/components/Header.js";
+
+describe("Header", () => {
+  it("shows the session identifier above the workflow flow chart", () => {
+    const output = render(<Header cwd="D:\\CodeAI\\agent-team" workflowId="delivery" sessionId="session-123" />);
+    const frame = output.lastFrame() ?? "";
+
+    assert.match(frame, /workflow delivery \| session session-123/);
+    assert.doesNotMatch(frame, /\| run /);
+    output.unmount();
+    output.cleanup();
+  });
+});

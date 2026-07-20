@@ -3,14 +3,18 @@ import { PromptHistory } from "./types.js";
 const MAX_HISTORY_ITEMS = 100;
 
 export function createHistory(entries: string[] = []): PromptHistory {
-  return { entries: entries.slice(-MAX_HISTORY_ITEMS) };
+  const normalized = entries.map((entry) => entry.trim()).filter(Boolean);
+  const deduplicated = normalized.filter((entry, index) => index === 0 || entry !== normalized[index - 1]);
+  return { entries: deduplicated.slice(-MAX_HISTORY_ITEMS) };
 }
 
 export function pushHistory(history: PromptHistory, value: string): PromptHistory {
   const trimmed = value.trim();
   if (!trimmed) return history;
   return {
-    entries: [...history.entries, trimmed].slice(-MAX_HISTORY_ITEMS),
+    entries: history.entries.at(-1) === trimmed
+      ? history.entries
+      : [...history.entries, trimmed].slice(-MAX_HISTORY_ITEMS),
     index: undefined,
     draft: undefined
   };

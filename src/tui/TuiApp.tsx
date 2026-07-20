@@ -37,7 +37,7 @@ import { TuiDefaultExecutionMode, TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
-import { buildMcpListChoice, buildMcpServerChoice, buildMcpToolDetailChoice, buildMcpToolsChoice, buildSkillsDetailChoice, buildSkillsListChoice, type McpMenuAction } from "./commandMenus/index.js";
+import { buildMcpListChoice, buildMcpServerChoice, buildMcpToolDetailChoice, buildMcpToolsChoice, buildSkillsDetailChoice, buildSkillsListChoice, buildStatuslineChoice, type McpMenuAction } from "./commandMenus/index.js";
 import type { SelectImageAttachment } from "./components/CustomSelect/index.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./components/PromptInput/types.js";
 import { ResultPanel } from "./components/ResultPanel.js";
@@ -53,6 +53,7 @@ import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, get
 export type CommandMenuState =
   | { kind: "skills:list" }
   | { kind: "skills:detail"; skillName: string }
+  | { kind: "statusline" }
   | { kind: "mcp:list" }
   | { kind: "mcp:server"; serverName: string }
   | { kind: "mcp:tools"; serverName: string }
@@ -1452,7 +1453,8 @@ ${message.detailText}` : ""}` }
         showHelp();
       }
       if (event.name === "statusline") {
-        updateStatusline(event.args);
+        if (event.args.length) updateStatusline(event.args);
+        else setCommandMenu({ kind: "statusline" });
       }
       if (event.name === "new") {
         if (isActiveSessionMode(state.mode)) setState((current) => ({ ...current, mode: "confirm_new", modeBeforeConfirmation: current.mode }));
@@ -1542,6 +1544,8 @@ ${message.detailText}` : ""}` }
     state: commandMenu,
     diagnostics: currentDiagnosticsForMenu,
     mcpRuntime,
+    statuslineElements,
+    setStatuslineElements,
     setCommandMenu,
     closeCommandMenu,
     runMcpAction
@@ -1870,7 +1874,7 @@ ${message.detailText}` : ""}` }
   const isLoading = state.mode === "running" || state.mode === "permission" || planWorkCount > 0;
   return (
     <Box flexDirection="column" height={terminalRows}>
-      <Header cwd={cwd} workflowId={state.workflowId} runId={state.runId} />
+      <Header cwd={cwd} workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
       <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
       <Box flexDirection="row" height={layout.mainHeight}>
         <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
@@ -2750,6 +2754,8 @@ export function buildCommandMenuChoice(input: {
   state: CommandMenuState;
   diagnostics: RuntimeDiagnostics;
   mcpRuntime?: McpRuntime;
+  statuslineElements: StatusLineElement[];
+  setStatuslineElements: (elements: StatusLineElement[]) => void;
   setCommandMenu: (state: CommandMenuState | undefined) => void;
   closeCommandMenu: (message: string) => void;
   runMcpAction: (action: McpMenuAction, serverName?: string) => Promise<void>;
@@ -2761,6 +2767,13 @@ export function buildCommandMenuChoice(input: {
   if (state.kind === "skills:detail") {
     const skill = input.diagnostics.skills.find((candidate) => candidate.name === state.skillName);
     return skill ? buildSkillsDetailChoice({ skill, onBack: () => input.setCommandMenu({ kind: "skills:list" }), onCancel: () => input.closeCommandMenu("Skills dialog dismissed") }) : undefined;
+  }
+  if (state.kind === "statusline") {
+    return buildStatuslineChoice({
+      selectedElements: input.statuslineElements,
+      onChange: input.setStatuslineElements,
+      onClose: () => input.closeCommandMenu("Statusline dialog dismissed")
+    });
   }
   if (state.kind === "mcp:list") {
     return buildMcpListChoice({ servers: input.diagnostics.mcp, onSelect: (serverName) => input.setCommandMenu({ kind: "mcp:server", serverName }), onAction: (action, serverName) => { void input.runMcpAction(action, serverName); }, onCancel: () => input.closeCommandMenu("MCP dialog dismissed") });
@@ -2791,7 +2804,7 @@ function helpDetailText(): string {
     "  /mcp list and manage MCP servers",
     "  /mcp enable|disable [server-name] toggle MCP servers",
     "  /mcp reconnect <server-name> reconnect an MCP server",
-    "  /statusline [elements|default] customize the bottom statusline",
+    "  /statusline configure the bottom statusline",
     "  /clear clear visible context · /resume [session] resume",
     "  /new new session · /model <model> switch · /permissions permissions"
   ].join("\n");

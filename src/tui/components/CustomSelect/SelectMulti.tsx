@@ -63,7 +63,15 @@ export function SelectMulti<T>({
     setSubmitFocused(false);
   };
   useInput((input, key, event) => {
-    if (isDisabled || !submitFocused || !submitButtonText) return;
+    if (isDisabled) return;
+    if (!submitFocused && (input === " " || event.keypress.name === "space")) {
+      const focusedOption = options.find((option) => option.value === focusedValue);
+      if (!focusedOption || focusedOption.disabled || focusedOption.type === "input" || focusedOption.multiSelectAction) return;
+      toggle(focusedOption.value);
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (!submitFocused || !submitButtonText) return;
     if (key.return || input === "\r" || input === "\n") {
       onSubmit(selected);
       event.stopImmediatePropagation();
@@ -83,7 +91,7 @@ export function SelectMulti<T>({
       onDownFromLastItem?.();
       event.stopImmediatePropagation();
     }
-  }, { isActive: !isDisabled && submitFocused && Boolean(submitButtonText) });
+  }, { isActive: !isDisabled });
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Select

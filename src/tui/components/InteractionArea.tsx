@@ -26,6 +26,7 @@ export type InteractionChoice = {
   hidePromptInput?: boolean;
   onCancel?: () => void;
   onSubmit: (value: string) => void;
+  onChangeValues?: (values: string[]) => void;
   onSubmitValues?: (values: string[]) => void;
   onPromptSubmit?: (text: string, focusedValue?: string, images?: PromptInputImageAttachment[]) => void;
   editInputText?: (text: string) => Promise<{ content: string | null; error?: string }> | { content: string | null; error?: string };
@@ -294,6 +295,7 @@ export function InteractionArea({
                     defaultValue={choice.selectedValues}
                     visibleOptionCount={choice.visibleOptionCount ?? 7}
                     submitButtonText={choice.submitButtonText ?? "Done"}
+                    onChange={choice.onChangeValues}
                     onSubmit={(values) => choice.onSubmitValues?.(values)}
                     onAction={(value) => choice.onSubmit(String(value))}
                     onCancel={choice.onCancel}

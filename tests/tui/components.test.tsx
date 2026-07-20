@@ -3026,6 +3026,41 @@ it("renders CustomSelect multi-select checkmarks without mutating option labels"
   output.cleanup();
 });
 
+it("toggles CustomSelect multi-select options with space without submitting", async () => {
+  const changes: string[][] = [];
+  const submissions: string[][] = [];
+  const output = render(
+    <RefableStdinSelectMultiProbe
+      options={[
+        { label: "Mode", value: "mode" },
+        { label: "Permission", value: "permission" }
+      ]}
+      defaultValue={["mode"]}
+      submitButtonText="Close"
+      onChange={(values) => changes.push(values)}
+      onSubmit={(values) => submissions.push(values)}
+    />
+  );
+
+  await settleInkInput();
+  output.stdin.write(" ");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /\[ \] Mode/);
+  assert.deepEqual(changes, [[]]);
+  assert.deepEqual(submissions, []);
+
+  output.stdin.write("j");
+  await settleInkInput();
+  output.stdin.write(" ");
+  await settleInkInput();
+  assert.match(output.lastFrame() ?? "", /\[✓\] Permission/);
+  assert.deepEqual(changes, [[], ["permission"]]);
+  assert.deepEqual(submissions, []);
+
+  output.unmount();
+  output.cleanup();
+});
+
 it("keeps CustomSelect input cursor position across typed updates", async () => {
   let latest = "";
   const submitted: string[] = [];

@@ -37,6 +37,12 @@ describe("command registry", () => {
     assert.equal(commandDefinitions().find((command) => command.name === "plan")?.argumentHint, "[open|<description>]");
   });
 
+  it("exposes /statusline as an interactive command without argument hints", () => {
+    const definition = commandDefinitions().find((command) => command.name === "statusline");
+    assert.equal(definition?.description, "Configure bottom statusline elements");
+    assert.equal(definition?.argumentHint, undefined);
+  });
+
   it("documents /mcp list and actions", () => {
     const definition = commandDefinitions().find((command) => command.name === "mcp");
     assert.equal(definition?.description, "List and manage MCP servers");

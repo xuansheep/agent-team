@@ -29,7 +29,7 @@ const definitions: CommandDefinition[] = [
   { name: "plan", description: "Enter Plan Mode or show the current plan", argumentHint: "[open|<description>]", parse: (args) => ({ type: "plan", args, behavior: "enter_or_show_plan" }) },
   { name: "resume", description: "Resume a session", argumentHint: "<session>", parse: (args) => ({ type: "resume", args, runId: args[0] }) },
   { name: "skills", description: "List available skills", argumentHint: "[refresh]", parse: (args) => ({ type: "skills", args }) },
-  { name: "statusline", description: "Customize bottom statusline elements", argumentHint: "[mode,permission,workflow,run,selection,loading|default]", parse: (args) => ({ type: "statusline", args }) }
+  { name: "statusline", description: "Configure bottom statusline elements", parse: (args) => ({ type: "statusline", args }) }
 ];
 
 const definitionByName = new Map(definitions.map((definition) => [definition.name, definition]));
