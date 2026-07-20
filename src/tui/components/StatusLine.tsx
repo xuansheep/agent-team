@@ -1,13 +1,12 @@
-import { effectiveModelTokens } from "../../model/usage.js";
 import type { ModelUsageTotals } from "../../model/usage.js";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
 import type { TuiMode } from "../state.js";
 import { Box, Text } from "../ink.js";
 
-export type StatusLineElement = "mode" | "permission" | "workflow" | "run" | "tokens" | "requests" | "selection" | "loading";
+export type StatusLineElement = "mode" | "permission" | "workflow" | "run" | "tokens" | "cache" | "requests" | "selection" | "loading";
 
-export const defaultStatusLineElements: StatusLineElement[] = ["mode", "workflow", "run", "tokens", "requests", "selection"];
-export const availableStatusLineElements: StatusLineElement[] = ["mode", "permission", "workflow", "run", "tokens", "requests", "selection", "loading"];
+export const defaultStatusLineElements: StatusLineElement[] = ["mode", "workflow", "run", "tokens", "cache", "requests", "selection"];
+export const availableStatusLineElements: StatusLineElement[] = ["mode", "permission", "workflow", "run", "tokens", "cache", "requests", "selection", "loading"];
 
 export function StatusLine({
   mode,
@@ -71,7 +70,13 @@ function statusLinePart(element: StatusLineElement, input: {
   if (element === "permission") return [`permission ${permissionModeLabel(input.permissionMode)}`];
   if (element === "workflow") return [`workflow ${input.workflowId ?? "unselected"}`];
   if (element === "run") return input.runId ? [`run ${input.runId}`] : [];
-  if (element === "tokens") return [`tokens ${formatTokenCount(effectiveModelTokens(input.sessionUsage))}`];
+  if (element === "tokens") return [`tokens I/O ${formatTokenCount(input.sessionUsage.inputTokens)}/${formatTokenCount(input.sessionUsage.outputTokens)}`];
+  if (element === "cache") {
+    const inputTokens = Math.max(0, input.sessionUsage.inputTokens);
+    const cachedInputTokens = Math.max(0, input.sessionUsage.cachedInputTokens);
+    const hitRate = inputTokens === 0 ? 0 : Math.min(100, Math.round((cachedInputTokens / inputTokens) * 100));
+    return [`cache tokens ${formatTokenCount(cachedInputTokens)} (${hitRate}%)`];
+  }
   if (element === "requests") return [`requests ${input.modelRequestCount.toLocaleString("en-US")}`];
   if (element === "selection") return input.hasSelection ? ["selection active"] : [];
   if (element === "loading") return input.isLoading ? ["running"] : [];

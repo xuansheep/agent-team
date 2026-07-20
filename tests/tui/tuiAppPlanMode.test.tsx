@@ -144,18 +144,18 @@ describe("TuiApp global Plan Mode", () => {
     const engine = { async startInteractive() { return fakeSession(); } };
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
 
-    await sendTuiLine(output, "/statusline mode,permission");
+    await sendTuiLine(output, "/statusline mode,permission,cache");
     await waitForFrame(output, /Statusline updated/);
     const frame = output.lastFrame() ?? "";
 
-    assert.match(frame, /mode Default \| permission default/);
+    assert.match(frame, /mode Default \| permission default \| cache tokens 0 \(0%\)/);
     assert.doesNotMatch(frame.split("\n").at(-2) ?? "", /workflow delivery/);
 
     output.unmount();
     output.cleanup();
   });
 
-  it("tracks effective tokens and successful model responses across clear", async () => {
+  it("tracks token I/O, cache metrics, and successful model responses across clear", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const engine = { async startInteractive() { return fakeSession(); } };
     const provider: ModelProvider = {
@@ -170,11 +170,11 @@ describe("TuiApp global Plan Mode", () => {
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Audit this session.");
-    await waitForFrame(output, /tokens 12\.3K \| requests 1/);
+    await waitForFrame(output, /tokens I\/O 15K\/300 \| cache tokens 3K \(20%\)/);
 
     await sendTuiLine(output, "/clear");
     await settleTuiWork();
-    assert.match(output.lastFrame() ?? "", /tokens 12\.3K \| requests 1/);
+    assert.match(output.lastFrame() ?? "", /tokens I\/O 15K\/300 \| cache tokens 3K \(20%\)/);
 
 
     output.unmount();
@@ -190,10 +190,11 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Space to enable or disable items/);
     let frame = output.lastFrame() ?? "";
 
-    for (const element of ["mode", "permission", "workflow", "run", "tokens", "requests", "selection", "loading"]) {
+    for (const element of ["mode", "permission", "workflow", "run", "tokens I/O", "cache tokens", "requests", "selection", "loading"]) {
       assert.match(frame, new RegExp(`\\[[ ✓]\\] ${element}`));
     }
     assert.match(frame, /\[✓\] mode/);
+    assert.match(frame, /\[✓\] cache tokens/);
     assert.match(frame, /\[ \] permission/);
 
     output.stdin.write(" ");
@@ -2596,6 +2597,34 @@ describe("TuiApp global Plan Mode", () => {
   });
 
 
+  it("sorts mixed resume entries by recent activity and timestamps session and run labels", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+    await store.savePlanState("session-planning", {
+      mode: "planning",
+      sessionId: "session-planning",
+      planFilePath: getPlanFilePath("session-planning", cwd),
+      prePlanMode: "default",
+      originalInput: { request: "session request" }
+    });
+    const engine = {
+      async listRuns() {
+        return [{ runId: "run-future", workflowId: "delivery", status: "completed", updatedAt: "2099-12-31T23:59:00", inputPreview: "orphan request" }];
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
+
+    await sendTuiLine(output, "/resume");
+    await waitForFrame(output, /Resume workflow run/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /> 1\. 12-31 23:59 delivery completed orphan request/);
+    assert.match(frame, /2\. \d{2}-\d{2} \d{2}:\d{2} session planning session request/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("restores waiting Plan Mode sessions from /resume without starting workflow", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const planFilePath = getPlanFilePath("session-plan", cwd);
@@ -2620,13 +2649,14 @@ describe("TuiApp global Plan Mode", () => {
 
     await sendTuiLine(output, "/resume");
     await waitForFrame(output, /Resume workflow run/);
+    assert.match(output.lastFrame() ?? "", /\d{2}-\d{2} \d{2}:\d{2} session waiting_approval Resume this/);
     output.stdin.write("\r");
     await settleTuiWork();
 
     await waitForFrame(output, /Ready to code\?/);
     assert.equal(starts, 0);
     assert.equal(resumes, 0);
-    assert.match(output.lastFrame() ?? "", /tokens 12\.3K \| requests 1/);
+    assert.match(output.lastFrame() ?? "", /tokens I\/O 15K\/300 \| cache tokens 3K \(20%\)/);
 
     output.unmount();
     output.cleanup();

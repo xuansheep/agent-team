@@ -460,7 +460,7 @@ describe("PromptInput component", () => {
 
 
 
-  it("renders current-session effective tokens and model response count", () => {
+  it("renders current-session input, output, cache tokens, and model response count", () => {
     const output = render(
       <StatusLine
         mode="input"
@@ -470,15 +470,68 @@ describe("PromptInput component", () => {
         hasSelection={false}
         sessionUsage={{ inputTokens: 15_000, cachedInputTokens: 3_000, outputTokens: 300, totalTokens: 15_300 }}
         modelRequestCount={1_234}
-        elements={["tokens", "requests"]}
+        elements={["tokens", "cache", "requests"]}
       />
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /tokens 12\.3K/);
+    assert.match(frame, /tokens I\/O 15K\/300/);
+    assert.match(frame, /cache tokens 3K \(20%\)/);
     assert.match(frame, /requests 1,234/);
     output.unmount();
     output.cleanup();
+  });
+
+  it("configures token I/O and cache metrics independently and handles zero input", () => {
+    const tokenOutput = render(
+      <StatusLine
+        mode="input"
+        permissionMode="default"
+        workflowId="delivery"
+        isLoading={false}
+        hasSelection={false}
+        sessionUsage={{ inputTokens: 0, cachedInputTokens: 100, outputTokens: 25, totalTokens: 25 }}
+        modelRequestCount={0}
+        elements={["tokens"]}
+      />
+    );
+    assert.match(tokenOutput.lastFrame() ?? "", /tokens I\/O 0\/25/);
+    assert.doesNotMatch(tokenOutput.lastFrame() ?? "", /cache tokens/);
+    tokenOutput.unmount();
+    tokenOutput.cleanup();
+
+    const cacheOutput = render(
+      <StatusLine
+        mode="input"
+        permissionMode="default"
+        workflowId="delivery"
+        isLoading={false}
+        hasSelection={false}
+        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 25, totalTokens: 25 }}
+        modelRequestCount={0}
+        elements={["cache"]}
+      />
+    );
+    assert.match(cacheOutput.lastFrame() ?? "", /cache tokens 0 \(0%\)/);
+    assert.doesNotMatch(cacheOutput.lastFrame() ?? "", /tokens I\/O/);
+    cacheOutput.unmount();
+    cacheOutput.cleanup();
+
+    const roundedCacheOutput = render(
+      <StatusLine
+        mode="input"
+        permissionMode="default"
+        workflowId="delivery"
+        isLoading={false}
+        hasSelection={false}
+        sessionUsage={{ inputTokens: 3, cachedInputTokens: 1, outputTokens: 0, totalTokens: 3 }}
+        modelRequestCount={0}
+        elements={["cache"]}
+      />
+    );
+    assert.match(roundedCacheOutput.lastFrame() ?? "", /cache tokens 1 \(33%\)/);
+    roundedCacheOutput.unmount();
+    roundedCacheOutput.cleanup();
   });
 
   it("renders an empty shell prompt with placeholder text", () => {
@@ -7486,6 +7539,43 @@ describe("TuiApp", () => {
 
 
 
+  it("renders the timestamped resume picker in the reusable half-screen layout", async (t) => {
+
+    const stdoutRows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+    Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
+    t.after(() => {
+      if (stdoutRows) Object.defineProperty(process.stdout, "rows", stdoutRows);
+      else Reflect.deleteProperty(process.stdout, "rows");
+    });
+
+    const engine = {
+
+      async listRuns() {
+
+        return Array.from({ length: 12 }, (_, index) => {
+          const ordinal = String(index + 1).padStart(2, "0");
+          return { runId: `run-${ordinal}`, workflowId: "delivery", status: "completed", updatedAt: "2026-06-24T07:08:00", inputPreview: `request-${ordinal}` };
+        });
+
+      }
+
+    };
+
+    const output = render(<TuiApp cwd="D:\CodeAI\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+    await settleInkInput();
+    await sendTuiLine(output, "/resume");
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Resume workflow run/);
+    assert.match(frame, /06-24 07:08 delivery completed request-01/);
+
+    output.unmount();
+    output.cleanup();
+
+  });
+
+
   it("closes the resume picker immediately after selecting a session", async () => {
 
     const resumed: string[] = [];
@@ -7630,7 +7720,7 @@ describe("TuiApp", () => {
 
     await sendTuiLine(output, "/resume");
 
-    assert.match(output.lastFrame() ?? "", /> 1\. delivery completed alpha/);
+    assert.match(output.lastFrame() ?? "", /> 1\. \d{2}-\d{2} \d{2}:\d{2} delivery completed beta/);
 
 
 
@@ -7638,7 +7728,7 @@ describe("TuiApp", () => {
 
     await settleInkInput();
 
-    assert.match(output.lastFrame() ?? "", /> 2\. delivery completed beta/);
+    assert.match(output.lastFrame() ?? "", /> 2\. \d{2}-\d{2} \d{2}:\d{2} delivery completed alpha/);
 
     assert.doesNotMatch(output.lastFrame() ?? "", /> \/resume/);
 
@@ -7652,7 +7742,7 @@ describe("TuiApp", () => {
 
 
 
-    assert.deepEqual(resumed, ["run-beta"]);
+    assert.deepEqual(resumed, ["run-alpha"]);
 
     assert.doesNotMatch(output.lastFrame() ?? "", /Resume workflow run/);
 
@@ -8264,14 +8354,14 @@ describe("TuiApp", () => {
       await settleInkInput();
       assert.equal(autoCopied, 1);
       assert.equal(fakeInk.selected, true);
-      assert.match(output.lastFrame() ?? "", /selection active/);
+      assert.match(output.lastFrame() ?? "", /selection\s+active/);
 
       output.stdin.write("\u001b[99;9u");
       await settleTerminalEscape();
       assert.equal(copied, 1);
       assert.equal(exited, 0);
       assert.equal(fakeInk.selected, false);
-      assert.doesNotMatch(output.lastFrame() ?? "", /selection active/);
+      assert.doesNotMatch(output.lastFrame() ?? "", /selection\s+active/);
 
       fakeInk.selected = true;
       for (const listener of fakeInk.listeners) listener();

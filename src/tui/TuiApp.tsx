@@ -1381,7 +1381,9 @@ ${message.detailText}` : ""}` }
       const orphanRunEntries = runs
         .filter((run) => !linkedRunIds.has(run.runId))
         .map((run) => ({ ...run, kind: "run" as const, id: `run:${run.runId}` }));
-      const resumeRuns = [...sessionEntries, ...orphanRunEntries].slice(0, 30);
+      const resumeRuns = [...sessionEntries, ...orphanRunEntries]
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || right.id.localeCompare(left.id))
+        .slice(0, 30);
       if (!resumeRuns.length) {
         setState((current) => ({ ...current, mode: "input", resumeRuns: [], error: "No sessions found" }));
         return;
@@ -2283,11 +2285,13 @@ function planLogMessagesFromTranscript(messages: ModelMessage[]): TuiLogMessage[
   return logs;
 }
 function resumeEntryLabel(entry: TuiState["resumeRuns"][number]): string {
+  const updatedAt = new Date(entry.updatedAt);
+  const timestamp = `${String(updatedAt.getMonth() + 1).padStart(2, "0")}-${String(updatedAt.getDate()).padStart(2, "0")} ${String(updatedAt.getHours()).padStart(2, "0")}:${String(updatedAt.getMinutes()).padStart(2, "0")}`;
   if (entry.kind === "session") {
     const status = entry.planMode ?? entry.status ?? "session";
-    return `session ${status} ${entry.inputPreview || entry.sessionId}`;
+    return `${timestamp} session ${status} ${entry.inputPreview || entry.sessionId}`;
   }
-  return `${entry.workflowId} ${entry.status} ${entry.inputPreview || entry.runId}`;
+  return `${timestamp} ${entry.workflowId} ${entry.status} ${entry.inputPreview || entry.runId}`;
 }
 
 function inputPreview(input: unknown): string {
@@ -2691,7 +2695,7 @@ function buildActiveChoice(input: {
       value: run.id
     }));
     const selectedValue = options[0]?.value ?? "";
-    return { title: "Resume workflow run", options, selectedValue, visibleOptionCount: 10, onSubmit: input.resolveResume };
+    return { title: "Resume workflow run", placement: "half-screen", options, selectedValue, onSubmit: input.resolveResume };
   }
   if (input.mode === "confirm_new") {
     const options = [
