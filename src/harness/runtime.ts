@@ -3,6 +3,7 @@ import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelMessage, ModelProvider, ModelResponse, ModelToolCall } from "../providers/types.js";
 import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { hasModelUsage } from "../model/usage.js";
+import { contextTokensFromUsage, estimateModelMessageTokens, estimateModelMessagesTokens } from "../model/contextUsage.js";
 import { executeTool, toolFailureResult } from "../tools/errors.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { Tool, ToolResult } from "../tools/types.js";
@@ -67,16 +68,48 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   });
   const messages: ModelMessage[] = [...baseMessages, ...(options.dialogueMessages ?? [])];
   const baseMessageCount = baseMessages.length;
+  const dialogueMessageCount = () => messages.length - baseMessageCount;
+  const previousContext = await options.store.latestNodeContext(options.runId, options.node.id, attempt);
+  let contextTokens = previousContext && previousContext.dialogue_message_count <= dialogueMessageCount()
+    ? previousContext.context_tokens
+    : undefined;
+  const publishContext = async () => {
+    if (contextTokens === undefined) return;
+    await appendRuntimeEvent(options, {
+      type: "node_context_updated",
+      node_id: options.node.id,
+      attempt,
+      activation: options.activation,
+      context_tokens: contextTokens,
+      dialogue_message_count: dialogueMessageCount()
+    });
+  };
+  if (contextTokens !== undefined && previousContext) {
+    const hasNewDialogue = previousContext.dialogue_message_count < dialogueMessageCount();
+    if (hasNewDialogue) {
+      contextTokens += estimateModelMessagesTokens(messages.slice(baseMessageCount + previousContext.dialogue_message_count));
+    }
+    if (hasNewDialogue || (previousContext.activation ?? 1) !== (options.activation ?? 1)) await publishContext();
+  }
+
   const turnExecutor = new RuntimeTurnExecutor();
   let resultRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
-  const appendDialogueMessage = async (message: ModelMessage) => {
+  const appendDialogueMessage = async (message: ModelMessage, includedInLatestResponse = false) => {
     messages.push(message);
     await options.onDialogueMessage?.(message);
     await options.onDialogueMessages?.(messages.slice(baseMessageCount));
+    if (contextTokens === undefined) return;
+    if (!includedInLatestResponse) contextTokens += estimateModelMessageTokens(message);
+    await publishContext();
   };
+  const dialogueCountBeforeReconcile = dialogueMessageCount();
   if (await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables)) {
     await options.onDialogueMessages?.(messages.slice(baseMessageCount));
+    if (contextTokens !== undefined) {
+      contextTokens += estimateModelMessagesTokens(messages.slice(baseMessageCount + dialogueCountBeforeReconcile));
+      await publishContext();
+    }
   }
   for (;;) {
     options.abortSignal?.throwIfAborted();
@@ -126,13 +159,19 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       stop_reason: response.stopReason
     });
     await appendModelUsageEvent(options, attempt, options.model, response);
+    const responseContextTokens = contextTokensFromUsage(response.usage);
+    const responseIncludedInUsage = responseContextTokens !== undefined;
+    if (responseContextTokens !== undefined) {
+      contextTokens = responseContextTokens;
+      await publishContext();
+    }
     await streamBatcher.drain();
     options.abortSignal?.throwIfAborted();
     if (!streamed) await appendNonStreamingResponseEvents(options, attempt, response);
     if (response.tool_calls?.length) {
       const submittedResult = response.tool_calls.find((call) => call.name === submitNodeResultTool.name);
       if (submittedResult) {
-        await appendDialogueMessage({ role: "assistant", content: assistantToolCallContent(response.content), tool_calls: [submittedResult] });
+        await appendDialogueMessage({ role: "assistant", content: assistantToolCallContent(response.content), tool_calls: [submittedResult] }, responseIncludedInUsage);
         await appendDialogueMessage(submitNodeResultToolMessage(submittedResult.id));
         return mergeArtifactDeliverables(nodeResultSchema.parse(submittedResult.input), artifactDeliverables);
       }
@@ -142,7 +181,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         await appendDialogueMessage({ role: "user", content: toolPreambleRepairPrompt(response.content, response.tool_calls) });
         continue;
       }
-      await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls });
+      await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls }, responseIncludedInUsage);
       for (const call of response.tool_calls) {
         options.abortSignal?.throwIfAborted();
         options.tools.activateSkillsForInput(call.input, options.cwd);
@@ -256,12 +295,12 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     if (!response.content) throw new Error(`Node ${options.node.id} returned no content and no tool calls`);
     try {
       const result = mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
-      await appendDialogueMessage({ role: "assistant", content: response.content });
+      await appendDialogueMessage({ role: "assistant", content: response.content }, responseIncludedInUsage);
       return result;
     } catch (error) {
       if (resultRepairAttempts >= 1) throw new Error(`Invalid NodeResult after repair attempt: ${errorMessage(error)}`, { cause: error });
       resultRepairAttempts += 1;
-      await appendDialogueMessage({ role: "assistant", content: response.content });
+      await appendDialogueMessage({ role: "assistant", content: response.content }, responseIncludedInUsage);
       await appendDialogueMessage({ role: "user", content: nodeResultRepairPrompt(error) });
       continue;
     }

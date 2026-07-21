@@ -58,12 +58,16 @@ export function resetTuiRunState(state: TuiState, input: { workflowId: string; r
 export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState {
   const next: TuiState = { ...state, timeline: [...state.timeline, event.type] };
   switch (event.type) {
-    case "model_response_recorded":
+    case "model_response_recorded": {
+      const withModel = updateNodeDetails(next, event.node_id, event.attempt, event.activation, { model: event.model });
       return {
-        ...next,
-        sessionUsage: addModelUsage(next.sessionUsage, event.usage),
-        modelRequestCount: next.modelRequestCount + 1
+        ...withModel,
+        sessionUsage: addModelUsage(withModel.sessionUsage, event.usage),
+        modelRequestCount: withModel.modelRequestCount + 1
       };
+    }
+    case "node_context_updated":
+      return updateNodeDetails(next, event.node_id, event.attempt, event.activation, { contextTokens: event.context_tokens });
     case "run_started":
       return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) }, event);
     case "user_message":
@@ -203,11 +207,32 @@ reason：${event.reason}`
 }
 function upsertNode(state: TuiState, nodeId: string, attempt: number, activation: number, status: TuiNodeState["status"]): TuiState {
   const existing = state.nodes.findIndex((node) => node.nodeId === nodeId && node.attempt === attempt);
-  const node: TuiNodeState = { nodeId, attempt, activation, status };
+  const previous = existing === -1 ? undefined : state.nodes[existing];
+  const sameActivation = previous !== undefined && (previous.activation ?? 1) === activation;
+  const node: TuiNodeState = sameActivation
+    ? { ...previous, nodeId, attempt, activation, status }
+    : { nodeId, attempt, activation, status };
   if (existing === -1) return { ...state, nodes: [...state.nodes, node] };
   const nodes = [...state.nodes];
   nodes[existing] = node;
   return { ...state, nodes };
+}
+function updateNodeDetails(
+  state: TuiState,
+  nodeId: string,
+  attempt: number,
+  activation: number | undefined,
+  details: Partial<Pick<TuiNodeState, "model" | "contextTokens">>
+): TuiState {
+  for (let index = state.nodes.length - 1; index >= 0; index -= 1) {
+    const node = state.nodes[index];
+    if (node.nodeId !== nodeId || node.attempt !== attempt) continue;
+    if (activation !== undefined && (node.activation ?? 1) !== activation) continue;
+    const nodes = [...state.nodes];
+    nodes[index] = { ...node, ...details };
+    return { ...state, nodes };
+  }
+  return state;
 }
 function appendModelStream(state: TuiState, nodeId: string, attempt: number, activation: number, text: string): TuiState {
   const existing = state.modelStreams.findIndex((stream) => stream.nodeId === nodeId && stream.attempt === attempt && (stream.activation ?? 1) === activation);

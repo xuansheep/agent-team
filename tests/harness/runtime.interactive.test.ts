@@ -54,6 +54,99 @@ describe("runNode interactive permissions", () => {
     assert.equal(executions, 0);
   });
 
+  it("recalibrates node context from usage and estimates messages between responses", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-context-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    tools.add({
+      name: "Echo",
+      description: "returns test output",
+      input_schema: {},
+      isReadOnly: () => true,
+      async execute() {
+        return { output: "abcdefgh".repeat(10) };
+      }
+    });
+    let requests = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        requests += 1;
+        if (requests === 1) {
+          return {
+            content: "Running Echo.",
+            tool_calls: [{ id: "tool-1", name: "Echo", input: {} }],
+            usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 }
+          };
+        }
+        return {
+          content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }),
+          usage: { inputTokens: 180, outputTokens: 20, totalTokens: 200 }
+        };
+      }
+    };
+
+    await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["Echo"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1
+    });
+
+    const contexts = (await store.loadEvents(run.runId)).filter((event) => event.type === "node_context_updated");
+    assert.ok(contexts.some((event) => event.context_tokens > 120));
+    assert.equal(contexts.at(-1)?.context_tokens, 200);
+    assert.equal((await store.latestNodeContext(run.runId, "dev", 1))?.context_tokens, 200);
+  });
+
+  it("republishes restored context before a continued node activation sends its first request", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-restored-context-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    await store.appendEvent(run.runId, {
+      type: "node_context_updated",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      context_tokens: 100,
+      dialogue_message_count: 1
+    });
+    let restoredBeforeRequest = false;
+    const provider: ModelProvider = {
+      async generate() {
+        const restored = await store.latestNodeContext(run.runId, "dev", 1);
+        restoredBeforeRequest = restored?.activation === 2 && restored.context_tokens === 100;
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 2,
+      dialogueMessages: [{ role: "user", content: "continue" }]
+    });
+
+    assert.equal(restoredBeforeRequest, true);
+  });
+
   it("refuses to replay an equivalent non-read-only tool call with an unknown outcome", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-in-doubt-tool-"));
     const store = new RunStore(root);

@@ -14,7 +14,7 @@ import { QueryEngine } from "../kernel/queryEngine.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
-import { getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
+import { getModelContextCompression, getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { addModelUsage, emptyModelUsage } from "../model/usage.js";
 import type { ModelUsage } from "../model/usage.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
@@ -1603,11 +1603,15 @@ ${message.detailText}` : ""}` }
       const provider = config.providers[node.provider];
       const role = config.roles[node.role];
       const registry = modelRegistryFromProviderConfig(provider);
+      const configuredModel = resolveModelForWorkflowNode({ node, role, provider, permissionMode: node.permission_mode, planModel: provider.plan_model, registry });
+      const runtimeModel = [...state.nodes].reverse().find((item) => item.nodeId === node.id)?.model;
+      const model = runtimeModel ?? configuredModel;
       return {
         id: node.id,
         role: node.role,
-        model: resolveModelForWorkflowNode({ node, role, provider, permissionMode: node.permission_mode, planModel: provider.plan_model, registry }),
-        effort: resolveEffortForWorkflowNode({ node, provider })
+        model,
+        effort: resolveEffortForWorkflowNode({ node, provider }),
+        contextCompression: getModelContextCompression(model, registry)
       };
     })
     : undefined;

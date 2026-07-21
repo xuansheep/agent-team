@@ -1,7 +1,9 @@
 import type { BorderStyle } from "../../ink/render-border.js";
+import { DEFAULT_MODEL_CONTEXT_COMPRESSION } from "../../model/modelRegistry.js";
 import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.js";
 import { Box, Text } from "../ink.js";
 import { TuiNodeState, TuiWorkflowNodeState } from "../state.js";
+import { formatTokenCount } from "./StatusLine.js";
 
 const RUNNING_TOP_RIGHT_FRAMES = ["◝", "◜", "◟", "◞"] as const;
 
@@ -30,8 +32,8 @@ export function WorkflowFlowChart({
   const [animationRef, animationTime] = useAnimationFrame(nodes.some((node) => node.status === "running") ? 120 : null);
   const runningBorder: BorderStyle = { ...NODE_BORDER, topRight: RUNNING_TOP_RIGHT_FRAMES[Math.floor(animationTime / 120) % RUNNING_TOP_RIGHT_FRAMES.length] };
   const rows = workflowNodes?.length
-    ? workflowNodes.map((node) => ({ id: node.id, model: node.model, effort: node.effort, state: latestNodeState(nodes, node.id) }))
-    : nodes.map((node) => ({ id: node.nodeId, model: undefined, effort: undefined, state: node }));
+    ? workflowNodes.map((node) => ({ id: node.id, model: node.model, effort: node.effort, contextCompression: node.contextCompression, state: latestNodeState(nodes, node.id) }))
+    : nodes.map((node) => ({ id: node.nodeId, model: node.model, effort: undefined, contextCompression: DEFAULT_MODEL_CONTEXT_COMPRESSION, state: node }));
 
   return (
     <Box ref={animationRef} flexWrap="wrap" flexShrink={0}>
@@ -39,11 +41,16 @@ export function WorkflowFlowChart({
         const active = row.id === currentNodeId;
         const running = row.state?.status === "running";
         const color = nodeColor(row.state, active);
+        const contextTokens = Math.max(0, row.state?.contextTokens ?? 0);
+        const contextCompression = row.contextCompression ?? DEFAULT_MODEL_CONTEXT_COMPRESSION;
+        const contextPercent = Math.min(100, Math.max(0, Math.round((contextTokens / contextCompression) * 100)));
+        const contextText = `context: ${formatTokenCount(contextTokens).toLowerCase()}/${formatTokenCount(contextCompression).toLowerCase()} (${contextPercent}%)`;
         return (
           <Box key={row.id} alignItems="center">
             <Box borderStyle={running ? runningBorder : "single"} borderColor={color} paddingX={1} minWidth={18} flexDirection="column">
               <Text color={color} bold={active} dimColor={!row.state}>{row.id}</Text>
               {row.model ? <Text color={color} dimColor={!row.state}>model: {row.model}{row.effort ? " " + row.effort : ""}</Text> : null}
+              <Text color={color} dimColor={!row.state}>{contextText}</Text>
               <Text color={color} dimColor={!row.state}>{statusLabel(row.state)}</Text>
             </Box>
             {index < rows.length - 1 ? <Text dimColor> -&gt; </Text> : null}

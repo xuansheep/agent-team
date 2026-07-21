@@ -2501,7 +2501,7 @@ describe("Workflow node status component", () => {
 
 
 
-        workflowNodes={[{ id: "product", role: "product", model: "gpt5.5", effort: "high" }, { id: "dev", role: "developer", model: "claude-dev", effort: "low" }, { id: "test", role: "tester" }]}
+        workflowNodes={[{ id: "product", role: "product", model: "gpt5.5", effort: "high", contextCompression: 258000 }, { id: "dev", role: "developer", model: "claude-dev", effort: "low", contextCompression: 258000 }, { id: "test", role: "tester", contextCompression: 258000 }]}
 
 
 
@@ -2517,7 +2517,7 @@ describe("Workflow node status component", () => {
 
 
 
-        nodes={[{ nodeId: "dev", attempt: 1, status: "running" }, { nodeId: "product", attempt: 1, status: "success" }]}
+        nodes={[{ nodeId: "dev", attempt: 1, contextTokens: 100000, status: "running" }, { nodeId: "product", attempt: 1, status: "success" }]}
 
 
 
@@ -2662,6 +2662,8 @@ describe("Workflow node status component", () => {
 
 
     assert.match(frame, /model: claude-dev low/);
+    assert.match(frame, /context: 0\/258k \(0%\)/);
+    assert.match(frame, /context: 100k\/258k \(39%\)/);
 
 
 

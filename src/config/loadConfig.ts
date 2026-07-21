@@ -132,11 +132,15 @@ function applyModelSettings(providers: AgentTeamConfig["providers"], models: Res
   return Object.fromEntries(Object.entries(providers).map(([providerId, provider]) => {
     const modelAliases = { ...provider.model_aliases, ...models.aliases };
     const contextWindows = { ...provider.context_windows, ...models.contextWindows };
+    const contextCompression = { ...provider.context_compression, ...models.contextCompression };
     return [providerId, {
       ...provider,
       ...(models.planModel ? { plan_model: models.planModel } : {}),
+      ...(models.defaultContextWindow ? { default_context_window: models.defaultContextWindow } : {}),
+      ...(models.defaultContextCompression ? { default_context_compression: models.defaultContextCompression } : {}),
       ...(Object.keys(modelAliases).length ? { model_aliases: modelAliases } : {}),
-      ...(Object.keys(contextWindows).length ? { context_windows: contextWindows } : {})
+      ...(Object.keys(contextWindows).length ? { context_windows: contextWindows } : {}),
+      ...(Object.keys(contextCompression).length ? { context_compression: contextCompression } : {})
     }];
   }));
 }

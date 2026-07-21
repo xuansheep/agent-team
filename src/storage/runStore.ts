@@ -199,6 +199,15 @@ export class RunStore {
     return events;
   }
 
+  async latestNodeContext(runId: string, nodeId: string, attempt: number): Promise<Extract<StoredEvent, { type: "node_context_updated" }> | undefined> {
+    const events = await this.loadEvents(runId).catch(() => [] as StoredEvent[]);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.type === "node_context_updated" && event.node_id === nodeId && event.attempt === attempt) return event;
+    }
+    return undefined;
+  }
+
   async saveState(runId: string, state: WorkflowState): Promise<void> {
     await this.enqueueRunWrite(runId, async () => {
       const runDir = await this.resolveRunDir(runId);

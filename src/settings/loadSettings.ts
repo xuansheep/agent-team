@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 import { resolveSettings } from "./resolveSettings.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
+import { DEFAULT_MODEL_CONTEXT_COMPRESSION, DEFAULT_MODEL_CONTEXT_WINDOW } from "../model/modelRegistry.js";
 
 export type LoadSettingsOptions = {
   cwd: string;
@@ -127,6 +128,10 @@ function parseSettingsJson(raw: string, path: string): unknown {
 }
 
 export const DEFAULT_USER_SETTINGS = JSON.stringify({
+  models: {
+    defaultContextWindow: DEFAULT_MODEL_CONTEXT_WINDOW,
+    defaultContextCompression: DEFAULT_MODEL_CONTEXT_COMPRESSION
+  },
   providers: {
     default: {
       type: "responses-api",

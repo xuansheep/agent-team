@@ -36,6 +36,51 @@ describe("TUI event adapter", () => {
     assert.deepEqual(reset.sessionUsage, state.sessionUsage);
   });
 
+  it("tracks the latest node model and absolute context without losing them on status changes", () => {
+    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+    state = reduceStoredEvent(state, { type: "node_started", node_id: "dev", attempt: 1, activation: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });
+    state = reduceStoredEvent(state, {
+      type: "model_response_recorded",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      model: "runtime-model",
+      usage: { inputTokens: 90000, outputTokens: 10000, totalTokens: 100000 },
+      ts: "2026-06-23T00:00:01.000Z",
+      seq: 2
+    });
+    state = reduceStoredEvent(state, {
+      type: "node_context_updated",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      context_tokens: 100000,
+      dialogue_message_count: 1,
+      ts: "2026-06-23T00:00:02.000Z",
+      seq: 3
+    });
+    state = reduceStoredEvent(state, {
+      type: "node_completed",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      status: "success",
+      result: {},
+      ts: "2026-06-23T00:00:03.000Z",
+      seq: 4
+    });
+
+    assert.equal(state.nodes[0]?.model, "runtime-model");
+    assert.equal(state.nodes[0]?.contextTokens, 100000);
+    assert.equal(state.nodes[0]?.status, "completed");
+
+    state = reduceStoredEvent(state, { type: "node_started", node_id: "dev", attempt: 1, activation: 2, ts: "2026-06-23T00:00:04.000Z", seq: 5 });
+
+    assert.equal(state.nodes[0]?.model, undefined);
+    assert.equal(state.nodes[0]?.contextTokens, undefined);
+    assert.equal(state.nodes[0]?.status, "running");
+  });
+
   it("groups node attempts and tool calls by runtime events", () => {
 
     let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });

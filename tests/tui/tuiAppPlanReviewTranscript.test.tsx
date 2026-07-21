@@ -12,7 +12,7 @@ describe("TuiApp plan review transcript", () => {
   it("renders restored Plan Mode approvals in the active approval dialog", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-plan-transcript-"));
     const planFilePath = getPlanFilePath("session-plan-transcript", cwd);
-    await writePlan(planFilePath, "# Plan\nreview from restored session\n");
+    await writePlan(planFilePath, "# Plan: review from restored session\n");
     await new SessionStore(join(cwd, ".einsteins", "projects", "tui")).savePlanState("session-plan-transcript", {
       mode: "waiting_approval",
       sessionId: "session-plan-transcript",

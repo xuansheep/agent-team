@@ -48,7 +48,8 @@ function mergeModels(userModels: AgentTeamSettings["models"], projectModels: Pro
   return {
     ...merged,
     aliases: mergeObject(userModels?.aliases, projectModels?.aliases),
-    contextWindows: mergeObject(userModels?.contextWindows, projectModels?.contextWindows)
+    contextWindows: mergeObject(userModels?.contextWindows, projectModels?.contextWindows),
+    contextCompression: mergeObject(userModels?.contextCompression, projectModels?.contextCompression)
   };
 }
 

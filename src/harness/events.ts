@@ -12,6 +12,7 @@ export type HarnessEvent =
   | { type: "model_stream_delta"; node_id: string; attempt: number; activation?: number; text: string }
   | { type: "model_response_recorded"; node_id: string; attempt: number; activation?: number; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "model_usage_recorded"; node_id: string; attempt: number; activation?: number; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
+  | { type: "node_context_updated"; node_id: string; attempt: number; activation?: number; context_tokens: number; dialogue_message_count: number }
   | { type: "tool_invoked"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; input: unknown }
   | { type: "tool_completed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; result: unknown }
   | { type: "tool_failed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; error: string; result?: unknown }

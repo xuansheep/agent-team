@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { getModelContextWindow, resolveModelAlias } from "../../src/model/modelRegistry.js";
+import { DEFAULT_MODEL_CONTEXT_COMPRESSION, DEFAULT_MODEL_CONTEXT_WINDOW, getModelContextCompression, getModelContextWindow, resolveModelAlias } from "../../src/model/modelRegistry.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../../src/model/modelRouting.js";
 
 describe("model routing", () => {
@@ -39,16 +39,28 @@ describe("model routing", () => {
     }), "medium");
   });
 
-  it("resolves aliases and context windows", () => {
+  it("resolves aliases, context windows, and compression thresholds", () => {
     const registry = {
       aliases: { sonnet: "claude-sonnet-4-20250514" },
       contextWindows: { "claude-sonnet-4-20250514": 200000 },
-      models: { "gpt-5": { aliases: ["gpt-latest"], contextWindow: 400000 } }
+      contextCompression: { "claude-sonnet-4-20250514": 180000 },
+      models: { "gpt-5": { aliases: ["gpt-latest"], contextWindow: 400000, contextCompression: 380000 } }
     };
 
     assert.equal(resolveModelAlias("sonnet", registry), "claude-sonnet-4-20250514");
     assert.equal(resolveModelAlias("gpt-latest", registry), "gpt-5");
     assert.equal(getModelContextWindow("sonnet", registry), 200000);
+    assert.equal(getModelContextCompression("sonnet", registry), 180000);
     assert.equal(getModelContextWindow("gpt-latest", registry), 400000);
+    assert.equal(getModelContextCompression("gpt-latest", registry), 380000);
+  });
+
+  it("uses global defaults and caps compression at the model context window", () => {
+    assert.equal(getModelContextWindow("unknown"), DEFAULT_MODEL_CONTEXT_WINDOW);
+    assert.equal(getModelContextCompression("unknown"), DEFAULT_MODEL_CONTEXT_COMPRESSION);
+    assert.equal(getModelContextCompression("small", {
+      contextWindows: { small: 128000 },
+      defaultContextCompression: 258000
+    }), 128000);
   });
 });
