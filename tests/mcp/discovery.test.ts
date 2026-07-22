@@ -36,14 +36,19 @@ describe("MCP deferred discovery protocol", () => {
       messages: [],
       permissions: { deny: ["mcp__docs"] }
     });
-    const messages = withMcpCatalogMessage([{ role: "user", content: "test" }], snapshot);
-    const catalog = String(messages.find((message) => message.metadata?.runtimeAttachment?.type === "mcp_catalog")?.content);
+    const messages = withMcpCatalogMessage([
+      { role: "user", content: "test" },
+      compactSummaryMessage("earlier context")
+    ], snapshot);
+    const catalogMessage = messages.find((message) => message.metadata?.runtimeAttachment?.type === "mcp_catalog");
+    const catalog = String(catalogMessage?.content);
 
     assert.deepEqual(snapshot.deferredToolNames, ["mcp__playwright__navigate"]);
     assert.match(catalog, /<available-deferred-tools>\nmcp__playwright__navigate\n<\/available-deferred-tools>/);
     assert.doesNotMatch(catalog, /Navigate a browser|Search private docs|mcp__docs__search/);
     assert.match(catalog, /late: pending/);
     assert.match(catalog, /broken: failed - badserver/);
+    assert.equal(catalogMessage?.metadata?.runtimeAttachment?.humanTurnCount, 1);
   });
 
   it("restores discovered schemas from durable ToolSearch history and compaction metadata", () => {

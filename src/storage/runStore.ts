@@ -1,6 +1,6 @@
 import { appendFile, mkdir, open, readFile, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { HarnessEvent, StoredEvent } from "../harness/events.js";
 import { ModelMessage } from "../providers/types.js";
 import { WorkflowState } from "../workflow/state.js";
@@ -46,19 +46,49 @@ export type CreateRunOptions = {
   permissionMode?: string;
 };
 
-export type WorkflowDialogueCompaction =
-  | { kind: "micro"; clearedToolCallIds: string[]; replacement: string }
-  | { kind: "full"; summaryMessage: ModelMessage };
+export type WorkflowDialogueWindow = {
+  windowNumber: number;
+  firstWindowId: string;
+  previousWindowId?: string;
+  currentWindowId: string;
+  model?: string;
+  compactionHash?: string;
+  contextWindow?: number;
+  prefixInputTokens?: number;
+};
+
+export type WorkflowDialogueCompaction = {
+  replacementHistory: ModelMessage[];
+  phase: "pre_turn" | "mid_turn";
+  reason: "threshold" | "model_change" | "smaller_context";
+  model: string;
+  compactionHash?: string;
+  contextWindow: number;
+  prefixInputTokens?: number;
+};
 
 export type WorkflowDialogueState = {
   cursor: number;
   messages: ModelMessage[];
+  window: WorkflowDialogueWindow;
 };
 
 type DialogueJournalRecord =
   | ModelMessage
-  | { journal_type: "microcompact"; cleared_tool_call_ids: string[]; replacement: string }
-  | { journal_type: "compact"; summary_message: ModelMessage }
+  | {
+      journal_type: "compacted";
+      replacement_history: ModelMessage[];
+      phase: WorkflowDialogueCompaction["phase"];
+      reason: WorkflowDialogueCompaction["reason"];
+      model: string;
+      compaction_hash?: string;
+      context_window: number;
+      prefix_input_tokens?: number;
+      window_number: number;
+      first_window_id: string;
+      previous_window_id: string;
+      current_window_id: string;
+    }
   | { journal_type: "reconcile"; messages: ModelMessage[] };
 
 export class RunStore {
@@ -207,7 +237,7 @@ export class RunStore {
           : []
       );
       await this.sessionStore.appendWorkflowTranscriptEntries(sessionId, entries);
-      return { cursor: state.cursor, messages: [...state.messages] };
+      return { cursor: state.cursor, messages: [...state.messages], window: { ...state.window } };
     });
   }
 
@@ -221,20 +251,36 @@ export class RunStore {
       const runDir = await this.resolveRunDir(runId);
       const path = dialogueJournalPath(runDir, nodeId, attempt);
       const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, path);
-      const record: DialogueJournalRecord = compaction.kind === "micro"
-        ? {
-            journal_type: "microcompact",
-            cleared_tool_call_ids: [...compaction.clearedToolCallIds],
-            replacement: compaction.replacement
-          }
-        : {
-            journal_type: "compact",
-            summary_message: compaction.summaryMessage
-          };
+      const currentWindow = state.window;
+      const nextWindow: WorkflowDialogueWindow = {
+        windowNumber: currentWindow.windowNumber + 1,
+        firstWindowId: currentWindow.firstWindowId,
+        previousWindowId: currentWindow.currentWindowId,
+        currentWindowId: uuidV7(),
+        model: compaction.model,
+        compactionHash: compaction.compactionHash,
+        contextWindow: compaction.contextWindow,
+        prefixInputTokens: compaction.prefixInputTokens
+      };
+      const record: DialogueJournalRecord = {
+        journal_type: "compacted",
+        replacement_history: [...compaction.replacementHistory],
+        phase: compaction.phase,
+        reason: compaction.reason,
+        model: compaction.model,
+        compaction_hash: compaction.compactionHash,
+        context_window: compaction.contextWindow,
+        prefix_input_tokens: compaction.prefixInputTokens,
+        window_number: nextWindow.windowNumber,
+        first_window_id: nextWindow.firstWindowId,
+        previous_window_id: nextWindow.previousWindowId!,
+        current_window_id: nextWindow.currentWindowId
+      };
       await appendDialogueJournalRecords(path, [record]);
       state.messages = applyDialogueJournalRecord(state.messages, record);
+      state.window = nextWindow;
       state.cursor += 1;
-      return { cursor: state.cursor, messages: [...state.messages] };
+      return { cursor: state.cursor, messages: [...state.messages], window: { ...state.window } };
     });
   }
 
@@ -242,7 +288,7 @@ export class RunStore {
     const runDir = await this.resolveRunDir(runId);
     const state = await readDialogueJournalState(dialogueJournalPath(runDir, nodeId, attempt), cursor);
     if (cursor === undefined) this.dialogueStates.set(`${runId}:${nodeId}:${attempt}`, state);
-    return { cursor: state.cursor, messages: [...state.messages] };
+    return { cursor: state.cursor, messages: [...state.messages], window: { ...state.window } };
   }
 
   async loadWorkflowDialogue(runId: string, nodeId: string, attempt: number, cursor?: number): Promise<ModelMessage[]> {
@@ -301,7 +347,7 @@ export class RunStore {
         const now = new Date().toISOString();
         return persistedWorkflowState({
           ...state,
-          version: 4,
+          version: 5,
           session_id: metadata.sessionId,
           run_id: runId,
           created_at: current?.created_at ?? metadata.createdAt,
@@ -335,31 +381,7 @@ export class RunStore {
     const runDir = await this.resolveRunDir(runId);
     let state = await readJsonWithBackup<WorkflowState>(join(runDir, "state.json"));
     if (!state) throw new Error(`Run ${runId} has no workflow state`);
-    if (state.version === 3) {
-      const lease = await this.acquireRunLease(runId);
-      try {
-        const migrateCheckpoint = async (checkpoint: WorkflowState["resume_checkpoint"]) => {
-          if (!checkpoint) return checkpoint;
-          const messages = checkpoint.dialogue_messages ?? [];
-          const cursor = checkpoint.attempt === undefined ? 0 : await this.syncWorkflowDialogue(runId, checkpoint.node_id, checkpoint.attempt, messages);
-          return { ...checkpoint, dialogue_cursor: cursor, dialogue_messages: undefined };
-        };
-        const nodeCheckpoints: NonNullable<WorkflowState["node_checkpoints"]> = {};
-        for (const [nodeId, checkpoint] of Object.entries(state.node_checkpoints ?? {})) {
-          nodeCheckpoints[nodeId] = (await migrateCheckpoint(checkpoint))!;
-        }
-        state = {
-          ...state,
-          version: 4,
-          resume_checkpoint: await migrateCheckpoint(state.resume_checkpoint),
-          node_checkpoints: nodeCheckpoints
-        };
-        await this.saveState(runId, state);
-      } finally {
-        await lease.release();
-      }
-    }
-    if (state.version !== 4) {
+    if (state.version !== 5) {
       throw new Error(`Unsupported workflow state version ${String((state as { version?: unknown }).version ?? "legacy")}; start a new run`);
     }
     const hydrateCheckpoint = async (checkpoint: WorkflowState["resume_checkpoint"]) => {
@@ -609,7 +631,8 @@ async function readDialogueJournalState(path: string, cursor?: number): Promise<
     if (isErrno(error, "ENOENT")) return "";
     throw error;
   });
-  if (!text.trim()) return { cursor: 0, messages: [] };
+  let window = initialDialogueWindow();
+  if (!text.trim()) return { cursor: 0, messages: [], window };
 
   const lines = text.split("\n");
   let messages: ModelMessage[] = [];
@@ -621,36 +644,60 @@ async function readDialogueJournalState(path: string, cursor?: number): Promise<
     try {
       const record = JSON.parse(line) as DialogueJournalRecord;
       messages = applyDialogueJournalRecord(messages, record);
+      if ("journal_type" in record && record.journal_type === "compacted") {
+        window = {
+          windowNumber: record.window_number,
+          firstWindowId: record.first_window_id,
+          previousWindowId: record.previous_window_id,
+          currentWindowId: record.current_window_id,
+          model: record.model,
+          compactionHash: record.compaction_hash,
+          contextWindow: record.context_window,
+          prefixInputTokens: record.prefix_input_tokens
+        };
+      }
       recordCount += 1;
     } catch (error) {
       if (index === lines.length - 1 && !text.endsWith("\n")) break;
       throw error;
     }
   }
-  return { cursor: recordCount, messages };
+  return { cursor: recordCount, messages, window };
 }
 
 function applyDialogueJournalRecord(messages: readonly ModelMessage[], record: DialogueJournalRecord): ModelMessage[] {
   if (!("journal_type" in record)) return [...messages, record];
-  if (record.journal_type === "compact") return [record.summary_message];
+  if (record.journal_type === "compacted") return [...record.replacement_history];
   if (record.journal_type === "reconcile") return [...record.messages];
-
-  const clearedIds = new Set(record.cleared_tool_call_ids);
-  return messages.map((message) =>
-    message.role === "tool" && message.tool_call_id && clearedIds.has(message.tool_call_id)
-      ? { ...message, content: record.replacement }
-      : message
-  );
+  throw new Error(`Unsupported legacy dialogue journal record ${String((record as { journal_type?: unknown }).journal_type)}; start a new run`);
 }
 
 function persistedWorkflowState(state: WorkflowState): WorkflowState {
   const checkpoint = (value: WorkflowState["resume_checkpoint"]) => value ? { ...value, dialogue_messages: undefined } : value;
   return {
     ...state,
-    version: 4,
+    version: 5,
     resume_checkpoint: checkpoint(state.resume_checkpoint),
     node_checkpoints: Object.fromEntries(Object.entries(state.node_checkpoints ?? {}).map(([nodeId, value]) => [nodeId, checkpoint(value)!]))
   };
+}
+
+function initialDialogueWindow(): WorkflowDialogueWindow {
+  const id = uuidV7();
+  return { windowNumber: 0, firstWindowId: id, currentWindowId: id };
+}
+
+function uuidV7(now = Date.now()): string {
+  const bytes = randomBytes(16);
+  let timestamp = BigInt(now);
+  for (let index = 5; index >= 0; index -= 1) {
+    bytes[index] = Number(timestamp & 0xffn);
+    timestamp >>= 8n;
+  }
+  bytes[6] = 0x70 | (bytes[6]! & 0x0f);
+  bytes[8] = 0x80 | (bytes[8]! & 0x3f);
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function inputPreview(input: unknown): string {
@@ -666,9 +713,9 @@ function inputPreview(input: unknown): string {
 }
 
 function workflowUserMessage(event: HarnessEvent): ModelMessage | undefined {
-  if (event.type === "user_message") return { role: "user", content: event.text };
+  if (event.type === "user_message") return { role: "user", content: event.text, metadata: { userMessageKind: "human" } };
   if (event.type !== "run_started" && event.type !== "run_continued") return undefined;
-  return { role: "user", content: workflowInputText(event.input) };
+  return { role: "user", content: workflowInputText(event.input), metadata: { userMessageKind: "human" } };
 }
 
 function workflowInputText(input: unknown): string {

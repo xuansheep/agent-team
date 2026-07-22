@@ -1,104 +1,27 @@
 import { estimateModelMessageTokens } from "./contextUsage.js";
 import { ModelProviderError, type ModelMessage } from "../providers/types.js";
+import { isHumanUserMessage } from "../context/messages.js";
 
-export const MICROCOMPACT_CLEARED_MESSAGE = "[Old tool result content cleared]";
-export const MICROCOMPACT_KEEP_RECENT = 5;
-export const MAX_COMPACTION_PROMPT_TOO_LONG_RETRIES = 3;
-export const MAX_CONSECUTIVE_COMPACTION_FAILURES = 3;
-
-const COMPACTABLE_TOOLS = new Set([
-  "Read",
-  "Bash",
-  "PowerShell",
-  "Grep",
-  "Glob",
-  "WebSearch",
-  "WebFetch",
-  "Edit",
-  "MultiEdit",
-  "Write"
-]);
-
-export type MicrocompactResult = {
-  messages: ModelMessage[];
-  clearedToolCallIds: string[];
-  tokensFreed: number;
-};
-
-export function microcompactMessages(
-  messages: readonly ModelMessage[],
-  keepRecent = MICROCOMPACT_KEEP_RECENT
-): MicrocompactResult {
-  const compactableIds: string[] = [];
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const call of message.tool_calls ?? []) {
-      if (COMPACTABLE_TOOLS.has(call.name)) compactableIds.push(call.id);
-    }
-  }
-
-  const keepCount = Math.max(1, keepRecent);
-  const keepIds = new Set(compactableIds.slice(-keepCount));
-  const clearIds = new Set(compactableIds.filter((id) => !keepIds.has(id)));
-  if (!clearIds.size) return { messages: [...messages], clearedToolCallIds: [], tokensFreed: 0 };
-
-  let tokensFreed = 0;
-  const clearedToolCallIds: string[] = [];
-  const compacted = messages.map((message) => {
-    if (
-      message.role !== "tool"
-      || !message.tool_call_id
-      || !clearIds.has(message.tool_call_id)
-      || message.content === MICROCOMPACT_CLEARED_MESSAGE
-    ) {
-      return message;
-    }
-
-    const replacement: ModelMessage = {
-      ...message,
-      content: MICROCOMPACT_CLEARED_MESSAGE
-    };
-    tokensFreed += Math.max(0, estimateModelMessageTokens(message) - estimateModelMessageTokens(replacement));
-    clearedToolCallIds.push(message.tool_call_id);
-    return replacement;
-  });
-
-  return {
-    messages: compacted,
-    clearedToolCallIds,
-    tokensFreed
-  };
-}
+export const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
+export const SUMMARY_PREFIX = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
 
 export function compactSummaryPrompt(): string {
-  return `CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
+  return `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
-Your task is to create a detailed summary of the conversation so far so another model turn can continue the work without losing important context.
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
 
-Before the final summary, use an <analysis> block to check completeness. Then return a <summary> block with these sections:
-
-1. Primary Request and Intent
-2. Key Technical Concepts and Decisions
-3. Files and Code Sections
-4. Errors and Fixes
-5. Problems Solved and Remaining Risks
-6. All User Messages
-7. Pending Tasks
-8. Current Work
-9. Next Step
-
-Preserve exact file names, identifiers, commands, configuration values, error messages, user corrections, unfinished work, and safety constraints. Do not call tools. Tool calls will be rejected.`;
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
 }
 
 export function compactSummaryMessage(summary: string): ModelMessage {
   return {
     role: "user",
-    content: `This node conversation is continuing after automatic context compaction. The summary below covers the earlier dialogue.
-
-${formatCompactSummary(summary)}
-
-Continue directly from where the work stopped. Do not acknowledge the compaction, recap the summary, or ask the user to repeat information.`,
-    metadata: { compactSummary: true }
+    content: `${SUMMARY_PREFIX}\n${formatCompactSummary(summary)}`,
+    metadata: { compactSummary: true, userMessageKind: "compaction" }
   };
 }
 
@@ -109,27 +32,78 @@ export function formatCompactSummary(summary: string): string {
   return formatted.replace(/\n\n+/g, "\n\n").trim();
 }
 
-export function truncateOldestDialogueRounds(messages: readonly ModelMessage[]): ModelMessage[] | undefined {
-  const groups: ModelMessage[][] = [];
-  let current: ModelMessage[] = [];
-
-  for (const message of messages) {
-    if (message.role === "assistant" && current.length) {
-      groups.push(current);
-      current = [];
+export function buildCompactedDialogue(
+  messages: readonly ModelMessage[],
+  summaryMessage: ModelMessage,
+  tokenBudget = COMPACT_USER_MESSAGE_MAX_TOKENS
+): ModelMessage[] {
+  let remaining = Math.max(0, Math.floor(tokenBudget));
+  const retained: ModelMessage[] = [];
+  const humanMessages = messages.filter(isHumanUserMessage);
+  for (let index = humanMessages.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = humanMessages[index]!;
+    const tokens = estimateModelMessageTokens(message);
+    if (tokens <= remaining) {
+      retained.unshift(message);
+      remaining -= tokens;
+      continue;
     }
-    current.push(message);
+    const truncated = truncateUserMessageToTokens(message, remaining);
+    if (truncated) retained.unshift(truncated);
+    break;
   }
-  if (current.length) groups.push(current);
-  if (groups.length < 2) return undefined;
+  return [...retained, summaryMessage];
+}
 
-  const dropCount = Math.min(groups.length - 1, Math.max(1, Math.floor(groups.length * 0.2)));
-  return [
-    { role: "user", content: "[Earlier node dialogue truncated for compaction retry]" },
-    ...groups.slice(dropCount).flat()
-  ];
+export function dropOldestCompactionItem(messages: readonly ModelMessage[]): ModelMessage[] | undefined {
+  if (!messages.length) return undefined;
+  const drop = new Set<number>([0]);
+  const first = messages[0]!;
+  if (first.role === "assistant" && first.tool_calls?.length) {
+    const ids = new Set(first.tool_calls.map((call) => call.id));
+    for (let index = 1; index < messages.length; index += 1) {
+      const message = messages[index]!;
+      if (message.role === "tool" && message.tool_call_id && ids.has(message.tool_call_id)) drop.add(index);
+      else if (message.role === "user" || message.role === "assistant") break;
+    }
+  } else if (first.role === "tool" && first.tool_call_id) {
+    const paired = messages.findIndex((message) =>
+      message.role === "assistant" && message.tool_calls?.some((call) => call.id === first.tool_call_id)
+    );
+    if (paired >= 0) drop.add(paired);
+  }
+  const remaining = messages.filter((_, index) => !drop.has(index));
+  return remaining.length < messages.length ? remaining : undefined;
 }
 
 export function isContextLimitError(error: unknown): boolean {
   return error instanceof ModelProviderError && error.errorKind === "context_limit";
+}
+
+function truncateUserMessageToTokens(message: ModelMessage, tokenBudget: number): ModelMessage | undefined {
+  if (tokenBudget <= 0) return undefined;
+  if (typeof message.content === "string") {
+    const content = truncateMiddleTokens(message.content, tokenBudget);
+    return content ? { ...message, content } : undefined;
+  }
+  const text = message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.type === "text" ? part.text : "")
+    .join("\n");
+  const content = truncateMiddleTokens(text, tokenBudget);
+  return content ? { ...message, content } : undefined;
+}
+
+function truncateMiddleTokens(value: string, tokenBudget: number): string {
+  const source = Buffer.from(value, "utf8");
+  const maxBytes = tokenBudget * 4;
+  if (source.byteLength <= maxBytes) return value;
+  const leftBytes = Math.floor(maxBytes / 2);
+  const rightBytes = maxBytes - leftBytes;
+  let leftEnd = leftBytes;
+  while (leftEnd > 0 && (source[leftEnd]! & 0xc0) === 0x80) leftEnd -= 1;
+  let start = Math.max(leftEnd, source.byteLength - rightBytes);
+  while (start < source.byteLength && (source[start]! & 0xc0) === 0x80) start += 1;
+  const removedTokens = Math.ceil(Math.max(0, source.byteLength - maxBytes) / 4);
+  return `${source.subarray(0, leftEnd).toString("utf8")}…${removedTokens} tokens truncated…${source.subarray(start).toString("utf8")}`;
 }

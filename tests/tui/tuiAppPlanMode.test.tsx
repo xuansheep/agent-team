@@ -2743,6 +2743,7 @@ describe("TuiApp global Plan Mode", () => {
       originalInput: { request: "Resume this planning session" }
     });
     await store.appendTranscript("session-planning-transcript", { role: "user", content: "Previously sent in Plan Mode." });
+    await store.appendTranscript("session-planning-transcript", { role: "user", content: "Internal compact summary must stay hidden.", metadata: { compactSummary: true } });
     await store.appendTranscript("session-planning-transcript", { role: "assistant", content: "Previously acknowledged." });
     await store.appendWorkflowTranscriptEntries("session-planning-transcript", [{
       message: { role: "assistant", content: "Workflow-only transcript entry." },
@@ -2764,6 +2765,7 @@ describe("TuiApp global Plan Mode", () => {
 
     await waitForFrame(output, /Previously sent in Plan Mode\./);
     assert.match(output.lastFrame() ?? "", /Previously acknowledged\./);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Internal compact summary must stay hidden\./);
     assert.doesNotMatch(output.lastFrame() ?? "", /Workflow-only transcript entry\./);
     assert.equal(starts, 0);
 

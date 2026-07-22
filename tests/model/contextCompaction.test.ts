@@ -1,41 +1,29 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildCompactedDialogue,
   compactSummaryMessage,
+  compactSummaryPrompt,
+  dropOldestCompactionItem,
   formatCompactSummary,
-  MICROCOMPACT_CLEARED_MESSAGE,
-  microcompactMessages,
-  truncateOldestDialogueRounds
 } from "../../src/model/contextCompaction.js";
 import type { ModelMessage } from "../../src/providers/types.js";
 
 describe("context compaction", () => {
-  it("microcompacts old tool results while preserving the five most recent compactable results", () => {
-    const messages: ModelMessage[] = [];
-    for (let index = 1; index <= 7; index += 1) {
-      messages.push({
-        role: "assistant",
-        content: `reading ${index}`,
-        tool_calls: [{ id: `read-${index}`, name: "Read", input: { path: `file-${index}.ts` } }]
-      });
-      messages.push({ role: "tool", tool_call_id: `read-${index}`, content: `result-${index}-${"x".repeat(80)}` });
-    }
-    messages.push({
-      role: "assistant",
-      content: "custom",
-      tool_calls: [{ id: "custom-1", name: "CustomTool", input: {} }]
-    });
-    messages.push({ role: "tool", tool_call_id: "custom-1", content: "custom-result" });
+  it("retains only the newest real user messages within the Codex budget", () => {
+    const messages: ModelMessage[] = [
+      { role: "user", content: "old-" + "x".repeat(80), metadata: { userMessageKind: "human" } },
+      { role: "user", content: "runtime", metadata: { userMessageKind: "runtime_context" } },
+      { role: "assistant", content: "answer" },
+      { role: "user", content: "latest", metadata: { userMessageKind: "human" } }
+    ];
+    const summary = compactSummaryMessage("summary");
+    const compacted = buildCompactedDialogue(messages, summary, 8);
 
-    const compacted = microcompactMessages(messages);
-
-    assert.deepEqual(compacted.clearedToolCallIds, ["read-1", "read-2"]);
-    assert.ok(compacted.tokensFreed > 0);
-    assert.equal(compacted.messages.find((message) => message.tool_call_id === "read-1")?.content, MICROCOMPACT_CLEARED_MESSAGE);
-    assert.equal(compacted.messages.find((message) => message.tool_call_id === "read-2")?.content, MICROCOMPACT_CLEARED_MESSAGE);
-    assert.match(String(compacted.messages.find((message) => message.tool_call_id === "read-3")?.content), /result-3/);
-    assert.equal(compacted.messages.find((message) => message.tool_call_id === "custom-1")?.content, "custom-result");
-    assert.match(String(messages.find((message) => message.tool_call_id === "read-1")?.content), /result-1/);
+    assert.equal(compacted.at(-1), summary);
+    assert.equal(compacted.some((message) => message.content === "runtime"), false);
+    assert.equal(compacted.some((message) => message.content === "latest"), true);
+    assert.equal(compacted.filter((message) => message.metadata?.userMessageKind === "human").length, 2);
   });
 
   it("normalizes compact summaries and marks the replacement message", () => {
@@ -45,23 +33,28 @@ describe("context compaction", () => {
     assert.equal(summary, "First\n\nSecond");
     assert.equal(message.role, "user");
     assert.equal(message.metadata?.compactSummary, true);
+    assert.equal(message.metadata?.userMessageKind, "compaction");
     assert.match(String(message.content), /First\n\nSecond/);
   });
 
-  it("drops the oldest complete dialogue rounds for an oversized summary retry", () => {
+  it("identifies the summarization request as internal control text", () => {
+    assert.match(compactSummaryPrompt(), /CONTEXT CHECKPOINT COMPACTION/);
+    assert.match(compactSummaryPrompt(), /Current progress and key decisions made/);
+    assert.match(compactSummaryPrompt(), /seamlessly continue the work/);
+  });
+
+  it("drops the oldest item and its paired tool result for an oversized summary retry", () => {
     const messages: ModelMessage[] = [
-      { role: "user", content: "u1" },
-      { role: "assistant", content: "a1" },
+      { role: "assistant", content: "a1", tool_calls: [{ id: "t1", name: "Read", input: {} }] },
       { role: "tool", tool_call_id: "t1", content: "r1" },
       { role: "assistant", content: "a2" },
       { role: "user", content: "u2" }
     ];
 
-    const truncated = truncateOldestDialogueRounds(messages);
+    const truncated = dropOldestCompactionItem(messages);
 
-    assert.equal(truncated?.[0]?.role, "user");
-    assert.match(String(truncated?.[0]?.content), /truncated/);
-    assert.equal(truncated?.some((message) => message.content === "u1"), false);
+    assert.equal(truncated?.some((message) => message.content === "a1"), false);
+    assert.equal(truncated?.some((message) => message.content === "r1"), false);
     assert.equal(truncated?.some((message) => message.content === "a2"), true);
   });
 });

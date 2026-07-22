@@ -432,7 +432,7 @@ export class WorkflowEngine {
         let activeRun: Promise<WorkflowState> | undefined;
         let activeAbortController: AbortController | undefined;
         let latestState: WorkflowState = {
-            version: 4,
+            version: 5,
             status: "running",
             workflow_id: workflowId,
             config_fingerprint: workflowConfigFingerprint(config, workflowId),
@@ -730,7 +730,7 @@ export class WorkflowEngine {
             options.reworkLimit = reworkLimit;
         };
         const stateBase = () => ({
-            version: 4 as const,
+            version: 5 as const,
             workflow_id: options.workflowId,
             config_fingerprint: configFingerprint,
             node_checkpoints: { ...nodeCheckpoints },
@@ -1299,7 +1299,7 @@ function resumeFromCheckpoint(state: WorkflowState, input: unknown): {
         handoff: checkpoint.handoff,
         attempt: checkpoint.attempt,
         activation: (checkpoint.activation ?? 0) + 1,
-        dialogueMessages: [...dialogueMessages, { role: "user", content: userText }],
+        dialogueMessages: [...dialogueMessages, { role: "user", content: userText, metadata: { userMessageKind: "human" } }],
         dialogueCursor: checkpoint.dialogue_cursor ?? dialogueMessages.length,
         userText
     };
@@ -1359,6 +1359,7 @@ function setAttemptOutcome(
 function controllerReturnMessage(fromNodeId: string, result: NodeResult, handoff: unknown): ModelMessage {
     return {
         role: "user",
+        metadata: { userMessageKind: "runtime_context" },
         content: JSON.stringify({
             type: "node_transition_result",
             from_node_id: fromNodeId,
@@ -1402,7 +1403,7 @@ function continuationStateFields(options: ContinueOptions, checkpoint: WorkflowS
     const nodeCheckpoints = { ...options.nodeCheckpoints };
     if (checkpoint) nodeCheckpoints[checkpoint.node_id] = checkpoint;
     return {
-        version: 4 as const,
+        version: 5 as const,
         config_fingerprint: options.configFingerprint ?? workflowConfigFingerprint(options.config, options.workflowId),
         node_checkpoints: nodeCheckpoints,
         suspended_stack: [...options.suspendedStack ?? []],
@@ -1458,7 +1459,7 @@ function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig,
     const extension = workflow.max_rework_cycles ?? DEFAULT_MAX_REWORK_CYCLES;
     const nextState: WorkflowState = {
         ...state,
-        version: 4,
+        version: 5,
         status: "running",
         current_node_id: resolved.target_node_id,
         attempts,

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment } from "../../src/context/attachments.js";
+import { isHumanUserMessage } from "../../src/context/messages.js";
 import { buildNodeMessages } from "../../src/harness/context.js";
 import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
 import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
@@ -43,6 +44,12 @@ function nonRuntimeUserMessage(messages: ModelMessage[]): ModelMessage | undefin
 }
 
 describe("runtime context attachments", () => {
+  it("distinguishes compact summaries from human user messages", () => {
+    assert.equal(isHumanUserMessage({ role: "user", content: "real request" }), true);
+    assert.equal(isHumanUserMessage({ role: "user", content: "summary", metadata: { compactSummary: true } }), false);
+    assert.equal(isHumanUserMessage({ role: "user", content: "attachment", metadata: { runtimeAttachment: { type: "plan_mode", humanTurnCount: 1 } } }), false);
+  });
+
   it("wraps global prompts with tui-code style instruction priority", () => {
     const attachment = buildGlobalPromptAttachment("Always reply in Chinese.");
 
@@ -227,6 +234,7 @@ describe("runtime context attachments", () => {
       { role: "system" as const, content: attachment.content },
       { role: "user" as const, content: "make a plan" },
       { role: "assistant" as const, content: "drafted" },
+      { role: "user" as const, content: "internal compact summary", metadata: { compactSummary: true } },
       { role: "user" as const, content: "revise it" }
     ];
     let systemMessages: string[] = [];

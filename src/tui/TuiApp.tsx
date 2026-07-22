@@ -11,6 +11,7 @@ import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSes
 import { PlanModeController } from "../kernel/plan/planModeController.js";
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "../kernel/plan/planToolCallMessages.js";
 import { QueryEngine } from "../kernel/queryEngine.js";
+import { isHumanUserMessage } from "../context/messages.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
@@ -2283,6 +2284,7 @@ function planLogMessagesFromTranscript(messages: ModelMessage[]): TuiLogMessage[
   for (const message of messages) {
     if (typeof message.content !== "string" || !message.content.trim()) continue;
     if (message.role === "user") {
+      if (!isHumanUserMessage(message)) continue;
       if (message.content.startsWith(planRejectionPrefix)) continue;
       logs.push({ id: randomUUID(), kind: "user", text: message.content });
       continue;
@@ -2626,8 +2628,16 @@ function isConfirmationMode(mode: TuiState["mode"]): boolean {
   return mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume";
 }
 function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiState["mode"] {
-  if (status === "waiting_user") return "question";
-  return "paused";
+  switch (status) {
+    case "waiting_user": return "question";
+    case "paused": return "paused";
+    case "completed": return "completed";
+    case "failed": return "failed";
+    case "cancelled": return "interrupted";
+    case "running":
+    case "pending":
+      return "running";
+  }
 }
 function buildActiveChoice(input: {
   mode: TuiState["mode"];
@@ -3181,7 +3191,7 @@ function hasExitPlanModeCall(messages: ModelMessage[]): boolean {
 }
 
 function firstUserText(messages: ModelMessage[]): string {
-  const content = messages.find((message) => message.role === "user" && !isRuntimeAttachmentMessage(message))?.content;
+  const content = messages.find(isHumanUserMessage)?.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
   return "";

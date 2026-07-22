@@ -15,6 +15,12 @@ const settingsShape = {
     defaultContextWindow: z.number().int().positive().optional(),
     aliases: z.record(z.string().min(1)).optional(),
     contextWindows: z.record(z.number().int().positive()).optional(),
+    defaultAutoCompactTokenLimit: z.number().int().positive().optional(),
+    autoCompactTokenLimits: z.record(z.number().int().positive()).optional(),
+    compactionHashes: z.record(z.string().min(1)).optional(),
+    autoCompactTokenLimitScope: z.enum(["total", "body_after_prefix"]).optional(),
+    toolOutputTokenLimit: z.number().int().positive().optional(),
+    compactPrompt: z.string().min(1).optional(),
   }).strict().optional(),
   planMode: z.object({
     defaultEntry: z.boolean().optional()

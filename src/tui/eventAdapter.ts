@@ -77,8 +77,8 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         nodeId: event.node_id,
         attempt: event.attempt,
         activation: event.activation,
-        text: `${event.node_id} 开始${event.kind === "micro" ? "微压缩" : "完整上下文压缩"}`,
-        detailText: `触发方式：${event.trigger}\n压缩前：${event.context_tokens}\n自动压缩上限：${event.context_limit}\n阻断上限：${event.blocking_limit}`
+        text: `${event.node_id} 开始上下文压缩`,
+        detailText: `阶段：${event.phase}\n原因：${event.reason}\n模型：${event.model}\n压缩前：${event.context_tokens}\n自动压缩上限：${event.context_limit}\n窗口：${event.window_number}`
       }, event);
     case "node_context_compacted": {
       const withContext = updateNodeDetails(next, event.node_id, event.attempt, event.activation, {
@@ -90,8 +90,8 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         nodeId: event.node_id,
         attempt: event.attempt,
         activation: event.activation,
-        text: `${event.node_id} 已完成${event.kind === "micro" ? "微压缩" : "完整上下文压缩"}`,
-        detailText: `触发方式：${event.trigger}\n压缩前：${event.context_tokens_before}\n压缩后：${event.context_tokens_after}`
+        text: `${event.node_id} 已完成上下文压缩`,
+        detailText: `阶段：${event.phase}\n原因：${event.reason}\n模型：${event.model}\n压缩前：${event.context_tokens_before}\n压缩后：${event.context_tokens_after}\n窗口：${event.window_number}`
       }, event);
     }
     case "node_context_compaction_failed":
@@ -100,8 +100,8 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         nodeId: event.node_id,
         attempt: event.attempt,
         activation: event.activation,
-        text: `${event.node_id} 上下文压缩失败（${event.failure_count}/3）`,
-        detailText: event.error
+        text: `${event.node_id} 上下文压缩失败`,
+        detailText: `阶段：${event.phase}\n原因：${event.reason}\n模型：${event.model}\n${event.error}`
       }, event);
     case "run_started":
       return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) }, event);

@@ -167,6 +167,8 @@ describe("settings", () => {
         defaultContextWindow: 111000,
         aliases: { shared: "user-model", "user-only": "user-model" },
         contextWindows: { "shared-model": 1000, "user-only-model": 3000 },
+        autoCompactTokenLimits: { "shared-model": 900, "user-only-model": 2500 },
+        compactionHashes: { "shared-model": "user-hash", "user-only-model": "user-only-hash" },
       },
       planMode: { defaultEntry: false },
       copyOnSelect: true,
@@ -181,6 +183,8 @@ describe("settings", () => {
         defaultContextWindow: 222000,
         aliases: { shared: "project-model" },
         contextWindows: { "shared-model": 2000 },
+        autoCompactTokenLimits: { "shared-model": 1800 },
+        compactionHashes: { "shared-model": "project-hash" },
       },
       planMode: { defaultEntry: true },
       copyOnSelect: false,
@@ -196,6 +200,8 @@ describe("settings", () => {
     assert.equal(settings.models?.defaultContextWindow, 222000);
     assert.deepEqual(settings.models?.aliases, { shared: "project-model", "user-only": "user-model" });
     assert.deepEqual(settings.models?.contextWindows, { "shared-model": 2000, "user-only-model": 3000 });
+    assert.deepEqual(settings.models?.autoCompactTokenLimits, { "shared-model": 1800, "user-only-model": 2500 });
+    assert.deepEqual(settings.models?.compactionHashes, { "shared-model": "project-hash", "user-only-model": "user-only-hash" });
     assert.equal(settings.planMode?.defaultEntry, true);
     assert.equal(settings.copyOnSelect, false);
     assert.equal(settings.showClearContextOnPlanAccept, true);
@@ -270,7 +276,13 @@ describe("settings", () => {
           planModel: "settings-plan",
           defaultContextWindow: 272000,
           aliases: { quick: "settings-model", shared: "settings-shared-model" },
-          contextWindows: { "settings-model": 128000, "shared-model": 32000 }
+          contextWindows: { "settings-model": 128000, "shared-model": 32000 },
+          defaultAutoCompactTokenLimit: 240000,
+          autoCompactTokenLimits: { "settings-model": 110000 },
+          compactionHashes: { "settings-model": "hash-v2" },
+          autoCompactTokenLimitScope: "body_after_prefix",
+          toolOutputTokenLimit: 4000,
+          compactPrompt: "custom compact prompt"
         }
       }
     });
@@ -281,6 +293,12 @@ describe("settings", () => {
     assert.equal(resolvedProvider.default_context_window, 272000);
     assert.deepEqual(resolvedProvider.model_aliases, { legacy: "legacy-model", shared: "settings-shared-model", quick: "settings-model" });
     assert.deepEqual(resolvedProvider.context_windows, { "legacy-model": 1000, "shared-model": 32000, "settings-model": 128000 });
+    assert.equal(resolvedProvider.default_auto_compact_token_limit, 240000);
+    assert.deepEqual(resolvedProvider.auto_compact_token_limits, { "settings-model": 110000 });
+    assert.deepEqual(resolvedProvider.compaction_hashes, { "settings-model": "hash-v2" });
+    assert.equal(resolvedProvider.auto_compact_token_limit_scope, "body_after_prefix");
+    assert.equal(resolvedProvider.tool_output_token_limit, 4000);
+    assert.equal(resolvedProvider.compact_prompt, "custom compact prompt");
   });
 
   it("defaults user settings to ~/.einsteins/settings.json", () => {

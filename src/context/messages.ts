@@ -4,19 +4,20 @@ import { RuntimeAttachment } from "./attachments.js";
 export type BuildRuntimeMessagesInput = {
   system: string;
   user: string | ModelContentPart[];
+  userMessageKind?: "human" | "runtime_context";
   attachments?: RuntimeAttachment[];
 };
 
 export function buildRuntimeMessages(input: BuildRuntimeMessagesInput): ModelMessage[] {
   return withRuntimeAttachments([
     { role: "system", content: input.system },
-    { role: "user", content: input.user }
+    { role: "user", content: input.user, metadata: { userMessageKind: input.userMessageKind ?? "human" } }
   ], input.attachments ?? []);
 }
 
 export function withRuntimeAttachments(messages: ModelMessage[], attachments: RuntimeAttachment[]): ModelMessage[] {
   if (!attachments.length) return messages.slice();
-  const humanTurnCount = Math.max(0, messages.filter(isHumanTurn).length - 1);
+  const humanTurnCount = Math.max(0, messages.filter(isHumanUserMessage).length - 1);
   const planAttachments = attachments.filter((attachment) => isPlanModeAttachment(attachment.type));
   const systemAttachments = attachments.filter((attachment) => !isPlanModeAttachment(attachment.type));
   const baseMessages: ModelMessage[] = [
@@ -48,18 +49,19 @@ ${content}
 </system-reminder>`;
 }
 
+export function isHumanUserMessage(message: ModelMessage): boolean {
+  if (message.role !== "user") return false;
+  if (message.metadata?.userMessageKind) return message.metadata.userMessageKind === "human";
+  return !message.metadata?.runtimeAttachment && !message.metadata?.compactSummary;
+}
 
 function isPlanModeAttachment(type: string): boolean {
   return type === "plan_mode" || type === "plan_mode_reminder" || type === "plan_mode_reentry" || type === "plan_mode_exit";
 }
 
-function isHumanTurn(message: ModelMessage): boolean {
-  return message.role === "user" && !message.metadata?.runtimeAttachment;
-}
-
 function lastHumanTurnIndex(messages: ModelMessage[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (isHumanTurn(messages[index]!)) return index;
+    if (isHumanUserMessage(messages[index]!)) return index;
   }
   return -1;
 }

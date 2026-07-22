@@ -52,15 +52,16 @@ describe("model routing", () => {
     assert.equal(getModelContextWindow("gpt-latest", registry), 400000);
   });
 
-  it("derives tui-code-compatible automatic and blocking compaction limits", () => {
+  it("derives Codex-compatible ninety-percent automatic compaction limits", () => {
     assert.equal(getModelContextWindow("unknown"), DEFAULT_MODEL_CONTEXT_WINDOW);
     assert.deepEqual(getModelContextLimits("unknown"), {
       contextWindow: 272000,
       maxOutputTokens: 8000,
-      summaryReservedTokens: 8000,
-      effectiveContextWindow: 264000,
-      autoCompactLimit: 251000,
-      blockingLimit: 261000
+      autoCompactLimit: 244800,
+      autoCompactTokenLimitScope: "total",
+      compactionHash: undefined,
+      toolOutputTokenLimit: undefined,
+      compactPrompt: undefined
     });
     assert.equal(getProviderMaxOutputTokens({ type: "openai-compatible", anthropic: { max_tokens: 20000 } }), 8000);
     assert.deepEqual(getModelContextLimits("unknown", {}, getProviderMaxOutputTokens({
@@ -69,10 +70,15 @@ describe("model routing", () => {
     })), {
       contextWindow: 272000,
       maxOutputTokens: 20000,
-      summaryReservedTokens: 20000,
-      effectiveContextWindow: 252000,
-      autoCompactLimit: 239000,
-      blockingLimit: 249000
+      autoCompactLimit: 244800,
+      autoCompactTokenLimitScope: "total",
+      compactionHash: undefined,
+      toolOutputTokenLimit: undefined,
+      compactPrompt: undefined
     });
+    assert.equal(getModelContextLimits("small", {
+      contextWindows: { small: 100000 },
+      autoCompactTokenLimits: { small: 95000 }
+    }).autoCompactLimit, 90000);
   });
 });

@@ -1,28 +1,38 @@
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 272_000;
 export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8_000;
-export const MAX_COMPACT_SUMMARY_OUTPUT_TOKENS = 20_000;
-export const AUTOCOMPACT_BUFFER_TOKENS = 13_000;
-export const BLOCKING_BUFFER_TOKENS = 3_000;
+export const DEFAULT_AUTO_COMPACT_PERCENT = 90;
+export const DEFAULT_TOOL_OUTPUT_LIMIT_BYTES = 10_000;
+
+export type AutoCompactTokenLimitScope = "total" | "body_after_prefix";
 
 export type ModelRegistryEntry = {
   aliases?: string[];
   contextWindow?: number;
+  autoCompactTokenLimit?: number;
+  compactionHash?: string;
 };
 
 export type ModelRegistry = {
   aliases?: Record<string, string>;
   defaultContextWindow?: number;
   contextWindows?: Record<string, number>;
+  defaultAutoCompactTokenLimit?: number;
+  autoCompactTokenLimits?: Record<string, number>;
+  compactionHashes?: Record<string, string>;
+  autoCompactTokenLimitScope?: AutoCompactTokenLimitScope;
+  toolOutputTokenLimit?: number;
+  compactPrompt?: string;
   models?: Record<string, ModelRegistryEntry>;
 };
 
 export type ModelContextLimits = {
   contextWindow: number;
   maxOutputTokens: number;
-  summaryReservedTokens: number;
-  effectiveContextWindow: number;
   autoCompactLimit: number;
-  blockingLimit: number;
+  autoCompactTokenLimitScope: AutoCompactTokenLimitScope;
+  compactionHash?: string;
+  toolOutputTokenLimit?: number;
+  compactPrompt?: string;
 };
 
 export function resolveModelAlias(model: string, registry: ModelRegistry = {}): string {
@@ -59,21 +69,22 @@ export function getModelContextLimits(
 ): ModelContextLimits {
   const contextWindow = getModelContextWindow(model, registry);
   const normalizedMaxOutputTokens = Math.max(1, Math.floor(maxOutputTokens));
-  const summaryReservedTokens = Math.min(
-    normalizedMaxOutputTokens,
-    MAX_COMPACT_SUMMARY_OUTPUT_TOKENS,
-    Math.max(0, contextWindow - 1)
-  );
-  const effectiveContextWindow = Math.max(1, contextWindow - summaryReservedTokens);
-  const autoCompactLimit = Math.max(1, effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS);
-  const blockingLimit = Math.max(autoCompactLimit, effectiveContextWindow - BLOCKING_BUFFER_TOKENS);
+  const resolved = resolveModelAlias(model, registry);
+  const configuredLimit = registry.autoCompactTokenLimits?.[resolved]
+    ?? registry.models?.[resolved]?.autoCompactTokenLimit
+    ?? registry.defaultAutoCompactTokenLimit;
+  const ninetyPercent = Math.max(1, Math.floor(contextWindow * DEFAULT_AUTO_COMPACT_PERCENT / 100));
+  const autoCompactLimit = configuredLimit === undefined
+    ? ninetyPercent
+    : Math.max(1, Math.min(Math.floor(configuredLimit), ninetyPercent));
   return {
     contextWindow,
     maxOutputTokens: normalizedMaxOutputTokens,
-    summaryReservedTokens,
-    effectiveContextWindow,
     autoCompactLimit,
-    blockingLimit
+    autoCompactTokenLimitScope: registry.autoCompactTokenLimitScope ?? "total",
+    compactionHash: registry.compactionHashes?.[resolved] ?? registry.models?.[resolved]?.compactionHash,
+    toolOutputTokenLimit: registry.toolOutputTokenLimit,
+    compactPrompt: registry.compactPrompt
   };
 }
 
@@ -81,10 +92,22 @@ export function modelRegistryFromProviderConfig(provider: {
   model_aliases?: Record<string, string>;
   context_windows?: Record<string, number>;
   default_context_window?: number;
+  default_auto_compact_token_limit?: number;
+  auto_compact_token_limits?: Record<string, number>;
+  compaction_hashes?: Record<string, string>;
+  auto_compact_token_limit_scope?: AutoCompactTokenLimitScope;
+  tool_output_token_limit?: number;
+  compact_prompt?: string;
 }): ModelRegistry {
   return {
     aliases: provider.model_aliases ?? {},
     defaultContextWindow: provider.default_context_window,
-    contextWindows: provider.context_windows ?? {}
+    contextWindows: provider.context_windows ?? {},
+    defaultAutoCompactTokenLimit: provider.default_auto_compact_token_limit,
+    autoCompactTokenLimits: provider.auto_compact_token_limits ?? {},
+    compactionHashes: provider.compaction_hashes ?? {},
+    autoCompactTokenLimitScope: provider.auto_compact_token_limit_scope,
+    toolOutputTokenLimit: provider.tool_output_token_limit,
+    compactPrompt: provider.compact_prompt
   };
 }

@@ -40,7 +40,7 @@ export async function buildNodeMessages(
   const toolPrompts = input.tools ? buildToolPromptsAttachment({ tools: input.tools }) : undefined;
   if (toolPrompts) attachments.unshift(toolPrompts);
   if (!images.length) {
-    return buildRuntimeMessages({ system: protocolPrompt, user: userContent, attachments });
+    return buildRuntimeMessages({ system: protocolPrompt, user: userContent, userMessageKind: "runtime_context", attachments });
   }
 
   const content: ModelContentPart[] = [{ type: "text", text: userContent }];
@@ -48,7 +48,7 @@ export async function buildNodeMessages(
     const data = await readFile(image.path, "base64");
     content.push({ type: "image", media_type: image.media_type, data });
   }
-  return buildRuntimeMessages({ system: protocolPrompt, user: content, attachments });
+  return buildRuntimeMessages({ system: protocolPrompt, user: content, userMessageKind: "runtime_context", attachments });
 }
 
 export function handoffHasImages(handoff: unknown): boolean {

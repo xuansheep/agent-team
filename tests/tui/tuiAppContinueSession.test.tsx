@@ -13,19 +13,24 @@ const config = {
 describe("TuiApp session continuation", () => {
   it("receives continuation events when the provider work starts asynchronously", async () => {
     let starts = 0;
+    const resumed: unknown[] = [];
     const continued: unknown[] = [];
-    const state = { status: "completed" as const, workflow_id: "delivery", attempts: [], handoff: undefined };
+    const completedState = { status: "completed" as const, workflow_id: "delivery", attempts: [], handoff: undefined };
+    let resolveResult!: (value: typeof completedState) => void;
+    const result = new Promise<typeof completedState>((resolve) => {
+      resolveResult = resolve;
+    });
     const events = new CountingEventStream();
-    events.push({ type: "run_started", workflow_id: "delivery", input: { request: "first request" }, ts: "2026-06-26T00:00:00.000Z", seq: 1 });
-    events.push({ type: "run_completed", result: state, ts: "2026-06-26T00:00:01.000Z", seq: 2 });
-    events.end();
     const session = {
       runId: "run-continue",
-      state,
+      state: { ...completedState, status: "running" as const },
       events,
       permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
       interrupt: async () => undefined,
-      resumeWithUserInput: async () => undefined,
+      resumeWithUserInput: async (input: unknown) => {
+        resumed.push(input);
+        throw new Error("completed run must not resume as waiting for user input");
+      },
       continueWithInput: (input: unknown) => {
         continued.push(input);
         events.reopen();
@@ -34,11 +39,11 @@ describe("TuiApp session continuation", () => {
           events.push({ type: "user_message", text: "second request", node_id: "dev", attempt: 1, ts: "2026-06-26T00:00:02.000Z", seq: 3 });
           events.push({ type: "node_started", node_id: "dev", attempt: 1, activation: 2, ts: "2026-06-26T00:00:03.000Z", seq: 4 });
           events.push({ type: "model_stream_delta", node_id: "dev", attempt: 1, activation: 2, text: "我继续处理第二轮。", ts: "2026-06-26T00:00:04.000Z", seq: 5 });
-          events.push({ type: "run_completed", result: state, ts: "2026-06-26T00:00:05.000Z", seq: 6 });
+          events.push({ type: "run_completed", result: completedState, ts: "2026-06-26T00:00:05.000Z", seq: 6 });
           events.end();
         })();
       },
-      result: Promise.resolve(state)
+      result
     };
     const engine = {
       async startInteractive() {
@@ -51,12 +56,18 @@ describe("TuiApp session continuation", () => {
     await settleTuiWork();
 
     await sendTuiLine(output, "first request");
+    events.push({ type: "run_started", workflow_id: "delivery", input: { request: "first request" }, ts: "2026-06-26T00:00:00.000Z", seq: 1 });
+    events.push({ type: "run_completed", result: completedState, ts: "2026-06-26T00:00:01.000Z", seq: 2 });
+    events.end();
+    await settleTuiWork();
+    resolveResult(completedState);
     await settleTuiWork();
     await sendTuiLine(output, "second request");
 
     await settleTuiWork();
 
     assert.equal(starts, 1);
+    assert.deepEqual(resumed, []);
     assert.deepEqual(continued, [{ request: "second request", images: [] }]);
     assert.equal(events.subscriptions, 2);
     assert.match(output.lastFrame() ?? "", /我继续处理第二轮。/);

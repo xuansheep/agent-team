@@ -1,4 +1,5 @@
 import { isToolExplicitlyDenied } from "../harness/permissions.js";
+import { isHumanUserMessage } from "../context/messages.js";
 import type { ToolPermissionCheckContext } from "../permissions/context.js";
 import type { ModelMessage } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -190,7 +191,7 @@ function addMcpName(target: Set<string>, name: string): void {
 }
 
 function countHumanTurns(messages: readonly ModelMessage[]): number {
-  return messages.filter((message) => message.role === "user" && !message.metadata?.runtimeAttachment).length;
+  return messages.filter(isHumanUserMessage).length;
 }
 
 export function sanitizeMcpText(value: string | undefined, maxLength = 2048): string | undefined {

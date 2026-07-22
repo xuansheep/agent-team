@@ -3,7 +3,7 @@ import type { AuditEvent } from "../audit/auditEvent.js";
 import { ModelMessage, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import { hasModelUsage } from "../model/usage.js";
 import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
-import { withRuntimeAttachments } from "../context/messages.js";
+import { isHumanUserMessage, withRuntimeAttachments } from "../context/messages.js";
 import { readPlan } from "../plans/planFiles.js";
 import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } from "../plans/planSession.js";
 import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
@@ -382,7 +382,7 @@ function planModeAttachmentTiming(messages: ModelMessage[]): { hasPlanAttachment
       foundLatestPlanAttachment = true;
       continue;
     }
-    if (!foundLatestPlanAttachment && isHumanTurn(message)) humanTurnsSinceAttachment += 1;
+    if (!foundLatestPlanAttachment && isHumanUserMessage(message)) humanTurnsSinceAttachment += 1;
   }
 
   if (foundLatestPlanAttachment && humanTurnsSinceAttachment < planModeAttachmentConfig.turnsBetweenAttachments) return { hasPlanAttachment: true, skip: true, sparse: true };
@@ -402,7 +402,7 @@ function annotatedPlanModeAttachmentTiming(messages: ModelMessage[]): { hasPlanA
   });
   if (!annotatedAttachments.length) return undefined;
 
-  const totalHumanTurns = messages.filter(isHumanTurn).length;
+  const totalHumanTurns = messages.filter(isHumanUserMessage).length;
   const lastExitTurn = Math.max(
     -1,
     ...annotatedAttachments
@@ -440,10 +440,6 @@ function runtimeAttachmentMarker(message: ModelMessage): "plan_mode" | "plan_mod
   if (typeof message.content !== "string") return undefined;
   const match = /(?:^|\n)ATTACHMENT (plan_mode|plan_mode_reminder|plan_mode_reentry|plan_mode_exit)\b/.exec(message.content);
   return match?.[1] as ReturnType<typeof runtimeAttachmentMarker>;
-}
-
-function isHumanTurn(message: ModelMessage): boolean {
-  return message.role === "user" && !message.metadata?.runtimeAttachment;
 }
 
 function toolMessage(toolCallId: string, result: ToolResult, tool: Tool, context?: ToolContext): ModelMessage {

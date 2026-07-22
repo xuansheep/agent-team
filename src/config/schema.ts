@@ -26,6 +26,12 @@ const providerBaseSchema = {
   model_aliases: z.record(z.string().min(1)).optional(),
   context_windows: z.record(z.number().int().positive()).optional(),
   default_context_window: z.number().int().positive().optional(),
+  default_auto_compact_token_limit: z.number().int().positive().optional(),
+  auto_compact_token_limits: z.record(z.number().int().positive()).optional(),
+  compaction_hashes: z.record(z.string().min(1)).optional(),
+  auto_compact_token_limit_scope: z.enum(["total", "body_after_prefix"]).optional(),
+  tool_output_token_limit: z.number().int().positive().optional(),
+  compact_prompt: z.string().min(1).optional(),
   api_key_mode: apiKeyModeSchema.default("bearer"),
   user_agent: z.string().min(1).optional(),
   capabilities: providerCapabilitiesSchema.default({})

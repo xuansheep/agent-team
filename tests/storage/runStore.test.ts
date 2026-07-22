@@ -31,7 +31,7 @@ describe("RunStore", () => {
 
     const state = JSON.parse(await readFile(join(run.runDir, "state.json"), "utf8"));
     assert.equal(state.current_node_id, "product");
-    assert.equal(state.version, 4);
+    assert.equal(state.version, 5);
     assert.equal(state.session_id, run.sessionId);
     assert.equal(state.run_id, run.runId);
     assert.equal(state.revision, 1);
@@ -83,7 +83,7 @@ describe("RunStore", () => {
     assert.equal(recovered.current_node_id, "product");
   });
 
-  it("migrates v3 embedded dialogue to a v4 journal without retaining normal leases", async () => {
+  it("rejects pre-v5 workflow state without mutating it", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-state-v3-"));
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "x" });
@@ -104,20 +104,17 @@ describe("RunStore", () => {
       rework_limit: 10
     })}\n`, "utf8");
 
-    const migrated = await store.loadState(run.runId);
+    await assert.rejects(() => store.loadState(run.runId), /Unsupported workflow state version 3; start a new run/);
     const persisted = JSON.parse(await readFile(join(run.runDir, "state.json"), "utf8")) as WorkflowState;
     const entries = await readdir(run.runDir);
 
-    assert.equal(migrated.version, 4);
-    assert.deepEqual(migrated.resume_checkpoint?.dialogue_messages, messages);
-    assert.equal(persisted.version, 4);
-    assert.equal(persisted.resume_checkpoint?.dialogue_messages, undefined);
-    assert.equal(persisted.resume_checkpoint?.dialogue_cursor, 2);
+    assert.equal(persisted.version, 3);
+    assert.deepEqual(persisted.resume_checkpoint?.dialogue_messages, messages);
     assert.equal(entries.includes("run.lease"), false);
     assert.equal(entries.includes(".lease-history"), false);
   });
 
-  it("replays append-only microcompact and full compact dialogue operations", async () => {
+  it("replays append-only Codex replacement checkpoints with window lineage", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-dialogue-compact-"));
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "x" });
@@ -129,34 +126,36 @@ describe("RunStore", () => {
     ];
     assert.equal(await store.syncWorkflowDialogue(run.runId, "dev", 1, messages), 4);
 
-    const micro = await store.compactWorkflowDialogue(run.runId, "dev", 1, {
-      kind: "micro",
-      clearedToolCallIds: ["read-1"],
-      replacement: "[Old tool result content cleared]"
-    });
-    assert.equal(micro.cursor, 5);
-    assert.equal(micro.messages[1]?.content, "[Old tool result content cleared]");
-    assert.equal(micro.messages[3]?.content, "original two");
-
     const summaryMessage: ModelMessage = {
       role: "user",
       content: "compacted summary",
-      metadata: { compactSummary: true }
+      metadata: { compactSummary: true, userMessageKind: "compaction" }
     };
     const full = await store.compactWorkflowDialogue(run.runId, "dev", 1, {
-      kind: "full",
-      summaryMessage
+      replacementHistory: [summaryMessage],
+      phase: "mid_turn",
+      reason: "threshold",
+      model: "test-model",
+      compactionHash: "hash-1",
+      contextWindow: 100_000
     });
-    assert.deepEqual(full, { cursor: 6, messages: [summaryMessage] });
-    assert.deepEqual(await store.loadWorkflowDialogueState(run.runId, "dev", 1, 4), { cursor: 4, messages });
-    assert.equal((await store.loadWorkflowDialogueState(run.runId, "dev", 1, 5)).messages[1]?.content, "[Old tool result content cleared]");
-    assert.deepEqual(await new RunStore(root).loadWorkflowDialogueState(run.runId, "dev", 1), { cursor: 6, messages: [summaryMessage] });
+    assert.equal(full.cursor, 5);
+    assert.deepEqual(full.messages, [summaryMessage]);
+    assert.equal(full.window.windowNumber, 1);
+    assert.equal(full.window.previousWindowId, full.window.firstWindowId);
+    assert.match(full.window.currentWindowId, /^[0-9a-f]{8}-[0-9a-f]{4}-7/);
+    const beforeCompact = await store.loadWorkflowDialogueState(run.runId, "dev", 1, 4);
+    assert.deepEqual(beforeCompact.messages, messages);
+    const reloaded = await new RunStore(root).loadWorkflowDialogueState(run.runId, "dev", 1);
+    assert.equal(reloaded.cursor, 5);
+    assert.deepEqual(reloaded.messages, [summaryMessage]);
+    assert.equal(reloaded.window.currentWindowId, full.window.currentWindowId);
 
     const journal = await readFile(join(run.runDir, "dialogue", "dev-attempt-1.ndjson"), "utf8");
     assert.match(journal, /original one/);
-    assert.match(journal, /"journal_type":"microcompact"/);
-    assert.match(journal, /"journal_type":"compact"/);
-    assert.equal(journal.trim().split("\n").length, 6);
+    assert.match(journal, /"journal_type":"compacted"/);
+    assert.match(journal, /"replacement_history"/);
+    assert.equal(journal.trim().split("\n").length, 5);
   });
 
   it("replays a recovery reconciliation without rewriting prior dialogue records", async () => {
@@ -174,8 +173,13 @@ describe("RunStore", () => {
 
     const state = await store.reconcileWorkflowDialogue(run.runId, "dev", 1, reconciled, [recovered]);
 
-    assert.deepEqual(state, { cursor: 3, messages: reconciled });
-    assert.deepEqual(await new RunStore(root).loadWorkflowDialogueState(run.runId, "dev", 1), { cursor: 3, messages: reconciled });
+    assert.equal(state.cursor, 3);
+    assert.deepEqual(state.messages, reconciled);
+    assert.equal(state.window.windowNumber, 0);
+    const reloaded = await new RunStore(root).loadWorkflowDialogueState(run.runId, "dev", 1);
+    assert.equal(reloaded.cursor, 3);
+    assert.deepEqual(reloaded.messages, reconciled);
+    assert.equal(reloaded.window.windowNumber, 0);
     const journal = await readFile(join(run.runDir, "dialogue", "dev-attempt-1.ndjson"), "utf8");
     assert.match(journal, /"role":"user","content":"continue"/);
     assert.match(journal, /"journal_type":"reconcile"/);

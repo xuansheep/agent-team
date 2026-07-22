@@ -15,6 +15,7 @@ export type ModelMessage = {
   is_error?: boolean;
   tool_calls?: ModelToolCall[];
   metadata?: {
+    userMessageKind?: "human" | "runtime_context" | "compaction";
     runtimeAttachment?: {
       type: string;
       humanTurnCount: number;

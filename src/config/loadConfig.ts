@@ -132,12 +132,20 @@ function applyModelSettings(providers: AgentTeamConfig["providers"], models: Res
   return Object.fromEntries(Object.entries(providers).map(([providerId, provider]) => {
     const modelAliases = { ...provider.model_aliases, ...models.aliases };
     const contextWindows = { ...provider.context_windows, ...models.contextWindows };
+    const autoCompactTokenLimits = { ...provider.auto_compact_token_limits, ...models.autoCompactTokenLimits };
+    const compactionHashes = { ...provider.compaction_hashes, ...models.compactionHashes };
     return [providerId, {
       ...provider,
       ...(models.planModel ? { plan_model: models.planModel } : {}),
       ...(models.defaultContextWindow ? { default_context_window: models.defaultContextWindow } : {}),
+      ...(models.defaultAutoCompactTokenLimit ? { default_auto_compact_token_limit: models.defaultAutoCompactTokenLimit } : {}),
+      ...(models.autoCompactTokenLimitScope ? { auto_compact_token_limit_scope: models.autoCompactTokenLimitScope } : {}),
+      ...(models.toolOutputTokenLimit ? { tool_output_token_limit: models.toolOutputTokenLimit } : {}),
+      ...(models.compactPrompt ? { compact_prompt: models.compactPrompt } : {}),
       ...(Object.keys(modelAliases).length ? { model_aliases: modelAliases } : {}),
-      ...(Object.keys(contextWindows).length ? { context_windows: contextWindows } : {})
+      ...(Object.keys(contextWindows).length ? { context_windows: contextWindows } : {}),
+      ...(Object.keys(autoCompactTokenLimits).length ? { auto_compact_token_limits: autoCompactTokenLimits } : {}),
+      ...(Object.keys(compactionHashes).length ? { compaction_hashes: compactionHashes } : {})
     }];
   }));
 }

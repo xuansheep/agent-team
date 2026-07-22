@@ -32,7 +32,7 @@ export type PendingInteraction =
   | { type: "rework_limit"; node_id: string; questions: unknown[]; result: unknown };
 
 export type WorkflowState = {
-  version?: 2 | 3 | 4;
+  version?: 2 | 3 | 4 | 5;
   session_id?: string;
   run_id?: string;
   created_at?: string;
