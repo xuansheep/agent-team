@@ -15,6 +15,35 @@ class FakeProvider implements ModelProvider {
 }
 
 describe("WorkflowEngine", () => {
+  it("persists the actual project path from prepared project storage", async () => {
+    const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const projectPath = join(process.cwd(), ".tmp", `project-path-${suffix}`);
+    const projectDir = join(process.cwd(), ".tmp", `project-storage-${suffix}`);
+    const projectStorage = {
+      homeDir: join(process.cwd(), ".tmp", `home-${suffix}`),
+      projectsDir: join(process.cwd(), ".tmp", `projects-${suffix}`),
+      projectDir,
+      projectPath,
+      projectKey: `project-${suffix}`
+    };
+    const sessionId = `session-${suffix}`;
+    const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: projectPath, projectStorage });
+
+    await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
+    }, "flow", { request: "x" }, { sessionId });
+
+    const metadata = await new SessionStore(projectStorage).loadMetadata(sessionId);
+    assert.equal(metadata?.projectPath, projectPath);
+    assert.notEqual(metadata?.projectPath, projectDir);
+    assert.throws(
+      () => new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: projectPath, projectStorage, runRoot: projectDir }),
+      /projectStorage and runRoot are mutually exclusive/
+    );
+  });
+
   it("runs two successful nodes in order", async () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: ".tmp/test-runs" });
 

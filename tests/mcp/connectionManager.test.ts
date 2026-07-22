@@ -195,4 +195,44 @@ describe("McpRuntime", () => {
     assert.deepEqual(tool?.inputSchema, { type: "object" });
   });
 
+  it("starts connections without blocking and publishes live status changes", async () => {
+    let resolveClient!: (client: McpClient) => void;
+    const clientPromise = new Promise<McpClient>((resolve) => { resolveClient = resolve; });
+    const runtime = new McpRuntime({ clientFactory: async () => clientPromise });
+    const states: string[][] = [];
+    const unsubscribe = runtime.subscribe((statuses) => states.push(statuses.map((status) => status.state)));
+
+    runtime.startAll([{ name: "docs", source: "project", type: "http", url: "https://mcp.example.test" }]);
+
+    assert.equal(runtime.getServerStatus("docs")?.state, "pending");
+    resolveClient(new FakeMcpClient([{ name: "search" }]));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(runtime.getServerStatus("docs")?.state, "connected");
+    assert.equal(states.some((state) => state.includes("pending")), true);
+    assert.equal(states.some((state) => state.includes("connected")), true);
+    unsubscribe();
+    await runtime.closeAll();
+    assert.equal(runtime.getServerStatus("docs")?.state, "disabled");
+  });
+
+  it("refreshes connected tool schemas after a list-changed notification", async () => {
+    let handlers: Parameters<NonNullable<McpClient["onListChanged"]>>[0] | undefined;
+    const client = new FakeMcpClient([{ name: "search", description: "old", inputSchema: { type: "object" } }]) as FakeMcpClient & McpClient;
+    client.onListChanged = (value) => { handlers = value; };
+    const runtime = new McpRuntime({ clientFactory: async () => client });
+    await runtime.connectAll([{ name: "docs", source: "project", type: "http", url: "https://mcp.example.test" }]);
+    const registry = createLocalToolRegistry({ mcpRuntime: runtime });
+    const search = registry.get("ToolSearch");
+    await search.execute({ query: "select:mcp__docs__search" }, { cwd: process.cwd(), toolRegistry: registry });
+
+    await handlers?.tools?.([{ name: "search", description: "new", inputSchema: { type: "object", properties: { q: { type: "string" } } } }]);
+    registry.list();
+
+    assert.equal(registry.get("mcp__docs__search").description, "new");
+    assert.deepEqual(registry.get("mcp__docs__search").input_schema, { type: "object", properties: { q: { type: "string" } } });
+    await runtime.closeAll();
+  });
+
 });

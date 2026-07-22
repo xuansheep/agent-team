@@ -58,9 +58,11 @@ export function toOpenAiMessages(messages: ModelMessage[]): unknown[] {
     if (Array.isArray(message.content)) {
       return {
         role: message.role,
-        content: message.content.map((part) => part.type === "text"
-          ? { type: "text", text: part.text }
-          : { type: "image_url", image_url: { url: `data:${part.media_type};base64,${part.data}` } })
+        content: message.content.map((part) => {
+          if (part.type === "text") return { type: "text", text: part.text };
+          if (part.type === "tool_reference") return { type: "text", text: `Deferred tool loaded: ${part.tool_name}` };
+          return { type: "image_url", image_url: { url: `data:${part.media_type};base64,${part.data}` } };
+        })
       };
     }
     return {
@@ -186,6 +188,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
 function toRequestBody(request: ModelRequest, options: OpenAiCompatibleOptions): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: request.model,
+    max_tokens: request.maxOutputTokens,
     messages: toOpenAiMessages(request.messages),
     tools: request.tools.map((tool) => ({
       type: "function",

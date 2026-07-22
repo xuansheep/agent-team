@@ -29,7 +29,10 @@ export class ToolRegistry {
   private beforeList?: () => void;
   private refreshing = false;
 
-  constructor(readonly skillRuntime?: SkillRuntime) {}
+  constructor(
+    readonly skillRuntime?: SkillRuntime,
+    readonly mcpRuntime?: McpRuntime
+  ) {}
 
   add(tool: Tool): void {
     if (this.tools.has(tool.name)) throw new Error(`Duplicate tool ${tool.name}`);
@@ -76,7 +79,7 @@ export class ToolRegistry {
 }
 
 export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skillRuntime?: SkillRuntime } = {}): ToolRegistry {
-  const registry = new ToolRegistry(options.skillRuntime);
+  const registry = new ToolRegistry(options.skillRuntime, options.mcpRuntime);
   for (const tool of [
     readTool,
     writeTool,

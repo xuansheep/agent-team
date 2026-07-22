@@ -30,6 +30,7 @@ export function createMcpClientFactory(options: McpTransportFactoryOptions = {})
 class SdkMcpClient implements McpClient {
   private readonly client: Client;
   private handlers: McpListChangedHandlers = {};
+  private closeHandler?: () => void;
   private connected = false;
 
   constructor(
@@ -52,6 +53,10 @@ class SdkMcpClient implements McpClient {
         }
       }
     );
+    this.client.onclose = () => {
+      this.connected = false;
+      this.closeHandler?.();
+    };
     if (options.roots) {
       this.client.setRequestHandler(ListRootsRequestSchema, async () => ({
         roots: options.roots!().map((root) => ({ uri: normalizeRootUri(root.uri), ...(root.name ? { name: root.name } : {}) }))
@@ -78,6 +83,10 @@ class SdkMcpClient implements McpClient {
 
   onListChanged(handlers: McpListChangedHandlers): void {
     this.handlers = handlers;
+  }
+
+  onClose(handler: () => void): void {
+    this.closeHandler = handler;
   }
 
   async listTools(): Promise<McpTool[]> {

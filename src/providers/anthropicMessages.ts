@@ -30,7 +30,8 @@ type AnthropicContentBlock = {
   input?: unknown;
   source?: unknown;
   tool_use_id?: string;
-  content?: string;
+  tool_name?: string;
+  content?: string | AnthropicContentBlock[];
   is_error?: boolean;
   cache_control?: typeof cacheControl;
 };
@@ -70,22 +71,42 @@ type StreamingBlock =
 
 export class AnthropicMessagesProvider implements ModelProvider {
   stream?: (request: ModelRequest, onEvent: (event: ModelStreamEvent) => void) => Promise<ModelResponse>;
+  private nativeDeferredToolsRejected = false;
 
   constructor(private readonly options: AnthropicMessagesOptions) {
     if (options.streaming) this.stream = this.streamImpl.bind(this);
   }
 
+  deferredToolProtocol(model: string): "portable" | "anthropic-tool-reference" {
+    return !this.nativeDeferredToolsRejected && supportsNativeDeferredTools(this.options, model)
+      ? "anthropic-tool-reference"
+      : "portable";
+  }
+
   async generate(request: ModelRequest): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    const response = await fetchProvider(endpoint, {
+    let nativeDeferredTools = this.useNativeDeferredTools(request);
+    let response = await fetchProvider(endpoint, {
       method: "POST",
-      headers: this.headers(request),
+      headers: this.headers(request, {}, nativeDeferredTools),
       signal: request.signal,
-      body: JSON.stringify(toAnthropicRequestBody(request, this.options))
+      body: JSON.stringify(toAnthropicRequestBody(request, this.options, nativeDeferredTools))
     });
 
     if (!response.ok) {
-      throw providerHttpError(response.status, await response.text());
+      const detail = await response.text();
+      if (!nativeDeferredTools || !isNativeDeferredToolsRejection(response.status, detail)) {
+        throw providerHttpError(response.status, detail);
+      }
+      this.nativeDeferredToolsRejected = true;
+      nativeDeferredTools = false;
+      response = await fetchProvider(endpoint, {
+        method: "POST",
+        headers: this.headers(request),
+        signal: request.signal,
+        body: JSON.stringify(toAnthropicRequestBody(request, this.options, false))
+      });
+      if (!response.ok) throw providerHttpError(response.status, await response.text());
     }
 
     return fromAnthropicBody(await response.json() as AnthropicBody);
@@ -93,15 +114,28 @@ export class AnthropicMessagesProvider implements ModelProvider {
 
   private async streamImpl(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    const response = await fetchProvider(endpoint, {
+    let nativeDeferredTools = this.useNativeDeferredTools(request);
+    let response = await fetchProvider(endpoint, {
       method: "POST",
-      headers: this.headers(request, { accept: "text/event-stream" }),
+      headers: this.headers(request, { accept: "text/event-stream" }, nativeDeferredTools),
       signal: request.signal,
-      body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options), stream: true })
+      body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options, nativeDeferredTools), stream: true })
     });
 
     if (!response.ok) {
-      throw providerHttpError(response.status, await response.text());
+      const detail = await response.text();
+      if (!nativeDeferredTools || !isNativeDeferredToolsRejection(response.status, detail)) {
+        throw providerHttpError(response.status, detail);
+      }
+      this.nativeDeferredToolsRejected = true;
+      nativeDeferredTools = false;
+      response = await fetchProvider(endpoint, {
+        method: "POST",
+        headers: this.headers(request, { accept: "text/event-stream" }),
+        signal: request.signal,
+        body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options, false), stream: true })
+      });
+      if (!response.ok) throw providerHttpError(response.status, await response.text());
     }
     if (!response.body) throw new Error("Provider stream response had no body");
 
@@ -183,10 +217,16 @@ export class AnthropicMessagesProvider implements ModelProvider {
     return `${this.options.baseUrl.replace(/\/$/, "")}/v1/messages`;
   }
 
-  private headers(request: ModelRequest, extra: Record<string, string> = {}): Record<string, string> {
+  private useNativeDeferredTools(request: ModelRequest): boolean {
+    return Boolean(request.deferredTools?.length)
+      && this.deferredToolProtocol(request.model) === "anthropic-tool-reference";
+  }
+
+  private headers(request: ModelRequest, extra: Record<string, string> = {}, nativeDeferredTools = false): Record<string, string> {
     const betaHeaders = [...new Set([
       ...(this.options.betaHeaders ?? []),
-      ...(typeof request.effort === "string" ? ["effort-2025-11-24"] : [])
+      ...(typeof request.effort === "string" ? ["effort-2025-11-24"] : []),
+      ...(nativeDeferredTools ? ["advanced-tool-use-2025-11-20"] : [])
     ].filter(Boolean))].join(",");
     return {
       ...buildApiKeyHeaders(this.options.apiKey, this.options.apiKeyMode ?? "x-api-key"),
@@ -199,19 +239,25 @@ export class AnthropicMessagesProvider implements ModelProvider {
   }
 }
 
-function toAnthropicRequestBody(request: ModelRequest, options: AnthropicMessagesOptions): Record<string, unknown> {
+function toAnthropicRequestBody(request: ModelRequest, options: AnthropicMessagesOptions, nativeDeferredTools = false): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: request.model,
-    max_tokens: options.maxTokens,
+    max_tokens: Math.min(options.maxTokens, request.maxOutputTokens ?? options.maxTokens),
     system: toAnthropicSystem(request.messages, options.promptCache ?? true),
     messages: toAnthropicMessages(request.messages, options.promptCache ?? true)
   };
 
-  if (request.tools.length) {
-    body.tools = request.tools.map((tool) => ({
+  const deferredNames = new Set(nativeDeferredTools ? request.deferredToolNames ?? [] : []);
+  const tools = [
+    ...request.tools,
+    ...(nativeDeferredTools ? request.deferredTools ?? [] : [])
+  ].filter((tool, index, all) => all.findIndex((candidate) => candidate.name === tool.name) === index);
+  if (tools.length) {
+    body.tools = tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
-      input_schema: tool.input_schema
+      input_schema: tool.input_schema,
+      ...(deferredNames.has(tool.name) ? { defer_loading: true } : {})
     }));
     body.tool_choice = { type: "auto" };
   }
@@ -295,7 +341,9 @@ function toAnthropicContent(message: ModelMessage): AnthropicContentBlock[] {
     return [{
       type: "tool_result",
       tool_use_id: message.tool_call_id ?? "",
-      content: contentAsText(message.content),
+      content: typeof message.content === "string"
+        ? message.content
+        : message.content.map(toAnthropicContentPart),
       ...(message.is_error === true ? { is_error: true } : {})
     }];
   }
@@ -312,6 +360,7 @@ function toAnthropicContent(message: ModelMessage): AnthropicContentBlock[] {
 
 function toAnthropicContentPart(part: ModelContentPart): AnthropicContentBlock {
   if (part.type === "text") return { type: "text", text: part.text };
+  if (part.type === "tool_reference") return { type: "tool_reference", tool_name: part.tool_name };
   return {
     type: "image",
     source: {
@@ -371,7 +420,25 @@ function anthropicStopReason(reason: string | undefined): ModelStopReason | unde
 function contentAsText(content: string | ModelContentPart[]): string {
   if (typeof content === "string") return content;
   return content
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
+    .flatMap((part) => {
+      if (part.type === "text") return [part.text];
+      if (part.type === "tool_reference") return [`Deferred tool loaded: ${part.tool_name}`];
+      return [];
+    })
     .join("\n");
+}
+
+function supportsNativeDeferredTools(options: AnthropicMessagesOptions, model: string): boolean {
+  if (!/^claude-/i.test(model)) return false;
+  if (options.betaHeaders?.includes("advanced-tool-use-2025-11-20")) return true;
+  try {
+    return new URL(options.baseUrl).hostname.toLowerCase() === "api.anthropic.com";
+  } catch {
+    return false;
+  }
+}
+
+function isNativeDeferredToolsRejection(status: number, detail: string): boolean {
+  return (status === 400 || status === 422)
+    && /defer_loading|tool_reference|advanced-tool-use|anthropic-beta/i.test(detail);
 }

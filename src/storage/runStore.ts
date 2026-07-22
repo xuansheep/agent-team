@@ -46,6 +46,21 @@ export type CreateRunOptions = {
   permissionMode?: string;
 };
 
+export type WorkflowDialogueCompaction =
+  | { kind: "micro"; clearedToolCallIds: string[]; replacement: string }
+  | { kind: "full"; summaryMessage: ModelMessage };
+
+export type WorkflowDialogueState = {
+  cursor: number;
+  messages: ModelMessage[];
+};
+
+type DialogueJournalRecord =
+  | ModelMessage
+  | { journal_type: "microcompact"; cleared_tool_call_ids: string[]; replacement: string }
+  | { journal_type: "compact"; summary_message: ModelMessage }
+  | { journal_type: "reconcile"; messages: ModelMessage[] };
+
 export class RunStore {
   private readonly writeQueues = new Map<string, Promise<unknown>>();
   private readonly leaseQueues = new Map<string, Promise<unknown>>();
@@ -53,7 +68,7 @@ export class RunStore {
   private readonly runDirs = new Map<string, string>();
   private readonly runSessions = new Map<string, string>();
   private readonly nextSeq = new Map<string, number>();
-  private readonly dialogueCounts = new Map<string, number>();
+  private readonly dialogueStates = new Map<string, WorkflowDialogueState>();
   private readonly pendingPermissions = new Map<string, { tool: string; nodeId: string; attempt: number; rule?: string }>();
   private readonly sessionStore: SessionStore;
 
@@ -139,44 +154,114 @@ export class RunStore {
     return this.enqueueRunWrite(runId, async () => {
       const runDir = await this.resolveRunDir(runId);
       const path = dialogueJournalPath(runDir, nodeId, attempt);
-      const key = `${runId}:${nodeId}:${attempt}`;
-      let count = this.dialogueCounts.get(key);
-      if (count === undefined) {
-        count = (await readDialogueJournal(path)).length;
-        this.dialogueCounts.set(key, count);
+      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, path);
+      if (messages.length < state.messages.length) {
+        throw new Error(`Dialogue for ${nodeId} attempt ${attempt} moved backward from ${state.messages.length} to ${messages.length} active messages`);
       }
-      if (messages.length < count) {
-        throw new Error(`Dialogue for ${nodeId} attempt ${attempt} moved backward from ${count} to ${messages.length} messages`);
+      for (let index = 0; index < state.messages.length; index += 1) {
+        if (JSON.stringify(messages[index]) !== JSON.stringify(state.messages[index])) {
+          throw new Error(`Dialogue for ${nodeId} attempt ${attempt} diverged at active message ${index}`);
+        }
       }
-      const pending = messages.slice(count);
-      if (!pending.length) return count;
-      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      const content = pending.map((message) => `${JSON.stringify(message)}\n`).join("");
-      const handle = await open(path, "a", 0o600);
-      try {
-        await handle.writeFile(content, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      const previousCount = count;
-      count += pending.length;
-      this.dialogueCounts.set(key, count);
+
+      const pending = messages.slice(state.messages.length);
+      if (!pending.length) return state.cursor;
+      await appendDialogueJournalRecords(path, pending);
+      const previousCursor = state.cursor;
+      state.messages = [...state.messages, ...pending];
+      state.cursor += pending.length;
       const sessionId = this.runSessions.get(runId) ?? (await this.metadata(runId)).sessionId;
       const entries = pending.flatMap((message, index) =>
         message.role === "assistant" || message.role === "tool"
-          ? [{ message, runId, entryId: `workflow:${runId}:node:${nodeId}:attempt:${attempt}:message:${previousCount + index}` }]
+          ? [{ message, runId, entryId: `workflow:${runId}:node:${nodeId}:attempt:${attempt}:message:${previousCursor + index}` }]
           : []
       );
       await this.sessionStore.appendWorkflowTranscriptEntries(sessionId, entries);
-      return count;
+      return state.cursor;
     });
   }
 
-  async loadWorkflowDialogue(runId: string, nodeId: string, attempt: number, cursor?: number): Promise<ModelMessage[]> {
+  async reconcileWorkflowDialogue(
+    runId: string,
+    nodeId: string,
+    attempt: number,
+    messages: ModelMessage[],
+    recoveredMessages: ModelMessage[]
+  ): Promise<WorkflowDialogueState> {
+    return this.enqueueRunWrite(runId, async () => {
+      const runDir = await this.resolveRunDir(runId);
+      const path = dialogueJournalPath(runDir, nodeId, attempt);
+      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, path);
+      const record: DialogueJournalRecord = {
+        journal_type: "reconcile",
+        messages: [...messages]
+      };
+      await appendDialogueJournalRecords(path, [record]);
+      const previousCursor = state.cursor;
+      state.messages = [...messages];
+      state.cursor += 1;
+      const sessionId = this.runSessions.get(runId) ?? (await this.metadata(runId)).sessionId;
+      const entries = recoveredMessages.flatMap((message, index) =>
+        message.role === "assistant" || message.role === "tool"
+          ? [{ message, runId, entryId: `workflow:${runId}:node:${nodeId}:attempt:${attempt}:reconcile:${previousCursor}:${index}` }]
+          : []
+      );
+      await this.sessionStore.appendWorkflowTranscriptEntries(sessionId, entries);
+      return { cursor: state.cursor, messages: [...state.messages] };
+    });
+  }
+
+  async compactWorkflowDialogue(
+    runId: string,
+    nodeId: string,
+    attempt: number,
+    compaction: WorkflowDialogueCompaction
+  ): Promise<WorkflowDialogueState> {
+    return this.enqueueRunWrite(runId, async () => {
+      const runDir = await this.resolveRunDir(runId);
+      const path = dialogueJournalPath(runDir, nodeId, attempt);
+      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, path);
+      const record: DialogueJournalRecord = compaction.kind === "micro"
+        ? {
+            journal_type: "microcompact",
+            cleared_tool_call_ids: [...compaction.clearedToolCallIds],
+            replacement: compaction.replacement
+          }
+        : {
+            journal_type: "compact",
+            summary_message: compaction.summaryMessage
+          };
+      await appendDialogueJournalRecords(path, [record]);
+      state.messages = applyDialogueJournalRecord(state.messages, record);
+      state.cursor += 1;
+      return { cursor: state.cursor, messages: [...state.messages] };
+    });
+  }
+
+  async loadWorkflowDialogueState(runId: string, nodeId: string, attempt: number, cursor?: number): Promise<WorkflowDialogueState> {
     const runDir = await this.resolveRunDir(runId);
-    const messages = await readDialogueJournal(dialogueJournalPath(runDir, nodeId, attempt));
-    return cursor === undefined ? messages : messages.slice(0, cursor);
+    const state = await readDialogueJournalState(dialogueJournalPath(runDir, nodeId, attempt), cursor);
+    if (cursor === undefined) this.dialogueStates.set(`${runId}:${nodeId}:${attempt}`, state);
+    return { cursor: state.cursor, messages: [...state.messages] };
+  }
+
+  async loadWorkflowDialogue(runId: string, nodeId: string, attempt: number, cursor?: number): Promise<ModelMessage[]> {
+    return (await this.loadWorkflowDialogueState(runId, nodeId, attempt, cursor)).messages;
+  }
+
+  private async ensureWorkflowDialogueState(
+    runId: string,
+    nodeId: string,
+    attempt: number,
+    path: string
+  ): Promise<WorkflowDialogueState> {
+    const key = `${runId}:${nodeId}:${attempt}`;
+    let state = this.dialogueStates.get(key);
+    if (!state) {
+      state = await readDialogueJournalState(path);
+      this.dialogueStates.set(key, state);
+    }
+    return state;
   }
 
   async loadEvents(runId: string): Promise<StoredEvent[]> {
@@ -279,9 +364,11 @@ export class RunStore {
     }
     const hydrateCheckpoint = async (checkpoint: WorkflowState["resume_checkpoint"]) => {
       if (!checkpoint || checkpoint.attempt === undefined) return checkpoint;
+      const dialogue = await this.loadWorkflowDialogueState(runId, checkpoint.node_id, checkpoint.attempt);
       return {
         ...checkpoint,
-        dialogue_messages: await this.loadWorkflowDialogue(runId, checkpoint.node_id, checkpoint.attempt, checkpoint.dialogue_cursor)
+        dialogue_cursor: dialogue.cursor,
+        dialogue_messages: dialogue.messages
       };
     };
     const nodeCheckpoints: NonNullable<WorkflowState["node_checkpoints"]> = {};
@@ -402,6 +489,12 @@ export class RunStore {
 
   private auditEvents(sessionId: string, runId: string, event: HarnessEvent): AuditEvent[] {
     const identity = { session_id: sessionId, run_id: runId };
+    if (event.type === "mcp_catalog_published") {
+      return [{ ...identity, type: "mcp_catalog_published", node_id: event.node_id, attempt: event.attempt, revision: event.revision, protocol: event.protocol, deferred_tools: event.deferred_tools, discovered_tools: event.discovered_tools, pending_servers: event.pending_servers, failed_servers: event.failed_servers }];
+    }
+    if (event.type === "mcp_tools_discovered") {
+      return [{ ...identity, type: "mcp_tools_discovered", node_id: event.node_id, attempt: event.attempt, query: event.query, tools: event.tools }];
+    }
     if (event.type === "tool_invoked") {
       const records: AuditEvent[] = [{ ...identity, type: "tool_invocation", node_id: event.node_id, attempt: event.attempt, tool: event.tool, input: event.input }];
       const input = event.input && typeof event.input === "object" ? event.input as Record<string, unknown> : {};
@@ -498,25 +591,56 @@ function dialogueJournalPath(runDir: string, nodeId: string, attempt: number): s
   return join(runDir, "dialogue", `${encodeURIComponent(nodeId)}-attempt-${attempt}.ndjson`);
 }
 
-async function readDialogueJournal(path: string): Promise<ModelMessage[]> {
+async function appendDialogueJournalRecords(path: string, records: readonly DialogueJournalRecord[]): Promise<void> {
+  if (!records.length) return;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const content = records.map((record) => `${JSON.stringify(record)}\n`).join("");
+  const handle = await open(path, "a", 0o600);
+  try {
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readDialogueJournalState(path: string, cursor?: number): Promise<WorkflowDialogueState> {
   const text = await readFile(path, "utf8").catch((error: unknown) => {
     if (isErrno(error, "ENOENT")) return "";
     throw error;
   });
-  if (!text.trim()) return [];
+  if (!text.trim()) return { cursor: 0, messages: [] };
+
   const lines = text.split("\n");
-  const messages: ModelMessage[] = [];
+  let messages: ModelMessage[] = [];
+  let recordCount = 0;
   for (let index = 0; index < lines.length; index += 1) {
+    if (cursor !== undefined && recordCount >= cursor) break;
     const line = lines[index];
     if (!line) continue;
     try {
-      messages.push(JSON.parse(line) as ModelMessage);
+      const record = JSON.parse(line) as DialogueJournalRecord;
+      messages = applyDialogueJournalRecord(messages, record);
+      recordCount += 1;
     } catch (error) {
       if (index === lines.length - 1 && !text.endsWith("\n")) break;
       throw error;
     }
   }
-  return messages;
+  return { cursor: recordCount, messages };
+}
+
+function applyDialogueJournalRecord(messages: readonly ModelMessage[], record: DialogueJournalRecord): ModelMessage[] {
+  if (!("journal_type" in record)) return [...messages, record];
+  if (record.journal_type === "compact") return [record.summary_message];
+  if (record.journal_type === "reconcile") return [...record.messages];
+
+  const clearedIds = new Set(record.cleared_tool_call_ids);
+  return messages.map((message) =>
+    message.role === "tool" && message.tool_call_id && clearedIds.has(message.tool_call_id)
+      ? { ...message, content: record.replacement }
+      : message
+  );
 }
 
 function persistedWorkflowState(state: WorkflowState): WorkflowState {

@@ -29,6 +29,7 @@ export type TuiNodeState = {
   activation?: number;
   model?: string;
   contextTokens?: number;
+  contextLimit?: number;
   status: "running" | "completed" | "suspended" | "retrying" | "success" | "failure" | "waiting_user" | "interrupted";
 };
 
@@ -37,7 +38,7 @@ export type TuiWorkflowNodeState = {
   role: string;
   model?: string;
   effort?: string;
-  contextCompression?: number;
+  contextLimit?: number;
 };
 
 export type TuiToolState = {

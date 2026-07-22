@@ -1,9 +1,12 @@
 import { Tool } from "../tools/types.js";
 import type { ModelUsage } from "../model/usage.js";
 
+export type DeferredToolProtocol = "portable" | "anthropic-tool-reference";
+
 export type ModelContentPart =
   | { type: "text"; text: string }
-  | { type: "image"; media_type: "image/png" | "image/jpeg" | "image/webp"; data: string };
+  | { type: "image"; media_type: "image/png" | "image/jpeg" | "image/webp"; data: string }
+  | { type: "tool_reference"; tool_name: string };
 
 export type ModelMessage = {
   role: "system" | "user" | "assistant" | "tool";
@@ -15,6 +18,11 @@ export type ModelMessage = {
     runtimeAttachment?: {
       type: string;
       humanTurnCount: number;
+    };
+    compactSummary?: boolean;
+    mcpDiscovery?: {
+      discoveredTools?: string[];
+      preCompactDiscoveredTools?: string[];
     };
   };
 };
@@ -38,8 +46,11 @@ export type ModelRequestContext = {
 export type ModelRequest = {
   model: string;
   effort?: string | number;
+  maxOutputTokens?: number;
   messages: ModelMessage[];
   tools: Tool[];
+  deferredToolNames?: string[];
+  deferredTools?: Tool[];
   response_schema?: unknown;
   context?: ModelRequestContext;
   signal?: AbortSignal;
@@ -47,7 +58,7 @@ export type ModelRequest = {
 
 export type ModelStopReason = "stop" | "tool_call" | "length" | "content_filter" | "error" | "unknown";
 
-export type ModelErrorKind = "network" | "rate_limit" | "auth" | "permission" | "server" | "invalid_request" | "unknown";
+export type ModelErrorKind = "network" | "rate_limit" | "auth" | "permission" | "server" | "invalid_request" | "context_limit" | "unknown";
 
 export type ModelResponse = {
   content?: string;
@@ -79,4 +90,5 @@ export type ModelStreamEvent =
 export type ModelProvider = {
   generate(request: ModelRequest): Promise<ModelResponse>;
   stream?(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse>;
+  deferredToolProtocol?(model: string): DeferredToolProtocol;
 };

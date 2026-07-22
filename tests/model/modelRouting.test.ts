@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_MODEL_CONTEXT_COMPRESSION, DEFAULT_MODEL_CONTEXT_WINDOW, getModelContextCompression, getModelContextWindow, resolveModelAlias } from "../../src/model/modelRegistry.js";
+import { DEFAULT_MODEL_CONTEXT_WINDOW, getModelContextLimits, getModelContextWindow, getProviderMaxOutputTokens, resolveModelAlias } from "../../src/model/modelRegistry.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../../src/model/modelRouting.js";
 
 describe("model routing", () => {
@@ -39,28 +39,40 @@ describe("model routing", () => {
     }), "medium");
   });
 
-  it("resolves aliases, context windows, and compression thresholds", () => {
+  it("resolves aliases and context windows", () => {
     const registry = {
       aliases: { sonnet: "claude-sonnet-4-20250514" },
       contextWindows: { "claude-sonnet-4-20250514": 200000 },
-      contextCompression: { "claude-sonnet-4-20250514": 180000 },
-      models: { "gpt-5": { aliases: ["gpt-latest"], contextWindow: 400000, contextCompression: 380000 } }
+      models: { "gpt-5": { aliases: ["gpt-latest"], contextWindow: 400000 } }
     };
 
     assert.equal(resolveModelAlias("sonnet", registry), "claude-sonnet-4-20250514");
     assert.equal(resolveModelAlias("gpt-latest", registry), "gpt-5");
     assert.equal(getModelContextWindow("sonnet", registry), 200000);
-    assert.equal(getModelContextCompression("sonnet", registry), 180000);
     assert.equal(getModelContextWindow("gpt-latest", registry), 400000);
-    assert.equal(getModelContextCompression("gpt-latest", registry), 380000);
   });
 
-  it("uses global defaults and caps compression at the model context window", () => {
+  it("derives tui-code-compatible automatic and blocking compaction limits", () => {
     assert.equal(getModelContextWindow("unknown"), DEFAULT_MODEL_CONTEXT_WINDOW);
-    assert.equal(getModelContextCompression("unknown"), DEFAULT_MODEL_CONTEXT_COMPRESSION);
-    assert.equal(getModelContextCompression("small", {
-      contextWindows: { small: 128000 },
-      defaultContextCompression: 258000
-    }), 128000);
+    assert.deepEqual(getModelContextLimits("unknown"), {
+      contextWindow: 272000,
+      maxOutputTokens: 8000,
+      summaryReservedTokens: 8000,
+      effectiveContextWindow: 264000,
+      autoCompactLimit: 251000,
+      blockingLimit: 261000
+    });
+    assert.equal(getProviderMaxOutputTokens({ type: "openai-compatible", anthropic: { max_tokens: 20000 } }), 8000);
+    assert.deepEqual(getModelContextLimits("unknown", {}, getProviderMaxOutputTokens({
+      type: "anthropic",
+      anthropic: { max_tokens: 20000 }
+    })), {
+      contextWindow: 272000,
+      maxOutputTokens: 20000,
+      summaryReservedTokens: 20000,
+      effectiveContextWindow: 252000,
+      autoCompactLimit: 239000,
+      blockingLimit: 249000
+    });
   });
 });

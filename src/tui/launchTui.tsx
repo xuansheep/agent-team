@@ -54,14 +54,14 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
   const skillConfigOptions = { cwd: options.cwd, userSettingsPath };
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
   const mcpRuntime = new McpRuntime({ clientFactory: createMcpClientFactory({ roots: () => [{ uri: options.cwd }] }) });
-  await mcpRuntime.connectAll(mcpServers);
+  mcpRuntime.startAll(mcpServers);
   const skillRuntime = await SkillRuntime.discover({
     cwd: options.cwd,
     userSkillRoot: join(userConfigDir, "skills"),
     legacyUserSkillRoot: join(options.homeDir ?? homedir(), ".agents", "skills"),
     disabledSkillNames: await loadDisabledSkillNames(skillConfigOptions)
   });
-  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, runRoot: projectStorage.projectDir, mcpRuntime, skillRuntime });
+  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, projectStorage, mcpRuntime, skillRuntime });
   const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
   return { config, workflows, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions, skillConfigOptions };
 }
@@ -126,6 +126,9 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
   try {
     await instance.waitUntilExit();
   } finally {
-    await promptHistoryStore?.flush();
+    await Promise.all([
+      promptHistoryStore?.flush(),
+      mcpRuntime?.closeAll()
+    ]);
   }
 }

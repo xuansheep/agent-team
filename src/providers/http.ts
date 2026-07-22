@@ -63,7 +63,7 @@ async function isDependencyUnavailable(response: Awaited<ReturnType<typeof fetch
 }
 
 export function providerHttpError(status: number, body: string): ModelProviderError {
-  return new ModelProviderError(`Provider request failed ${status}: ${body}`, { errorKind: classifyProviderStatus(status), status });
+  return new ModelProviderError(`Provider request failed ${status}: ${body}`, { errorKind: classifyProviderError(status, body), status });
 }
 
 export function classifyProviderStatus(status: number): ModelErrorKind {
@@ -74,6 +74,24 @@ export function classifyProviderStatus(status: number): ModelErrorKind {
   if (status >= 500) return "server";
   if (status >= 400) return "invalid_request";
   return "unknown";
+}
+
+export function classifyProviderError(status: number, body: string): ModelErrorKind {
+  if (isContextLimitErrorBody(body)) return "context_limit";
+  return classifyProviderStatus(status);
+}
+
+function isContextLimitErrorBody(body: string): boolean {
+  const normalized = body.toLowerCase();
+  return [
+    "prompt_too_long",
+    "context_length_exceeded",
+    "maximum context length",
+    "context window exceeded",
+    "input is too long",
+    "input tokens exceed",
+    "too many input tokens"
+  ].some((marker) => normalized.includes(marker));
 }
 
 export async function consumeSseBlocks(

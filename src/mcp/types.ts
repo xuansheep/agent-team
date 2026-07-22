@@ -92,6 +92,7 @@ export type McpClient = {
   initialize?(): Promise<void>;
   getMetadata?(): McpServerMetadata;
   onListChanged?(handlers: McpListChangedHandlers): void;
+  onClose?(handler: () => void): void;
   listTools(): Promise<McpTool[]>;
   callTool(name: string, input: unknown): Promise<unknown>;
   listResources(): Promise<McpResource[]>;

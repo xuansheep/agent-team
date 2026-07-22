@@ -23,6 +23,10 @@ export function decidePermission(tool: string, specifier: string, permissions: P
   return { decision: "ask" };
 }
 
+export function isToolExplicitlyDenied(tool: string, permissions: Pick<PermissionSet, "deny">): boolean {
+  return permissions.deny.some((rule) => matchesRule(rule, tool, ""));
+}
+
 export function mergePermissions(base: PermissionSet, node: PermissionSet): PermissionSet {
   return {
     deny: [...base.deny, ...node.deny],
@@ -33,12 +37,17 @@ export function mergePermissions(base: PermissionSet, node: PermissionSet): Perm
 
 function matchesRule(rule: string, tool: string, specifier: string): boolean {
   const parsed = parseRule(rule);
-  if (parsed.tool !== "*" && parsed.tool !== tool) return false;
+  if (!matchesToolName(parsed.tool, tool)) return false;
   if (!parsed.specifier) return true;
   if (parsed.specifier.toLowerCase().startsWith("prompt:")) {
     return matchesPromptRule(tool, parsed.specifier.slice("prompt:".length), specifier);
   }
   return wildcardMatch(parsed.specifier, specifier);
+}
+
+function matchesToolName(ruleTool: string, actualTool: string): boolean {
+  if (ruleTool === "*" || ruleTool === actualTool) return true;
+  return ruleTool.startsWith("mcp__") && actualTool.startsWith(ruleTool + "__");
 }
 
 function parseRule(rule: string): ParsedRule {
@@ -49,7 +58,7 @@ function parseRule(rule: string): ParsedRule {
 
 function wildcardMatch(pattern: string, value: string): boolean {
   const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/[.+^\${}()|[\]\\]/g, "\\$&")
     .replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`).test(value);
 }

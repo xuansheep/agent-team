@@ -13,10 +13,8 @@ const settingsShape = {
   models: z.object({
     planModel: z.string().min(1).optional(),
     defaultContextWindow: z.number().int().positive().optional(),
-    defaultContextCompression: z.number().int().positive().optional(),
     aliases: z.record(z.string().min(1)).optional(),
     contextWindows: z.record(z.number().int().positive()).optional(),
-    contextCompression: z.record(z.number().int().positive()).optional()
   }).strict().optional(),
   planMode: z.object({
     defaultEntry: z.boolean().optional()

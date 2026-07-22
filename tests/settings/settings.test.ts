@@ -42,13 +42,13 @@ describe("settings", () => {
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
     const generated = await readFile(userSettingsPath, "utf8");
     const parsed = JSON.parse(generated) as {
-      models: { defaultContextWindow: number; defaultContextCompression: number };
+      models: { defaultContextWindow: number };
       providers: Record<string, { api_key: string; effort: string }>;
     };
 
     assert.deepEqual(Object.keys(settings.providers ?? {}), ["default", "openai_compatible", "anthropic"]);
     assert.equal(parsed.models.defaultContextWindow, 272000);
-    assert.equal(parsed.models.defaultContextCompression, 258000);
+    assert.equal(Object.hasOwn(parsed.models, "defaultContextCompression"), false);
     assert.equal(parsed.providers.default.api_key, "");
     assert.equal(parsed.providers.default.effort, "medium");
     assert.equal(parsed.providers.openai_compatible.effort, "medium");
@@ -150,6 +150,11 @@ describe("settings", () => {
     } } }), /api_key/);
   });
 
+  it("strictly rejects removed model compression settings", () => {
+    assert.throws(() => settingsSchema.parse({ models: { defaultContextCompression: 258000 } }), /Unrecognized key/);
+    assert.throws(() => settingsSchema.parse({ models: { contextCompression: { "gpt-test": 251000 } } }), /Unrecognized key/);
+  });
+
   it("loads JSON user and project settings with project settings taking precedence", async () => {
     const cwd = await workspace();
     const userSettingsPath = join(cwd, "user-settings.json");
@@ -160,10 +165,8 @@ describe("settings", () => {
       models: {
         planModel: "user-plan",
         defaultContextWindow: 111000,
-        defaultContextCompression: 101000,
         aliases: { shared: "user-model", "user-only": "user-model" },
         contextWindows: { "shared-model": 1000, "user-only-model": 3000 },
-        contextCompression: { "shared-model": 900, "user-only-model": 2700 }
       },
       planMode: { defaultEntry: false },
       copyOnSelect: true,
@@ -176,10 +179,8 @@ describe("settings", () => {
       models: {
         planModel: "project-plan",
         defaultContextWindow: 222000,
-        defaultContextCompression: 202000,
         aliases: { shared: "project-model" },
         contextWindows: { "shared-model": 2000 },
-        contextCompression: { "shared-model": 1800 }
       },
       planMode: { defaultEntry: true },
       copyOnSelect: false,
@@ -193,10 +194,8 @@ describe("settings", () => {
     assert.equal(settings.plansDirectory, resolve(cwd, ".einsteins", "plans"));
     assert.equal(settings.models?.planModel, "project-plan");
     assert.equal(settings.models?.defaultContextWindow, 222000);
-    assert.equal(settings.models?.defaultContextCompression, 202000);
     assert.deepEqual(settings.models?.aliases, { shared: "project-model", "user-only": "user-model" });
     assert.deepEqual(settings.models?.contextWindows, { "shared-model": 2000, "user-only-model": 3000 });
-    assert.deepEqual(settings.models?.contextCompression, { "shared-model": 1800, "user-only-model": 2700 });
     assert.equal(settings.planMode?.defaultEntry, true);
     assert.equal(settings.copyOnSelect, false);
     assert.equal(settings.showClearContextOnPlanAccept, true);
@@ -264,18 +263,14 @@ describe("settings", () => {
         plan_model: "config-plan",
         model_aliases: { legacy: "legacy-model", shared: "config-model" },
         context_windows: { "legacy-model": 1000, "shared-model": 2000 },
-        context_compression: { "legacy-model": 900, "shared-model": 1800 },
-        default_context_window: 64000,
-        default_context_compression: 60000
+        default_context_window: 64000
       }) } }),
       projectSettings: {
         models: {
           planModel: "settings-plan",
           defaultContextWindow: 272000,
-          defaultContextCompression: 258000,
           aliases: { quick: "settings-model", shared: "settings-shared-model" },
-          contextWindows: { "settings-model": 128000, "shared-model": 32000 },
-          contextCompression: { "settings-model": 120000, "shared-model": 30000 }
+          contextWindows: { "settings-model": 128000, "shared-model": 32000 }
         }
       }
     });
@@ -284,10 +279,8 @@ describe("settings", () => {
 
     assert.equal(resolvedProvider.plan_model, "settings-plan");
     assert.equal(resolvedProvider.default_context_window, 272000);
-    assert.equal(resolvedProvider.default_context_compression, 258000);
     assert.deepEqual(resolvedProvider.model_aliases, { legacy: "legacy-model", shared: "settings-shared-model", quick: "settings-model" });
     assert.deepEqual(resolvedProvider.context_windows, { "legacy-model": 1000, "shared-model": 32000, "settings-model": 128000 });
-    assert.deepEqual(resolvedProvider.context_compression, { "legacy-model": 900, "shared-model": 30000, "settings-model": 120000 });
   });
 
   it("defaults user settings to ~/.einsteins/settings.json", () => {

@@ -1,10 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelMessage, ModelProvider, ModelResponse, ModelToolCall } from "../providers/types.js";
+import { getModelContextLimits, MAX_COMPACT_SUMMARY_OUTPUT_TOKENS, type ModelRegistry } from "../model/modelRegistry.js";
+import {
+  compactSummaryMessage,
+  compactSummaryPrompt,
+  formatCompactSummary,
+  isContextLimitError,
+  MAX_COMPACTION_PROMPT_TOO_LONG_RETRIES,
+  MAX_CONSECUTIVE_COMPACTION_FAILURES,
+  MICROCOMPACT_CLEARED_MESSAGE,
+  microcompactMessages,
+  truncateOldestDialogueRounds
+} from "../model/contextCompaction.js";
 import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { hasModelUsage } from "../model/usage.js";
 import { contextTokensFromUsage, estimateModelMessageTokens, estimateModelMessagesTokens } from "../model/contextUsage.js";
+import { prepareMcpDiscovery, mergePreCompactDiscoveredTools, withMcpCatalogMessage } from "../mcp/discovery.js";
+import { isToolExplicitlyDenied } from "./permissions.js";
 import { executeTool, toolFailureResult } from "../tools/errors.js";
+import { toolResultMessage } from "../tools/modelResult.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { Tool, ToolResult } from "../tools/types.js";
 import { RunStore } from "../storage/runStore.js";
@@ -36,8 +51,12 @@ export type NodeRuntimeOptions = {
   attempt?: number;
   activation?: number;
   dialogueMessages?: ModelMessage[];
-  onDialogueMessage?: (message: ModelMessage) => Promise<void> | void;
+  dialogueCursor?: number;
+  modelRegistry?: ModelRegistry;
+  maxOutputTokens?: number;
+  onDialogueMessage?: (message: ModelMessage) => Promise<number | void> | number | void;
   onDialogueMessages?: (messages: ModelMessage[]) => Promise<void> | void;
+  onDialogueCompacted?: (messages: ModelMessage[], cursor: number) => Promise<void> | void;
   interaction?: RuntimeInteraction;
   eventSink?: (event: StoredEvent) => void;
   abortSignal?: AbortSignal;
@@ -46,8 +65,8 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   options.abortSignal?.throwIfAborted();
   const attempt = options.attempt ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
-  let requestTools = [...options.tools.list(), submitNodeResultTool];
   const runtimePermissions = normalizeRuntimePermissions(options.permissions);
+  let requestTools = modelVisibleWorkflowTools(options.tools, runtimePermissions);
   await restoreSkillPermissions(options, runtimePermissions, attempt);
   const baseMessages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff, {
     tools: requestTools,
@@ -66,60 +85,277 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       source: "handoff"
     }); }
   });
-  const messages: ModelMessage[] = [...baseMessages, ...(options.dialogueMessages ?? [])];
+  let activeDialogue = [...options.dialogueMessages ?? []];
+  const durableDialogue = await options.store.loadWorkflowDialogueState(options.runId, options.node.id, attempt);
+  const restoredDurableTail = options.dialogueCursor !== undefined && durableDialogue.cursor > options.dialogueCursor;
+  if (restoredDurableTail) activeDialogue = durableDialogue.messages;
+  const messages: ModelMessage[] = [...baseMessages, ...activeDialogue];
   const baseMessageCount = baseMessages.length;
   const dialogueMessageCount = () => messages.length - baseMessageCount;
+  let dialogueCursor = await options.store.syncWorkflowDialogue(options.runId, options.node.id, attempt, activeDialogue);
+  if (restoredDurableTail) {
+    await options.onDialogueCompacted?.([...activeDialogue], dialogueCursor);
+    await options.onDialogueMessages?.([...activeDialogue]);
+  }
+  const currentLimits = () => getModelContextLimits(options.model, options.modelRegistry, options.maxOutputTokens);
   const previousContext = await options.store.latestNodeContext(options.runId, options.node.id, attempt);
   let contextTokens = previousContext && previousContext.dialogue_message_count <= dialogueMessageCount()
     ? previousContext.context_tokens
-    : undefined;
+    : estimateModelMessagesTokens(messages);
   const publishContext = async () => {
-    if (contextTokens === undefined) return;
+    const limits = currentLimits();
     await appendRuntimeEvent(options, {
       type: "node_context_updated",
       node_id: options.node.id,
       attempt,
       activation: options.activation,
       context_tokens: contextTokens,
-      dialogue_message_count: dialogueMessageCount()
+      context_limit: limits.autoCompactLimit,
+      dialogue_message_count: dialogueMessageCount(),
+      dialogue_cursor: dialogueCursor
     });
   };
-  if (contextTokens !== undefined && previousContext) {
+  if (previousContext) {
     const hasNewDialogue = previousContext.dialogue_message_count < dialogueMessageCount();
     if (hasNewDialogue) {
       contextTokens += estimateModelMessagesTokens(messages.slice(baseMessageCount + previousContext.dialogue_message_count));
     }
     if (hasNewDialogue || (previousContext.activation ?? 1) !== (options.activation ?? 1)) await publishContext();
+  } else {
+    await publishContext();
   }
 
   const turnExecutor = new RuntimeTurnExecutor();
   let resultRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
+  let reactiveCompactAttempted = false;
+  let compactionFailures = consecutiveCompactionFailures(
+    await options.store.loadEvents(options.runId).catch(() => [] as StoredEvent[]),
+    options.node.id,
+    attempt
+  );
+  const replaceDialogue = async (activeDialogue: ModelMessage[], cursor: number) => {
+    messages.splice(baseMessageCount, messages.length - baseMessageCount, ...activeDialogue);
+    dialogueCursor = cursor;
+    await options.onDialogueCompacted?.([...activeDialogue], cursor);
+    await options.onDialogueMessages?.([...activeDialogue]);
+  };
   const appendDialogueMessage = async (message: ModelMessage, includedInLatestResponse = false) => {
     messages.push(message);
-    await options.onDialogueMessage?.(message);
+    const persistedCursor = await options.onDialogueMessage?.(message);
+    dialogueCursor = typeof persistedCursor === "number" ? persistedCursor : dialogueCursor + 1;
     await options.onDialogueMessages?.(messages.slice(baseMessageCount));
-    if (contextTokens === undefined) return;
     if (!includedInLatestResponse) contextTokens += estimateModelMessageTokens(message);
     await publishContext();
   };
-  const dialogueCountBeforeReconcile = dialogueMessageCount();
-  if (await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables)) {
-    await options.onDialogueMessages?.(messages.slice(baseMessageCount));
-    if (contextTokens !== undefined) {
-      contextTokens += estimateModelMessagesTokens(messages.slice(baseMessageCount + dialogueCountBeforeReconcile));
+  const performFullCompaction = async (trigger: "auto" | "reactive"): Promise<{ compacted: boolean; error?: unknown }> => {
+    const limits = currentLimits();
+    const contextBefore = contextTokens;
+    await appendRuntimeEvent(options, {
+      type: "node_context_compaction_started",
+      node_id: options.node.id,
+      attempt,
+      activation: options.activation,
+      kind: "full",
+      trigger,
+      context_tokens: contextBefore,
+      context_limit: limits.autoCompactLimit,
+      blocking_limit: limits.blockingLimit
+    });
+
+    try {
+      let dialogueToSummarize = messages.slice(baseMessageCount);
+      let truncatedMessageCount = 0;
+      let summaryResponse: ModelResponse | undefined;
+      for (let retry = 0; retry <= MAX_COMPACTION_PROMPT_TOO_LONG_RETRIES; retry += 1) {
+        try {
+          summaryResponse = await options.provider.generate({
+            model: options.model,
+            effort: options.effort,
+            maxOutputTokens: Math.min(limits.maxOutputTokens, MAX_COMPACT_SUMMARY_OUTPUT_TOKENS),
+            messages: [
+              ...baseMessages,
+              ...dialogueToSummarize,
+              { role: "user", content: compactSummaryPrompt() }
+            ],
+            tools: [],
+            signal: options.abortSignal,
+            context: {
+              runId: options.runId,
+              nodeId: options.node.id,
+              attempt,
+              sessionId: options.runId,
+              threadId: `${options.runId}:${options.node.id}`,
+              turnId: `${options.runId}:${options.node.id}:${attempt}:compact:${trigger}:${retry + 1}`,
+              promptCacheKey: promptCacheKey(options.runId, options.node.id)
+            }
+          });
+          break;
+        } catch (error) {
+          if (!isContextLimitError(error) || retry >= MAX_COMPACTION_PROMPT_TOO_LONG_RETRIES) throw error;
+          const truncated = truncateOldestDialogueRounds(dialogueToSummarize);
+          if (!truncated) throw error;
+          truncatedMessageCount += Math.max(0, dialogueToSummarize.length - truncated.length);
+          dialogueToSummarize = truncated;
+        }
+      }
+
+      if (!summaryResponse) throw new Error("Context compaction returned no response");
+      await appendRuntimeEvent(options, {
+        type: "model_response_recorded",
+        node_id: options.node.id,
+        attempt,
+        activation: options.activation,
+        model: options.model,
+        usage: summaryResponse.usage,
+        stop_reason: summaryResponse.stopReason
+      });
+      await appendModelUsageEvent(options, attempt, options.model, summaryResponse);
+      if (summaryResponse.tool_calls?.length) throw new Error("Context compaction attempted to call tools");
+      const summary = formatCompactSummary(summaryResponse.content ?? "");
+      if (!summary) throw new Error("Context compaction returned an empty summary");
+
+      const summaryMessage = mergePreCompactDiscoveredTools(compactSummaryMessage(summary), messages);
+      const compactedState = await options.store.compactWorkflowDialogue(options.runId, options.node.id, attempt, {
+        kind: "full",
+        summaryMessage
+      });
+      await replaceDialogue(compactedState.messages, compactedState.cursor);
+      contextTokens = estimateModelMessagesTokens(messages);
+      compactionFailures = 0;
+      await appendRuntimeEvent(options, {
+        type: "node_context_compacted",
+        node_id: options.node.id,
+        attempt,
+        activation: options.activation,
+        kind: "full",
+        trigger,
+        context_tokens_before: contextBefore,
+        context_tokens_after: contextTokens,
+        context_limit: limits.autoCompactLimit,
+        dialogue_cursor: dialogueCursor,
+        ...(truncatedMessageCount ? { truncated_message_count: truncatedMessageCount } : {})
+      });
       await publishContext();
+      return { compacted: true };
+    } catch (error) {
+      if (options.abortSignal?.aborted || isAbortLikeError(error)) throw error;
+      compactionFailures += 1;
+      await appendRuntimeEvent(options, {
+        type: "node_context_compaction_failed",
+        node_id: options.node.id,
+        attempt,
+        activation: options.activation,
+        trigger,
+        failure_count: compactionFailures,
+        error: errorMessage(error)
+      });
+      return { compacted: false, error };
     }
+  };
+  const recoveredMessages = await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables);
+  if (recoveredMessages.length) {
+    const reconciledState = await options.store.reconcileWorkflowDialogue(
+      options.runId,
+      options.node.id,
+      attempt,
+      messages.slice(baseMessageCount),
+      recoveredMessages
+    );
+    await replaceDialogue(reconciledState.messages, reconciledState.cursor);
+    contextTokens += estimateModelMessagesTokens(recoveredMessages);
+    await publishContext();
   }
   for (;;) {
     options.abortSignal?.throwIfAborted();
+    const limits = currentLimits();
+    if (contextTokens >= limits.autoCompactLimit) {
+      const dialogueBeforeMicrocompact = messages.slice(baseMessageCount);
+      const microcompact = microcompactMessages(dialogueBeforeMicrocompact);
+      if (microcompact.clearedToolCallIds.length) {
+        const contextBefore = contextTokens;
+        await appendRuntimeEvent(options, {
+          type: "node_context_compaction_started",
+          node_id: options.node.id,
+          attempt,
+          activation: options.activation,
+          kind: "micro",
+          trigger: "auto",
+          context_tokens: contextBefore,
+          context_limit: limits.autoCompactLimit,
+          blocking_limit: limits.blockingLimit
+        });
+        const compactedState = await options.store.compactWorkflowDialogue(options.runId, options.node.id, attempt, {
+          kind: "micro",
+          clearedToolCallIds: microcompact.clearedToolCallIds,
+          replacement: MICROCOMPACT_CLEARED_MESSAGE
+        });
+        await replaceDialogue(compactedState.messages, compactedState.cursor);
+        contextTokens = Math.max(0, contextTokens - microcompact.tokensFreed);
+        await appendRuntimeEvent(options, {
+          type: "node_context_compacted",
+          node_id: options.node.id,
+          attempt,
+          activation: options.activation,
+          kind: "micro",
+          trigger: "auto",
+          context_tokens_before: contextBefore,
+          context_tokens_after: contextTokens,
+          context_limit: limits.autoCompactLimit,
+          dialogue_cursor: dialogueCursor,
+          cleared_tool_result_count: microcompact.clearedToolCallIds.length
+        });
+        await publishContext();
+      }
+
+      if (contextTokens >= limits.autoCompactLimit && compactionFailures < MAX_CONSECUTIVE_COMPACTION_FAILURES) {
+        const compaction = await performFullCompaction("auto");
+        if (!compaction.compacted && contextTokens >= limits.blockingLimit) {
+          if (compactionFailures >= MAX_CONSECUTIVE_COMPACTION_FAILURES) {
+            throw new Error(`Context compaction circuit breaker opened after ${compactionFailures} consecutive failures`);
+          }
+          continue;
+        }
+      }
+      if (contextTokens >= limits.autoCompactLimit && compactionFailures >= MAX_CONSECUTIVE_COMPACTION_FAILURES) {
+        throw new Error(`Context compaction circuit breaker opened after ${compactionFailures} consecutive failures`);
+      }
+      if (contextTokens >= limits.blockingLimit) {
+        throw new Error(`Context remains above blocking limit ${limits.blockingLimit} after compaction`);
+      }
+    }
+
     assertResolvedToolCallHistory(messages);
-    requestTools = [...options.tools.list(), submitNodeResultTool];
+    const discovery = options.tools.mcpRuntime
+      ? prepareMcpDiscovery({
+        runtime: options.tools.mcpRuntime,
+        registry: options.tools,
+        messages,
+        permissions: runtimePermissions
+      })
+      : undefined;
+    requestTools = modelVisibleWorkflowTools(options.tools, runtimePermissions);
+    if (discovery) {
+      await appendRuntimeEvent(options, {
+        type: "mcp_catalog_published",
+        node_id: options.node.id,
+        attempt,
+        activation: options.activation,
+        revision: discovery.revision,
+        protocol: options.provider.deferredToolProtocol?.(options.model) ?? "portable",
+        deferred_tools: discovery.deferredToolNames,
+        discovered_tools: discovery.discoveredToolNames,
+        pending_servers: discovery.pendingServers,
+        failed_servers: discovery.failedServers.map((server) => server.name)
+      });
+    }
     const request = {
       model: options.model,
       effort: options.effort,
-      messages: messages.slice(),
+      maxOutputTokens: currentLimits().maxOutputTokens,
+      messages: discovery ? withMcpCatalogMessage(messages, discovery) : messages.slice(),
       tools: requestTools,
+      ...(discovery?.deferredToolNames.length ? { deferredToolNames: discovery.deferredToolNames, deferredTools: discovery.deferredTools } : {}),
       response_schema: requestTools.length ? undefined : nodeResultJsonSchema,
       signal: options.abortSignal,
       context: {
@@ -133,22 +369,32 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       }
     };
     const streamBatcher = new RuntimeStreamBatcher(options, attempt);
-    const { streamed, response } = await (async () => {
-      try {
-        return await turnExecutor.requestModel({
-          provider: options.provider,
-          request,
-          onStreamEvent(event) {
-            streamBatcher.push(event.type === "thinking_delta" ? "thinking" : "content", event.text);
-          }
-        });
-      } catch (error) {
-        await streamBatcher.drain();
-        if (options.abortSignal?.aborted || isAbortLikeError(error)) throw error;
-        await appendDialogueMessage({ role: "assistant", content: formatRunErrorText(error), is_error: true });
-        throw error;
+    let streamed: boolean;
+    let response: ModelResponse;
+    try {
+      ({ streamed, response } = await turnExecutor.requestModel({
+        provider: options.provider,
+        request,
+        onStreamEvent(event) {
+          streamBatcher.push(event.type === "thinking_delta" ? "thinking" : "content", event.text);
+        }
+      }));
+      reactiveCompactAttempted = false;
+    } catch (error) {
+      await streamBatcher.drain();
+      if (options.abortSignal?.aborted || isAbortLikeError(error)) throw error;
+      if (
+        isContextLimitError(error)
+        && !reactiveCompactAttempted
+        && compactionFailures < MAX_CONSECUTIVE_COMPACTION_FAILURES
+      ) {
+        reactiveCompactAttempted = true;
+        const compaction = await performFullCompaction("reactive");
+        if (compaction.compacted) continue;
       }
-    })();
+      await appendDialogueMessage({ role: "assistant", content: formatRunErrorText(error), is_error: true });
+      throw error;
+    }
     await appendRuntimeEvent(options, {
       type: "model_response_recorded",
       node_id: options.node.id,
@@ -248,7 +494,8 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         await assertToolCallCanExecute(options, attempt, call, tool);
         await appendRuntimeEvent(options, { type: "tool_invoked", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, input: call.input });
         try {
-          const result = await executeTool(tool, call.input, { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt, activation: options.activation ?? 1, runId: options.runId, provider: options.provider, model: options.model, toolRegistry: options.tools, permissionMode: runtimePermissions.mode, planFilePath: runtimePermissions.planFilePath, abortSignal: options.abortSignal });
+          const toolContext = { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt, activation: options.activation ?? 1, runId: options.runId, provider: options.provider, model: options.model, toolRegistry: options.tools, toolPermissionContext: runtimePermissions, permissionMode: runtimePermissions.mode, planFilePath: runtimePermissions.planFilePath, abortSignal: options.abortSignal };
+          const result = await executeTool(tool, call.input, toolContext);
           await appendRuntimeEvent(options, { type: "tool_completed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, result });
           const artifact = artifactFromToolResult(result);
           if (artifact) {
@@ -276,12 +523,26 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
               allowed_tools: skillActivation.allowedTools
             });
           }
-          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, ...(result.is_error === true ? { is_error: true } : {}), content: JSON.stringify(result) });
+          const resultMessage = toolResultMessage(call.id, result, tool, toolContext);
+          await appendDialogueMessage(resultMessage);
+          const discoveredTools = resultMessage.metadata?.mcpDiscovery?.discoveredTools ?? [];
+          if (discoveredTools.length) {
+            await appendRuntimeEvent(options, {
+              type: "mcp_tools_discovered",
+              node_id: options.node.id,
+              attempt,
+              activation: options.activation,
+              query: typeof (call.input as { query?: unknown })?.query === "string" ? String((call.input as { query: string }).query) : "",
+              tools: discoveredTools
+            });
+          }
           const skillMessage = skillSystemMessageFromToolResult(result);
           if (skillMessage) await appendDialogueMessage(skillMessage);
           const skillOverrides = skillRuntimeOverridesFromToolResult(result);
+          const previousModel = options.model;
           if (skillOverrides?.model) options.model = skillOverrides.model;
           if (skillOverrides?.effort !== undefined) options.effort = skillOverrides.effort;
+          if (options.model !== previousModel) await publishContext();
         } catch (error) {
           options.abortSignal?.throwIfAborted();
           const failure = toolFailureResult(error);
@@ -306,6 +567,18 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     }
   }
 }
+
+function consecutiveCompactionFailures(events: readonly StoredEvent[], nodeId: string, attempt: number): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!("node_id" in event) || event.node_id !== nodeId) continue;
+    if (!("attempt" in event) || event.attempt !== attempt) continue;
+    if (event.type === "node_context_compacted" && event.kind === "full") return 0;
+    if (event.type === "node_context_compaction_failed") return event.failure_count;
+  }
+  return 0;
+}
+
 const submitNodeResultTool: Tool = {
   name: "SubmitNodeResult",
   description: "Submit the final NodeResult and explicitly move forward, backward, or retry the current node.",
@@ -324,6 +597,13 @@ function artifactFromToolResult(result: ToolResult): { artifact_id: string; path
   if (!result.artifact_id || !result.path) return undefined;
   return { artifact_id: result.artifact_id, path: result.path, description: result.description ?? "" };
 }
+function modelVisibleWorkflowTools(registry: ToolRegistry, permissions: ToolPermissionContext): Tool[] {
+  return [
+    ...registry.list().filter((tool) => !isToolExplicitlyDenied(tool.name, permissions)),
+    submitNodeResultTool
+  ];
+}
+
 function normalizeRuntimePermissions(permissions: ToolPermissionContext | PermissionSet): ToolPermissionContext {
   if ("mode" in permissions) {
     return {
@@ -481,10 +761,10 @@ function toolSpecifier(tool: string, input: unknown): string {
   return "";
 }
 
-async function reconcileInterruptedToolCalls(options: NodeRuntimeOptions, attempt: number, messages: ModelMessage[], artifacts: NodeResult["deliverables"]): Promise<boolean> {
+async function reconcileInterruptedToolCalls(options: NodeRuntimeOptions, attempt: number, messages: ModelMessage[], artifacts: NodeResult["deliverables"]): Promise<ModelMessage[]> {
   const existingToolResults = new Set(messages.filter((message) => message.role === "tool" && message.tool_call_id).map((message) => message.tool_call_id));
   const events = await options.store.loadEvents(options.runId);
-  let changed = false;
+  const allRecovered: ModelMessage[] = [];
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message.role !== "assistant" || !message.tool_calls?.length) continue;
@@ -512,12 +792,11 @@ async function reconcileInterruptedToolCalls(options: NodeRuntimeOptions, attemp
     }
     if (recovered.length) {
       messages.splice(index + 1, 0, ...recovered);
-      for (const message of recovered) await options.onDialogueMessage?.(message);
+      allRecovered.push(...recovered);
       index += recovered.length;
-      changed = true;
     }
   }
-  return changed;
+  return allRecovered;
 }
 
 function assertResolvedToolCallHistory(messages: ModelMessage[]): void {

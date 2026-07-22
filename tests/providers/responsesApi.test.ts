@@ -45,6 +45,7 @@ describe("ResponsesApiProvider", () => {
 
     const result = await provider.generate({
       model: "gpt-test",
+      maxOutputTokens: 8000,
       messages: [
         { role: "system", content: "System prompt" },
         { role: "user", content: "hello" }
@@ -62,6 +63,7 @@ describe("ResponsesApiProvider", () => {
     assert.equal(server.requestHeaders["thread-id"], "run-1:dev");
     assert.equal(server.requestHeaders["x-client-request-id"], "run-1:dev:2");
     assert.equal(server.requestBody.instructions, "System prompt");
+    assert.equal(server.requestBody.max_output_tokens, 8000);
     assert.deepEqual(server.requestBody.input, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }
     ]);

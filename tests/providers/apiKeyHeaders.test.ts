@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildApiKeyHeaders } from "../../src/providers/http.js";
+import { buildApiKeyHeaders, providerHttpError } from "../../src/providers/http.js";
 import { configSchema, providerSchema } from "../../src/config/schema.js";
 import { createProvider } from "../../src/providers/registry.js";
 
@@ -15,6 +15,14 @@ describe("buildApiKeyHeaders", () => {
     assert.deepEqual(buildApiKeyHeaders("test-key", "x-api-key"), {
       "x-api-key": "test-key"
     });
+  });
+});
+
+describe("providerHttpError", () => {
+  it("classifies provider context-window errors for reactive compaction", () => {
+    assert.equal(providerHttpError(400, '{"error":{"code":"context_length_exceeded"}}').errorKind, "context_limit");
+    assert.equal(providerHttpError(400, "maximum context length exceeded").errorKind, "context_limit");
+    assert.equal(providerHttpError(400, "ordinary invalid request").errorKind, "invalid_request");
   });
 });
 

@@ -8,8 +8,10 @@ import { readPlan } from "../plans/planFiles.js";
 import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } from "../plans/planSession.js";
 import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
+import { prepareMcpDiscovery, withMcpCatalogMessage } from "../mcp/discovery.js";
 import { executeToolCalls } from "../tools/orchestration.js";
-import { Tool, ToolResult } from "../tools/types.js";
+import { toolResultMessage as mapToolResultMessage } from "../tools/modelResult.js";
+import { Tool, ToolContext, ToolResult } from "../tools/types.js";
 import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { PlanApprovalRequest, PromptInjectionRecord, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
 
@@ -38,13 +40,23 @@ export class RuntimeTurnExecutor {
     try {
       for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
         throwIfAborted(input.abortSignal);
+        const discovery = input.tools.mcpRuntime
+          ? prepareMcpDiscovery({
+            runtime: input.tools.mcpRuntime,
+            registry: input.tools,
+            messages,
+            permissions: input.permissions
+          })
+          : undefined;
+        const requestMessages = discovery ? withMcpCatalogMessage(messages, discovery) : messages;
         const { response } = await this.requestModel({
-        provider: input.provider,
-        request: {
-          model: input.model,
-          effort: input.effort,
-          messages,
-          tools: modelVisibleTools(input),
+          provider: input.provider,
+          request: {
+            model: input.model,
+            effort: input.effort,
+            messages: requestMessages,
+            tools: modelVisibleTools(input),
+            ...(discovery?.deferredToolNames.length ? { deferredToolNames: discovery.deferredToolNames, deferredTools: discovery.deferredTools } : {}),
           context: {
             runId: input.runId ?? input.sessionId,
             nodeId: "runtime",
@@ -167,6 +179,7 @@ export class RuntimeTurnExecutor {
         provider: input.provider,
         model: input.model,
         toolRegistry: input.tools,
+        toolPermissionContext: input.permissions,
         permissionMode: input.permissions.mode
       }, {
         onToolStart: (call) => emit(input, { type: "runtime_tool_invoked", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, input: call.input }),
@@ -187,7 +200,17 @@ export class RuntimeTurnExecutor {
           }
           const tool = execution.result && input.tools.has(execution.call.name) ? input.tools.get(execution.call.name) : undefined;
           messages.push(execution.result && tool
-            ? toolMessage(execution.call.id, execution.result, tool)
+            ? toolMessage(execution.call.id, execution.result, tool, {
+              cwd: input.cwd,
+              sessionId: input.sessionId,
+              runId: input.runId,
+              abortSignal: input.abortSignal,
+              provider: input.provider,
+              model: input.model,
+              toolRegistry: input.tools,
+              toolPermissionContext: input.permissions,
+              permissionMode: input.permissions.mode
+            })
             : failureToolMessage(execution.call.id, execution.failure, execution.error));
           const skillMessage = skillSystemMessageFromToolResult(execution.result);
           if (skillMessage) messages.push(skillMessage);
@@ -423,9 +446,8 @@ function isHumanTurn(message: ModelMessage): boolean {
   return message.role === "user" && !message.metadata?.runtimeAttachment;
 }
 
-function toolMessage(toolCallId: string, result: ToolResult, tool: Tool): ModelMessage {
-  const mapped = tool.mapToolResultToModelResult?.(result);
-  return { role: "tool", tool_call_id: toolCallId, ...(result.is_error === true ? { is_error: true } : {}), content: typeof mapped === "string" ? mapped : JSON.stringify(mapped ?? result) };
+function toolMessage(toolCallId: string, result: ToolResult, tool: Tool, context?: ToolContext): ModelMessage {
+  return mapToolResultMessage(toolCallId, result, tool, context);
 }
 
 function applySkillPermissionRules(permissions: RuntimeTurnInput["permissions"], rules: string[]): void {

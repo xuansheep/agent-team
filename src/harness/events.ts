@@ -12,7 +12,12 @@ export type HarnessEvent =
   | { type: "model_stream_delta"; node_id: string; attempt: number; activation?: number; text: string }
   | { type: "model_response_recorded"; node_id: string; attempt: number; activation?: number; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "model_usage_recorded"; node_id: string; attempt: number; activation?: number; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
-  | { type: "node_context_updated"; node_id: string; attempt: number; activation?: number; context_tokens: number; dialogue_message_count: number }
+  | { type: "node_context_updated"; node_id: string; attempt: number; activation?: number; context_tokens: number; context_limit?: number; dialogue_message_count: number; dialogue_cursor?: number }
+  | { type: "node_context_compaction_started"; node_id: string; attempt: number; activation?: number; kind: "micro" | "full"; trigger: "auto" | "reactive"; context_tokens: number; context_limit: number; blocking_limit: number }
+  | { type: "node_context_compacted"; node_id: string; attempt: number; activation?: number; kind: "micro" | "full"; trigger: "auto" | "reactive"; context_tokens_before: number; context_tokens_after: number; context_limit: number; dialogue_cursor: number; cleared_tool_result_count?: number; truncated_message_count?: number }
+  | { type: "node_context_compaction_failed"; node_id: string; attempt: number; activation?: number; trigger: "auto" | "reactive"; failure_count: number; error: string }
+  | { type: "mcp_catalog_published"; node_id: string; attempt?: number; activation?: number; revision: number; protocol: "portable" | "anthropic-tool-reference"; deferred_tools: string[]; discovered_tools: string[]; pending_servers: string[]; failed_servers: string[] }
+  | { type: "mcp_tools_discovered"; node_id: string; attempt?: number; activation?: number; query: string; tools: string[] }
   | { type: "tool_invoked"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; input: unknown }
   | { type: "tool_completed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; result: unknown }
   | { type: "tool_failed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; error: string; result?: unknown }

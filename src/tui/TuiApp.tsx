@@ -14,7 +14,7 @@ import { QueryEngine } from "../kernel/queryEngine.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
-import { getModelContextCompression, getModelContextWindow, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
+import { getModelContextLimits, getModelContextWindow, getProviderMaxOutputTokens, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { addModelUsage, emptyModelUsage } from "../model/usage.js";
 import type { ModelUsage } from "../model/usage.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
@@ -146,6 +146,7 @@ export function TuiApp({
   const [pendingSkillNames, setPendingSkillNames] = useState<string[]>([]);
   const pendingSkillNamesRef = useRef(new Set<string>());
   const [, setSkillAvailabilityRevision] = useState(0);
+  const [, setMcpStatusRevision] = useState(0);
   const mainScrollRef = useRef<ScrollBoxHandle>(null);
   const sessionRef = useRef<WorkflowSession>();
   const planSessionRef = useRef<PlanSessionState>();
@@ -177,6 +178,10 @@ export function TuiApp({
   const canceledChoiceKeyRef = useRef<string>();
   const defaultPlanModeStartedRef = useRef(false);
   const scrollMainAfterRenderRef = useRef(false);
+  useEffect(() => {
+    if (!mcpRuntime) return;
+    return mcpRuntime.subscribe(() => setMcpStatusRevision((current) => current + 1));
+  }, [mcpRuntime]);
   useEffect(() => {
     if (!skillRuntime || !skillConfigOptions) return;
     const apply = (disabledSkillNames: string[]) => {
@@ -1611,7 +1616,7 @@ ${message.detailText}` : ""}` }
         role: node.role,
         model,
         effort: resolveEffortForWorkflowNode({ node, provider }),
-        contextCompression: getModelContextCompression(model, registry)
+        contextLimit: getModelContextLimits(model, registry, getProviderMaxOutputTokens(provider)).autoCompactLimit
       };
     })
     : undefined;

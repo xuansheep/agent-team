@@ -1,7 +1,10 @@
+import { isToolExplicitlyDenied } from "../harness/permissions.js";
 import type { Tool } from "../tools/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { McpServerStatus, RuntimeMcpTool } from "./runtime.js";
 import type { McpToolCallResult } from "./types.js";
+
+const MAX_MCP_TEXT_LENGTH = 2048;
 
 export type McpToolSearchRuntime = {
   listTools(): RuntimeMcpTool[];
@@ -23,6 +26,7 @@ export type McpToolSearchMatch = {
 };
 
 export type McpToolSearchData = {
+  kind: "mcp_tool_search";
   query: string;
   matches: McpToolSearchMatch[];
   total_deferred_tools: number;
@@ -46,7 +50,7 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
   const candidates = (): SearchCandidate[] => {
     const tools = runtime.listTools();
     const revision = runtime.getCatalogRevision?.() ?? -1;
-    const key = tools.map((tool) => [tool.name, tool.description ?? "", searchHint(tool)].join("\u0000")).sort().join("\u0001");
+    const key = tools.map((tool) => [tool.name, sanitizedText(tool.description) ?? "", searchHint(tool)].join("\u0000")).sort().join("\u0001");
     if (cachedRevision === revision && cachedKey === key) return cachedCandidates;
     cachedRevision = revision;
     cachedKey = key;
@@ -56,7 +60,7 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
         tool,
         parts: parsed.parts,
         full: parsed.full,
-        description: (tool.description ?? "").toLowerCase(),
+        description: (sanitizedText(tool.description) ?? "").toLowerCase(),
         hint: searchHint(tool).toLowerCase()
       };
     });
@@ -65,8 +69,15 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
 
   return {
     name: "ToolSearch",
-    description: "Fetch full schemas for deferred MCP tools. Supports select:ToolA,ToolB, exact names, MCP prefixes, keywords, and +required terms.",
-    prompt: () => runtime.getServerInstructions?.().join("\n\n") ?? "",
+    description: "Load deferred MCP tool schemas before use. Use select:ToolA,ToolB for exact names, an MCP prefix, keywords, or +required terms.",
+    prompt: () => [
+      "MCP tools may be deferred: the model can see their names but not their schemas.",
+      "You MUST call ToolSearch before using any name from <available-deferred-tools>.",
+      "Prefer exact lookup with select:mcp__server__tool when the required name is known.",
+      "After ToolSearch returns a match, use that exact tool name in the next step.",
+      "If an appropriate MCP browser or domain tool is available, do not launch a replacement process unless discovery or the server reports failure.",
+      ...(runtime.getServerInstructions?.().map((value) => sanitizedText(value)).filter((value): value is string => Boolean(value)) ?? [])
+    ].join("\n\n"),
     input_schema: {
       type: "object",
       properties: {
@@ -81,7 +92,12 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
     async execute(input, context) {
       const value = objectInput(input);
       if (context.toolRegistry) syncMcpRegistry(context.toolRegistry, runtime);
-      const allCandidates = candidates();
+      const allCandidates = candidates().filter((candidate) => !isDenied(candidate.tool.name, context.toolPermissionContext));
+      if (context.toolRegistry) {
+        for (const name of context.toolRegistry.names()) {
+          if (name.startsWith("mcp__") && isDenied(name, context.toolPermissionContext)) context.toolRegistry.remove(name);
+        }
+      }
       const deferred = allCandidates.filter((candidate) => !context.toolRegistry?.has(candidate.tool.name));
       const selected = selectedToolNames(value.query, allCandidates, context.toolRegistry, value.maxResults);
       const found = selected ?? searchCandidates(value.query, deferred, value.maxResults);
@@ -95,7 +111,7 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
         }
         matches.push({
           name: item.name,
-          description: item.description,
+          ...(item.description ? { description: sanitizedText(item.description) } : {}),
           source: item.source,
           loaded: item.source === "local" || Boolean(context.toolRegistry?.has(item.name))
         });
@@ -105,6 +121,7 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
         ? runtime.listServerStatuses?.().filter((status) => status.state === "pending").map((status) => status.name)
         : undefined;
       const data: McpToolSearchData = {
+        kind: "mcp_tool_search",
         query: value.query,
         matches,
         total_deferred_tools: deferred.length,
@@ -112,6 +129,14 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
         ...(missing.length ? { missing } : {})
       };
       return { output: formatSearchOutput(data), data };
+    },
+    mapToolResultToModelResult(result, context) {
+      const data = result.data as McpToolSearchData | undefined;
+      if (!data?.matches?.length) return data ?? result.output ?? result.error;
+      if (context?.provider?.deferredToolProtocol?.(context.model ?? "") === "anthropic-tool-reference") {
+        return data.matches.map((match) => ({ type: "tool_reference", tool_name: match.name }));
+      }
+      return data;
     }
   };
 }
@@ -119,7 +144,16 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
 export function syncMcpRegistry(registry: ToolRegistry, runtime: McpToolSearchRuntime): void {
   const available = new Map(runtime.listTools().map((tool) => [tool.name, tool]));
   for (const name of registry.names()) {
-    if (name.startsWith("mcp__") && !available.has(name)) registry.remove(name);
+    if (!name.startsWith("mcp__")) continue;
+    const tool = available.get(name);
+    if (!tool) {
+      registry.remove(name);
+      continue;
+    }
+    if (runtime.callTool) {
+      registry.remove(name);
+      registry.add(createDeferredMcpTool(tool, { callTool: runtime.callTool.bind(runtime) }));
+    }
   }
   if (!runtime.callTool) return;
   for (const tool of available.values()) {
@@ -136,14 +170,15 @@ export function mcpToolAlwaysLoad(tool: RuntimeMcpTool): boolean {
 export function createDeferredMcpTool(tool: RuntimeMcpTool, runtime: DeferredMcpToolRuntime): Tool {
   return {
     name: tool.name,
-    description: tool.description ?? "MCP tool " + tool.originalName + " from " + tool.server,
+    description: sanitizedText(tool.description) ?? "MCP tool " + tool.originalName + " from " + tool.server,
     input_schema: tool.inputSchema ?? { type: "object", additionalProperties: true },
     isReadOnly: () => tool.annotations?.readOnlyHint === true,
     isDestructive: () => tool.annotations?.destructiveHint === true,
     isConcurrencySafe: () => tool.annotations?.readOnlyHint === true || tool.annotations?.idempotentHint === true,
     async execute(input) {
       const data = await runtime.callTool(tool.server, tool.originalName, input ?? {});
-      return { output: toolResultText(data), ...(data.isError ? { error: toolResultText(data), is_error: true } : {}), data };
+      const output = toolResultText(data);
+      return { output, ...(data.isError ? { error: output, is_error: true } : {}), data };
     },
     mapToolResultToModelResult(result) {
       return result.data ?? result.output ?? result.error;
@@ -161,8 +196,7 @@ function selectedToolNames(
   const requested = select
     ? select[1].split(",").map((name) => name.trim()).filter(Boolean)
     : [query.trim()];
-  const exactOnly = Boolean(select) || requested.length === 1;
-  if (!exactOnly) return undefined;
+  if (!select && requested.length !== 1) return undefined;
 
   const matches: Array<{ name: string; description?: string; source: "local" | "mcp" }> = [];
   const missing: string[] = [];
@@ -170,14 +204,14 @@ function selectedToolNames(
     const candidate = candidates.find((entry) => entry.tool.name.toLowerCase() === requestedName.toLowerCase());
     if (candidate) {
       if (!matches.some((entry) => entry.name === candidate.tool.name)) {
-        matches.push({ name: candidate.tool.name, description: candidate.tool.description, source: "mcp" });
+        matches.push({ name: candidate.tool.name, description: sanitizedText(candidate.tool.description), source: "mcp" });
       }
       continue;
     }
-    const local = registry?.names().find((name) => name.toLowerCase() === requestedName.toLowerCase());
+    const local = registry?.names().find((name) => name.toLowerCase() === requestedName.toLowerCase() && !name.startsWith("mcp__"));
     if (local) {
       const tool = registry?.get(local);
-      matches.push({ name: local, description: tool?.description, source: "local" });
+      matches.push({ name: local, description: sanitizedText(tool?.description), source: "local" });
       continue;
     }
     missing.push(requestedName);
@@ -196,7 +230,7 @@ function searchCandidates(
     const prefix = candidates
       .filter((candidate) => candidate.tool.name.toLowerCase().startsWith(lower))
       .slice(0, maxResults)
-      .map((candidate) => ({ name: candidate.tool.name, description: candidate.tool.description, source: "mcp" as const }));
+      .map((candidate) => ({ name: candidate.tool.name, description: sanitizedText(candidate.tool.description), source: "mcp" as const }));
     if (prefix.length) return { matches: prefix, missing: [] };
   }
 
@@ -220,7 +254,7 @@ function searchCandidates(
   return {
     matches: scored.slice(0, maxResults).map(({ candidate }) => ({
       name: candidate.tool.name,
-      description: candidate.tool.description,
+      description: sanitizedText(candidate.tool.description),
       source: "mcp" as const
     })),
     missing: []
@@ -252,12 +286,12 @@ function wordContains(text: string, term: string): boolean {
 }
 
 function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^$\{\}()|[\]\\]/g, "\\$&");
+  return value.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&");
 }
 
 function searchHint(tool: RuntimeMcpTool): string {
   const hint = tool._meta?.["anthropic/searchHint"];
-  return typeof hint === "string" ? hint : "";
+  return typeof hint === "string" ? sanitizedText(hint) ?? "" : "";
 }
 
 function objectInput(input: unknown): { query: string; maxResults: number } {
@@ -278,7 +312,7 @@ function formatSearchOutput(data: McpToolSearchData): string {
     const missing = data.missing?.length ? " Missing: " + data.missing.join(", ") + "." : "";
     return "No matching deferred tools found." + pending + missing;
   }
-  const lines = data.matches.map((match) => match.name + ": " + (match.description ?? "") + (match.loaded ? " [loaded]" : ""));
+  const lines = data.matches.map((match) => match.name);
   if (data.missing?.length) lines.push("Missing: " + data.missing.join(", "));
   return lines.join("\n");
 }
@@ -290,4 +324,15 @@ function toolResultText(result: McpToolCallResult): string {
   if (text) return text;
   if (result.structuredContent) return JSON.stringify(result.structuredContent);
   return JSON.stringify(result);
+}
+
+function sanitizedText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const sanitized = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trim();
+  if (!sanitized) return undefined;
+  return sanitized.length <= MAX_MCP_TEXT_LENGTH ? sanitized : sanitized.slice(0, MAX_MCP_TEXT_LENGTH - 1) + "…";
+}
+
+function isDenied(name: string, permissions: { deny: string[] } | undefined): boolean {
+  return permissions ? isToolExplicitlyDenied(name, permissions) : false;
 }

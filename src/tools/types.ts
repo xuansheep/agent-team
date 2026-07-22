@@ -1,5 +1,6 @@
 import type { AuditSink } from "../audit/auditEvent.js";
 import type { PlanSessionState } from "../plans/planSession.js";
+import type { ToolPermissionContext } from "../permissions/context.js";
 import type { ModelProvider } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { ToolRegistry } from "./registry.js";
@@ -19,6 +20,7 @@ export type ToolContext = {
   provider?: ModelProvider;
   model?: string;
   toolRegistry?: ToolRegistry;
+  toolPermissionContext?: ToolPermissionContext;
   permissionMode?: PermissionMode;
 };
 
@@ -50,5 +52,5 @@ export type Tool = ToolSafety & {
   input_schema: Record<string, unknown>;
   execute(input: unknown, context: ToolContext): Promise<ToolResult>;
   validateInput?: (input: unknown, context: ToolContext) => Promise<{ result: true } | { result: false; message: string }>;
-  mapToolResultToModelResult?: (output: ToolResult) => unknown;
+  mapToolResultToModelResult?: (output: ToolResult, context?: ToolContext) => unknown;
 };

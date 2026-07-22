@@ -83,6 +83,15 @@ describe("AnthropicMessagesProvider", () => {
     });
   });
 
+  it("caps max_tokens at the runtime output-token limit", async () => {
+    const server = await startJsonServer({ content: [{ type: "text", text: "{\"direction\":\"forward\"}" }] });
+    const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 4096 });
+
+    await provider.generate({ model: "claude-test", maxOutputTokens: 2048, messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.equal(server.requestBody.max_tokens, 2048);
+  });
+
   it("keeps long tool prompts out of Anthropic tool schemas", async () => {
     const server = await startJsonServer({ content: [{ type: "text", text: "{\"direction\":\"forward\"}" }] });
     const provider = new AnthropicMessagesProvider({ baseUrl: server.baseUrl, apiKey: "test-key", version: "2023-06-01", maxTokens: 1024 });
@@ -207,6 +216,82 @@ describe("AnthropicMessagesProvider", () => {
     ]);
   });
 
+  it("uses Anthropic native deferred tools and tool_reference blocks when supported", async () => {
+    const server = await startJsonServer({ content: [{ type: "text", text: "ok" }] });
+    const deferredTool: Tool = {
+      name: "mcp__playwright__navigate",
+      description: "Navigate",
+      input_schema: { type: "object", properties: { url: { type: "string" } } },
+      async execute() { return { output: "" }; }
+    };
+    const provider = new AnthropicMessagesProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      version: "2023-06-01",
+      betaHeaders: ["advanced-tool-use-2025-11-20"],
+      maxTokens: 1024
+    });
+
+    await provider.generate({
+      model: "claude-test",
+      messages: [{
+        role: "tool",
+        tool_call_id: "search-1",
+        content: [{ type: "tool_reference", tool_name: deferredTool.name }]
+      }],
+      tools: [tool],
+      deferredToolNames: [deferredTool.name],
+      deferredTools: [deferredTool]
+    });
+
+    assert.equal(provider.deferredToolProtocol("claude-test"), "anthropic-tool-reference");
+    assert.equal(server.requestHeaders["anthropic-beta"], "advanced-tool-use-2025-11-20");
+    assert.deepEqual(server.requestBody.tools, [
+      { name: "Bash", description: "Run a command", input_schema: tool.input_schema },
+      { name: deferredTool.name, description: "Navigate", input_schema: deferredTool.input_schema, defer_loading: true }
+    ]);
+    assert.deepEqual(server.requestBody.messages, [{
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "search-1",
+        content: [{ type: "tool_reference", tool_name: deferredTool.name }],
+        cache_control: { type: "ephemeral" }
+      }]
+    }]);
+  });
+
+  it("retries once with the portable protocol when native deferred fields are rejected", async () => {
+    const server = await startSequencedJsonServer();
+    const deferredTool: Tool = {
+      name: "mcp__playwright__navigate",
+      description: "Navigate",
+      input_schema: { type: "object" },
+      async execute() { return { output: "" }; }
+    };
+    const provider = new AnthropicMessagesProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      version: "2023-06-01",
+      betaHeaders: ["advanced-tool-use-2025-11-20"],
+      maxTokens: 1024
+    });
+
+    const result = await provider.generate({
+      model: "claude-test",
+      messages: [{ role: "user", content: "test" }],
+      tools: [tool],
+      deferredToolNames: [deferredTool.name],
+      deferredTools: [deferredTool]
+    });
+
+    assert.equal(result.content, "portable");
+    assert.equal(server.requestBodies.length, 2);
+    assert.equal((server.requestBodies[0]?.tools as Array<Record<string, unknown>>)[1]?.defer_loading, true);
+    assert.deepEqual(server.requestBodies[1]?.tools, [{ name: "Bash", description: "Run a command", input_schema: tool.input_schema }]);
+    assert.equal(provider.deferredToolProtocol("claude-test"), "portable");
+  });
+
   it("streams text deltas and tool input deltas", async () => {
     const server = await startSseServer([
       { type: "message_start", message: { usage: { input_tokens: 3, cache_creation_input_tokens: 2, cache_read_input_tokens: 5, output_tokens: 0 } } },
@@ -300,6 +385,27 @@ async function startSseServer(events: Array<unknown | "[DONE]">): Promise<{ base
   const address = server.address() as AddressInfo;
   const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   const handle = { baseUrl: `http://127.0.0.1:${address.port}`, get requestBody() { return requestBody; }, close };
+  servers.push(handle);
+  return handle;
+}
+
+async function startSequencedJsonServer(): Promise<{ baseUrl: string; requestBodies: Record<string, unknown>[]; close: () => Promise<void> }> {
+  const requestBodies: Record<string, unknown>[] = [];
+  const server = createServer(async (request, response) => {
+    requestBodies.push(await readJsonBody(request));
+    if (requestBodies.length === 1) {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "defer_loading is not supported" } }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ content: [{ type: "text", text: "portable" }] }));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  const handle = { baseUrl: `http://127.0.0.1:${address.port}`, requestBodies, close };
   servers.push(handle);
   return handle;
 }

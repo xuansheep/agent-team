@@ -143,6 +143,7 @@ export class ResponsesApiProvider implements ModelProvider {
 function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOptions): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: request.model,
+    max_output_tokens: request.maxOutputTokens,
     input: toResponsesInput(request.messages),
     tools: request.tools.map((tool) => ({
       type: "function",
@@ -223,9 +224,11 @@ function toResponsesInput(messages: ModelMessage[]): unknown[] {
 
 function toResponsesMessageContent(role: "user" | "assistant", content: string | ModelContentPart[]): unknown[] {
   if (Array.isArray(content)) {
-    return content.map((part) => part.type === "text"
-      ? { type: role === "assistant" ? "output_text" : "input_text", text: part.text }
-      : { type: "input_image", image_url: `data:${part.media_type};base64,${part.data}` });
+    return content.map((part) => {
+      if (part.type === "text") return { type: role === "assistant" ? "output_text" : "input_text", text: part.text };
+      if (part.type === "tool_reference") return { type: role === "assistant" ? "output_text" : "input_text", text: `Deferred tool loaded: ${part.tool_name}` };
+      return { type: "input_image", image_url: `data:${part.media_type};base64,${part.data}` };
+    });
   }
   if (!content) return [];
   return [{ type: role === "assistant" ? "output_text" : "input_text", text: content }];

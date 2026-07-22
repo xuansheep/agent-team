@@ -4,6 +4,8 @@ import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReen
 import { withRuntimeAttachments } from "../context/messages.js";
 import { isDefaultPlanFilePath, planFilenameSlug, readPlan, uniquePlanFilePath } from "../plans/planFiles.js";
 import { hasModelUsage } from "../model/usage.js";
+import { prepareMcpDiscovery, withMcpCatalogMessage } from "../mcp/discovery.js";
+import { toolResultMessage } from "../tools/modelResult.js";
 import type { ModelMessage, ModelProvider, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import type { GlobalPromptMetadata } from "../config/schema.js";
 import type { AuditSink } from "../audit/auditEvent.js";
@@ -52,11 +54,21 @@ export class QueryEngine {
     await emit(input, { type: "runtime_turn_started", session_id: session.id, run_id: session.workflowBinding?.runId });
     for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
       throwIfAborted(input.signal);
+      const legacyRegistry = input.tools.legacyRegistry;
+      const discovery = legacyRegistry?.mcpRuntime
+        ? prepareMcpDiscovery({
+          runtime: legacyRegistry.mcpRuntime,
+          registry: legacyRegistry,
+          messages,
+          permissions: session.toolPermissionContext
+        })
+        : undefined;
       const request = {
         model: input.model,
         effort: input.effort,
-        messages,
+        messages: discovery ? withMcpCatalogMessage(messages, discovery) : messages,
         tools: input.tools.visibleTools(session.toolPermissionContext).map((tool) => tool.legacyTool),
+        ...(discovery?.deferredToolNames.length ? { deferredToolNames: discovery.deferredToolNames, deferredTools: discovery.deferredTools } : {}),
         context: {
           runId: session.workflowBinding?.runId ?? session.id,
           nodeId: input.nodeId ?? "kernel",
@@ -132,7 +144,7 @@ export class QueryEngine {
         : calls;
       for (const call of executableCalls) {
         const tool = input.tools.get(call.name);
-          const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, planFilePath: session.toolPermissionContext.planFilePath, auditSink: input.auditSink, provider: input.provider, model: input.model, toolRegistry: input.tools.legacyRegistry, permissionMode: session.toolPermissionContext.mode };
+        const context = { cwd: session.cwd, sessionId: session.id, runId: session.workflowBinding?.runId, planState: session.planState ?? undefined, planFilePath: session.toolPermissionContext.planFilePath, auditSink: input.auditSink, provider: input.provider, model: input.model, toolRegistry: input.tools.legacyRegistry, toolPermissionContext: session.toolPermissionContext, permissionMode: session.toolPermissionContext.mode };
         const interaction = await tool.requiresUserInteraction(call.input, context);
         if (interaction?.type === "ask_user_question") {
           const result = await tool.execute(call.input, context);
@@ -162,7 +174,7 @@ export class QueryEngine {
           try {
             const result = await tool.execute(call.input, context);
             await emit(input, { type: "runtime_tool_completed", session_id: session.id, run_id: session.workflowBinding?.runId, tool_call_id: call.id, tool: call.name, result });
-            messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(tool.mapToolResultToModelResult(result, context)) });
+            messages.push(toolResultMessage(call.id, result, tool.legacyTool, context));
             const skillMessage = skillSystemMessageFromToolResult(result);
             if (skillMessage) messages.push(skillMessage);
             const skillOverrides = skillRuntimeOverridesFromToolResult(result);

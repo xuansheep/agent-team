@@ -440,17 +440,18 @@ workflows:
       plan_model: "plan-alias",
       model_aliases: { "default-alias": "gpt-default", "plan-alias": "gpt-plan" },
       context_windows: { "gpt-default": 128000 },
-      context_compression: { "gpt-default": 120000 },
-      default_context_window: 272000,
-      default_context_compression: 258000
+      default_context_window: 272000
     }) });
 
     assert.equal(config.providers.default.plan_model, "plan-alias");
     assert.deepEqual(config.providers.default.model_aliases, { "default-alias": "gpt-default", "plan-alias": "gpt-plan" });
     assert.deepEqual(config.providers.default.context_windows, { "gpt-default": 128000 });
-    assert.deepEqual(config.providers.default.context_compression, { "gpt-default": 120000 });
     assert.equal(config.providers.default.default_context_window, 272000);
-    assert.equal(config.providers.default.default_context_compression, 258000);
+  });
+
+  it("strictly rejects removed provider compression settings", () => {
+    assert.throws(() => providerSettings({ ...defaultProvider, context_compression: { "gpt-test": 120000 } }), /Unrecognized key/);
+    assert.throws(() => providerSettings({ ...defaultProvider, default_context_compression: 258000 }), /Unrecognized key/);
   });
 
   it("does not expose project MCP server configuration", async () => {

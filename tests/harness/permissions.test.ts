@@ -52,4 +52,18 @@ describe("decidePermission", () => {
       deny: []
     }).decision, "allow");
   });
+
+  it("matches an MCP server prefix against every tool from that server", () => {
+    assert.equal(decidePermission("mcp__playwright__navigate", "", {
+      allow: [],
+      ask: [],
+      deny: ["mcp__playwright"]
+    }).decision, "deny");
+
+    assert.equal(decidePermission("mcp__docs__search", "", {
+      allow: ["mcp__docs"],
+      ask: [],
+      deny: []
+    }).decision, "allow");
+  });
 });

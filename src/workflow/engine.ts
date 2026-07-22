@@ -9,7 +9,7 @@ import { RuntimeInteraction, runNode } from "../harness/runtime.js";
 import type { ToolPermissionContext } from "../permissions/context.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { ModelMessage, ModelProvider } from "../providers/types.js";
-import { modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
+import { getProviderMaxOutputTokens, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import { formatRunError } from "../runtime/errorFormatting.js";
 import { ArtifactStore } from "../storage/artifacts.js";
@@ -29,6 +29,7 @@ import { NodeTransitionController } from "./nodeTransitionController.js";
 export type WorkflowEngineOptions = {
     providerFactory: (providerId: string) => ModelProvider;
     cwd: string;
+    projectStorage?: ProjectStorageContext;
     runRoot?: string;
     mcpRuntime?: McpRuntime;
     skillRuntime?: SkillRuntime;
@@ -71,12 +72,17 @@ export type WorkflowRunOptions = {
 };
 export class WorkflowEngine {
     private readonly transitionController = new NodeTransitionController();
-    private projectStorage?: Promise<ProjectStorageContext>;
-    constructor(private readonly options: WorkflowEngineOptions) { }
+    private preparedProjectStorage?: Promise<ProjectStorageContext>;
+    constructor(private readonly options: WorkflowEngineOptions) {
+        if (options.projectStorage && options.runRoot) {
+            throw new Error("WorkflowEngine options projectStorage and runRoot are mutually exclusive");
+        }
+    }
     private async runStore(): Promise<RunStore> {
+        if (this.options.projectStorage) return new RunStore(this.options.projectStorage);
         if (this.options.runRoot) return new RunStore(this.options.runRoot);
-        this.projectStorage ??= prepareProjectStorage({ cwd: this.options.cwd });
-        return new RunStore(await this.projectStorage);
+        this.preparedProjectStorage ??= prepareProjectStorage({ cwd: this.options.cwd });
+        return new RunStore(await this.preparedProjectStorage);
     }
     async run(config: AgentTeamConfig, workflowId: string, input: unknown, options: WorkflowRunOptions = {}): Promise<WorkflowState> {
         assertWorkflowRunPermissionMode(options.permissionMode);
@@ -704,7 +710,6 @@ export class WorkflowEngine {
         try {
         const configFingerprint = options.configFingerprint ?? workflowConfigFingerprint(options.config, options.workflowId);
         options.configFingerprint = configFingerprint;
-        const tools = createLocalToolRegistry({ mcpRuntime: this.options.mcpRuntime, skillRuntime: this.options.skillRuntime });
         const basePermissions = options.workflow.workflow_permissions ?? permissionSetSchema.parse(undefined);
         const planRequestedPermissionRules = options.planRequestedPermissionRules?.length
             ? options.planRequestedPermissionRules
@@ -787,6 +792,7 @@ export class WorkflowEngine {
             options.onState?.(runningState);
             await options.store.saveState(options.runId, runningState);
             await this.appendEvent(options.store, options.runId, { type: "node_started", node_id: node.id, attempt, activation }, options.eventSink);
+            const tools = createLocalToolRegistry({ mcpRuntime: this.options.mcpRuntime, skillRuntime: this.options.skillRuntime });
             let result: NodeResult;
             try {
                 result = await runNode({
@@ -795,6 +801,8 @@ export class WorkflowEngine {
                     systemPrompt: effectiveSystemPrompt(options.config.global_prompt, role.system_prompt),
                     model: resolveModelForWorkflowNode({ node, role, provider: providerConfig, permissionMode: effectivePermissionMode, planModel: providerConfig.plan_model, registry: modelRegistryFromProviderConfig(providerConfig) }),
                     effort: resolveEffortForWorkflowNode({ node, provider: providerConfig }),
+                    modelRegistry: modelRegistryFromProviderConfig(providerConfig),
+                    maxOutputTokens: getProviderMaxOutputTokens(providerConfig),
                     provider: this.options.providerFactory(node.provider),
                     tools,
                     permissions: workflowToolPermissions(effectivePermissionMode, basePermissions, node.permissions ?? permissionSetSchema.parse(undefined), planRequestedPermissionRules),
@@ -808,9 +816,15 @@ export class WorkflowEngine {
                     eventSink: options.eventSink,
                     abortSignal: options.abortSignal,
                     dialogueMessages,
+                    dialogueCursor,
                     onDialogueMessage: async (message) => {
                         dialogueMessages.push(message);
                         dialogueCursor = await options.store.syncWorkflowDialogue(options.runId, node.id, attempt, dialogueMessages);
+                        return dialogueCursor;
+                    },
+                    onDialogueCompacted: async (messages, cursor) => {
+                        dialogueMessages = [...messages];
+                        dialogueCursor = cursor;
                     }
                 });
             }

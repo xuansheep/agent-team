@@ -19,6 +19,7 @@ export async function checkToolPermission(
   }
 
   if (context.mode === "plan") return checkPlanModePermission(tool, input, context);
+  if (tool.name === "ToolSearch") return { decision: "allow", reason: "safe deferred tool discovery" };
 
   const askDecision = firstRuleDecision(tool.name, specifier, context.ask, "ask");
   if (askDecision) return askDecision;

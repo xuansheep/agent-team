@@ -67,7 +67,42 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
       };
     }
     case "node_context_updated":
-      return updateNodeDetails(next, event.node_id, event.attempt, event.activation, { contextTokens: event.context_tokens });
+      return updateNodeDetails(next, event.node_id, event.attempt, event.activation, {
+        contextTokens: event.context_tokens,
+        contextLimit: event.context_limit
+      });
+    case "node_context_compaction_started":
+      return appendConversation(next, {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        activation: event.activation,
+        text: `${event.node_id} 开始${event.kind === "micro" ? "微压缩" : "完整上下文压缩"}`,
+        detailText: `触发方式：${event.trigger}\n压缩前：${event.context_tokens}\n自动压缩上限：${event.context_limit}\n阻断上限：${event.blocking_limit}`
+      }, event);
+    case "node_context_compacted": {
+      const withContext = updateNodeDetails(next, event.node_id, event.attempt, event.activation, {
+        contextTokens: event.context_tokens_after,
+        contextLimit: event.context_limit
+      });
+      return appendConversation(withContext, {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        activation: event.activation,
+        text: `${event.node_id} 已完成${event.kind === "micro" ? "微压缩" : "完整上下文压缩"}`,
+        detailText: `触发方式：${event.trigger}\n压缩前：${event.context_tokens_before}\n压缩后：${event.context_tokens_after}`
+      }, event);
+    }
+    case "node_context_compaction_failed":
+      return appendConversation(next, {
+        kind: "status",
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        activation: event.activation,
+        text: `${event.node_id} 上下文压缩失败（${event.failure_count}/3）`,
+        detailText: event.error
+      }, event);
     case "run_started":
       return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) }, event);
     case "user_message":
@@ -222,7 +257,7 @@ function updateNodeDetails(
   nodeId: string,
   attempt: number,
   activation: number | undefined,
-  details: Partial<Pick<TuiNodeState, "model" | "contextTokens">>
+  details: Partial<Pick<TuiNodeState, "model" | "contextTokens" | "contextLimit">>
 ): TuiState {
   for (let index = state.nodes.length - 1; index >= 0; index -= 1) {
     const node = state.nodes[index];

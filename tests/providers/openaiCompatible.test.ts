@@ -86,6 +86,15 @@ describe("OpenAiCompatibleProvider structured output", () => {
     assert.equal(server.requestBody.reasoning_effort, "custom-level");
   });
 
+  it("sends the runtime output-token limit", async () => {
+    const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    await provider.generate({ model: "gpt-test", maxOutputTokens: 8000, messages: [{ role: "user", content: "hello" }], tools: [] });
+
+    assert.equal(server.requestBody.max_tokens, 8000);
+  });
+
   it("keeps long tool prompts out of OpenAI-compatible tool schemas", async () => {
     const server = await startJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
     const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });

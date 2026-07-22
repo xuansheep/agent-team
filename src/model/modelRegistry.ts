@@ -1,19 +1,28 @@
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 272_000;
-export const DEFAULT_MODEL_CONTEXT_COMPRESSION = 258_000;
+export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8_000;
+export const MAX_COMPACT_SUMMARY_OUTPUT_TOKENS = 20_000;
+export const AUTOCOMPACT_BUFFER_TOKENS = 13_000;
+export const BLOCKING_BUFFER_TOKENS = 3_000;
 
 export type ModelRegistryEntry = {
   aliases?: string[];
   contextWindow?: number;
-  contextCompression?: number;
 };
 
 export type ModelRegistry = {
   aliases?: Record<string, string>;
   defaultContextWindow?: number;
-  defaultContextCompression?: number;
   contextWindows?: Record<string, number>;
-  contextCompression?: Record<string, number>;
   models?: Record<string, ModelRegistryEntry>;
+};
+
+export type ModelContextLimits = {
+  contextWindow: number;
+  maxOutputTokens: number;
+  summaryReservedTokens: number;
+  effectiveContextWindow: number;
+  autoCompactLimit: number;
+  blockingLimit: number;
 };
 
 export function resolveModelAlias(model: string, registry: ModelRegistry = {}): string {
@@ -34,27 +43,48 @@ export function getModelContextWindow(model: string, registry: ModelRegistry = {
     ?? DEFAULT_MODEL_CONTEXT_WINDOW;
 }
 
-export function getModelContextCompression(model: string, registry: ModelRegistry = {}): number {
-  const resolved = resolveModelAlias(model, registry);
-  const configured = registry.contextCompression?.[resolved]
-    ?? registry.models?.[resolved]?.contextCompression
-    ?? registry.defaultContextCompression
-    ?? DEFAULT_MODEL_CONTEXT_COMPRESSION;
-  return Math.min(configured, getModelContextWindow(resolved, registry));
+export function getProviderMaxOutputTokens(provider: {
+  type?: string;
+  anthropic?: { max_tokens?: number };
+}): number {
+  return provider.type === "anthropic"
+    ? provider.anthropic?.max_tokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+    : DEFAULT_MODEL_MAX_OUTPUT_TOKENS;
+}
+
+export function getModelContextLimits(
+  model: string,
+  registry: ModelRegistry = {},
+  maxOutputTokens = DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+): ModelContextLimits {
+  const contextWindow = getModelContextWindow(model, registry);
+  const normalizedMaxOutputTokens = Math.max(1, Math.floor(maxOutputTokens));
+  const summaryReservedTokens = Math.min(
+    normalizedMaxOutputTokens,
+    MAX_COMPACT_SUMMARY_OUTPUT_TOKENS,
+    Math.max(0, contextWindow - 1)
+  );
+  const effectiveContextWindow = Math.max(1, contextWindow - summaryReservedTokens);
+  const autoCompactLimit = Math.max(1, effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS);
+  const blockingLimit = Math.max(autoCompactLimit, effectiveContextWindow - BLOCKING_BUFFER_TOKENS);
+  return {
+    contextWindow,
+    maxOutputTokens: normalizedMaxOutputTokens,
+    summaryReservedTokens,
+    effectiveContextWindow,
+    autoCompactLimit,
+    blockingLimit
+  };
 }
 
 export function modelRegistryFromProviderConfig(provider: {
   model_aliases?: Record<string, string>;
   context_windows?: Record<string, number>;
-  context_compression?: Record<string, number>;
   default_context_window?: number;
-  default_context_compression?: number;
 }): ModelRegistry {
   return {
     aliases: provider.model_aliases ?? {},
     defaultContextWindow: provider.default_context_window,
-    defaultContextCompression: provider.default_context_compression,
-    contextWindows: provider.context_windows ?? {},
-    contextCompression: provider.context_compression ?? {}
+    contextWindows: provider.context_windows ?? {}
   };
 }

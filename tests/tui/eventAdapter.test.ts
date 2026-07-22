@@ -55,6 +55,7 @@ describe("TUI event adapter", () => {
       attempt: 1,
       activation: 1,
       context_tokens: 100000,
+      context_limit: 251000,
       dialogue_message_count: 1,
       ts: "2026-06-23T00:00:02.000Z",
       seq: 3
@@ -72,6 +73,7 @@ describe("TUI event adapter", () => {
 
     assert.equal(state.nodes[0]?.model, "runtime-model");
     assert.equal(state.nodes[0]?.contextTokens, 100000);
+    assert.equal(state.nodes[0]?.contextLimit, 251000);
     assert.equal(state.nodes[0]?.status, "completed");
 
     state = reduceStoredEvent(state, { type: "node_started", node_id: "dev", attempt: 1, activation: 2, ts: "2026-06-23T00:00:04.000Z", seq: 5 });
