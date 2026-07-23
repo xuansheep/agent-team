@@ -21,6 +21,7 @@ export type ModelMessage = {
       humanTurnCount: number;
     };
     compactSummary?: boolean;
+    durableRuntimeContext?: boolean;
     mcpDiscovery?: {
       discoveredTools?: string[];
       preCompactDiscoveredTools?: string[];

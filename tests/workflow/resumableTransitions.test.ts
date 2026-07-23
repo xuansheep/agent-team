@@ -38,17 +38,19 @@ describe("resumable workflow transitions", () => {
     assert.match(JSON.stringify(requests[3]?.messages), /@r1/);
   });
 
-  it("keeps SubmitNodeResult history valid when tester returns work to developer", async () => {
+  it("keeps SubmitNodeResult history valid and makes the latest return handoff authoritative", async () => {
     let call = 0;
+    const requests: ModelRequest[] = [];
     const provider: ModelProvider = {
       async generate(request) {
+        requests.push(request);
         assertResolvedToolCalls(request.messages);
         call += 1;
         if (call === 1) return submittedResponse("product-1", "forward", "PRD ready", "Start UI");
-        if (call === 2) return submittedResponse("ui-1", "forward", "Design ready", "Implement");
+        if (call === 2) return submittedResponse("ui-1", "forward", "Design ready", "实现4卡布局");
         if (call === 3) return submittedResponse("developer-1", "forward", "Implementation ready", "Verify");
-        if (call === 4) return submittedResponse("tester-1", "backward", "Accessibility defect", "Fix accessibility", ["Missing accessible name"]);
-        if (call === 5) return submittedResponse("developer-2", "forward", "Accessibility fixed", "Retest");
+        if (call === 4) return submittedResponse("tester-1", "backward", "Layout defect", "修复为8卡布局", ["Only four cards"]);
+        if (call === 5) return submittedResponse("developer-2", "forward", "Layout fixed", "Retest");
         return submittedResponse("tester-2", "forward", "Verification passed", "Deliver", [], "# Delivery\n\nVerified.");
       }
     };
@@ -59,6 +61,18 @@ describe("resumable workflow transitions", () => {
     assert.equal(state.rework_count, 1);
     assert.equal(state.attempts.find((attempt) => attempt.node_id === "developer")?.activation, 2);
     assert.equal(state.attempts.find((attempt) => attempt.node_id === "tester")?.activation, 2);
+    const resumedDeveloperContext = requests[4]?.messages.find((message) =>
+      message.role === "user"
+      && typeof message.content === "string"
+      && message.content.includes('"node_id": "developer"')
+    );
+    assert.ok(resumedDeveloperContext && typeof resumedDeveloperContext.content === "string");
+    const resumedHandoff = JSON.parse(resumedDeveloperContext.content).handoff as {
+      instruction?: string;
+      previous_handoff?: { instruction?: string };
+    };
+    assert.equal(resumedHandoff.instruction, "修复为8卡布局");
+    assert.equal(resumedHandoff.previous_handoff?.instruction, "实现4卡布局");
   });
 
   it("retries the current node in the same attempt with a new activation", async () => {

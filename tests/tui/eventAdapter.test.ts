@@ -54,6 +54,7 @@ describe("TUI event adapter", () => {
       node_id: "dev",
       attempt: 1,
       activation: 1,
+      context_window: 258400,
       context_tokens: 100000,
       context_limit: 251000,
       dialogue_message_count: 1,
@@ -73,6 +74,7 @@ describe("TUI event adapter", () => {
 
     assert.equal(state.nodes[0]?.model, "runtime-model");
     assert.equal(state.nodes[0]?.contextTokens, 100000);
+    assert.equal(state.nodes[0]?.contextWindow, 258400);
     assert.equal(state.nodes[0]?.contextLimit, 251000);
     assert.equal(state.nodes[0]?.status, "completed");
 

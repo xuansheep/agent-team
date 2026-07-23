@@ -810,6 +810,120 @@ describe("WorkflowEngine", () => {
     assert.match(devText, /add unit tests and retry/);
   });
 
+  it("recovers the latest incoming handoff when resuming a legacy stale checkpoint", async () => {
+    const runRoot = `.tmp/legacy-stale-handoff-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const requests: ModelRequest[] = [];
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        calls += 1;
+        if (calls === 1) {
+          return { content: JSON.stringify({ direction: "forward", summary: "UI ready", handoff: { instruction: "实现4卡布局" } }) };
+        }
+        if (calls === 2) {
+          return { content: JSON.stringify({ direction: "forward", summary: "Implementation ready", handoff: { instruction: "Verify" } }) };
+        }
+        if (calls === 3) {
+          return {
+            content: JSON.stringify({
+              direction: "backward",
+              summary: "Layout defect",
+              feedback: { defects: ["Only four cards"], change_requests: [] },
+              handoff: { instruction: "修复为8卡布局" }
+            })
+          };
+        }
+        if (calls === 4) throw new Error("interrupted after return transition");
+        if (calls === 5) {
+          return { content: JSON.stringify({ direction: "forward", summary: "Eight cards implemented", handoff: { instruction: "Retest" } }) };
+        }
+        return {
+          content: JSON.stringify({
+            direction: "forward",
+            summary: "Verified",
+            document: "# Delivery\n\nEight cards verified.",
+            handoff: { instruction: "Deliver" }
+          })
+        };
+      }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const role = { description: "", system_prompt: "Role", requires: { tool_calling: false, vision: false } };
+    const config = {
+      providers: {
+        default: {
+          type: "openai-compatible" as const,
+          base_url: "https://api.example.test/v1",
+          api_key: "test-key",
+          default_model: "gpt-test",
+          capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true }
+        }
+      },
+      roles: { ui: role, developer: role, tester: role },
+      workflows: {
+        flow: {
+          nodes: [
+            { id: "ui", role: "ui", provider: "default", permission_mode: "default" as const },
+            { id: "developer", role: "developer", provider: "default", permission_mode: "default" as const },
+            { id: "tester", role: "tester", provider: "default", permission_mode: "default" as const, mode: "complete" as const }
+          ],
+          edges: []
+        }
+      }
+    };
+
+    const paused = await engine.run(config, "flow", { request: "Build cards" });
+    assert.equal(paused.status, "paused");
+    assert.equal(paused.current_node_id, "developer");
+
+    const runId = await latestRunId(runRoot);
+    const statePath = join(await runDirForRun(runRoot, runId), "state.json");
+    const persisted = JSON.parse(await readFile(statePath, "utf8")) as {
+      [key: string]: unknown;
+      resume_checkpoint?: { [key: string]: unknown };
+    };
+    assert.ok(persisted.resume_checkpoint);
+    const staleHandoff = {
+      from: "ui",
+      to: "developer",
+      instruction: "实现4卡布局",
+      must_follow: [],
+      known_risks: [],
+      open_questions: [],
+      references: [],
+      iteration: 1
+    };
+    const { attempt: _legacyAttempt, activation: _legacyActivation, ...legacyCheckpoint } = persisted.resume_checkpoint;
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(
+      statePath,
+      `${JSON.stringify({
+        ...persisted,
+        handoff: staleHandoff,
+        resume_checkpoint: { ...legacyCheckpoint, handoff: staleHandoff }
+      }, null, 2)}\n`,
+      "utf8"
+    ));
+
+    const completed = await engine.resume(config, "flow", runId, { answer: "继续修复" });
+
+    assert.equal(completed.status, "completed");
+    const resumedDeveloperContext = requests[4]?.messages.find((message) =>
+      message.role === "user"
+      && typeof message.content === "string"
+      && message.content.includes('"node_id": "developer"')
+    );
+    assert.ok(resumedDeveloperContext && typeof resumedDeveloperContext.content === "string");
+    const recoveredHandoff = JSON.parse(resumedDeveloperContext.content).handoff as {
+      instruction?: string;
+      previous_handoff?: { instruction?: string };
+      user_input?: unknown;
+    };
+    assert.equal(recoveredHandoff.instruction, "修复为8卡布局");
+    assert.equal(recoveredHandoff.previous_handoff?.instruction, "实现4卡布局");
+    assert.match(JSON.stringify(requests[4]?.messages), /继续修复/);
+  });
+
   it("resumes a provider-error headless run with the real failure before the user's next turn", async () => {
     const runRoot = `.tmp/headless-checkpoint-error-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let calls = 0;

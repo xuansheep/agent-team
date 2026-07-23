@@ -56,6 +56,7 @@ describe("model routing", () => {
     assert.equal(getModelContextWindow("unknown"), DEFAULT_MODEL_CONTEXT_WINDOW);
     assert.deepEqual(getModelContextLimits("unknown"), {
       contextWindow: 272000,
+      effectiveContextWindow: 258400,
       maxOutputTokens: 8000,
       autoCompactLimit: 244800,
       autoCompactTokenLimitScope: "total",
@@ -69,6 +70,7 @@ describe("model routing", () => {
       anthropic: { max_tokens: 20000 }
     })), {
       contextWindow: 272000,
+      effectiveContextWindow: 258400,
       maxOutputTokens: 20000,
       autoCompactLimit: 244800,
       autoCompactTokenLimitScope: "total",

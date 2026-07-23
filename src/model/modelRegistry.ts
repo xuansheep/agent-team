@@ -1,4 +1,5 @@
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 272_000;
+export const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
 export const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 8_000;
 export const DEFAULT_AUTO_COMPACT_PERCENT = 90;
 export const DEFAULT_TOOL_OUTPUT_LIMIT_BYTES = 10_000;
@@ -27,6 +28,7 @@ export type ModelRegistry = {
 
 export type ModelContextLimits = {
   contextWindow: number;
+  effectiveContextWindow: number;
   maxOutputTokens: number;
   autoCompactLimit: number;
   autoCompactTokenLimitScope: AutoCompactTokenLimitScope;
@@ -68,6 +70,7 @@ export function getModelContextLimits(
   maxOutputTokens = DEFAULT_MODEL_MAX_OUTPUT_TOKENS
 ): ModelContextLimits {
   const contextWindow = getModelContextWindow(model, registry);
+  const effectiveContextWindow = Math.max(1, Math.floor(contextWindow * DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT / 100));
   const normalizedMaxOutputTokens = Math.max(1, Math.floor(maxOutputTokens));
   const resolved = resolveModelAlias(model, registry);
   const configuredLimit = registry.autoCompactTokenLimits?.[resolved]
@@ -79,6 +82,7 @@ export function getModelContextLimits(
     : Math.max(1, Math.min(Math.floor(configuredLimit), ninetyPercent));
   return {
     contextWindow,
+    effectiveContextWindow,
     maxOutputTokens: normalizedMaxOutputTokens,
     autoCompactLimit,
     autoCompactTokenLimitScope: registry.autoCompactTokenLimitScope ?? "total",

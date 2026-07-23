@@ -1,12 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { contextTokensFromUsage, estimateModelMessageTokens, estimateModelMessagesTokens } from "../../src/model/contextUsage.js";
+import { contextTokensFromUsage, contextUsedPercent, estimateModelMessageTokens, estimateModelMessagesTokens } from "../../src/model/contextUsage.js";
 
 describe("context usage", () => {
   it("uses the latest normalized input and output usage as the exact context baseline", () => {
     assert.equal(contextTokensFromUsage({ inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, totalTokens: 120 }), 120);
     assert.equal(contextTokensFromUsage({ cachedInputTokens: 40 }), undefined);
     assert.equal(contextTokensFromUsage(undefined), undefined);
+  });
+
+  it("subtracts the Codex display baseline from used tokens and effective capacity", () => {
+    assert.equal(contextUsedPercent(0, 258400), 0);
+    assert.equal(contextUsedPercent(12000, 258400), 0);
+    assert.equal(contextUsedPercent(100000, 258400), 36);
+    assert.equal(contextUsedPercent(258400, 258400), 100);
+    assert.equal(contextUsedPercent(300000, 258400), 100);
   });
 
   it("estimates text, tool calls, and images added after the latest response", () => {

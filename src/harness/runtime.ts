@@ -8,14 +8,16 @@ import {
   compactSummaryPrompt,
   dropOldestCompactionItem,
   formatCompactSummary,
-  isContextLimitError
+  isContextLimitError,
+  isDurableRuntimeContext
 } from "../model/contextCompaction.js";
 import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { hasModelUsage } from "../model/usage.js";
 import { contextTokensFromUsage, estimateModelMessageTokens, estimateModelMessagesTokens } from "../model/contextUsage.js";
 import { prepareMcpDiscovery, mergePreCompactDiscoveredTools, withMcpCatalogMessage } from "../mcp/discovery.js";
 import { isToolExplicitlyDenied } from "./permissions.js";
-import { executeTool, toolFailureResult } from "../tools/errors.js";
+import { executeTool, toolFailureInfo, toolFailureResult, toolPolicyFailureResult } from "../tools/errors.js";
+import { isShellToolName, shellCallMatchesFailureCategory } from "../tools/local/shellPolicy.js";
 import { modelToolResultContent, toolResultMessage } from "../tools/modelResult.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { Tool, ToolResult } from "../tools/types.js";
@@ -105,6 +107,14 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     }
     if (insertionIndex < 0) {
       for (let index = dialogue.length - 1; index >= 0; index -= 1) {
+        if (isDurableRuntimeContext(dialogue[index]!)) {
+          insertionIndex = index;
+          break;
+        }
+      }
+    }
+    if (insertionIndex < 0) {
+      for (let index = dialogue.length - 1; index >= 0; index -= 1) {
         if (dialogue[index]?.metadata?.compactSummary === true) {
           insertionIndex = index;
           break;
@@ -137,7 +147,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   };
   const reachesCompactLimit = () => {
     const limits = currentLimits();
-    return contextTokens >= limits.contextWindow || scopedContextTokens() >= limits.autoCompactLimit;
+    return contextTokens >= limits.effectiveContextWindow || scopedContextTokens() >= limits.autoCompactLimit;
   };
   const publishContext = async () => {
     const limits = currentLimits();
@@ -148,7 +158,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       activation: options.activation,
       model: options.model,
       compaction_hash: limits.compactionHash,
-      context_window: limits.contextWindow,
+      context_window: limits.effectiveContextWindow,
       context_tokens: contextTokens,
       context_limit: limits.autoCompactLimit,
       prefix_input_tokens: prefixInputTokens,
@@ -171,6 +181,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   const turnExecutor = new RuntimeTurnExecutor();
   let resultRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
+  const toolFailureCounts = new Map<string, { category: string; count: number }>();
   let hasSampledModel = false;
   let lastSampledModel = previousContext?.model ?? dialogueWindow.model ?? options.model;
   const replaceDialogue = async (activeDialogue: ModelMessage[], cursor: number) => {
@@ -186,6 +197,34 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await options.onDialogueMessages?.(messages.slice(baseMessageCount));
     if (!includedInLatestResponse) contextTokens += estimateModelMessageTokens(message);
     await publishContext();
+  };
+  const recordToolFailure = async (call: ModelToolCall, failure: ToolResult, countFailure = true) => {
+    const message = failure.error ?? "Tool failed";
+    const info = toolFailureInfo(failure);
+    if (info && countFailure) {
+      const current = toolFailureCounts.get(info.fingerprint);
+      toolFailureCounts.set(info.fingerprint, {
+        category: info.category,
+        count: (current?.count ?? 0) + 1
+      });
+    }
+    await appendRuntimeEvent(options, {
+      type: "tool_failed",
+      node_id: options.node.id,
+      attempt,
+      activation: options.activation,
+      tool_call_id: call.id,
+      tool: call.name,
+      error: message,
+      result: failure,
+      ...(info ? { failure_category: info.category, failure_fingerprint: info.fingerprint } : {})
+    });
+    await appendDialogueMessage({
+      role: "tool",
+      tool_call_id: call.id,
+      is_error: true,
+      content: JSON.stringify(failure)
+    });
   };
   const performLocalCompaction = async (
     phase: "pre_turn" | "mid_turn",
@@ -218,26 +257,29 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       let summaryResponse: ModelResponse | undefined;
       for (let retry = 0; ; retry += 1) {
         try {
-          summaryResponse = await options.provider.generate({
-            model: compactionModel,
-            effort: options.effort,
-            maxOutputTokens: limits.maxOutputTokens,
-            messages: [
-              ...requestHistory(dialogueToSummarize),
-              { role: "user", content: limits.compactPrompt ?? compactSummaryPrompt(), metadata: { userMessageKind: "compaction" } }
-            ],
-            tools: [],
-            signal: options.abortSignal,
-            context: {
-              runId: options.runId,
-              nodeId: options.node.id,
-              attempt,
-              sessionId: options.runId,
-              threadId: `${options.runId}:${options.node.id}`,
-              turnId: `${options.runId}:${options.node.id}:${attempt}:compact:${phase}:${retry + 1}`,
-              promptCacheKey: promptCacheKey(options.runId, options.node.id)
+          ({ response: summaryResponse } = await turnExecutor.requestModel({
+            provider: options.provider,
+            request: {
+              model: compactionModel,
+              effort: options.effort,
+              maxOutputTokens: limits.maxOutputTokens,
+              messages: [
+                ...requestHistory(dialogueToSummarize),
+                { role: "user", content: limits.compactPrompt ?? compactSummaryPrompt(), metadata: { userMessageKind: "compaction" } }
+              ],
+              tools: [],
+              signal: options.abortSignal,
+              context: {
+                runId: options.runId,
+                nodeId: options.node.id,
+                attempt,
+                sessionId: options.runId,
+                threadId: `${options.runId}:${options.node.id}`,
+                turnId: `${options.runId}:${options.node.id}:${attempt}:compact:${phase}:${retry + 1}`,
+                promptCacheKey: promptCacheKey(options.runId, options.node.id)
+              }
             }
-          });
+          }));
           break;
         } catch (error) {
           if (!isContextLimitError(error)) throw error;
@@ -274,7 +316,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         reason,
         model: compactionModel,
         compactionHash: limits.compactionHash,
-        contextWindow: limits.contextWindow,
+        contextWindow: limits.effectiveContextWindow,
         prefixInputTokens
       });
       await replaceDialogue(compactedState.messages, compactedState.cursor);
@@ -296,6 +338,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         context_limit: limits.autoCompactLimit,
         dialogue_cursor: dialogueCursor,
         retained_user_message_count: replacementHistory.filter(isHumanUserMessage).length,
+        retained_runtime_context_count: replacementHistory.filter(isDurableRuntimeContext).length,
         window_number: dialogueWindow.windowNumber,
         first_window_id: dialogueWindow.firstWindowId,
         previous_window_id: dialogueWindow.previousWindowId!,
@@ -348,7 +391,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     if (previousLimits.compactionHash && nextLimits.compactionHash && previousLimits.compactionHash !== nextLimits.compactionHash) {
       preTurnReason = "model_change";
       preTurnModel = previousModel;
-    } else if (previousLimits.contextWindow > nextLimits.contextWindow && contextTokens >= nextLimits.autoCompactLimit) {
+    } else if (previousLimits.effectiveContextWindow > nextLimits.effectiveContextWindow && contextTokens >= nextLimits.autoCompactLimit) {
       preTurnReason = "smaller_context";
       preTurnModel = previousModel;
     }
@@ -366,7 +409,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       let reason: "threshold" | "model_change" | "smaller_context" | undefined;
       if (lastSampledModel !== options.model && sampledLimits.compactionHash && nextLimits.compactionHash && sampledLimits.compactionHash !== nextLimits.compactionHash) {
         reason = "model_change";
-      } else if (lastSampledModel !== options.model && sampledLimits.contextWindow > nextLimits.contextWindow && contextTokens >= nextLimits.autoCompactLimit) {
+      } else if (lastSampledModel !== options.model && sampledLimits.effectiveContextWindow > nextLimits.effectiveContextWindow && contextTokens >= nextLimits.autoCompactLimit) {
         reason = "smaller_context";
       } else if (reachesCompactLimit()) {
         reason = "threshold";
@@ -433,7 +476,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       await streamBatcher.drain();
       if (options.abortSignal?.aborted || isAbortLikeError(error)) throw error;
       if (isContextLimitError(error)) {
-        contextTokens = currentLimits().contextWindow;
+        contextTokens = currentLimits().effectiveContextWindow;
         await publishContext();
       }
       await appendDialogueMessage({ role: "assistant", content: formatRunErrorText(error), is_error: true });
@@ -481,6 +524,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         continue;
       }
       await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls }, responseIncludedInUsage);
+      let shellFailureInResponse: { tool: string; toolCallId: string; error: string } | undefined;
       for (const call of response.tool_calls) {
         options.abortSignal?.throwIfAborted();
         options.tools.activateSkillsForInput(call.input, options.cwd);
@@ -492,6 +536,31 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
           continue;
         }
         const tool = options.tools.get(call.name);
+        if (shellFailureInResponse && tool.isReadOnly?.(call.input, {
+          cwd: options.cwd,
+          runDir: options.store.runDir(options.runId),
+          nodeId: options.node.id,
+          attempt,
+          activation: options.activation ?? 1
+        }) !== true) {
+          const failure = toolPolicyFailureResult(
+            "tool.cancelled_after_shell_failure",
+            "Tool call cancelled because an earlier shell call in the same model response failed. Re-plan from the failure before performing more writes.",
+            shellFailureInResponse.tool + ":" + shellFailureInResponse.toolCallId
+          );
+          await recordToolFailure(call, failure, false);
+          continue;
+        }
+        const blockedFailure = blockedShellStrategyFailure(call, toolFailureCounts);
+        if (blockedFailure) {
+          await recordToolFailure(call, blockedFailure, false);
+          shellFailureInResponse = {
+            tool: call.name,
+            toolCallId: call.id,
+            error: blockedFailure.error ?? "Shell strategy blocked"
+          };
+          continue;
+        }
         const permission = await checkToolPermission(tool, call.input, { ...runtimePermissions, cwd: options.cwd });
         if (permission.decision === "deny") {
           const error = `Permission denied for ${call.name}: ${permission.reason ?? permission.rule ?? "no rule"}`;
@@ -601,9 +670,14 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         } catch (error) {
           options.abortSignal?.throwIfAborted();
           const failure = toolFailureResult(error);
-            const message = failure.error ?? "Tool failed";
-          await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, error: message, result: failure });
-          await appendDialogueMessage({ role: "tool", tool_call_id: call.id, is_error: true, content: JSON.stringify(failure) });
+          await recordToolFailure(call, failure);
+          if (isShellToolName(call.name)) {
+            shellFailureInResponse = {
+              tool: call.name,
+              toolCallId: call.id,
+              error: failure.error ?? "Shell command failed"
+            };
+          }
         }
       }
       continue;
@@ -908,6 +982,22 @@ function toolCallLedger(events: StoredEvent[], nodeId: string, attempt: number, 
     completed: reversed.find((event): event is Extract<StoredEvent, { type: "tool_completed" }> => event.type === "tool_completed"),
     failed: reversed.find((event): event is Extract<StoredEvent, { type: "tool_failed" }> => event.type === "tool_failed")
   };
+}
+
+function blockedShellStrategyFailure(
+  call: ModelToolCall,
+  failures: ReadonlyMap<string, { category: string; count: number }>
+): ToolResult | undefined {
+  if (!isShellToolName(call.name)) return undefined;
+  for (const failure of failures.values()) {
+    if (failure.count < 2 || !shellCallMatchesFailureCategory(failure.category, call.input)) continue;
+    return toolPolicyFailureResult(
+      "tool.strategy_blocked",
+      "This shell strategy has already failed twice in the current activation. Do not retry it; switch to Read/Edit/MultiEdit/Write or another method.",
+      call.name + ":" + failure.category
+    );
+  }
+  return undefined;
 }
 
 function toolInputFingerprint(tool: string, input: unknown): string {

@@ -1,4 +1,5 @@
 import type { BorderStyle } from "../../ink/render-border.js";
+import { contextUsedPercent } from "../../model/contextUsage.js";
 import { getModelContextLimits } from "../../model/modelRegistry.js";
 import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.js";
 import { Box, Text } from "../ink.js";
@@ -32,8 +33,17 @@ export function WorkflowFlowChart({
   const [animationRef, animationTime] = useAnimationFrame(nodes.some((node) => node.status === "running") ? 120 : null);
   const runningBorder: BorderStyle = { ...NODE_BORDER, topRight: RUNNING_TOP_RIGHT_FRAMES[Math.floor(animationTime / 120) % RUNNING_TOP_RIGHT_FRAMES.length] };
   const rows = workflowNodes?.length
-    ? workflowNodes.map((node) => ({ id: node.id, model: node.model, effort: node.effort, contextLimit: node.contextLimit, state: latestNodeState(nodes, node.id) }))
-    : nodes.map((node) => ({ id: node.nodeId, model: node.model, effort: undefined, contextLimit: node.contextLimit ?? getModelContextLimits(node.model ?? "").autoCompactLimit, state: node }));
+    ? workflowNodes.map((node) => ({ id: node.id, model: node.model, effort: node.effort, contextWindow: node.contextWindow, state: latestNodeState(nodes, node.id) }))
+    : nodes.map((node) => {
+      const limits = getModelContextLimits(node.model ?? "");
+      return {
+        id: node.nodeId,
+        model: node.model,
+        effort: undefined,
+        contextWindow: node.contextWindow ?? limits.effectiveContextWindow,
+        state: node
+      };
+    });
 
   return (
     <Box ref={animationRef} flexWrap="wrap" flexShrink={0}>
@@ -42,9 +52,10 @@ export function WorkflowFlowChart({
         const running = row.state?.status === "running";
         const color = nodeColor(row.state, active);
         const contextTokens = Math.max(0, row.state?.contextTokens ?? 0);
-        const contextLimit = row.state?.contextLimit ?? row.contextLimit ?? getModelContextLimits(row.model ?? "").autoCompactLimit;
-        const contextPercent = Math.min(100, Math.max(0, Math.round((contextTokens / contextLimit) * 100)));
-        const contextText = `context: ${formatTokenCount(contextTokens).toLowerCase()}/${formatTokenCount(contextLimit).toLowerCase()} (${contextPercent}%)`;
+        const limits = getModelContextLimits(row.model ?? "");
+        const contextWindow = row.state?.contextWindow ?? row.contextWindow ?? limits.effectiveContextWindow;
+        const contextPercent = contextUsedPercent(contextTokens, contextWindow);
+        const contextText = `context: ${formatTokenCount(contextTokens).toLowerCase()}/${formatTokenCount(contextWindow).toLowerCase()} (${contextPercent}%)`;
         return (
           <Box key={row.id} alignItems="center">
             <Box borderStyle={running ? runningBorder : "single"} borderColor={color} paddingX={1} minWidth={18} flexDirection="column">

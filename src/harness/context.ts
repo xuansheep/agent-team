@@ -103,7 +103,8 @@ function nodeModeInstructions(node: WorkflowNodeConfig): string {
   }
   return [
     "This node is a normal task node.",
-    "Treat referenced_artifacts as the primary source for upstream deliverables. Use ArtifactRead for truncated content and workspace Read only for actual workspace files.",
+    "Treat the top-level handoff and latest user_input as the authoritative current requirements. They override conflicting previous_handoff content or older referenced artifacts.",
+    "Treat referenced_artifacts as evidence for upstream deliverables, ordered with current handoff references first. Use ArtifactRead for truncated content and workspace Read only for actual workspace files.",
     "Use ArtifactWrite for user-facing deliverable files that should be returned to the user.",
     "If this task has no user-facing deliverable file, make summary clear and leave document empty; the runtime will create a Markdown explanation artifact."
   ].join("\n");

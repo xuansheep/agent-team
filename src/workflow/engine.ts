@@ -15,10 +15,10 @@ import { formatRunError } from "../runtime/errorFormatting.js";
 import { ArtifactStore } from "../storage/artifacts.js";
 import { RunStore, RunSummary } from "../storage/runStore.js";
 import { prepareProjectStorage, type ProjectStorageContext } from "../storage/projectStorage.js";
-import { buildHandoff } from "../team/handoff.js";
+import { buildHandoff, buildResumeHandoff, sameCanonicalHandoff } from "../team/handoff.js";
 import type { PlanRequestedPermission } from "../plans/planSession.js";
 import { stripInternalPlanModeHandoffMarkers } from "../plans/planSession.js";
-import { NodeResult } from "../team/nodeResult.js";
+import { NodeResult, nodeResultSchema } from "../team/nodeResult.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
@@ -123,6 +123,7 @@ export class WorkflowEngine {
             const resumed = await this.continueSavedCheckpointWithInput({ config, workflowId, workflow, store, runId, state, input: userInput });
             if (resumed)
                 return resumed;
+            const recoveredHandoff = await recoverLatestIncomingHandoff(store, runId, state, state.handoff);
             return this.continueFrom({
                 config,
                 workflowId,
@@ -130,7 +131,7 @@ export class WorkflowEngine {
                 store,
                 runId,
                 startNodeId: state.current_node_id,
-                initialHandoff: { previous_handoff: state.handoff, user_input: userInput },
+                initialHandoff: resumeHandoffWithUserInput(recoveredHandoff, userInput),
                 attempts: state.attempts,
                 nodeCheckpoints: state.node_checkpoints,
                 suspendedStack: state.suspended_stack,
@@ -145,6 +146,7 @@ export class WorkflowEngine {
         const resumed = await this.continueSavedCheckpointWithInput({ config, workflowId, workflow, store, runId, state, input: userInput });
         if (resumed)
             return resumed;
+        const recoveredHandoff = await recoverLatestIncomingHandoff(store, runId, state, state.resume_checkpoint.handoff);
         return this.continueFrom({
             config,
             workflowId,
@@ -152,7 +154,7 @@ export class WorkflowEngine {
             store,
             runId,
             startNodeId: state.resume_checkpoint.node_id,
-            initialHandoff: { previous_handoff: state.resume_checkpoint.handoff, resumed: true, user_input: userInput },
+            initialHandoff: resumeHandoffWithUserInput(recoveredHandoff, userInput, true),
             attempts: state.attempts,
             nodeCheckpoints: state.node_checkpoints,
             suspendedStack: state.suspended_stack,
@@ -338,6 +340,7 @@ export class WorkflowEngine {
                 }
                 const checkpointResume = resumeFromCheckpoint(latestState, input);
                 if (checkpointResume) {
+                    await recoverCheckpointResumeHandoff(store, runId, latestState, checkpointResume);
                     await this.persistCheckpointResume(store, runId, checkpointResume, (event) => stream.push(event));
                     const nextState = await runSegment({
                         startNodeId: checkpointResume.nodeId,
@@ -354,9 +357,10 @@ export class WorkflowEngine {
                     node_id: latestState.current_node_id,
                     attempt: latestState.attempts.filter((attempt) => attempt.node_id === latestState.current_node_id).length + 1
                 }, (event) => stream.push(event));
+                const recoveredHandoff = await recoverLatestIncomingHandoff(store, runId, latestState, latestState.handoff);
                 const nextState = await runSegment({
                     startNodeId: latestState.current_node_id,
-                    initialHandoff: { previous_handoff: latestState.handoff, user_input: input },
+                    initialHandoff: resumeHandoffWithUserInput(recoveredHandoff, input),
                     attempts: latestState.attempts
                 });
                 finishWhenTerminal(nextState);
@@ -373,6 +377,7 @@ export class WorkflowEngine {
                     if (latestState.resume_checkpoint) {
                         const checkpointResume = resumeFromCheckpoint(latestState, input);
                         if (checkpointResume) {
+                            await recoverCheckpointResumeHandoff(store, runId, latestState, checkpointResume);
                             await this.persistCheckpointResume(store, runId, checkpointResume, (event) => stream.push(event));
                             const nextState = await runSegment({
                                 startNodeId: checkpointResume.nodeId,
@@ -390,9 +395,10 @@ export class WorkflowEngine {
                             node_id: checkpoint.node_id,
                             attempt: latestState.attempts.filter((attempt) => attempt.node_id === checkpoint.node_id).length + 1
                         }, (event) => stream.push(event));
+                        const recoveredHandoff = await recoverLatestIncomingHandoff(store, runId, latestState, checkpoint.handoff);
                         const nextState = await runSegment({
                             startNodeId: checkpoint.node_id,
-                            initialHandoff: { previous_handoff: checkpoint.handoff, resumed: true, user_input: input },
+                            initialHandoff: resumeHandoffWithUserInput(recoveredHandoff, input, true),
                             attempts: latestState.attempts
                         });
                         finishWhenTerminal(nextState);
@@ -587,6 +593,7 @@ export class WorkflowEngine {
                 }
                 const checkpointResume = resumeFromCheckpoint(latestState, input);
                 if (checkpointResume) {
+                    await recoverCheckpointResumeHandoff(store, run.runId, latestState, checkpointResume);
                     await this.persistCheckpointResume(store, run.runId, checkpointResume, (event) => stream.push(event));
                     const state = await runSegment({
                         startNodeId: checkpointResume.nodeId,
@@ -603,9 +610,10 @@ export class WorkflowEngine {
                     node_id: latestState.current_node_id,
                     attempt: latestState.attempts.filter((attempt) => attempt.node_id === latestState.current_node_id).length + 1
                 }, (event) => stream.push(event));
+                const recoveredHandoff = await recoverLatestIncomingHandoff(store, run.runId, latestState, latestState.handoff);
                 const state = await runSegment({
                     startNodeId: latestState.current_node_id,
-                    initialHandoff: { previous_handoff: latestState.handoff, user_input: input },
+                    initialHandoff: resumeHandoffWithUserInput(recoveredHandoff, input),
                     attempts: latestState.attempts
                 });
                 finishWhenTerminal(state);
@@ -622,6 +630,7 @@ export class WorkflowEngine {
                     if (latestState.resume_checkpoint) {
                         const checkpointResume = resumeFromCheckpoint(latestState, input);
                         if (checkpointResume) {
+                            await recoverCheckpointResumeHandoff(store, run.runId, latestState, checkpointResume);
                             await this.persistCheckpointResume(store, run.runId, checkpointResume, (event) => stream.push(event));
                             const state = await runSegment({
                                 startNodeId: checkpointResume.nodeId,
@@ -639,9 +648,10 @@ export class WorkflowEngine {
                             node_id: checkpoint.node_id,
                             attempt: latestState.attempts.filter((attempt) => attempt.node_id === checkpoint.node_id).length + 1
                         }, (event) => stream.push(event));
+                        const recoveredHandoff = await recoverLatestIncomingHandoff(store, run.runId, latestState, checkpoint.handoff);
                         const state = await runSegment({
                             startNodeId: checkpoint.node_id,
-                            initialHandoff: { previous_handoff: checkpoint.handoff, resumed: true, user_input: input },
+                            initialHandoff: resumeHandoffWithUserInput(recoveredHandoff, input, true),
                             attempts: latestState.attempts
                         });
                         finishWhenTerminal(state);
@@ -686,6 +696,7 @@ export class WorkflowEngine {
         const checkpointResume = resumeFromCheckpoint(input.state, input.input);
         if (!checkpointResume)
             return undefined;
+        await recoverCheckpointResumeHandoff(input.store, input.runId, input.state, checkpointResume);
         await this.persistCheckpointResume(input.store, input.runId, checkpointResume);
         return this.continueFrom({
             config: input.config,
@@ -912,6 +923,7 @@ export class WorkflowEngine {
                 await this.appendEvent(options.store, options.runId, { type: "transition", from: node.id, to: target, reason: result.direction, activation }, options.eventSink);
                 const savedTarget = nodeCheckpoints[target];
                 if (resolution.resume && savedTarget) {
+                    const resumedHandoff = buildResumeHandoff(savedTarget.handoff, targetHandoff);
                     const resumedMessages = [...savedTarget.dialogue_messages ?? [], controllerReturnMessage(node.id, result, targetHandoff)];
                     const resumedAttempt = savedTarget.attempt ?? 1;
                     const resumedCursor = await options.store.syncWorkflowDialogue(options.runId, target, resumedAttempt, resumedMessages);
@@ -919,11 +931,11 @@ export class WorkflowEngine {
                         nodeId: target,
                         attempt: resumedAttempt,
                         activation: (savedTarget.activation ?? 0) + 1,
-                        handoff: savedTarget.handoff,
+                        handoff: resumedHandoff,
                         dialogueMessages: resumedMessages,
                         dialogueCursor: resumedCursor
                     };
-                    handoff = result.direction === "retry" ? targetHandoff : savedTarget.handoff;
+                    handoff = resumedHandoff;
                 }
                 else {
                     pendingResume = undefined;
@@ -1276,6 +1288,65 @@ function requireDocument(node: WorkflowNodeConfig, result: NodeResult): string {
         throw new Error(`${node.mode} node ${node.id} must return document`);
     return document;
 }
+async function recoverCheckpointResumeHandoff(
+    store: RunStore,
+    runId: string,
+    state: WorkflowState,
+    checkpointResume: NonNullable<ReturnType<typeof resumeFromCheckpoint>>
+): Promise<void> {
+    checkpointResume.handoff = await recoverLatestIncomingHandoff(store, runId, state, checkpointResume.handoff);
+}
+
+function resumeHandoffWithUserInput(handoff: unknown, userInput: unknown, resumed = false): unknown {
+    if (isCanonicalHandoff(handoff)) {
+        return { ...handoff, ...(resumed ? { resumed: true } : {}), user_input: userInput };
+    }
+    return { previous_handoff: handoff, ...(resumed ? { resumed: true } : {}), user_input: userInput };
+}
+
+function isCanonicalHandoff(value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const handoff = value as Record<string, unknown>;
+    return typeof handoff.to === "string" && typeof handoff.instruction === "string";
+}
+
+async function recoverLatestIncomingHandoff(
+    store: RunStore,
+    runId: string,
+    state: WorkflowState,
+    checkpointHandoff: unknown
+): Promise<unknown> {
+    const targetNodeId = state.resume_checkpoint?.node_id;
+    if (!targetNodeId) return checkpointHandoff;
+    const events = await store.loadEvents(runId);
+    let transitionIndex = -1;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+        const event = events[index];
+        if (event?.type === "transition" && event.to === targetNodeId) {
+            transitionIndex = index;
+            break;
+        }
+    }
+    if (transitionIndex < 0) return checkpointHandoff;
+    const transition = events[transitionIndex] as Extract<StoredEvent, { type: "transition" }>;
+    for (let index = transitionIndex - 1; index >= 0; index -= 1) {
+        const event = events[index];
+        if (event?.type !== "node_completed" || event.node_id !== transition.from) continue;
+        if (transition.activation !== undefined && event.activation !== transition.activation) continue;
+        const parsed = nodeResultSchema.safeParse(event.result);
+        if (!parsed.success) return checkpointHandoff;
+        const incomingHandoff = buildHandoff(
+            targetNodeId,
+            transition.from,
+            parsed.data,
+            latestAttemptForNode(state.attempts, targetNodeId)
+        );
+        if (sameCanonicalHandoff(checkpointHandoff, incomingHandoff)) return checkpointHandoff;
+        return buildResumeHandoff(checkpointHandoff, incomingHandoff);
+    }
+    return checkpointHandoff;
+}
+
 function resumeFromCheckpoint(state: WorkflowState, input: unknown): {
     nodeId: string;
     handoff: unknown;
@@ -1359,7 +1430,7 @@ function setAttemptOutcome(
 function controllerReturnMessage(fromNodeId: string, result: NodeResult, handoff: unknown): ModelMessage {
     return {
         role: "user",
-        metadata: { userMessageKind: "runtime_context" },
+        metadata: { userMessageKind: "runtime_context", durableRuntimeContext: true },
         content: JSON.stringify({
             type: "node_transition_result",
             from_node_id: fromNodeId,
@@ -1443,15 +1514,16 @@ function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig,
     const nodeCheckpoints = { ...state.node_checkpoints, [state.current_node_id]: state.resume_checkpoint };
     const targetHandoff = buildHandoff(resolved.target_node_id, state.current_node_id, result, 1);
     const savedTarget = nodeCheckpoints[resolved.target_node_id];
+    const resumedHandoff = savedTarget ? buildResumeHandoff(savedTarget.handoff, targetHandoff) : undefined;
     const resume = savedTarget ? {
         nodeId: resolved.target_node_id,
         attempt: savedTarget.attempt ?? 1,
         activation: (savedTarget.activation ?? 0) + 1,
-        handoff: savedTarget.handoff,
+        handoff: resumedHandoff,
         dialogueMessages: [...savedTarget.dialogue_messages ?? [], controllerReturnMessage(state.current_node_id, result, targetHandoff)],
         dialogueCursor: savedTarget.dialogue_cursor
     } : undefined;
-    const handoff = resume ? (result.direction === "retry" ? targetHandoff : savedTarget!.handoff) : targetHandoff;
+    const handoff = resumedHandoff ?? targetHandoff;
     const checkpoint = resume
         ? { node_id: resolved.target_node_id, handoff, attempt: resume.attempt, activation: resume.activation ?? 1, dialogue_cursor: resume.dialogueCursor, dialogue_messages: resume.dialogueMessages }
         : { node_id: resolved.target_node_id, handoff, attempt: 1, activation: 1, dialogue_cursor: 0, dialogue_messages: [] };

@@ -4,6 +4,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runNode } from "../../src/harness/runtime.js";
+import { toolPolicyFailureResult } from "../../src/tools/errors.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { ModelMessage, ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
@@ -666,6 +667,101 @@ describe("runNode interactive permissions", () => {
     assert.deepEqual(requests.map((request) => request.attempt), [1, 1]);
     assert.match(JSON.stringify(requests[1]?.messages), /Return exactly one valid NodeResult JSON object/);
   });
+  it("blocks a repeated shell strategy and cancels later writes while allowing reads", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-shell-strategy-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let shellExecutions = 0;
+    let writeExecutions = 0;
+    let readExecutions = 0;
+    tools.add({
+      name: "Bash",
+      description: "fake failing bash",
+      input_schema: {},
+      isReadOnly: () => false,
+      async execute() {
+        shellExecutions += 1;
+        return toolPolicyFailureResult("git.not_repository", "fatal: not a git repository", "bash");
+      }
+    });
+    tools.add({
+      name: "WriteProbe",
+      description: "fake write",
+      input_schema: {},
+      isReadOnly: () => false,
+      async execute() {
+        writeExecutions += 1;
+        return { output: "written" };
+      }
+    });
+    tools.add({
+      name: "ReadProbe",
+      description: "fake read",
+      input_schema: {},
+      isReadOnly: () => true,
+      async execute() {
+        readExecutions += 1;
+        return { output: "read" };
+      }
+    });
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls <= 2) {
+          return {
+            content: "I will inspect the repository.",
+            tool_calls: [{ id: `shell-${calls}`, name: "Bash", input: { command: "git status" } }]
+          };
+        }
+        if (calls === 3) {
+          return {
+            content: "I will retry and then update the file.",
+            tool_calls: [
+              { id: "shell-3", name: "Bash", input: { command: "git status" } },
+              { id: "write-1", name: "WriteProbe", input: {} },
+              { id: "read-1", name: "ReadProbe", input: {} }
+            ]
+          };
+        }
+        return { content: JSON.stringify({ direction: "forward", summary: "replanned", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["Bash", "WriteProbe", "ReadProbe"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1
+    });
+
+    assert.equal(result.direction, "forward");
+    assert.equal(shellExecutions, 2);
+    assert.equal(writeExecutions, 0);
+    assert.equal(readExecutions, 1);
+    const events = await store.loadEvents(run.runId);
+    assert.equal(events.some((event) =>
+      event.type === "tool_failed"
+      && event.tool_call_id === "shell-3"
+      && event.failure_category === "tool.strategy_blocked"
+    ), true);
+    assert.equal(events.some((event) =>
+      event.type === "tool_failed"
+      && event.tool_call_id === "write-1"
+      && event.failure_category === "tool.cancelled_after_shell_failure"
+    ), true);
+    assert.equal(events.some((event) => event.type === "tool_completed" && event.tool_call_id === "read-1"), true);
+  });
+
   it("propagates abort to an active tool without recording a normal failure", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-abort-tool-"));
     const store = new RunStore(root);

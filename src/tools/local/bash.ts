@@ -5,12 +5,14 @@ import { Tool } from "../types.js";
 import { interpretBashCommand } from "./commandSemantics.js";
 import { executeBash } from "./shellProvider.js";
 import { isDestructiveShellCommand, isReadOnlyShellCommand } from "./shellSafety.js";
+import { shellToolPrompt, validateShellCommandInput } from "./shellPolicy.js";
 
 const inputSchema = z.object({ command: z.string().min(1), timeout_ms: z.number().int().positive().default(120000) });
 
 export const bashTool: Tool = {
   name: "Bash",
   description: "Run a Bash command in the workspace. On Windows this requires Git Bash; commands are never reinterpreted by another shell.",
+  prompt: shellToolPrompt("Bash"),
   input_schema: {
     type: "object",
     properties: { command: { type: "string" }, timeout_ms: { type: "number" } },
@@ -20,6 +22,11 @@ export const bashTool: Tool = {
   isConcurrencySafe: () => false,
   isDestructive: isDestructiveShellCommand,
   requiresUserInteraction: () => false,
+  async validateInput(input) {
+    const parsed = inputSchema.parse(input);
+    validateShellCommandInput(parsed.command, "bash");
+    return { result: true };
+  },
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     const result = await executeBash(parsed.command, {

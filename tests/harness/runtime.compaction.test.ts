@@ -67,6 +67,58 @@ describe("runNode context compaction", () => {
     assert.equal(String(persistedSummary?.content).includes("CONTEXT CHECKPOINT COMPACTION"), false);
   });
 
+  it("streams local compaction, retries context limits, and keeps summary deltas internal", async () => {
+    const fixture = await runtimeFixture("agent-team-stream-compact-");
+    await fixture.store.appendEvent(fixture.runId, {
+      type: "node_context_updated",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      context_tokens: 6000,
+      context_limit: 4500,
+      dialogue_message_count: 3
+    });
+    const summaryRequests: ModelRequest[] = [];
+    let generateCalls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        generateCalls += 1;
+        throw new Error("generate should not be used when stream is available");
+      },
+      async stream(request, onEvent) {
+        if (request.tools.length === 0) {
+          summaryRequests.push(request);
+          onEvent({ type: "content_delta", text: "internal-summary-fragment" });
+          if (summaryRequests.length === 1) {
+            throw new ModelProviderError("summary input too large", { errorKind: "context_limit" });
+          }
+          onEvent({ type: "content_delta", text: compactSummary });
+          return { content: compactSummary, usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } };
+        }
+        onEvent({ type: "content_delta", text: nodeResult });
+        return { content: nodeResult, usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 } };
+      }
+    };
+    const dialogue: ModelMessage[] = [
+      { role: "assistant", content: "old call", tool_calls: [{ id: "read-1", name: "Read", input: {} }] },
+      { role: "tool", tool_call_id: "read-1", content: "old result" },
+      { role: "user", content: "latest request", metadata: { userMessageKind: "human" } }
+    ];
+
+    const result = await runNode(runtimeOptions(fixture, provider, dialogue, {
+      modelRegistry: { defaultContextWindow: 5000 }
+    }));
+
+    assert.equal(result.direction, "forward");
+    assert.equal(generateCalls, 0);
+    assert.equal(summaryRequests.length, 2);
+    assert.equal(summaryRequests[0]!.messages.some((message) => message.content === "old result"), true);
+    assert.equal(summaryRequests[1]!.messages.some((message) => message.content === "old result"), false);
+    const deltas = (await fixture.store.loadEvents(fixture.runId)).filter((event) => event.type === "model_stream_delta");
+    assert.equal(deltas.some((event) => event.text.includes("internal-summary-fragment") || event.text.includes("Earlier decisions")), false);
+    assert.equal(deltas.map((event) => event.text).join(""), nodeResult);
+  });
+
   it("ends the activation on a provider context-limit failure without reactive compaction", async () => {
     const fixture = await runtimeFixture("agent-team-reactive-compact-");
     const requests: ModelRequest[] = [];
@@ -93,7 +145,7 @@ describe("runNode context compaction", () => {
     const events = await fixture.store.loadEvents(fixture.runId);
     assert.equal(events.some((event) => event.type === "node_context_compacted"), false);
     const context = events.filter((event) => event.type === "node_context_updated").at(-1);
-    assert.ok((context?.type === "node_context_updated" ? context.context_tokens : 0) >= 272000);
+    assert.ok((context?.type === "node_context_updated" ? context.context_tokens : 0) >= 258400);
   });
 
   it("publishes the new automatic limit immediately after a skill changes the model", async () => {
@@ -143,7 +195,7 @@ describe("runNode context compaction", () => {
     assert.equal(result.direction, "forward");
     assert.deepEqual(models, ["old", "small"]);
     const contextEvents = (await fixture.store.loadEvents(fixture.runId)).filter((event) => event.type === "node_context_updated");
-    assert.equal(contextEvents.some((event) => event.context_limit === 36000), true);
+    assert.equal(contextEvents.some((event) => event.context_limit === 36000 && event.context_window === 38000), true);
   });
 
   it("uses the previous model for pre-turn compaction when compaction hashes differ", async () => {

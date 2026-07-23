@@ -15,7 +15,8 @@ import { isHumanUserMessage } from "../context/messages.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
-import { getModelContextLimits, getModelContextWindow, getProviderMaxOutputTokens, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
+import { contextTokensFromUsage, contextUsedPercent } from "../model/contextUsage.js";
+import { getModelContextLimits, getProviderMaxOutputTokens, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { addModelUsage, emptyModelUsage } from "../model/usage.js";
 import type { ModelUsage } from "../model/usage.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
@@ -685,7 +686,7 @@ export function TuiApp({
             empty,
             requestedPermissions: pending.requestedPermissions,
             toolCallId: pending.toolCallId,
-            contextUsedPercent: contextUsedPercent(lastUsage, providerSelection.contextWindow)
+            contextUsedPercent: contextUsedPercentFromUsage(lastUsage, providerSelection.contextWindow)
           },
           error: undefined,
           conversation: [...current.conversation, { kind: "status", text: empty ? "Exit Plan Mode requested" : "Plan approval requested" }],
@@ -1612,12 +1613,14 @@ ${message.detailText}` : ""}` }
       const configuredModel = resolveModelForWorkflowNode({ node, role, provider, permissionMode: node.permission_mode, planModel: provider.plan_model, registry });
       const runtimeModel = [...state.nodes].reverse().find((item) => item.nodeId === node.id)?.model;
       const model = runtimeModel ?? configuredModel;
+      const limits = getModelContextLimits(model, registry, getProviderMaxOutputTokens(provider));
       return {
         id: node.id,
         role: node.role,
         model,
         effort: resolveEffortForWorkflowNode({ node, provider }),
-        contextLimit: getModelContextLimits(model, registry, getProviderMaxOutputTokens(provider)).autoCompactLimit
+        contextWindow: limits.effectiveContextWindow,
+        contextLimit: limits.autoCompactLimit
       };
     })
     : undefined;
@@ -3223,13 +3226,14 @@ function selectPlanProvider(input: {
     provider: input.providerFactory(providerId),
     model,
     effort,
-    contextWindow: getModelContextWindow(model, registry)
+    contextWindow: getModelContextLimits(model, registry, getProviderMaxOutputTokens(providerConfig)).effectiveContextWindow
   };
 }
 
-function contextUsedPercent(usage: ModelUsage | undefined, contextWindow: number | undefined): number | undefined {
-  if (!usage?.inputTokens || !contextWindow) return undefined;
-  return Math.max(0, Math.round((usage.inputTokens / contextWindow) * 100));
+function contextUsedPercentFromUsage(usage: ModelUsage | undefined, contextWindow: number | undefined): number | undefined {
+  const contextTokens = contextTokensFromUsage(usage);
+  if (contextTokens === undefined || !contextWindow) return undefined;
+  return contextUsedPercent(contextTokens, contextWindow);
 }
 
 function buildQuestionChoice(input: {

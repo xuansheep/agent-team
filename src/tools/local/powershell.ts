@@ -5,12 +5,14 @@ import { Tool } from "../types.js";
 import { interpretPowerShellCommand } from "./commandSemantics.js";
 import { executePowerShell } from "./shellProvider.js";
 import { isDestructiveShellCommand, isReadOnlyPowerShellCommand } from "./shellSafety.js";
+import { shellToolPrompt, validateShellCommandInput } from "./shellPolicy.js";
 
 const inputSchema = z.object({ command: z.string().min(1), timeout_ms: z.number().int().positive().default(120000) });
 
 export const powerShellTool: Tool = {
   name: "PowerShell",
   description: "Run a PowerShell command in the workspace on Windows",
+  prompt: shellToolPrompt("PowerShell"),
   input_schema: {
     type: "object",
     properties: { command: { type: "string" }, timeout_ms: { type: "number" } },
@@ -20,6 +22,11 @@ export const powerShellTool: Tool = {
   isConcurrencySafe: () => false,
   isDestructive: isDestructiveShellCommand,
   requiresUserInteraction: () => false,
+  async validateInput(input) {
+    const parsed = inputSchema.parse(input);
+    validateShellCommandInput(parsed.command, "powershell");
+    return { result: true };
+  },
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     if (process.platform !== "win32") throw new Error("PowerShell is only supported on Windows");

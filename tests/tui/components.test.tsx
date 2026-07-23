@@ -2662,8 +2662,8 @@ describe("Workflow node status component", () => {
 
 
     assert.match(frame, /model: claude-dev low/);
-    assert.match(frame, /context: 0\/251k \(0%\)/);
-    assert.match(frame, /context: 100k\/251k \(40%\)/);
+    assert.match(frame, /context: 0\/258.4k \(0%\)/);
+    assert.match(frame, /context: 100k\/258.4k \(36%\)/);
 
 
 

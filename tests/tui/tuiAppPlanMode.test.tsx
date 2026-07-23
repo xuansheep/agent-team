@@ -17,7 +17,7 @@ const config = {
 };
 const configWithContextWindow = {
   ...config,
-  providers: { default: { ...config.providers.default, context_windows: { "gpt-test": 1000 } } }
+  providers: { default: { ...config.providers.default, context_windows: { "gpt-test": 100000 } } }
 };
 
 describe("TuiApp global Plan Mode", () => {
@@ -2836,7 +2836,7 @@ function usagePlanProviderFactory(): ModelProvider {
   return {
     async generate(request) {
       const response = await provider.generate(request);
-      return { ...response, usage: { inputTokens: 250, outputTokens: 10, totalTokens: 260 } };
+      return { ...response, usage: { inputTokens: 32000, outputTokens: 1000, totalTokens: 33000 } };
     }
   };
 }

@@ -14,6 +14,12 @@ Include:
 - What remains to be done (clear next steps)
 - Any critical data, examples, or references needed to continue
 
+Authority rules:
+- Preserve the exact priority of user requirements and canonical handoffs.
+- Latest user input and top-level handoff override conflicting older artifacts or previous_handoff content.
+- Never reinterpret a later requirement as speculation merely because an older artifact conflicts with it.
+- Treat this summary as non-authoritative; record conflicts instead of resolving them by changing requirements.
+
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
 }
 
@@ -32,6 +38,18 @@ export function formatCompactSummary(summary: string): string {
   return formatted.replace(/\n\n+/g, "\n\n").trim();
 }
 
+export function isDurableRuntimeContext(message: ModelMessage): boolean {
+  if (message.role !== "user" || message.metadata?.userMessageKind !== "runtime_context") return false;
+  if (message.metadata.durableRuntimeContext === true) return true;
+  if (typeof message.content !== "string") return false;
+  try {
+    const parsed = JSON.parse(message.content) as { type?: unknown };
+    return parsed.type === "node_transition_result";
+  } catch {
+    return false;
+  }
+}
+
 export function buildCompactedDialogue(
   messages: readonly ModelMessage[],
   summaryMessage: ModelMessage,
@@ -39,9 +57,18 @@ export function buildCompactedDialogue(
 ): ModelMessage[] {
   let remaining = Math.max(0, Math.floor(tokenBudget));
   const retained: ModelMessage[] = [];
-  const humanMessages = messages.filter(isHumanUserMessage);
-  for (let index = humanMessages.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const message = humanMessages[index]!;
+  let latestDurableIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (isDurableRuntimeContext(messages[index]!)) {
+      latestDurableIndex = index;
+      break;
+    }
+  }
+  const candidates = messages.filter((message, index) =>
+    isHumanUserMessage(message) || index === latestDurableIndex
+  );
+  for (let index = candidates.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = candidates[index]!;
     const tokens = estimateModelMessageTokens(message);
     if (tokens <= remaining) {
       retained.unshift(message);
@@ -49,7 +76,12 @@ export function buildCompactedDialogue(
       continue;
     }
     const truncated = truncateUserMessageToTokens(message, remaining);
-    if (truncated) retained.unshift(truncated);
+    if (truncated) retained.unshift({
+      ...truncated,
+      ...(isDurableRuntimeContext(message)
+        ? { metadata: { ...truncated.metadata, durableRuntimeContext: true } }
+        : {})
+    });
     break;
   }
   return [...retained, summaryMessage];

@@ -69,6 +69,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
     case "node_context_updated":
       return updateNodeDetails(next, event.node_id, event.attempt, event.activation, {
         contextTokens: event.context_tokens,
+        contextWindow: event.context_window,
         contextLimit: event.context_limit
       });
     case "node_context_compaction_started":
@@ -257,7 +258,7 @@ function updateNodeDetails(
   nodeId: string,
   attempt: number,
   activation: number | undefined,
-  details: Partial<Pick<TuiNodeState, "model" | "contextTokens" | "contextLimit">>
+  details: Partial<Pick<TuiNodeState, "model" | "contextTokens" | "contextWindow" | "contextLimit">>
 ): TuiState {
   for (let index = state.nodes.length - 1; index >= 0; index -= 1) {
     const node = state.nodes[index];
