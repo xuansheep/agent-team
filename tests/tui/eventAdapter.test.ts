@@ -36,6 +36,74 @@ describe("TUI event adapter", () => {
     assert.deepEqual(reset.sessionUsage, state.sessionUsage);
   });
 
+  it("rolls back failed stream fragments and keeps only the latest temporary retry status", () => {
+    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+    state = reduceStoredEvent(state, { type: "model_stream_delta", node_id: "dev", attempt: 1, activation: 1, text: "stable", ts: "2026-06-23T00:00:00.000Z", seq: 1 });
+    state = reduceStoredEvent(state, { type: "model_stream_delta", node_id: "dev", attempt: 1, activation: 1, text: "partial", ts: "2026-06-23T00:00:01.000Z", seq: 2 });
+    state = reduceStoredEvent(state, { type: "model_thinking_delta", node_id: "dev", attempt: 1, activation: 1, text: "kept", ts: "2026-06-23T00:00:02.000Z", seq: 3 });
+    state = reduceStoredEvent(state, { type: "model_thinking_delta", node_id: "dev", attempt: 1, activation: 1, text: "bad", ts: "2026-06-23T00:00:03.000Z", seq: 4 });
+    state = reduceStoredEvent(state, {
+      type: "model_retry_scheduled",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      operation: "sampling",
+      phase: "stream",
+      retry_attempt: 1,
+      max_retries: 10,
+      retry_in_ms: 500,
+      retry_at: "2026-06-23T00:00:04.500Z",
+      error_kind: "network",
+      error: "socket disconnected",
+      discarded_content_chars: 7,
+      discarded_thinking_chars: 3,
+      ts: "2026-06-23T00:00:04.000Z",
+      seq: 5
+    });
+
+    assert.deepEqual(state.modelStreams, [{ nodeId: "dev", attempt: 1, activation: 1, text: "stable" }]);
+    assert.equal(state.conversation.find((item) => item.kind === "assistant")?.text, "stable");
+    assert.equal(state.logMessages.find((item) => item.text === "Reasoning")?.detailText, "kept");
+    assert.equal(state.logMessages.filter((item) => item.kind === "status" && item.source === "model_retry").length, 1);
+
+    state = reduceStoredEvent(state, {
+      type: "model_retry_scheduled",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      operation: "sampling",
+      phase: "stream",
+      retry_attempt: 2,
+      max_retries: 10,
+      retry_in_ms: 1_000,
+      retry_at: "2026-06-23T00:00:06.000Z",
+      error_kind: "timeout",
+      error: "stream idle timeout",
+      discarded_content_chars: 0,
+      discarded_thinking_chars: 0,
+      ts: "2026-06-23T00:00:05.000Z",
+      seq: 6
+    });
+
+    const retryLogs = state.logMessages.filter((item) => item.kind === "status" && item.source === "model_retry");
+    assert.equal(retryLogs.length, 1);
+    assert.match(retryLogs[0]?.text ?? "", /2\/10/);
+    assert.equal(state.activeModelRetry?.retryAttempt, 2);
+
+    state = reduceStoredEvent(state, {
+      type: "model_response_recorded",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      model: "gpt-test",
+      ts: "2026-06-23T00:00:06.000Z",
+      seq: 7
+    });
+
+    assert.equal(state.activeModelRetry, undefined);
+    assert.equal(state.logMessages.some((item) => item.kind === "status" && item.source === "model_retry"), false);
+  });
+
   it("tracks the latest node model and absolute context without losing them on status changes", () => {
     let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
     state = reduceStoredEvent(state, { type: "node_started", node_id: "dev", attempt: 1, activation: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });

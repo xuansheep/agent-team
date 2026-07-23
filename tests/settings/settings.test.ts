@@ -141,6 +141,19 @@ describe("settings", () => {
     }), /Unrecognized key/);
   });
 
+  it("accepts provider retry overrides and validates their bounds", () => {
+    const parsed = settingsSchema.parse({ providers: { default: provider({
+      request_max_retries: 0,
+      stream_max_retries: 25,
+      request_timeout_ms: 1_000,
+      stream_idle_timeout_ms: 500
+    }) } });
+    assert.equal(parsed.providers?.default?.request_max_retries, 0);
+    assert.equal(parsed.providers?.default?.stream_max_retries, 25);
+    assert.throws(() => settingsSchema.parse({ providers: { default: provider({ request_max_retries: 101 }) } }));
+    assert.throws(() => settingsSchema.parse({ providers: { default: provider({ stream_idle_timeout_ms: 0 }) } }));
+  });
+
   it("rejects provider environment variable keys", () => {
     assert.throws(() => settingsSchema.parse({ providers: { default: {
       type: "openai-compatible",

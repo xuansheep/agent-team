@@ -1,5 +1,5 @@
-import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, ApiKeyMode } from "./http.js";
-import { ModelContentPart, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
+import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, providerStreamApiError, providerStreamError, withProviderRetry, ApiKeyMode, ProviderRetryConfig } from "./http.js";
+import { ModelContentPart, ModelMessage, ModelProvider, ModelProviderError, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
 import type { ModelUsage } from "../model/usage.js";
 
 export type AnthropicMessagesOptions = {
@@ -17,6 +17,7 @@ export type AnthropicMessagesOptions = {
     type: "disabled" | "enabled";
     budget_tokens?: number;
   };
+  retry?: ProviderRetryConfig;
 };
 
 const cacheControl = { type: "ephemeral" } as const;
@@ -62,6 +63,7 @@ type AnthropicStreamChunk = {
     partial_json?: string;
     stop_reason?: string;
   };
+  error?: { type?: string; message?: string };
 };
 
 type StreamingBlock =
@@ -85,72 +87,93 @@ export class AnthropicMessagesProvider implements ModelProvider {
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    let nativeDeferredTools = this.useNativeDeferredTools(request);
-    let response = await fetchProvider(endpoint, {
-      method: "POST",
-      headers: this.headers(request, {}, nativeDeferredTools),
-      signal: request.signal,
-      body: JSON.stringify(toAnthropicRequestBody(request, this.options, nativeDeferredTools))
-    });
+    return withProviderRetry({
+      request,
+      endpoint,
+      streaming: false,
+      retry: this.options.retry,
+      operation: async (attempt) => {
+        let nativeDeferredTools = this.useNativeDeferredTools(request);
+        let response = await fetchProvider(endpoint, {
+          method: "POST",
+          headers: this.headers(request, {}, nativeDeferredTools),
+          signal: attempt.signal,
+          body: JSON.stringify(toAnthropicRequestBody(request, this.options, nativeDeferredTools))
+        });
 
-    if (!response.ok) {
-      const detail = await response.text();
-      if (!nativeDeferredTools || !isNativeDeferredToolsRejection(response.status, detail)) {
-        throw providerHttpError(response.status, detail);
+        if (!response.ok) {
+          const detail = await response.text();
+          if (!nativeDeferredTools || !isNativeDeferredToolsRejection(response.status, detail)) {
+            throw providerHttpError(response.status, detail, response.headers);
+          }
+          this.nativeDeferredToolsRejected = true;
+          nativeDeferredTools = false;
+          response = await fetchProvider(endpoint, {
+            method: "POST",
+            headers: this.headers(request),
+            signal: attempt.signal,
+            body: JSON.stringify(toAnthropicRequestBody(request, this.options, false))
+          });
+          if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        }
+        return fromAnthropicBody(await response.json() as AnthropicBody);
       }
-      this.nativeDeferredToolsRejected = true;
-      nativeDeferredTools = false;
-      response = await fetchProvider(endpoint, {
-        method: "POST",
-        headers: this.headers(request),
-        signal: request.signal,
-        body: JSON.stringify(toAnthropicRequestBody(request, this.options, false))
-      });
-      if (!response.ok) throw providerHttpError(response.status, await response.text());
-    }
-
-    return fromAnthropicBody(await response.json() as AnthropicBody);
+    });
   }
 
   private async streamImpl(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    let nativeDeferredTools = this.useNativeDeferredTools(request);
-    let response = await fetchProvider(endpoint, {
-      method: "POST",
-      headers: this.headers(request, { accept: "text/event-stream" }, nativeDeferredTools),
-      signal: request.signal,
-      body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options, nativeDeferredTools), stream: true })
-    });
+    return withProviderRetry({
+      request,
+      endpoint,
+      streaming: true,
+      retry: this.options.retry,
+      onStreamEvent: onEvent,
+      operation: async (attempt) => {
+        let nativeDeferredTools = this.useNativeDeferredTools(request);
+        let response = await fetchProvider(endpoint, {
+          method: "POST",
+          headers: this.headers(request, { accept: "text/event-stream" }, nativeDeferredTools),
+          signal: attempt.signal,
+          body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options, nativeDeferredTools), stream: true })
+        });
 
-    if (!response.ok) {
-      const detail = await response.text();
-      if (!nativeDeferredTools || !isNativeDeferredToolsRejection(response.status, detail)) {
-        throw providerHttpError(response.status, detail);
-      }
-      this.nativeDeferredToolsRejected = true;
-      nativeDeferredTools = false;
-      response = await fetchProvider(endpoint, {
-        method: "POST",
-        headers: this.headers(request, { accept: "text/event-stream" }),
-        signal: request.signal,
-        body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options, false), stream: true })
-      });
-      if (!response.ok) throw providerHttpError(response.status, await response.text());
-    }
-    if (!response.body) throw new Error("Provider stream response had no body");
+        if (!response.ok) {
+          const detail = await response.text();
+          if (!nativeDeferredTools || !isNativeDeferredToolsRejection(response.status, detail)) {
+            throw providerHttpError(response.status, detail, response.headers);
+          }
+          this.nativeDeferredToolsRejected = true;
+          nativeDeferredTools = false;
+          response = await fetchProvider(endpoint, {
+            method: "POST",
+            headers: this.headers(request, { accept: "text/event-stream" }),
+            signal: attempt.signal,
+            body: JSON.stringify({ ...toAnthropicRequestBody(request, this.options, false), stream: true })
+          });
+          if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        }
+        if (!response.body) throw new ModelProviderError("Provider stream response had no body", { errorKind: "server", phase: "request", retryable: true });
+        attempt.markStreamStarted();
 
-    const content: string[] = [];
-    const thinking: string[] = [];
-    const toolCalls: ModelToolCall[] = [];
-    const blocks = new Map<number, StreamingBlock>();
-    let usage: AnthropicUsage | undefined;
-    let stopReason: string | undefined;
+        const content: string[] = [];
+        const thinking: string[] = [];
+        const toolCalls: ModelToolCall[] = [];
+        const blocks = new Map<number, StreamingBlock>();
+        let usage: AnthropicUsage | undefined;
+        let stopReason: string | undefined;
+        let completed = false;
 
-    await consumeSseBlocks(response.body, (data) => {
+        const stopped = await consumeSseBlocks(response.body, (data) => {
       const chunk = JSON.parse(data) as AnthropicStreamChunk;
+      if (chunk.type === "error" || chunk.error) throw anthropicStreamError(chunk);
+      if (chunk.type === "message_stop") completed = true;
       if (chunk.message?.usage) usage = { ...(usage ?? {}), ...chunk.message.usage };
       if (chunk.usage) usage = { ...(usage ?? {}), ...chunk.usage };
-      if (chunk.delta?.stop_reason) stopReason = chunk.delta.stop_reason;
+      if (chunk.delta?.stop_reason) {
+        stopReason = chunk.delta.stop_reason;
+        completed = true;
+      }
       const index = chunk.index ?? 0;
       if (chunk.type === "content_block_start" && chunk.content_block) {
         if (chunk.content_block.type === "tool_use") {
@@ -166,13 +189,13 @@ export class AnthropicMessagesProvider implements ModelProvider {
           blocks.set(index, { kind: "thinking" });
           if (chunk.content_block.thinking) {
             thinking.push(chunk.content_block.thinking);
-            onEvent({ type: "thinking_delta", text: chunk.content_block.thinking });
+            attempt.emit({ type: "thinking_delta", text: chunk.content_block.thinking });
           }
         } else {
           blocks.set(index, { kind: "text" });
           if (chunk.content_block.text) {
             content.push(chunk.content_block.text);
-            onEvent({ type: "content_delta", text: chunk.content_block.text });
+            attempt.emit({ type: "content_delta", text: chunk.content_block.text });
           }
         }
       }
@@ -180,11 +203,11 @@ export class AnthropicMessagesProvider implements ModelProvider {
         const block = blocks.get(index);
         if (chunk.delta.type === "text_delta" && chunk.delta.text) {
           content.push(chunk.delta.text);
-          onEvent({ type: "content_delta", text: chunk.delta.text });
+          attempt.emit({ type: "content_delta", text: chunk.delta.text });
         }
         if (chunk.delta.type === "thinking_delta" && chunk.delta.thinking) {
           thinking.push(chunk.delta.thinking);
-          onEvent({ type: "thinking_delta", text: chunk.delta.thinking });
+          attempt.emit({ type: "thinking_delta", text: chunk.delta.thinking });
         }
         if (chunk.delta.type === "input_json_delta" && block?.kind === "tool_use") {
           block.inputJson += chunk.delta.partial_json ?? "";
@@ -202,15 +225,17 @@ export class AnthropicMessagesProvider implements ModelProvider {
         }
       }
       return false;
+        }, { signal: attempt.signal, idleTimeoutMs: attempt.streamIdleTimeoutMs });
+        if (!stopped && !completed) throw providerStreamError("Provider stream ended before a completion marker");
+        return {
+          content: content.length ? content.join("") : undefined,
+          thinking: thinking.length ? thinking.join("") : undefined,
+          tool_calls: toolCalls.length ? toolCalls : undefined,
+          usage: anthropicUsage(usage),
+          stopReason: anthropicStopReason(stopReason)
+        };
+      }
     });
-
-    return {
-      content: content.length ? content.join("") : undefined,
-      thinking: thinking.length ? thinking.join("") : undefined,
-      tool_calls: toolCalls.length ? toolCalls : undefined,
-      usage: anthropicUsage(usage),
-      stopReason: anthropicStopReason(stopReason)
-    };
   }
 
   private endpoint(): string {
@@ -237,6 +262,14 @@ export class AnthropicMessagesProvider implements ModelProvider {
       "user-agent": this.options.userAgent ?? defaultProviderUserAgent
     };
   }
+}
+
+function anthropicStreamError(chunk: AnthropicStreamChunk): ModelProviderError {
+  const detail = JSON.stringify(chunk);
+  return providerStreamApiError(chunk.error?.message ?? "Provider returned a stream error", {
+    marker: chunk.error?.type,
+    detail
+  });
 }
 
 function toAnthropicRequestBody(request: ModelRequest, options: AnthropicMessagesOptions, nativeDeferredTools = false): Record<string, unknown> {

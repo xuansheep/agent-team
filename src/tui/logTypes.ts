@@ -29,6 +29,7 @@ export type TuiAssistantLogMessage = BaseLogMessage & {
 
 export type TuiStatusLogMessage = BaseLogMessage & {
   kind: "status";
+  source?: "model_retry";
 };
 
 export type TuiPlanLogMessage = BaseLogMessage & {

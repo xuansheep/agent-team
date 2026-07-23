@@ -6,6 +6,7 @@ import { ResponsesApiProvider } from "../../src/providers/responsesApi.js";
 import { Tool } from "../../src/tools/types.js";
 
 const servers: Array<{ close: () => Promise<void> }> = [];
+const fastRetry = { calculateDelay: () => 0 };
 const responseSchema = { type: "object", properties: { status: { type: "string" } }, required: ["status"], additionalProperties: false };
 const tool: Tool = {
   name: "Bash",
@@ -263,6 +264,34 @@ describe("ResponsesApiProvider", () => {
     assert.equal(result?.thinking, "Checked constraints.");
     assert.equal(result?.content, "{\"direction\":\"forward\"}");
   });
+
+  it("retries an incomplete stream and reports discarded content", async () => {
+    const server = await startRecoveringSseServer();
+    const provider = new ResponsesApiProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      streaming: true,
+      retry: { ...fastRetry, streamMaxRetries: 1 }
+    });
+    const deltas: string[] = [];
+    const discarded: number[] = [];
+
+    const result = await provider.stream?.({
+      model: "gpt-test",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      onRetry(event) {
+        discarded.push(event.discardedContentChars);
+      }
+    }, (event) => {
+      if (event.type === "content_delta") deltas.push(event.text);
+    });
+
+    assert.deepEqual(deltas, ["partial", "complete"]);
+    assert.deepEqual(discarded, [7]);
+    assert.equal(result?.content, "complete");
+    assert.equal(server.attempts, 2);
+  });
 });
 
 async function startJsonServer(responseBody: unknown): Promise<{ baseUrl: string; requestPath: string; requestBody: Record<string, unknown>; requestHeaders: IncomingHttpHeaders; close: () => Promise<void> }> {
@@ -300,6 +329,28 @@ async function startSseServer(events: Array<unknown | "[DONE]">, lineEnding: "\n
   const address = server.address() as AddressInfo;
   const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   const handle = { baseUrl: `http://127.0.0.1:${address.port}/v1`, get requestBody() { return requestBody; }, close };
+  servers.push(handle);
+  return handle;
+}
+
+async function startRecoveringSseServer(): Promise<{ baseUrl: string; attempts: number; close: () => Promise<void> }> {
+  let attempts = 0;
+  const server = createServer(async (request, response) => {
+    attempts += 1;
+    await readJsonBody(request);
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    if (attempts === 1) {
+      response.end(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "partial" })}\n\n`);
+      return;
+    }
+    response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "complete" })}\n\n`);
+    response.end("data: [DONE]\n\n");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  const handle = { baseUrl: `http://127.0.0.1:${address.port}/v1`, get attempts() { return attempts; }, close };
   servers.push(handle);
   return handle;
 }

@@ -15,6 +15,25 @@ A local TUI harness for configurable agent-team workflow sessions.
 The first TUI startup creates `~/.einsteins/settings.json` when it does not exist. Provider definitions and API keys are user-level settings and must be configured under its top-level `providers` key. Existing settings files are never overwritten.
 Provider-level `effort` accepts any non-empty string and defaults to `medium`; a workflow node may override it with its own `effort`.
 
+Each provider also supports the same retry and timeout controls:
+
+```json
+{
+  "providers": {
+    "default": {
+      "request_max_retries": 10,
+      "stream_max_retries": 10,
+      "request_timeout_ms": 600000,
+      "stream_idle_timeout_ms": 90000
+    }
+  }
+}
+```
+
+`request_max_retries` applies before a streaming response is established and to non-streaming requests. `stream_max_retries` applies after streaming begins, including premature EOF, interrupted sockets, invalid completion markers, and idle streams. A value of `0` disables the corresponding retries. Retries cover network and timeout failures, HTTP 408, 409, 429, retryable 424 dependency failures, and 5xx responses. Authentication, permission, ordinary 4xx, context-limit, and user-cancellation errors are not retried.
+
+Backoff starts at 500 ms, doubles up to 32 seconds, and adds 0-25% jitter; a valid `Retry-After` response header takes precedence. Streaming never falls back to non-streaming mode, so a retry cannot cause completed tool calls to be replayed through a second response path. Every scheduled retry is persisted in `events.ndjson` and the session `audit.ndjson`. The TUI shows one temporary reconnect status, updates it across consecutive retries, rolls back failed stream fragments, and removes it after success, failure, interruption, or cancellation.
+
 Roles and workflows are user-level configuration under `~/.einsteins/roles` and `~/.einsteins/workflows`. On startup, missing directories are initialized from the application's bundled `config/` templates without merging into or overwriting existing directories. Provider definitions remain in user settings, and API key environment variables are not supported.
 
 An empty `api_key` in the generated template does not block startup. The application reports an error only when a workflow tries to use that provider.
@@ -115,6 +134,9 @@ The harness follows Claude Code-style local tool execution and permissions where
 MVP 支持：
 
 - Responses API、OpenAI-compatible 和 Anthropic Provider
+- 三类 Provider 统一支持请求错误、请求超时、流中断、提前 EOF 和流空闲超时重试；默认请求与流各重试 10 次，请求超时 600 秒，流空闲超时 90 秒
+- 重试采用 500ms 指数退避、32 秒上限和 0-25% 抖动，并优先遵循 `Retry-After`；认证、权限、普通 4xx、上下文超限和用户取消不会重试
+- TUI 连续重试只更新一条临时重连状态，失败流残片会回滚，终态后自动移除；完整记录持久化到 `events.ndjson` 与 Session `audit.ndjson`
 - Claude Code 风格 `allow`、`ask`、`deny` 权限规则
 - 本地工具集：`Read`、`Write`、`Edit`、`MultiEdit`、`LS`、`Glob`、`Grep`、`Bash`、`PowerShell`、`TodoWrite`、`AttachImage`、`WebFetch`、`WebSearch`
 - 默认按 `nodes` 顺序执行，节点必须显式提交 `forward`、`backward` 或 `retry`；退回节点与上游节点保持原 attempt，并以新的 activation 从对话检查点继续

@@ -181,6 +181,45 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("shows one temporary Plan Mode retry status and removes it after recovery", async () => {
+    const cwd = await makeProjectTmpCwd("agent-team-tui-plan-retry-");
+    const engine = { async startInteractive() { return fakeSession(); } };
+    let release!: () => void;
+    const recovery = new Promise<void>((resolve) => { release = resolve; });
+    const provider: ModelProvider = {
+      async generate(request) {
+        await request.onRetry?.({
+          phase: "request",
+          retryAttempt: 1,
+          maxRetries: 10,
+          retryInMs: 5_000,
+          scheduledAt: new Date().toISOString(),
+          retryAt: new Date(Date.now() + 5_000).toISOString(),
+          errorKind: "server",
+          status: 503,
+          message: "service unavailable",
+          discardedContentChars: 0,
+          discardedThinkingChars: 0
+        });
+        await recovery;
+        return { content: "Recovered after retry." };
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Retry this plan request.");
+    await waitForFrame(output, /模型重连中 .* 1\/10/);
+    assert.equal((output.lastFrame() ?? "").match(/模型请求将在/g)?.length, 1);
+
+    release();
+    await waitForFrame(output, /Recovered after retry\./);
+    assert.doesNotMatch(output.lastFrame() ?? "", /模型重连中|模型请求将在/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("configures the statusline interactively with immediate space toggles", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const engine = { async startInteractive() { return fakeSession(); } };

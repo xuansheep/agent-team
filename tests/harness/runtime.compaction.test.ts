@@ -5,12 +5,79 @@ import { join } from "node:path";
 import { runNode, type NodeRuntimeOptions } from "../../src/harness/runtime.js";
 import { ModelProviderError, type ModelMessage, type ModelProvider, type ModelRequest } from "../../src/providers/types.js";
 import { RunStore } from "../../src/storage/runStore.js";
+import { AuditStore } from "../../src/audit/auditStore.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 
 const compactSummary = "<summary>Earlier decisions and unfinished work.</summary>";
 const nodeResult = JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } });
 
 describe("runNode context compaction", () => {
+  it("persists retry events before continuing a successful sampled stream", async () => {
+    const fixture = await runtimeFixture("agent-team-sampling-retry-");
+    const tools = new ToolRegistry();
+    let toolExecutions = 0;
+    tools.add({
+      name: "Once",
+      description: "executes once",
+      input_schema: {},
+      isReadOnly: () => false,
+      async execute() {
+        toolExecutions += 1;
+        return { output: "done" };
+      }
+    });
+    let modelTurns = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("generate should not be used when stream is available");
+      },
+      async stream(request, onEvent) {
+        modelTurns += 1;
+        if (modelTurns > 1) {
+          onEvent({ type: "content_delta", text: nodeResult });
+          return { content: nodeResult, usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 } };
+        }
+        onEvent({ type: "content_delta", text: "partial" });
+        await request.onRetry?.({
+          phase: "stream",
+          retryAttempt: 1,
+          maxRetries: 10,
+          retryInMs: 500,
+          scheduledAt: "2026-06-23T00:00:00.000Z",
+          retryAt: "2026-06-23T00:00:00.500Z",
+          errorKind: "network",
+          message: "socket disconnected",
+          discardedContentChars: 7,
+          discardedThinkingChars: 0
+        });
+        onEvent({ type: "content_delta", text: "Running Once." });
+        return {
+          content: "Running Once.",
+          tool_calls: [{ id: "once-1", name: "Once", input: {} }],
+          usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 }
+        };
+      }
+    };
+
+    const result = await runNode(runtimeOptions(fixture, provider, [], {
+      tools,
+      permissions: { allow: ["Once"], ask: [], deny: [] }
+    }));
+
+    assert.equal(result.direction, "forward");
+    assert.equal(toolExecutions, 1);
+    assert.equal(modelTurns, 2);
+    const events = await fixture.store.loadEvents(fixture.runId);
+    const retryIndex = events.findIndex((event) => event.type === "model_retry_scheduled");
+    assert.equal(events[retryIndex - 1]?.type, "model_stream_delta");
+    const retry = events[retryIndex];
+    assert.equal(retry?.type === "model_retry_scheduled" ? retry.operation : undefined, "sampling");
+    assert.equal(retry?.type === "model_retry_scheduled" ? retry.discarded_content_chars : undefined, 7);
+    assert.equal(events.filter((event) => event.type === "model_response_recorded").length, modelTurns);
+    const audit = await new AuditStore(join(fixture.root, fixture.sessionId)).readEvents();
+    assert.equal(audit.filter((event) => event.type === "model_retry").length, 1);
+  });
+
   it("automatically performs a full compaction before a high-pressure model request", async () => {
     const fixture = await runtimeFixture("agent-team-auto-compact-");
     await fixture.store.appendEvent(fixture.runId, {
@@ -88,6 +155,21 @@ describe("runNode context compaction", () => {
       async stream(request, onEvent) {
         if (request.tools.length === 0) {
           summaryRequests.push(request);
+          if (summaryRequests.length === 2) {
+            await request.onRetry?.({
+              phase: "request",
+              retryAttempt: 1,
+              maxRetries: 10,
+              retryInMs: 500,
+              scheduledAt: "2026-06-23T00:00:00.000Z",
+              retryAt: "2026-06-23T00:00:00.500Z",
+              errorKind: "server",
+              status: 503,
+              message: "compaction service unavailable",
+              discardedContentChars: 0,
+              discardedThinkingChars: 0
+            });
+          }
           onEvent({ type: "content_delta", text: "internal-summary-fragment" });
           if (summaryRequests.length === 1) {
             throw new ModelProviderError("summary input too large", { errorKind: "context_limit" });
@@ -117,6 +199,8 @@ describe("runNode context compaction", () => {
     const deltas = (await fixture.store.loadEvents(fixture.runId)).filter((event) => event.type === "model_stream_delta");
     assert.equal(deltas.some((event) => event.text.includes("internal-summary-fragment") || event.text.includes("Earlier decisions")), false);
     assert.equal(deltas.map((event) => event.text).join(""), nodeResult);
+    const retry = (await fixture.store.loadEvents(fixture.runId)).find((event) => event.type === "model_retry_scheduled");
+    assert.equal(retry?.type === "model_retry_scheduled" ? retry.operation : undefined, "compaction");
   });
 
   it("ends the activation on a provider context-limit failure without reactive compaction", async () => {
@@ -346,7 +430,9 @@ describe("runNode context compaction", () => {
 });
 
 type RuntimeFixture = {
+  root: string;
   store: RunStore;
+  sessionId: string;
   runId: string;
 };
 
@@ -356,7 +442,7 @@ async function runtimeFixture(prefix: string): Promise<RuntimeFixture> {
   const root = await mkdtemp(join(tempRoot, prefix));
   const store = new RunStore(root);
   const run = await store.createRun("flow", { request: "x" });
-  return { store, runId: run.runId };
+  return { root, store, sessionId: run.sessionId, runId: run.runId };
 }
 
 function runtimeOptions(

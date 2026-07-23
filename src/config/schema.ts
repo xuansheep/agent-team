@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 export const DEFAULT_MAX_REWORK_CYCLES = 99;
+export const DEFAULT_REQUEST_MAX_RETRIES = 10;
+export const DEFAULT_STREAM_MAX_RETRIES = 10;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 600_000;
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 90_000;
 
 export const permissionSetSchema = z.object({
   allow: z.array(z.string()).default([]),
@@ -32,6 +36,10 @@ const providerBaseSchema = {
   auto_compact_token_limit_scope: z.enum(["total", "body_after_prefix"]).optional(),
   tool_output_token_limit: z.number().int().positive().optional(),
   compact_prompt: z.string().min(1).optional(),
+  request_max_retries: z.number().int().min(0).max(100).default(DEFAULT_REQUEST_MAX_RETRIES),
+  stream_max_retries: z.number().int().min(0).max(100).default(DEFAULT_STREAM_MAX_RETRIES),
+  request_timeout_ms: z.number().int().positive().default(DEFAULT_REQUEST_TIMEOUT_MS),
+  stream_idle_timeout_ms: z.number().int().positive().default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   api_key_mode: apiKeyModeSchema.default("bearer"),
   user_agent: z.string().min(1).optional(),
   capabilities: providerCapabilitiesSchema.default({})
@@ -134,9 +142,10 @@ type ParsedProjectConfig = z.infer<typeof configSchema>;
 type ParsedProviderConfig = z.infer<typeof providerSchema>;
 type ParsedWorkflowConfig = z.infer<typeof workflowSchema>;
 type ParsedWorkflowNodeConfig = z.infer<typeof nodeSchema>;
+type ProviderDefaults = "api_key_mode" | "request_max_retries" | "stream_max_retries" | "request_timeout_ms" | "stream_idle_timeout_ms";
 export type ProviderConfig = ParsedProviderConfig extends infer Provider
-  ? Provider extends { api_key_mode: infer Mode }
-    ? Omit<Provider, "api_key_mode"> & { api_key_mode?: Mode }
+  ? Provider extends Record<ProviderDefaults, unknown>
+    ? Omit<Provider, ProviderDefaults> & Partial<Pick<Provider, ProviderDefaults>>
     : Provider
   : never;
 

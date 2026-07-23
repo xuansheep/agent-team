@@ -6,7 +6,7 @@ import { isDefaultPlanFilePath, planFilenameSlug, readPlan, uniquePlanFilePath }
 import { hasModelUsage } from "../model/usage.js";
 import { prepareMcpDiscovery, withMcpCatalogMessage } from "../mcp/discovery.js";
 import { toolResultMessage } from "../tools/modelResult.js";
-import type { ModelMessage, ModelProvider, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
+import type { ModelMessage, ModelProvider, ModelRetryEvent, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import type { GlobalPromptMetadata } from "../config/schema.js";
 import type { AuditSink } from "../audit/auditEvent.js";
 import type { PromptInjectionRecord, RuntimeEvent } from "../runtime/types.js";
@@ -78,7 +78,26 @@ export class QueryEngine {
           turnId: `${session.id}:${input.nodeId ?? "kernel"}:${iteration + 1}`,
           promptCacheKey: session.id
         },
-        signal: input.signal
+        signal: input.signal,
+        onRetry: async (retry: ModelRetryEvent) => {
+          await emit(input, runtimeModelRetryEvent(session.id, session.workflowBinding?.runId, retry));
+          await input.auditSink?.({
+            type: "model_retry",
+            session_id: session.id,
+            run_id: session.workflowBinding?.runId,
+            operation: "sampling",
+            phase: retry.phase,
+            retry_attempt: retry.retryAttempt,
+            max_retries: retry.maxRetries,
+            retry_in_ms: retry.retryInMs,
+            retry_at: retry.retryAt,
+            error_kind: retry.errorKind,
+            status: retry.status,
+            error: retry.message,
+            discarded_content_chars: retry.discardedContentChars,
+            discarded_thinking_chars: retry.discardedThinkingChars
+          });
+        }
       };
       const response = input.provider.stream
         ? await input.provider.stream(request, (event) => input.onStreamEvent?.(event))
@@ -199,6 +218,26 @@ export class QueryEngine {
 
     return { session: { ...session, messages, status: "idle_input" } };
   }
+}
+
+function runtimeModelRetryEvent(sessionId: string, runId: string | undefined, retry: ModelRetryEvent): RuntimeEvent {
+  return {
+    type: "runtime_model_retry_scheduled",
+    session_id: sessionId,
+    run_id: runId,
+    operation: "sampling",
+    phase: retry.phase,
+    retry_attempt: retry.retryAttempt,
+    max_retries: retry.maxRetries,
+    retry_in_ms: retry.retryInMs,
+    retry_at: retry.retryAt,
+    error_kind: retry.errorKind,
+    status: retry.status,
+    error: retry.message,
+    detail: retry.detail,
+    discarded_content_chars: retry.discardedContentChars,
+    discarded_thinking_chars: retry.discardedThinkingChars
+  };
 }
 
 

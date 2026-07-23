@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AuditEvent } from "../audit/auditEvent.js";
-import { ModelMessage, ModelRequest, ModelResponse, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
+import { ModelMessage, ModelRequest, ModelResponse, ModelRetryEvent, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import { hasModelUsage } from "../model/usage.js";
 import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { isHumanUserMessage, withRuntimeAttachments } from "../context/messages.js";
@@ -66,7 +66,12 @@ export class RuntimeTurnExecutor {
             turnId: `${input.sessionId}:${iteration + 1}`,
             promptCacheKey: input.sessionId
           },
-          signal: input.abortSignal
+          signal: input.abortSignal,
+          onRetry: async (retry) => {
+            const event = runtimeModelRetryEvent(input.sessionId, input.runId, retry);
+            await emit(input, event);
+            await audit(input, modelRetryAuditEvent(retry));
+          }
         }
       });
       await emit(input, {
@@ -570,3 +575,40 @@ export type RuntimeModelTurnResult = {
   streamed: boolean;
   response: ModelResponse;
 };
+
+function runtimeModelRetryEvent(sessionId: string, runId: string | undefined, retry: ModelRetryEvent): RuntimeEvent {
+  return {
+    type: "runtime_model_retry_scheduled",
+    session_id: sessionId,
+    run_id: runId,
+    operation: "sampling",
+    phase: retry.phase,
+    retry_attempt: retry.retryAttempt,
+    max_retries: retry.maxRetries,
+    retry_in_ms: retry.retryInMs,
+    retry_at: retry.retryAt,
+    error_kind: retry.errorKind,
+    status: retry.status,
+    error: retry.message,
+    detail: retry.detail,
+    discarded_content_chars: retry.discardedContentChars,
+    discarded_thinking_chars: retry.discardedThinkingChars
+  };
+}
+
+function modelRetryAuditEvent(retry: ModelRetryEvent): AuditEvent {
+  return {
+    type: "model_retry",
+    operation: "sampling",
+    phase: retry.phase,
+    retry_attempt: retry.retryAttempt,
+    max_retries: retry.maxRetries,
+    retry_in_ms: retry.retryInMs,
+    retry_at: retry.retryAt,
+    error_kind: retry.errorKind,
+    status: retry.status,
+    error: retry.message,
+    discarded_content_chars: retry.discardedContentChars,
+    discarded_thinking_chars: retry.discardedThinkingChars
+  };
+}

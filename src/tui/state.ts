@@ -87,6 +87,22 @@ export type TuiModelStreamState = {
   text: string;
 };
 
+export type TuiModelRetryState = {
+  nodeId?: string;
+  attempt?: number;
+  activation?: number;
+  operation: "sampling" | "compaction";
+  phase: "request" | "stream";
+  retryAttempt: number;
+  maxRetries: number;
+  retryInMs: number;
+  retryAt: string;
+  errorKind: string;
+  status?: number;
+  error: string;
+  detail?: string;
+};
+
 export type TuiConversationItem = {
   kind: "user" | "assistant" | "status";
   text: string;
@@ -131,6 +147,7 @@ export type TuiState = {
   pendingReview?: TuiPlanReviewState;
   planSession?: PlanSessionState;
   modelStreams: TuiModelStreamState[];
+  activeModelRetry?: TuiModelRetryState;
   conversation: TuiConversationItem[];
   logMessages: TuiLogMessage[];
   questions: unknown[];

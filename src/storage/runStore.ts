@@ -542,6 +542,25 @@ export class RunStore {
     if (event.type === "skill_activated") {
       return [{ ...identity, type: "skill_activated", node_id: event.node_id, attempt: event.attempt, name: event.name, mode: event.mode, source: event.source, version: event.version, allowed_tools: event.allowed_tools }];
     }
+    if (event.type === "model_retry_scheduled") {
+      return [{
+        ...identity,
+        type: "model_retry",
+        node_id: event.node_id,
+        attempt: event.attempt,
+        operation: event.operation,
+        phase: event.phase,
+        retry_attempt: event.retry_attempt,
+        max_retries: event.max_retries,
+        retry_in_ms: event.retry_in_ms,
+        retry_at: event.retry_at,
+        error_kind: event.error_kind,
+        status: event.status,
+        error: event.error,
+        discarded_content_chars: event.discarded_content_chars,
+        discarded_thinking_chars: event.discarded_thinking_chars
+      }];
+    }
     if (event.type === "permission_requested") {
       this.pendingPermissions.set(event.request_id, { tool: event.tool, nodeId: event.node_id, attempt: event.attempt, rule: event.rule });
       return [{ ...identity, type: "permission_decision", node_id: event.node_id, attempt: event.attempt, tool: event.tool, decision: "ask", rule: event.rule, input: event.input }];
@@ -740,7 +759,8 @@ function isTerminalEvent(event: HarnessEvent): boolean {
 }
 
 function isAuditableEvent(event: HarnessEvent): boolean {
-  return event.type === "tool_invoked"
+  return event.type === "model_retry_scheduled"
+    || event.type === "tool_invoked"
     || event.type === "tool_completed"
     || event.type === "tool_failed"
     || event.type === "artifact_read"

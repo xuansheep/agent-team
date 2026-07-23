@@ -1,5 +1,5 @@
-import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, ApiKeyMode } from "./http.js";
-import { ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
+import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, providerStreamApiError, providerStreamError, withProviderRetry, ApiKeyMode, ProviderRetryConfig } from "./http.js";
+import { ModelMessage, ModelProvider, ModelProviderError, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
 import type { ModelUsage } from "../model/usage.js";
 
 export type OpenAiCompatibleOptions = {
@@ -9,6 +9,7 @@ export type OpenAiCompatibleOptions = {
   streaming?: boolean;
   jsonSchemaOutput?: boolean;
   userAgent?: string;
+  retry?: ProviderRetryConfig;
 };
 
 type OpenAiToolCall = {
@@ -37,6 +38,7 @@ type OpenAiUsage = {
 
 type OpenAiStreamChunk = {
   usage?: OpenAiUsage;
+  error?: { message?: string; type?: string; code?: string; status?: number };
   choices?: Array<{
     finish_reason?: string;
     delta?: {
@@ -94,81 +96,97 @@ export class OpenAiCompatibleProvider implements ModelProvider {
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    const response = await fetchProvider(endpoint, {
-      method: "POST",
-      headers: this.headers(),
-      signal: request.signal,
-      body: JSON.stringify(toRequestBody(request, this.options))
+    return withProviderRetry({
+      request,
+      endpoint,
+      streaming: false,
+      retry: this.options.retry,
+      operation: async (attempt) => {
+        const response = await fetchProvider(endpoint, {
+          method: "POST",
+          headers: this.headers(),
+          signal: attempt.signal,
+          body: JSON.stringify(toRequestBody(request, this.options))
+        });
+
+        if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        const body = await response.json() as {
+          choices?: Array<{ finish_reason?: string; message?: { content?: string; reasoning_content?: string; tool_calls?: OpenAiToolCall[] } }>;
+          usage?: OpenAiUsage;
+        };
+        const choice = body.choices?.[0] ?? {};
+        const message = choice.message ?? {};
+        return {
+          content: message.content ?? undefined,
+          thinking: message.reasoning_content ?? undefined,
+          tool_calls: message.tool_calls?.map((call) => ({
+            id: call.id,
+            name: call.function.name,
+            input: JSON.parse(call.function.arguments || "{}")
+          })),
+          usage: openAiUsage(body.usage),
+          stopReason: openAiStopReason(choice.finish_reason)
+        };
+      }
     });
-
-    if (!response.ok) {
-      throw providerHttpError(response.status, await response.text());
-    }
-
-    const body = await response.json() as {
-      choices?: Array<{ finish_reason?: string; message?: { content?: string; reasoning_content?: string; tool_calls?: OpenAiToolCall[] } }>;
-      usage?: OpenAiUsage;
-    };
-    const choice = body.choices?.[0] ?? {};
-    const message = choice.message ?? {};
-    return {
-      content: message.content ?? undefined,
-      thinking: message.reasoning_content ?? undefined,
-      tool_calls: message.tool_calls?.map((call) => ({
-        id: call.id,
-        name: call.function.name,
-        input: JSON.parse(call.function.arguments || "{}")
-      })),
-      usage: openAiUsage(body.usage),
-      stopReason: openAiStopReason(choice.finish_reason)
-    };
   }
 
   private async streamImpl(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    const response = await fetchProvider(endpoint, {
-      method: "POST",
-      headers: this.headers({ accept: "text/event-stream" }),
-      signal: request.signal,
-      body: JSON.stringify({ ...toRequestBody(request, this.options), stream: true, stream_options: { include_usage: true } })
-    });
+    return withProviderRetry({
+      request,
+      endpoint,
+      streaming: true,
+      retry: this.options.retry,
+      onStreamEvent: onEvent,
+      operation: async (attempt) => {
+        const response = await fetchProvider(endpoint, {
+          method: "POST",
+          headers: this.headers({ accept: "text/event-stream" }),
+          signal: attempt.signal,
+          body: JSON.stringify({ ...toRequestBody(request, this.options), stream: true, stream_options: { include_usage: true } })
+        });
 
-    if (!response.ok) {
-      throw providerHttpError(response.status, await response.text());
-    }
-    if (!response.body) throw new Error("Provider stream response had no body");
+        if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        if (!response.body) throw new ModelProviderError("Provider stream response had no body", { errorKind: "server", phase: "request", retryable: true });
+        attempt.markStreamStarted();
 
-    const content: string[] = [];
-    const thinking: string[] = [];
-    const toolCalls = new Map<number, StreamingToolCall>();
-    let usage: OpenAiUsage | undefined;
+        const content: string[] = [];
+        const thinking: string[] = [];
+        const toolCalls = new Map<number, StreamingToolCall>();
+        let usage: OpenAiUsage | undefined;
+        let completed = false;
 
-    await consumeSseBlocks(response.body, (data) => {
-      const chunk = JSON.parse(data) as OpenAiStreamChunk;
-      if (chunk.usage) usage = chunk.usage;
-      for (const choice of chunk.choices ?? []) {
-        const delta = choice.delta;
-        if (!delta) continue;
-        if (delta.content) {
-          content.push(delta.content);
-          onEvent({ type: "content_delta", text: delta.content });
-        }
-        if (delta.reasoning_content) {
-          thinking.push(delta.reasoning_content);
-          onEvent({ type: "thinking_delta", text: delta.reasoning_content });
-        }
-        for (const callDelta of delta.tool_calls ?? []) {
-          const current = toolCalls.get(callDelta.index) ?? { name: "", arguments: "" };
-          if (callDelta.id) current.id = callDelta.id;
-          if (callDelta.function?.name) current.name += callDelta.function.name;
-          if (callDelta.function?.arguments) current.arguments += callDelta.function.arguments;
-          toolCalls.set(callDelta.index, current);
-        }
+        const stopped = await consumeSseBlocks(response.body, (data) => {
+          const chunk = JSON.parse(data) as OpenAiStreamChunk;
+          if (chunk.error) throw openAiStreamError(chunk.error);
+          if (chunk.usage) usage = chunk.usage;
+          for (const choice of chunk.choices ?? []) {
+            if (choice.finish_reason) completed = true;
+            const delta = choice.delta;
+            if (!delta) continue;
+            if (delta.content) {
+              content.push(delta.content);
+              attempt.emit({ type: "content_delta", text: delta.content });
+            }
+            if (delta.reasoning_content) {
+              thinking.push(delta.reasoning_content);
+              attempt.emit({ type: "thinking_delta", text: delta.reasoning_content });
+            }
+            for (const callDelta of delta.tool_calls ?? []) {
+              const current = toolCalls.get(callDelta.index) ?? { name: "", arguments: "" };
+              if (callDelta.id) current.id = callDelta.id;
+              if (callDelta.function?.name) current.name += callDelta.function.name;
+              if (callDelta.function?.arguments) current.arguments += callDelta.function.arguments;
+              toolCalls.set(callDelta.index, current);
+            }
+          }
+          return false;
+        }, { signal: attempt.signal, idleTimeoutMs: attempt.streamIdleTimeoutMs });
+        if (!stopped && !completed) throw providerStreamError("Provider stream ended before a completion marker");
+        return toStreamResponse(content, thinking, toolCalls, usage);
       }
-      return false;
     });
-
-    return toStreamResponse(content, thinking, toolCalls, usage);
   }
 
   private endpoint(): string {
@@ -183,6 +201,15 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       "user-agent": this.options.userAgent ?? defaultProviderUserAgent
     };
   }
+}
+
+function openAiStreamError(error: { message?: string; type?: string; code?: string; status?: number }): ModelProviderError {
+  const detail = JSON.stringify(error);
+  return providerStreamApiError(error.message ?? "Provider returned a stream error", {
+    status: error.status,
+    marker: `${error.type ?? ""} ${error.code ?? ""}`,
+    detail
+  });
 }
 
 function toRequestBody(request: ModelRequest, options: OpenAiCompatibleOptions): Record<string, unknown> {

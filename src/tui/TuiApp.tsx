@@ -35,7 +35,7 @@ import { askUserQuestionModelResult } from "../tools/local/askUserQuestion.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { WorkflowSession } from "../workflow/session.js";
-import { initialTuiState, reduceStoredEvent, resetTuiRunState } from "./eventAdapter.js";
+import { applyTuiModelRetry, clearTuiModelRetry, initialTuiState, reduceStoredEvent, resetTuiRunState } from "./eventAdapter.js";
 import { ensureRefableStdin } from "./inkStdin.js";
 import { TuiDefaultExecutionMode, TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
@@ -622,7 +622,8 @@ export function TuiApp({
         nodeId: "runtime",
         globalPrompt: config?.global_prompt,
         globalPromptMetadata: config?.global_prompt_metadata,
-            signal: abortController.signal,
+        signal: abortController.signal,
+        auditSink: (event) => sessionStore.appendAudit(currentPlan.sessionId, event),
         eventSink: async (event) => {
           if (planTurnGenerationRef.current !== turnGeneration) return;
           if (abortController.signal.aborted && event.type !== "runtime_model_response") return;
@@ -710,7 +711,7 @@ export function TuiApp({
       if (abortController.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         setWorkStatusDetail(undefined);
         setState((current) => ({
-          ...current,
+          ...clearTuiModelRetry(current),
           mode: "planning",
           pendingReview: undefined,
           questions: [],
@@ -720,7 +721,7 @@ export function TuiApp({
         requestMainScrollToBottom();
         return;
       }
-      setState((current) => ({ ...current, mode: "planning", error: error instanceof Error ? error.message : String(error) }));
+      setState((current) => ({ ...clearTuiModelRetry(current), mode: "planning", error: error instanceof Error ? error.message : String(error) }));
     } finally {
       if (planAbortControllerRef.current === abortController) planAbortControllerRef.current = undefined;
       setPlanWorkCount((current) => Math.max(0, current - 1));
@@ -1630,7 +1631,8 @@ ${message.detailText}` : ""}` }
   const planApprovalOverlayVisible = planApprovalActive && !planApprovalCollapsed;
   const planApprovalPlanFilePath = state.pendingReview?.planFilePath ? displayPlanFilePath(state.pendingReview.planFilePath, cwd) : undefined;
   const logMessages = state.logMessages;
-  const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: workStatusDetail });
+  const retryDetail = state.activeModelRetry ? modelRetryStatusDetail(state.activeModelRetry.retryAt, state.activeModelRetry.retryAttempt, state.activeModelRetry.maxRetries, clockMs) : undefined;
+  const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: retryDetail ?? workStatusDetail });
   const activityStatus = hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus;
   const currentDiagnosticsForMenu = collectDiagnostics?.() ?? diagnostics ?? { mcp: [], skills: [] };
   const commandMenuChoice = commandMenu ? buildCommandMenuChoice({
@@ -2056,6 +2058,10 @@ function formatWorkDuration(durationMs: number): string {
   if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
   return `${seconds}s`;
 }
+function modelRetryStatusDetail(retryAt: string, retryAttempt: number, maxRetries: number, nowMs: number): string {
+  const remainingSeconds = Math.max(0, Math.ceil((Date.parse(retryAt) - nowMs) / 1000));
+  return `模型重连中 · ${remainingSeconds}s · ${retryAttempt}/${maxRetries}`;
+}
 function statusLog(text: string, detailText?: string): TuiLogMessage {
   return { id: randomUUID(), kind: "status", text, detailText };
 }
@@ -2088,6 +2094,23 @@ function runtimeWorkStatusDetail(event: RuntimeEvent): string | undefined {
 }
 function reducePlanRuntimeEvent(state: TuiState, event: RuntimeEvent): TuiState {
   switch (event.type) {
+    case "runtime_model_retry_scheduled":
+      return applyTuiModelRetry(state, {
+        nodeId: planRuntimeNodeId,
+        attempt: planRuntimeAttempt,
+        operation: event.operation,
+        phase: event.phase,
+        retryAttempt: event.retry_attempt,
+        maxRetries: event.max_retries,
+        retryInMs: event.retry_in_ms,
+        retryAt: event.retry_at,
+        errorKind: event.error_kind,
+        status: event.status,
+        error: event.error,
+        detail: event.detail
+      });
+    case "runtime_model_response":
+      return clearTuiModelRetry(state);
     case "runtime_assistant_message":
       return appendPlanAssistantLog(state, event.content);
     case "runtime_tool_invoked":

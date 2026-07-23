@@ -10,6 +10,8 @@ import { createKernelToolRegistry } from "../../src/kernel/tools/registry.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { SkillRuntime } from "../../src/skills/runtime.js";
 import type { ModelProvider } from "../../src/providers/types.js";
+import type { AuditEvent } from "../../src/audit/auditEvent.js";
+import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { readPlan, writePlan } from "../../src/plans/planFiles.js";
 import { writeTool } from "../../src/tools/local/write.js";
 
@@ -437,6 +439,54 @@ describe("QueryEngine", () => {
     assert.match(capturedSystem, /Available skills/);
     assert.match(capturedSystem, /planner/);
     assert.match(capturedSystem, /Use before implementation planning/);
+  });
+
+  it("emits and audits Plan Mode model retries before recording the successful response", async () => {
+    const events: RuntimeEvent[] = [];
+    const audits: AuditEvent[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        await request.onRetry?.({
+          phase: "request",
+          retryAttempt: 1,
+          maxRetries: 10,
+          retryInMs: 500,
+          scheduledAt: "2026-06-23T00:00:00.000Z",
+          retryAt: "2026-06-23T00:00:00.500Z",
+          errorKind: "server",
+          status: 503,
+          message: "service unavailable",
+          detail: "upstream overloaded",
+          discardedContentChars: 0,
+          discardedThinkingChars: 0
+        });
+        return { content: "planned" };
+      }
+    };
+
+    const result = await new QueryEngine().run({
+      session: createKernelSession({
+        id: "s-retry",
+        cwd: process.cwd(),
+        permissions: { mode: "plan", allow: [], ask: [], deny: [] },
+        messages: [{ role: "user", content: "plan this" }]
+      }),
+      provider,
+      model: "test-model",
+      tools: createKernelToolRegistry(new ToolRegistry()),
+      eventSink: (event) => { events.push(event); },
+      auditSink: (event) => { audits.push(event); }
+    });
+
+    assert.equal(result.session.status, "idle_input");
+    const retryIndex = events.findIndex((event) => event.type === "runtime_model_retry_scheduled");
+    const responseIndex = events.findIndex((event) => event.type === "runtime_model_response");
+    assert.ok(retryIndex >= 0 && retryIndex < responseIndex);
+    const retry = events[retryIndex];
+    assert.equal(retry?.type === "runtime_model_retry_scheduled" ? retry.retry_attempt : undefined, 1);
+    assert.equal(retry?.type === "runtime_model_retry_scheduled" ? retry.status : undefined, 503);
+    assert.deepEqual(audits.map((event) => event.type), ["model_retry"]);
+    assert.equal(audits[0]?.type === "model_retry" ? audits[0].operation : undefined, "sampling");
   });
 
 });

@@ -10,6 +10,7 @@ export type HarnessEvent =
   | { type: "complete_summary_available"; node_id: string; attempt: number; activation?: number; document: string }
   | { type: "model_thinking_delta"; node_id: string; attempt: number; activation?: number; text: string }
   | { type: "model_stream_delta"; node_id: string; attempt: number; activation?: number; text: string }
+  | { type: "model_retry_scheduled"; node_id: string; attempt: number; activation?: number; operation: "sampling" | "compaction"; phase: "request" | "stream"; retry_attempt: number; max_retries: number; retry_in_ms: number; retry_at: string; error_kind: string; status?: number; error: string; detail?: string; discarded_content_chars: number; discarded_thinking_chars: number }
   | { type: "model_response_recorded"; node_id: string; attempt: number; activation?: number; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "model_usage_recorded"; node_id: string; attempt: number; activation?: number; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "node_context_updated"; node_id: string; attempt: number; activation?: number; model?: string; compaction_hash?: string; context_window?: number; context_tokens: number; context_limit?: number; prefix_input_tokens?: number; window_number?: number; current_window_id?: string; dialogue_message_count: number; dialogue_cursor?: number }

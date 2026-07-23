@@ -7,6 +7,8 @@ import type { PromptInjectionRecord } from "../runtime/types.js";
 import { readJsonWithBackup, updateJsonAtomic } from "./atomicJson.js";
 import { acquireFileLease } from "./fileLease.js";
 import { projectDirectory, projectPath, ProjectStorageContext, sessionDirectory } from "./projectStorage.js";
+import { AuditStore } from "../audit/auditStore.js";
+import type { AuditEvent } from "../audit/auditEvent.js";
 
 export type TranscriptPhase = "plan" | "workflow";
 
@@ -67,6 +69,11 @@ export class SessionStore {
       phase: "plan",
       ...(runId ? { runId } : {})
     } satisfies TranscriptEntry]);
+    await this.touch(sessionId);
+  }
+
+  async appendAudit(sessionId: string, event: AuditEvent): Promise<void> {
+    await new AuditStore(this.sessionDir(sessionId)).append({ ...event, session_id: event.session_id ?? sessionId });
     await this.touch(sessionId);
   }
 

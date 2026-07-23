@@ -57,6 +57,7 @@ export type RuntimeEvent =
   | { type: "runtime_turn_started"; session_id: string; run_id?: string }
   | { type: "runtime_prompt_injection"; session_id: string; run_id?: string; record: PromptInjectionRecord }
   | { type: "runtime_assistant_message"; session_id: string; run_id?: string; content: string }
+  | { type: "runtime_model_retry_scheduled"; session_id: string; run_id?: string; operation: "sampling" | "compaction"; phase: "request" | "stream"; retry_attempt: number; max_retries: number; retry_in_ms: number; retry_at: string; error_kind: string; status?: number; error: string; detail?: string; discarded_content_chars: number; discarded_thinking_chars: number }
   | { type: "runtime_model_response"; session_id: string; run_id?: string; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "runtime_model_usage"; session_id: string; run_id?: string; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "runtime_user_input_requested"; session_id: string; run_id?: string; tool_call_id: string; questions: unknown[] }

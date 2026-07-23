@@ -16,6 +16,7 @@ export type AuditEvent = {
   | { type: "file_write"; tool: "Write" | "Edit" | "MultiEdit"; path: string }
   | { type: "artifact_read"; artifact_id: string; offset: number; bytes_read: number; total_bytes: number; truncated: boolean; source: "handoff" | "tool" }
   | { type: "skill_activated"; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }
+  | { type: "model_retry"; operation: "sampling" | "compaction"; phase: "request" | "stream"; retry_attempt: number; max_retries: number; retry_in_ms: number; retry_at: string; error_kind: string; status?: number; error: string; discarded_content_chars: number; discarded_thinking_chars: number }
   | { type: "plan_mode"; action: "entered" | "draft_updated" | "approval_requested" | "approval_resolved"; plan_file_path?: string; decision?: "continue" | "stay" }
 );
 

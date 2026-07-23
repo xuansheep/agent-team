@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { consumeSseBlocks } from "../../src/providers/http.js";
+import { consumeSseBlocks, providerStreamApiError } from "../../src/providers/http.js";
 
 describe("consumeSseBlocks", () => {
   it("dispatches CRLF-delimited events independently across chunk boundaries", async () => {
@@ -33,6 +33,30 @@ describe("consumeSseBlocks", () => {
 
     assert.equal(stopped, false);
     assert.deepEqual(data, ["first\nsecond", "third", "fourth", "tail"]);
+  });
+});
+
+describe("providerStreamApiError", () => {
+  it("does not retry stream authentication, permission, invalid-request, or context-limit errors", () => {
+    const cases = [
+      providerStreamApiError("auth", { status: 401, detail: "unauthorized" }),
+      providerStreamApiError("permission", { marker: "permission_error", detail: "forbidden" }),
+      providerStreamApiError("invalid", { marker: "invalid_request_error", detail: "bad request" }),
+      providerStreamApiError("context", { marker: "request_too_large", detail: "input is too long" })
+    ];
+
+    assert.deepEqual(cases.map((error) => error.errorKind), ["auth", "permission", "invalid_request", "context_limit"]);
+    assert.equal(cases.every((error) => error.retryable === false), true);
+  });
+
+  it("retries rate limits and service failures reported inside a stream", () => {
+    const rateLimit = providerStreamApiError("limited", { status: 429, detail: "rate limited" });
+    const overloaded = providerStreamApiError("overloaded", { marker: "overloaded_error", detail: "try again" });
+
+    assert.equal(rateLimit.errorKind, "rate_limit");
+    assert.equal(rateLimit.retryable, true);
+    assert.equal(overloaded.errorKind, "server");
+    assert.equal(overloaded.retryable, true);
   });
 });
 

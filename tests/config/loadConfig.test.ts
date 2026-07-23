@@ -70,6 +70,10 @@ workflows:
 
     assert.equal(config.providers.default.type, "openai-compatible");
     assert.equal(config.providers.default.api_key_mode, "bearer");
+    assert.equal(config.providers.default.request_max_retries, 10);
+    assert.equal(config.providers.default.stream_max_retries, 10);
+    assert.equal(config.providers.default.request_timeout_ms, 600_000);
+    assert.equal(config.providers.default.stream_idle_timeout_ms, 90_000);
     assert.equal(config.workflows.delivery.nodes[0].id, "product");
     assert.equal(config.workflows.delivery.nodes[0].mode, "task");
     assert.deepEqual(config.roles.product.requires, { tool_calling: true, vision: true });

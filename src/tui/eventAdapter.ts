@@ -3,7 +3,7 @@ import { visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { StoredEvent } from "../harness/events.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { TuiLogMessage, TuiToolLogMessage } from "./logTypes.js";
-import { TuiConversationItem, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
+import { TuiConversationItem, TuiModelRetryState, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
 import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue } from "./toolDisplay.js";
 export function initialTuiState(input: { cwd: string; inputPermissionMode?: PermissionMode }): TuiState {
   return {
@@ -59,7 +59,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
   const next: TuiState = { ...state, timeline: [...state.timeline, event.type] };
   switch (event.type) {
     case "model_response_recorded": {
-      const withModel = updateNodeDetails(next, event.node_id, event.attempt, event.activation, { model: event.model });
+      const withModel = updateNodeDetails(clearTuiModelRetry(next), event.node_id, event.attempt, event.activation, { model: event.model });
       return {
         ...withModel,
         sessionUsage: addModelUsage(withModel.sessionUsage, event.usage),
@@ -141,6 +141,25 @@ reason：${event.reason}`
     case "model_stream_delta": {
       const activation = event.activation ?? findActivation(next, event.node_id);
       return appendAssistantStreamLog(appendModelStream(next, event.node_id, event.attempt, activation, event.text), event.node_id, event.attempt, activation, event);
+    }
+    case "model_retry_scheduled": {
+      const activation = event.activation ?? findActivation(next, event.node_id);
+      const rolledBack = rollbackRetryStream(next, event.node_id, event.attempt, activation, event.discarded_content_chars, event.discarded_thinking_chars);
+      return applyTuiModelRetry(rolledBack, {
+        nodeId: event.node_id,
+        attempt: event.attempt,
+        activation,
+        operation: event.operation,
+        phase: event.phase,
+        retryAttempt: event.retry_attempt,
+        maxRetries: event.max_retries,
+        retryInMs: event.retry_in_ms,
+        retryAt: event.retry_at,
+        errorKind: event.error_kind,
+        status: event.status,
+        error: event.error,
+        detail: event.detail
+      });
     }
     case "node_completed": {
       const attempt = event.attempt ?? findAttempt(next, event.node_id);
@@ -226,20 +245,115 @@ reason：${event.reason}`
         detailText: `节点：${event.node_id}\n第 ${event.attempt} 次尝试`
       }, event);
     case "run_interrupted":
-      return appendConversation({ ...next, mode: "interrupted" }, { kind: "status", text: "运行已中断", detailText: "原因：用户中断" }, event);
+      return appendConversation({ ...clearTuiModelRetry(next), mode: "interrupted" }, { kind: "status", text: "运行已中断", detailText: "原因：用户中断" }, event);
     case "run_failed":
       return appendConversation(
-        { ...next, mode: "failed", error: event.error },
+        { ...clearTuiModelRetry(next), mode: "failed", error: event.error },
         { kind: "status", text: `运行失败：${event.error}`, detailText: event.detail ? `错误：${event.error}\n${event.detail}` : `错误：${event.error}` },
         event
       );
     case "run_completed":
-      return appendConversation({ ...next, mode: "completed" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) }, event);
+      return appendConversation({ ...clearTuiModelRetry(next), mode: "completed" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) }, event);
     case "run_cancelled":
-      return appendConversation({ ...next, mode: "interrupted" }, { kind: "status", text: "运行已取消", detailText: event.reason }, event);
+      return appendConversation({ ...clearTuiModelRetry(next), mode: "interrupted" }, { kind: "status", text: "运行已取消", detailText: event.reason }, event);
     default:
       return next;
   }
+}
+
+export function applyTuiModelRetry(state: TuiState, retry: TuiModelRetryState): TuiState {
+  const seconds = Math.max(0, Math.ceil(retry.retryInMs / 1000));
+  const status = retry.status === undefined ? "" : `\nHTTP 状态：${retry.status}`;
+  const detail = retry.detail ? `\n${retry.detail}` : "";
+  const log: TuiLogMessage = {
+    id: `model-retry:${retry.nodeId ?? "runtime"}:${retry.attempt ?? 1}`,
+    kind: "status",
+    source: "model_retry",
+    nodeId: retry.nodeId,
+    attempt: retry.attempt,
+    activation: retry.activation,
+    text: `模型请求将在 ${seconds} 秒后重试（${retry.retryAttempt}/${retry.maxRetries}）`,
+    detailText: `操作：${retry.operation}\n阶段：${retry.phase}\n错误类型：${retry.errorKind}${status}\n错误：${retry.error}${detail}`
+  };
+  return {
+    ...state,
+    activeModelRetry: retry,
+    logMessages: [...state.logMessages.filter((item) => !(item.kind === "status" && item.source === "model_retry")), log]
+  };
+}
+
+export function clearTuiModelRetry(state: TuiState): TuiState {
+  if (!state.activeModelRetry && !state.logMessages.some((item) => item.kind === "status" && item.source === "model_retry")) return state;
+  return {
+    ...state,
+    activeModelRetry: undefined,
+    logMessages: state.logMessages.filter((item) => !(item.kind === "status" && item.source === "model_retry"))
+  };
+}
+
+function rollbackRetryStream(
+  state: TuiState,
+  nodeId: string,
+  attempt: number,
+  activation: number,
+  discardedContentChars: number,
+  discardedThinkingChars: number
+): TuiState {
+  let next = state;
+  if (discardedContentChars > 0) {
+    const index = next.modelStreams.findIndex((stream) => stream.nodeId === nodeId && stream.attempt === attempt && (stream.activation ?? 1) === activation);
+    if (index !== -1) {
+      const stream = next.modelStreams[index]!;
+      const text = stream.text.slice(0, Math.max(0, stream.text.length - discardedContentChars));
+      const modelStreams = [...next.modelStreams];
+      if (text) modelStreams[index] = { ...stream, text };
+      else modelStreams.splice(index, 1);
+      const visibleLength = visibleAssistantStreamText(text).length;
+      next = {
+        ...next,
+        modelStreams,
+        conversation: trimAssistantConversation(next.conversation, nodeId, attempt, activation, visibleLength),
+        logMessages: trimAssistantLogs(next.logMessages, nodeId, attempt, activation, visibleLength)
+      };
+    }
+  }
+  if (discardedThinkingChars > 0) next = rollbackThinkingLog(next, nodeId, attempt, activation, discardedThinkingChars);
+  return next;
+}
+
+function trimAssistantLogs(items: TuiLogMessage[], nodeId: string, attempt: number, activation: number, visibleLength: number): TuiLogMessage[] {
+  return items.flatMap((item) => {
+    if (item.kind !== "assistant" || item.source !== "model_stream" || item.nodeId !== nodeId || item.attempt !== attempt || item.activation !== activation) return [item];
+    const end = item.streamEnd ?? 0;
+    const start = Math.max(0, end - item.text.length);
+    if (start >= visibleLength) return [];
+    if (end <= visibleLength) return [item];
+    return [{ ...item, text: item.text.slice(0, visibleLength - start), streamEnd: visibleLength }];
+  });
+}
+
+function trimAssistantConversation(items: TuiConversationItem[], nodeId: string, attempt: number, activation: number, visibleLength: number): TuiConversationItem[] {
+  return items.flatMap((item) => {
+    if (item.kind !== "assistant" || item.source !== "model_stream" || item.nodeId !== nodeId || item.attempt !== attempt || item.activation !== activation) return [item];
+    const end = item.streamEnd ?? 0;
+    const start = Math.max(0, end - item.text.length);
+    if (start >= visibleLength) return [];
+    if (end <= visibleLength) return [item];
+    return [{ ...item, text: item.text.slice(0, visibleLength - start), streamEnd: visibleLength }];
+  });
+}
+
+function rollbackThinkingLog(state: TuiState, nodeId: string, attempt: number, activation: number, discardedChars: number): TuiState {
+  for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
+    const item = state.logMessages[index];
+    if (item.kind !== "status" || item.text !== "Reasoning" || item.nodeId !== nodeId || item.attempt !== attempt || item.activation !== activation) continue;
+    const detailText = (item.detailText ?? "").slice(0, Math.max(0, (item.detailText ?? "").length - discardedChars));
+    const logMessages = [...state.logMessages];
+    if (detailText) logMessages[index] = { ...item, detailText };
+    else logMessages.splice(index, 1);
+    return { ...state, logMessages };
+  }
+  return state;
 }
 function upsertNode(state: TuiState, nodeId: string, attempt: number, activation: number, status: TuiNodeState["status"]): TuiState {
   const existing = state.nodes.findIndex((node) => node.nodeId === nodeId && node.attempt === attempt);
@@ -334,18 +448,17 @@ function appendConversation(state: TuiState, item: TuiConversationItem, event?: 
   return { ...state, conversation, logMessages: [...state.logMessages, conversationToLogMessage(item, event)] };
 }
 function conversationToLogMessage(item: TuiConversationItem, event: StoredEvent): TuiLogMessage {
-  return {
+  const base = {
     id: logId(event),
-    kind: item.kind,
     text: item.text,
     detailText: item.detailText,
     detailVisible: item.detailVisible,
     nodeId: item.nodeId,
     attempt: item.attempt,
-    activation: item.activation,
-    source: item.source,
-    streamEnd: item.streamEnd
+    activation: item.activation
   };
+  if (item.kind === "assistant") return { ...base, kind: "assistant", source: item.source, streamEnd: item.streamEnd };
+  return { ...base, kind: item.kind };
 }
 function findToolParentAssistantLog(state: TuiState, nodeId: string, attempt: number, activation: number): string | undefined {
   for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {

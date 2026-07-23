@@ -6,6 +6,7 @@ import { OpenAiCompatibleProvider, toOpenAiMessages } from "../../src/providers/
 import type { Tool } from "../../src/tools/types.js";
 
 const servers: Array<{ close: () => Promise<void> }> = [];
+const fastRetry = { calculateDelay: () => 0 };
 const responseSchema = { type: "object", properties: { status: { type: "string" } }, required: ["status"], additionalProperties: false };
 const promptedTool: Tool = {
   name: "PromptedTool",
@@ -158,7 +159,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
 
   it("retries transient network failures for non-streaming requests", async () => {
     const server = await startFlakyJsonServer({ choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] });
-    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", retry: { ...fastRetry, requestMaxRetries: 1 } });
 
     const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
@@ -168,13 +169,13 @@ describe("OpenAiCompatibleProvider structured output", () => {
 
   it("reports endpoint, attempts, and cause details after network retries are exhausted", async () => {
     const server = await startNetworkFailureServer();
-    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", retry: { ...fastRetry, requestMaxRetries: 4 } });
 
     await assert.rejects(
       () => provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] }),
       (error) => {
         assert.equal(error instanceof Error, true);
-        assert.match((error as Error).message, /Provider network request failed after 5 attempts/);
+        assert.match((error as Error).message, /Provider request failed after 5 attempts/);
         const detail = (error as { detail?: string }).detail ?? "";
         assert.match(detail, /endpoint: .*\/chat\/completions/);
         assert.match(detail, /attempts: 5/);
@@ -197,7 +198,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
       },
       { status: 200, body: { choices: [{ message: { content: "{\"direction\":\"forward\"}" } }] } }
     ]);
-    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", retry: { ...fastRetry, requestMaxRetries: 2 } });
 
     const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
@@ -207,7 +208,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
 
   it("does not retry unrelated 424 responses", async () => {
     const server = await startStatusServer(424, JSON.stringify({ error: { code: "upstream_contract_error" } }));
-    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", retry: { ...fastRetry, requestMaxRetries: 2 } });
 
     await assert.rejects(
       () => provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] }),
@@ -240,7 +241,7 @@ describe("OpenAiCompatibleProvider structured output", () => {
   it("limits dependency-unavailable 424 retries and classifies exhaustion as server failure", async () => {
     const body = JSON.stringify({ error: { type: "service_dependency_unavailable", code: "service_dependency_unavailable" } });
     const server = await startStatusServer(424, body);
-    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", retry: { ...fastRetry, requestMaxRetries: 2 } });
 
     await assert.rejects(
       () => provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] }),
@@ -338,7 +339,7 @@ describe("OpenAiCompatibleProvider streaming", () => {
       { choices: [{ delta: { content: "{\"direction\":\"forward\"}" } }] },
       "[DONE]"
     ]);
-    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true });
+    const provider = new OpenAiCompatibleProvider({ baseUrl: server.baseUrl, apiKey: "test-key", streaming: true, retry: { ...fastRetry, requestMaxRetries: 1 } });
     const deltas: string[] = [];
 
     const result = await provider.stream?.(
@@ -350,6 +351,64 @@ describe("OpenAiCompatibleProvider streaming", () => {
 
     assert.deepEqual(deltas, ["{\"direction\":\"forward\"}"]);
     assert.equal(result?.content, "{\"direction\":\"forward\"}");
+    assert.equal(server.attempts, 2);
+  });
+
+  it("retries a disconnected stream and reports the partial output to roll back", async () => {
+    const server = await startRecoveringStreamServer("disconnect");
+    const provider = new OpenAiCompatibleProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      streaming: true,
+      retry: { ...fastRetry, streamMaxRetries: 1, streamIdleTimeoutMs: 1_000 }
+    });
+    const deltas: string[] = [];
+    const retries: Array<{ phase: string; discardedContentChars: number }> = [];
+
+    const result = await provider.stream?.(
+      {
+        model: "gpt-test",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        onRetry(event) {
+          retries.push({ phase: event.phase, discardedContentChars: event.discardedContentChars });
+        }
+      },
+      (event) => {
+        if (event.type === "content_delta") deltas.push(event.text);
+      }
+    );
+
+    assert.deepEqual(deltas, ["partial", "complete"]);
+    assert.deepEqual(retries, [{ phase: "stream", discardedContentChars: 7 }]);
+    assert.equal(result?.content, "complete");
+    assert.equal(server.attempts, 2);
+  });
+
+  it("retries when a stream is idle past the configured timeout", async () => {
+    const server = await startRecoveringStreamServer("idle");
+    const provider = new OpenAiCompatibleProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      streaming: true,
+      retry: { ...fastRetry, streamMaxRetries: 1, requestTimeoutMs: 1_000, streamIdleTimeoutMs: 20 }
+    });
+    const retries: string[] = [];
+
+    const result = await provider.stream?.(
+      {
+        model: "gpt-test",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        onRetry(event) {
+          retries.push(event.errorKind);
+        }
+      },
+      () => undefined
+    );
+
+    assert.deepEqual(retries, ["timeout"]);
+    assert.equal(result?.content, "complete");
     assert.equal(server.attempts, 2);
   });
 });
@@ -446,6 +505,33 @@ async function startFlakySseServer(events: Array<unknown | "[DONE]">): Promise<{
   const address = server.address() as AddressInfo;
   const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   const handle = { baseUrl: `http://127.0.0.1:${address.port}/v1`, get requestBody() { return requestBody; }, get attempts() { return attempts; }, close };
+  servers.push(handle);
+  return handle;
+}
+
+async function startRecoveringStreamServer(firstFailure: "disconnect" | "idle"): Promise<{ baseUrl: string; attempts: number; close: () => Promise<void> }> {
+  let attempts = 0;
+  const server = createServer(async (request, response) => {
+    attempts += 1;
+    await readJsonBody(request);
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    if (attempts === 1) {
+      if (firstFailure === "disconnect") {
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "partial" } }] })}\n\n`, () => {
+          setTimeout(() => response.destroy(new Error("simulated stream disconnect")), 5);
+        });
+      }
+      return;
+    }
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "complete" }, finish_reason: "stop" }] })}\n\n`);
+    response.write("data: [DONE]\n\n");
+    response.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  const handle = { baseUrl: `http://127.0.0.1:${address.port}/v1`, get attempts() { return attempts; }, close };
   servers.push(handle);
   return handle;
 }

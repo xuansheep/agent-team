@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
-import { ModelMessage, ModelProvider, ModelResponse, ModelToolCall } from "../providers/types.js";
+import { ModelMessage, ModelProvider, ModelResponse, ModelRetryEvent, ModelToolCall } from "../providers/types.js";
 import { getModelContextLimits, type ModelRegistry } from "../model/modelRegistry.js";
 import {
   buildCompactedDialogue,
@@ -277,6 +277,9 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
                 threadId: `${options.runId}:${options.node.id}`,
                 turnId: `${options.runId}:${options.node.id}:${attempt}:compact:${phase}:${retry + 1}`,
                 promptCacheKey: promptCacheKey(options.runId, options.node.id)
+              },
+              onRetry: async (retry) => {
+                await appendRuntimeEvent(options, modelRetryHarnessEvent(options, attempt, "compaction", retry));
               }
             }
           }));
@@ -442,6 +445,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         failed_servers: discovery.failedServers.map((server) => server.name)
       });
     }
+    const streamBatcher = new RuntimeStreamBatcher(options, attempt);
     const request = {
       model: options.model,
       effort: options.effort,
@@ -459,9 +463,12 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         threadId: `${options.runId}:${options.node.id}`,
         turnId: `${options.runId}:${options.node.id}:${attempt}`,
         promptCacheKey: promptCacheKey(options.runId, options.node.id)
+      },
+      onRetry: async (retry: ModelRetryEvent) => {
+        await streamBatcher.drain();
+        await appendRuntimeEvent(options, modelRetryHarnessEvent(options, attempt, "sampling", retry));
       }
     };
-    const streamBatcher = new RuntimeStreamBatcher(options, attempt);
     let streamed: boolean;
     let response: ModelResponse;
     try {
@@ -866,6 +873,31 @@ function isAbortLikeError(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+function modelRetryHarnessEvent(
+  options: NodeRuntimeOptions,
+  attempt: number,
+  operation: "sampling" | "compaction",
+  retry: ModelRetryEvent
+): HarnessEvent {
+  return {
+    type: "model_retry_scheduled",
+    node_id: options.node.id,
+    attempt,
+    activation: options.activation,
+    operation,
+    phase: retry.phase,
+    retry_attempt: retry.retryAttempt,
+    max_retries: retry.maxRetries,
+    retry_in_ms: retry.retryInMs,
+    retry_at: retry.retryAt,
+    error_kind: retry.errorKind,
+    status: retry.status,
+    error: retry.message,
+    detail: retry.detail,
+    discarded_content_chars: retry.discardedContentChars,
+    discarded_thinking_chars: retry.discardedThinkingChars
+  };
 }
 function promptCacheKey(runId: string, nodeId: string): string {
   return createHash("sha256").update(`${runId}:${nodeId}`).digest("hex");

@@ -1,5 +1,5 @@
-import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, ApiKeyMode } from "./http.js";
-import { ModelContentPart, ModelMessage, ModelProvider, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
+import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, providerStreamApiError, providerStreamError, withProviderRetry, ApiKeyMode, ProviderRetryConfig } from "./http.js";
+import { ModelContentPart, ModelMessage, ModelProvider, ModelProviderError, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
 import type { ModelUsage } from "../model/usage.js";
 
 export type ResponsesApiOptions = {
@@ -15,6 +15,7 @@ export type ResponsesApiOptions = {
     effort?: "minimal" | "low" | "medium" | "high";
     summary?: string;
   };
+  retry?: ProviderRetryConfig;
 };
 
 type ResponsesOutputItem = {
@@ -40,6 +41,7 @@ type ResponsesStreamChunk = {
   delta?: string;
   item?: ResponsesOutputItem;
   response?: ResponsesBody;
+  error?: { message?: string; type?: string; code?: string; status?: number };
 };
 
 export class ResponsesApiProvider implements ModelProvider {
@@ -51,74 +53,88 @@ export class ResponsesApiProvider implements ModelProvider {
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    const response = await fetchProvider(endpoint, {
-      method: "POST",
-      headers: this.headers(request),
-      signal: request.signal,
-      body: JSON.stringify(toResponsesRequestBody(request, this.options))
+    return withProviderRetry({
+      request,
+      endpoint,
+      streaming: false,
+      retry: this.options.retry,
+      operation: async (attempt) => {
+        const response = await fetchProvider(endpoint, {
+          method: "POST",
+          headers: this.headers(request),
+          signal: attempt.signal,
+          body: JSON.stringify(toResponsesRequestBody(request, this.options))
+        });
+        if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        return fromResponsesBody(await response.json() as ResponsesBody);
+      }
     });
-
-    if (!response.ok) {
-      throw providerHttpError(response.status, await response.text());
-    }
-
-    return fromResponsesBody(await response.json() as ResponsesBody);
   }
 
   private async streamImpl(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse> {
     const endpoint = this.endpoint();
-    const response = await fetchProvider(endpoint, {
-      method: "POST",
-      headers: this.headers(request, { accept: "text/event-stream" }),
-      signal: request.signal,
-      body: JSON.stringify({ ...toResponsesRequestBody(request, this.options), stream: true })
+    return withProviderRetry({
+      request,
+      endpoint,
+      streaming: true,
+      retry: this.options.retry,
+      onStreamEvent: onEvent,
+      operation: async (attempt) => {
+        const response = await fetchProvider(endpoint, {
+          method: "POST",
+          headers: this.headers(request, { accept: "text/event-stream" }),
+          signal: attempt.signal,
+          body: JSON.stringify({ ...toResponsesRequestBody(request, this.options), stream: true })
+        });
+        if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        if (!response.body) throw new ModelProviderError("Provider stream response had no body", { errorKind: "server", phase: "request", retryable: true });
+        attempt.markStreamStarted();
+
+        const content: string[] = [];
+        const thinking: string[] = [];
+        const toolCalls: ModelToolCall[] = [];
+        let completedBody: ResponsesBody | undefined;
+        let completed = false;
+
+        const stopped = await consumeSseBlocks(response.body, (data) => {
+          const chunk = JSON.parse(data) as ResponsesStreamChunk;
+          if (chunk.error || chunk.type === "error" || chunk.type === "response.failed") {
+            throw responsesStreamError(chunk);
+          }
+          if (chunk.type === "response.output_text.delta" && chunk.delta) {
+            content.push(chunk.delta);
+            attempt.emit({ type: "content_delta", text: chunk.delta });
+          }
+          if (chunk.type?.includes("reasoning") && chunk.type.includes("delta") && chunk.delta) {
+            thinking.push(chunk.delta);
+            attempt.emit({ type: "thinking_delta", text: chunk.delta });
+          }
+          if (chunk.type === "response.output_item.done" && chunk.item?.type === "function_call") toolCalls.push(toModelToolCall(chunk.item));
+          if (chunk.type === "response.output_item.done" && chunk.item?.type === "message" && content.length === 0) {
+            const text = textFromOutputItem(chunk.item);
+            if (text) {
+              content.push(text);
+              attempt.emit({ type: "content_delta", text });
+            }
+          }
+          if ((chunk.type === "response.completed" || chunk.type === "response.incomplete") && chunk.response) {
+            completed = true;
+            completedBody = chunk.response;
+          }
+          return false;
+        }, { signal: attempt.signal, idleTimeoutMs: attempt.streamIdleTimeoutMs });
+        if (!stopped && !completed) throw providerStreamError("Provider stream ended before a completion marker");
+        const completedResponse = completedBody ? fromResponsesBody(completedBody) : undefined;
+        const mergedToolCalls = mergeToolCalls(toolCalls, completedResponse?.tool_calls);
+        return {
+          content: content.length ? content.join("") : completedResponse?.content,
+          thinking: thinking.length ? thinking.join("") : completedResponse?.thinking,
+          tool_calls: mergedToolCalls.length ? mergedToolCalls : undefined,
+          usage: completedResponse?.usage,
+          stopReason: completedResponse?.stopReason
+        };
+      }
     });
-
-    if (!response.ok) {
-      throw providerHttpError(response.status, await response.text());
-    }
-    if (!response.body) throw new Error("Provider stream response had no body");
-
-    const content: string[] = [];
-    const thinking: string[] = [];
-    const toolCalls: ModelToolCall[] = [];
-    let completedBody: ResponsesBody | undefined;
-
-    await consumeSseBlocks(response.body, (data) => {
-      const chunk = JSON.parse(data) as ResponsesStreamChunk;
-      if (chunk.type === "response.output_text.delta" && chunk.delta) {
-        content.push(chunk.delta);
-        onEvent({ type: "content_delta", text: chunk.delta });
-      }
-      if (chunk.type?.includes("reasoning") && chunk.type.includes("delta") && chunk.delta) {
-        thinking.push(chunk.delta);
-        onEvent({ type: "thinking_delta", text: chunk.delta });
-      }
-      if (chunk.type === "response.output_item.done" && chunk.item?.type === "function_call") {
-        toolCalls.push(toModelToolCall(chunk.item));
-      }
-      if (chunk.type === "response.output_item.done" && chunk.item?.type === "message" && content.length === 0) {
-        const text = textFromOutputItem(chunk.item);
-        if (text) {
-          content.push(text);
-          onEvent({ type: "content_delta", text });
-        }
-      }
-      if ((chunk.type === "response.completed" || chunk.type === "response.incomplete") && chunk.response) {
-        completedBody = chunk.response;
-      }
-      return false;
-    });
-    const completed = completedBody ? fromResponsesBody(completedBody) : undefined;
-    const mergedToolCalls = mergeToolCalls(toolCalls, completed?.tool_calls);
-
-    return {
-      content: content.length ? content.join("") : completed?.content,
-      thinking: thinking.length ? thinking.join("") : completed?.thinking,
-      tool_calls: mergedToolCalls.length ? mergedToolCalls : undefined,
-      usage: completed?.usage,
-      stopReason: completed?.stopReason
-    };
   }
 
   private endpoint(): string {
@@ -138,6 +154,16 @@ export class ResponsesApiProvider implements ModelProvider {
       "user-agent": this.options.userAgent ?? defaultProviderUserAgent
     };
   }
+}
+
+function responsesStreamError(chunk: ResponsesStreamChunk): ModelProviderError {
+  const error = chunk.error;
+  const detail = JSON.stringify(chunk);
+  return providerStreamApiError(error?.message ?? `Provider returned ${chunk.type ?? "a stream error"}`, {
+    status: error?.status,
+    marker: `${error?.type ?? ""} ${error?.code ?? ""}`,
+    detail
+  });
 }
 
 function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOptions): Record<string, unknown> {

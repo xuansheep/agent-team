@@ -56,11 +56,29 @@ export type ModelRequest = {
   response_schema?: unknown;
   context?: ModelRequestContext;
   signal?: AbortSignal;
+  onRetry?: (event: ModelRetryEvent) => void | Promise<void>;
 };
 
 export type ModelStopReason = "stop" | "tool_call" | "length" | "content_filter" | "error" | "unknown";
 
-export type ModelErrorKind = "network" | "rate_limit" | "auth" | "permission" | "server" | "invalid_request" | "context_limit" | "unknown";
+export type ModelErrorKind = "network" | "timeout" | "rate_limit" | "auth" | "permission" | "server" | "invalid_request" | "context_limit" | "unknown";
+
+export type ModelRetryPhase = "request" | "stream";
+
+export type ModelRetryEvent = {
+  phase: ModelRetryPhase;
+  retryAttempt: number;
+  maxRetries: number;
+  retryInMs: number;
+  scheduledAt: string;
+  retryAt: string;
+  errorKind: ModelErrorKind;
+  status?: number;
+  message: string;
+  detail?: string;
+  discardedContentChars: number;
+  discardedThinkingChars: number;
+};
 
 export type ModelResponse = {
   content?: string;
@@ -74,13 +92,27 @@ export type ModelResponse = {
 export class ModelProviderError extends Error {
   readonly errorKind: ModelErrorKind;
   readonly status?: number;
+  readonly phase: ModelRetryPhase;
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number;
   detail?: string;
 
-  constructor(message: string, input: { errorKind: ModelErrorKind; status?: number; detail?: string; cause?: unknown }) {
+  constructor(message: string, input: {
+    errorKind: ModelErrorKind;
+    status?: number;
+    phase?: ModelRetryPhase;
+    retryable?: boolean;
+    retryAfterMs?: number;
+    detail?: string;
+    cause?: unknown;
+  }) {
     super(message, { cause: input.cause });
     this.name = "ModelProviderError";
     this.errorKind = input.errorKind;
     this.status = input.status;
+    this.phase = input.phase ?? "request";
+    this.retryable = input.retryable ?? false;
+    this.retryAfterMs = input.retryAfterMs;
     this.detail = input.detail;
   }
 }
