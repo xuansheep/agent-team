@@ -40,15 +40,18 @@ describe("local tools", () => {
   it("imports attached images as immutable indexed artifacts", async () => {
     const cwd = await workspace();
     const runDir = join(cwd, ".session", "run-1");
-    await writeFile(join(cwd, "diagram.png"), "image-bytes", "utf8");
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff]);
+    await writeFile(join(cwd, "diagram.png"), imageBytes);
     const tools = createLocalToolRegistry();
 
     const result = await tools.get("AttachImage").execute({ path: "diagram.png" }, { cwd, runDir, nodeId: "ui", attempt: 1, activation: 2 });
 
     assert.equal(result.artifact_id, "ui/diagram.png@r1");
-    assert.equal(await readFile(String(result.path), "utf8"), "image-bytes");
-    const index = await readFile(join(runDir, "artifacts", "index.json"), "utf8");
-    assert.match(index, /"activation": 2/);
+    assert.deepEqual(await readFile(String(result.path)), imageBytes);
+    const index = JSON.parse(await readFile(join(runDir, "artifacts", "index.json"), "utf8")) as { artifacts: Array<{ activation: number; kind?: string; media_type?: string }> };
+    assert.equal(index.artifacts[0]?.activation, 2);
+    assert.equal(index.artifacts[0]?.kind, "image");
+    assert.equal(index.artifacts[0]?.media_type, "image/png");
   });
 
   it("rejects artifact names with path traversal", async () => {

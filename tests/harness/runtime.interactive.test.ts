@@ -284,6 +284,132 @@ describe("runNode interactive permissions", () => {
     assert.match(eventsText, /permission_resolved/);
     assert.match(eventsText, /tool_completed/);
   });
+
+  it("keeps built-in safety denials fatal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-built-in-deny-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let executions = 0;
+    tools.add({
+      name: "ExitPlanMode",
+      description: "fake exit plan mode",
+      input_schema: {},
+      async execute() {
+        executions += 1;
+        return { output: "exited" };
+      }
+    });
+    const provider: ModelProvider = {
+      async generate() {
+        return { content: "exit", tool_calls: [{ id: "exit-denied", name: "ExitPlanMode", input: {} }] };
+      }
+    };
+
+    await assert.rejects(() => runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["ExitPlanMode"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    }), /Permission denied for ExitPlanMode: You are not in plan mode/);
+
+    assert.equal(executions, 0);
+    const events = await store.loadEvents(run.runId);
+    assert.equal(events.some((event) => event.type === "tool_failed" && event.tool_call_id === "exit-denied"), true);
+    assert.equal(events.some((event) => event.type === "tool_invoked" && event.tool_call_id === "exit-denied"), false);
+  });
+
+  it("records configured shell denials and safely continues the node", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-deny-continue-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let shellExecutions = 0;
+    let writeExecutions = 0;
+    let readExecutions = 0;
+    tools.add({
+      name: "Bash",
+      description: "fake bash",
+      input_schema: {},
+      isReadOnly: () => false,
+      async execute() {
+        shellExecutions += 1;
+        return { output: "removed" };
+      }
+    });
+    tools.add({
+      name: "WriteProbe",
+      description: "fake write",
+      input_schema: {},
+      isReadOnly: () => false,
+      async execute() {
+        writeExecutions += 1;
+        return { output: "written" };
+      }
+    });
+    tools.add({
+      name: "ReadProbe",
+      description: "fake read",
+      input_schema: {},
+      isReadOnly: () => true,
+      async execute() {
+        readExecutions += 1;
+        return { output: "read" };
+      }
+    });
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "I will clean up and inspect.",
+            tool_calls: [
+              { id: "shell-denied", name: "Bash", input: { command: "rm -rf dist" } },
+              { id: "write-cancelled", name: "WriteProbe", input: {} },
+              { id: "read-allowed", name: "ReadProbe", input: {} }
+            ]
+          };
+        }
+        const denial = request.messages.find((message) => message.role === "tool" && message.tool_call_id === "shell-denied");
+        assert.match(String(denial?.content), /Permission denied for Bash: Bash\(rm \*\)/);
+        return { content: JSON.stringify({ direction: "forward", summary: "replanned", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "fullAccess" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["Bash", "WriteProbe", "ReadProbe"], ask: [], deny: ["Bash(rm *)"] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1
+    });
+
+    assert.equal(result.direction, "forward");
+    assert.equal(calls, 2);
+    assert.equal(shellExecutions, 0);
+    assert.equal(writeExecutions, 0);
+    assert.equal(readExecutions, 1);
+    const events = await store.loadEvents(run.runId);
+    assert.equal(events.some((event) => event.type === "tool_failed" && event.tool_call_id === "shell-denied"), true);
+    assert.equal(events.some((event) => event.type === "tool_invoked" && event.tool_call_id === "shell-denied"), false);
+    assert.equal(events.some((event) => event.type === "tool_failed" && event.tool_call_id === "write-cancelled" && event.failure_category === "tool.cancelled_after_shell_failure"), true);
+    assert.equal(events.some((event) => event.type === "tool_completed" && event.tool_call_id === "read-allowed"), true);
+  });
+
   it("emits artifact events and returns deliverables for artifact tool output", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-artifact-"));
     const store = new RunStore(root);

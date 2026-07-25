@@ -54,6 +54,7 @@ export type NodeRuntimeOptions = {
   dialogueCursor?: number;
   modelRegistry?: ModelRegistry;
   maxOutputTokens?: number;
+  supportsVision?: boolean;
   onDialogueMessage?: (message: ModelMessage) => Promise<number | void> | number | void;
   onDialogueMessages?: (messages: ModelMessage[]) => Promise<void> | void;
   onDialogueCompacted?: (messages: ModelMessage[], cursor: number) => Promise<void> | void;
@@ -73,6 +74,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     permissionMode: runtimePermissions.mode,
     navigation: options.navigation,
     runDir: options.store.runDir(options.runId),
+    supportsVision: options.supportsVision,
     onArtifactRead: async (chunk) => { await appendRuntimeEvent(options, {
       type: "artifact_read",
       node_id: options.node.id,
@@ -571,8 +573,20 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         const permission = await checkToolPermission(tool, call.input, { ...runtimePermissions, cwd: options.cwd });
         if (permission.decision === "deny") {
           const error = `Permission denied for ${call.name}: ${permission.reason ?? permission.rule ?? "no rule"}`;
-          await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, error });
-          throw new Error(error);
+          if (!permission.rule) {
+            await appendRuntimeEvent(options, { type: "tool_failed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: call.name, error });
+            throw new Error(error);
+          }
+          const failure: ToolResult = {
+            is_error: true,
+            error,
+            data: { permission_denied: true, rule: permission.rule }
+          };
+          await recordToolFailure(call, failure, false);
+          if (isShellToolName(call.name)) {
+            shellFailureInResponse = { tool: call.name, toolCallId: call.id, error };
+          }
+          continue;
         }
         if (permission.decision === "ask") {
           if (!options.interaction?.requestPermission) {

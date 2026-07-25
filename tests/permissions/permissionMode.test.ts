@@ -172,6 +172,32 @@ describe("checkToolPermission", () => {
     assert.equal((await checkToolPermission(localBashTool, { command: "git reset --hard" }, context)).decision, "deny");
     assert.equal((await checkToolPermission(localBashTool, { command: "git reset --hard" }, context)).reason, "Plan Mode blocks shell execution");
   });
+  it("denies a compound rm command in fullAccess before node or transient allows", async () => {
+    const cwd = await workspace();
+    const command = "cd /d/work/code-ai/random && (pkill -f \"http.server 8137\" 2>/dev/null; pkill -f \"8137\" 2>/dev/null); rm -f weather-desktop.png; rm -rf .playwright-mcp; ls -la";
+    const decision = await checkToolPermission(bashTool, { command }, {
+      mode: "fullAccess",
+      allow: ["Bash", "Bash(rm *)"],
+      transientAllow: ["Bash(*)"],
+      ask: [],
+      deny: ["Bash(rm *)"],
+      cwd
+    });
+
+    assert.deepEqual(decision, { decision: "deny", rule: "Bash(rm *)" });
+  });
+
+  it("does not deny quoted rm text in fullAccess", async () => {
+    const cwd = await workspace();
+    assert.equal((await checkToolPermission(bashTool, { command: "echo \"rm -rf dist\"" }, {
+      mode: "fullAccess",
+      allow: [],
+      ask: [],
+      deny: ["Bash(rm *)"],
+      cwd
+    })).decision, "allow");
+  });
+
 });
 
 const readTool: Tool = {

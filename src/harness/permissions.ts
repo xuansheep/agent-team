@@ -1,4 +1,5 @@
 import { PermissionSet } from "../config/schema.js";
+import { splitShellCommandSegments } from "../security/shellSafety.js";
 
 export type PermissionDecision = {
   decision: "allow" | "ask" | "deny";
@@ -12,19 +13,22 @@ type ParsedRule = {
 
 export function decidePermission(tool: string, specifier: string, permissions: PermissionSet): PermissionDecision {
   for (const rule of permissions.deny) {
-    if (matchesRule(rule, tool, specifier)) return { decision: "deny", rule };
+    if (matchesRule(rule, tool, specifier, "deny")) return { decision: "deny", rule };
   }
   for (const rule of permissions.ask) {
-    if (matchesRule(rule, tool, specifier)) return { decision: "ask", rule };
+    if (matchesRule(rule, tool, specifier, "ask")) return { decision: "ask", rule };
   }
   for (const rule of permissions.allow) {
-    if (matchesRule(rule, tool, specifier)) return { decision: "allow", rule };
+    if (matchesRule(rule, tool, specifier, "allow")) return { decision: "allow", rule };
   }
   return { decision: "ask" };
 }
 
 export function isToolExplicitlyDenied(tool: string, permissions: Pick<PermissionSet, "deny">): boolean {
-  return permissions.deny.some((rule) => matchesRule(rule, tool, ""));
+  return permissions.deny.some((rule) => {
+    const parsed = parseRule(rule);
+    return !parsed.specifier && matchesToolName(parsed.tool, tool);
+  });
 }
 
 export function mergePermissions(base: PermissionSet, node: PermissionSet): PermissionSet {
@@ -35,14 +39,36 @@ export function mergePermissions(base: PermissionSet, node: PermissionSet): Perm
   };
 }
 
-function matchesRule(rule: string, tool: string, specifier: string): boolean {
+function matchesRule(rule: string, tool: string, specifier: string, decision: PermissionDecision["decision"]): boolean {
   const parsed = parseRule(rule);
   if (!matchesToolName(parsed.tool, tool)) return false;
   if (!parsed.specifier) return true;
-  if (parsed.specifier.toLowerCase().startsWith("prompt:")) {
-    return matchesPromptRule(tool, parsed.specifier.slice("prompt:".length), specifier);
+
+  const wholeCommandMatches = matchesSpecifier(parsed.specifier, tool, specifier);
+  if (decision === "allow") {
+    if (!wholeCommandMatches || !isShellTool(tool) || parsed.specifier === "*") return wholeCommandMatches;
+    const commandSegments = splitShellCommandSegments(specifier);
+    if (!commandSegments || commandSegments.length < 2) return Boolean(commandSegments);
+    const ruleSegments = splitShellCommandSegments(parsed.specifier);
+    return Boolean(ruleSegments && ruleSegments.length === commandSegments.length);
   }
-  return wildcardMatch(parsed.specifier, specifier);
+  if (wholeCommandMatches) return true;
+  if (!isShellTool(tool)) return false;
+
+  const segments = splitShellCommandSegments(specifier);
+  if (!segments) return decision === "deny";
+  return segments.some((segment) => matchesSpecifier(parsed.specifier!, tool, segment));
+}
+
+function matchesSpecifier(pattern: string, tool: string, specifier: string): boolean {
+  if (pattern.toLowerCase().startsWith("prompt:")) {
+    return matchesPromptRule(tool, pattern.slice("prompt:".length), specifier);
+  }
+  return wildcardMatch(pattern, specifier);
+}
+
+function isShellTool(tool: string): boolean {
+  return tool === "Bash" || tool === "PowerShell";
 }
 
 function matchesToolName(ruleTool: string, actualTool: string): boolean {

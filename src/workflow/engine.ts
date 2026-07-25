@@ -814,6 +814,7 @@ export class WorkflowEngine {
                     effort: resolveEffortForWorkflowNode({ node, provider: providerConfig }),
                     modelRegistry: modelRegistryFromProviderConfig(providerConfig),
                     maxOutputTokens: getProviderMaxOutputTokens(providerConfig),
+                    supportsVision: providerConfig.capabilities.vision,
                     provider: this.options.providerFactory(node.provider),
                     tools,
                     permissions: workflowToolPermissions(effectivePermissionMode, basePermissions, node.permissions ?? permissionSetSchema.parse(undefined), planRequestedPermissionRules),

@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { z } from "zod";
-import { ArtifactStore } from "../../storage/artifacts.js";
+import { ArtifactStore, inferImageMediaType } from "../../storage/artifacts.js";
 import { Tool } from "../types.js";
 import { resolveWorkspacePath } from "./path.js";
 
@@ -17,7 +17,9 @@ export const attachImageTool: Tool = {
     const ref = await new ArtifactStore(context.runDir).importFile(context.nodeId, path, basename(path), {
       description: "节点附加图片",
       attempt: context.attempt,
-      activation: context.activation
+      activation: context.activation,
+      kind: "image",
+      mediaType: inferImageMediaType(path)
     });
     return { output: `Attached image ${parsed.path}`, artifact_id: ref.artifactId, path: ref.path, description: "节点附加图片" };
   }

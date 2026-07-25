@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
@@ -995,6 +995,118 @@ describe("WorkflowEngine", () => {
     assert.ok(transcriptErrorIndex >= 0);
     assert.ok(transcriptQuestionIndex > transcriptErrorIndex);
     assert.equal(transcriptAfterResume.filter((entry) => entry.message.role === "assistant" && entry.message.is_error).length, 1);
+  });
+
+  it("lets a non-vision tester start after developer AttachImage", async () => {
+    const imagePath = join(process.cwd(), ".tmp", "engine-artifact-" + Date.now().toString() + ".png");
+    await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff]));
+    const requests: ModelRequest[] = [];
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        calls += 1;
+        if (calls === 1) {
+          return { content: "attach screenshot", tool_calls: [{ id: "attach-1", name: "AttachImage", input: { path: imagePath } }] };
+        }
+        if (calls === 2) return { content: JSON.stringify({ direction: "forward", summary: "developer done", handoff: { instruction: "verify" } }) };
+        return { content: JSON.stringify({ direction: "forward", summary: "verified", document: "# Verified", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = join(process.cwd(), ".tmp", "artifact-handoff-runs-" + Date.now().toString());
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const state = await engine.run({
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: {
+        developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } },
+        tester: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: { flow: {
+        nodes: [
+          { id: "developer", role: "developer", provider: "default", permission_mode: "fullAccess" as const },
+          { id: "tester", role: "tester", provider: "default", permission_mode: "fullAccess" as const, mode: "complete" as const }
+        ],
+        edges: []
+      } }
+    }, "flow", { request: "build" });
+
+    assert.equal(state.status, "completed");
+    assert.equal(calls, 3);
+    const testerContext = requests[2]?.messages.find((message) => message.role === "user" && !message.metadata?.runtimeAttachment);
+    assert.equal(typeof testerContext?.content, "string");
+    assert.match(String(testerContext?.content), /"kind": "image"/);
+    assert.match(String(testerContext?.content), /provider does not support vision/);
+  });
+
+  it("records workflow Bash deny rules for compound commands and continues execution", async () => {
+    const command = "cd /d/work/code-ai/random && (pkill -f \"http.server 8137\" 2>/dev/null; pkill -f \"8137\" 2>/dev/null); rm -f weather-desktop.png; rm -rf .playwright-mcp; ls -la";
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return { content: "cleanup", tool_calls: [{ id: "bash-denied", name: "Bash", input: { command } }] };
+        }
+        const denial = request.messages.find((message) => message.role === "tool" && message.tool_call_id === "bash-denied");
+        assert.match(String(denial?.content), /Permission denied for Bash: Bash\(rm \*\)/);
+        return { content: JSON.stringify({ direction: "forward", summary: "continued after denial", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = join(process.cwd(), ".tmp", "compound-deny-runs-" + Date.now().toString());
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const state = await engine.run({
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: {
+        workflow_permissions: { allow: [], ask: [], deny: ["Bash(rm *)"] },
+        nodes: [{ id: "developer", role: "developer", provider: "default", permission_mode: "fullAccess" as const, permissions: { allow: ["Bash"], ask: [], deny: [] } }],
+        edges: []
+      } }
+    }, "flow", { request: "build" });
+
+    assert.equal(state.status, "completed");
+    assert.equal(calls, 2);
+    const runId = await latestRunId(runRoot);
+    const events = await new RunStore(runRoot).loadEvents(runId);
+    const failure = events.find((event) => event.type === "tool_failed" && event.tool === "Bash");
+    assert.match(failure && failure.type === "tool_failed" ? failure.error : "", /Bash\(rm \*\)/);
+    assert.equal(events.some((event) => event.type === "tool_invoked" && event.tool === "Bash"), false);
+    assert.equal(events.some((event) => event.type === "node_waiting_user"), false);
+  });
+
+
+  it("records node Bash deny rules and continues execution", async () => {
+    const command = "rm -rf dist";
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return { content: "cleanup", tool_calls: [{ id: "node-bash-denied", name: "Bash", input: { command } }] };
+        }
+        const denial = request.messages.find((message) => message.role === "tool" && message.tool_call_id === "node-bash-denied");
+        assert.match(String(denial?.content), /Permission denied for Bash: Bash\(rm \*\)/);
+        return { content: JSON.stringify({ direction: "forward", summary: "continued after node denial", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = join(process.cwd(), ".tmp", "node-deny-runs-" + Date.now().toString());
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const state = await engine.run({
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: {
+        nodes: [{ id: "developer", role: "developer", provider: "default", permission_mode: "fullAccess" as const, permissions: { allow: ["Bash"], ask: [], deny: ["Bash(rm *)"] } }],
+        edges: []
+      } }
+    }, "flow", { request: "build" });
+
+    assert.equal(state.status, "completed");
+    assert.equal(calls, 2);
+    const runId = await latestRunId(runRoot);
+    const events = await new RunStore(runRoot).loadEvents(runId);
+    assert.equal(events.some((event) => event.type === "tool_failed" && event.tool_call_id === "node-bash-denied"), true);
+    assert.equal(events.some((event) => event.type === "tool_invoked" && event.tool_call_id === "node-bash-denied"), false);
+    assert.equal(events.some((event) => event.type === "node_waiting_user"), false);
   });
 
 });

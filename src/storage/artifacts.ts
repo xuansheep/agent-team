@@ -5,6 +5,7 @@ import { TextDecoder } from "node:util";
 import { acquireFileLease } from "./fileLease.js";
 
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/webp";
+export type ArtifactKind = "text" | "image" | "binary";
 
 export type ArtifactRef = {
   artifactId: string;
@@ -28,6 +29,15 @@ export type ArtifactRecord = {
   attempt: number;
   activation: number;
   created_at: string;
+  kind?: ArtifactKind;
+  media_type?: ImageMediaType;
+};
+
+export type ArtifactContent = {
+  record: ArtifactRecord;
+  kind: ArtifactKind;
+  mediaType?: ImageMediaType;
+  bytes: Buffer;
 };
 
 export type ArtifactTextChunk = {
@@ -43,22 +53,37 @@ export type ArtifactTextChunk = {
 };
 
 type ArtifactIndex = { version: 1; artifacts: ArtifactRecord[] };
+type ArtifactMetadata = {
+  description?: string;
+  attempt?: number;
+  activation?: number;
+  kind?: ArtifactKind;
+  mediaType?: ImageMediaType;
+};
 
 export class ArtifactStore {
   constructor(private readonly runDir: string) {}
 
-  async writeText(nodeId: string, name: string, text: string, metadata: { description?: string; attempt?: number; activation?: number } = {}): Promise<ArtifactRef> {
-    return this.writeRevision(nodeId, name, Buffer.from(text, "utf8"), metadata);
+  async writeText(nodeId: string, name: string, text: string, metadata: Omit<ArtifactMetadata, "kind" | "mediaType"> = {}): Promise<ArtifactRef> {
+    return this.writeRevision(nodeId, name, Buffer.from(text, "utf8"), { ...metadata, kind: "text" });
   }
 
-  async importFile(nodeId: string, sourcePath: string, logicalName = basename(sourcePath), metadata: { description?: string; attempt?: number; activation?: number } = {}): Promise<ArtifactRef> {
+  async importFile(nodeId: string, sourcePath: string, logicalName = basename(sourcePath), metadata: ArtifactMetadata = {}): Promise<ArtifactRef> {
     const bytes = await readFile(sourcePath);
-    return this.writeRevision(nodeId, logicalName, bytes, metadata);
+    const safeName = basename(logicalName);
+    const mediaType = metadata.mediaType ?? imageMediaTypeFromPath(safeName);
+    const kind = metadata.kind ?? (mediaType ? "image" : isValidUtf8(bytes) ? "text" : "binary");
+    return this.writeRevision(nodeId, safeName, bytes, {
+      ...metadata,
+      kind: kind === "image" && !mediaType ? "binary" : kind,
+      ...(mediaType ? { mediaType } : {})
+    });
   }
 
   async copyInputImage(path: string): Promise<ImageArtifactRef> {
-    const ref = await this.importFile("input", path);
-    return { ...ref, mediaType: inferImageMediaType(path) };
+    const mediaType = inferImageMediaType(path);
+    const ref = await this.importFile("input", path, basename(path), { kind: "image", mediaType });
+    return { ...ref, mediaType };
   }
 
   async has(artifactId: string): Promise<boolean> {
@@ -76,17 +101,23 @@ export class ArtifactStore {
     return (await this.readIndex()).artifacts.find((item) => item.artifact_id === artifactId);
   }
 
-  async readText(artifactId: string, options: { offset?: number; maxBytes?: number } = {}): Promise<ArtifactTextChunk> {
+  async read(artifactId: string): Promise<ArtifactContent> {
     const record = await this.record(artifactId);
     if (!record) throw new Error(`Unknown artifact ${artifactId}`);
-    const path = this.safeRecordPath(record);
-    const bytes = await readFile(path);
-    const actualHash = sha256(bytes);
-    if (actualHash !== record.sha256) throw new Error(`Artifact integrity check failed for ${artifactId}`);
+    const bytes = await readFile(this.safeRecordPath(record));
+    if (sha256(bytes) !== record.sha256) throw new Error(`Artifact integrity check failed for ${artifactId}`);
 
-    try {
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
+    const inferredMediaType = record.media_type ?? imageMediaTypeFromPath(record.logical_name);
+    const declaredKind = record.kind ?? (inferredMediaType ? "image" : isValidUtf8(bytes) ? "text" : "binary");
+    const kind = declaredKind === "text" && !isValidUtf8(bytes) ? "binary" : declaredKind;
+    if (kind === "image" && !inferredMediaType) return { record, kind: "binary", bytes };
+    return { record, kind, ...(kind === "image" ? { mediaType: inferredMediaType } : {}), bytes };
+  }
+
+  async readText(artifactId: string, options: { offset?: number; maxBytes?: number } = {}): Promise<ArtifactTextChunk> {
+    const artifact = await this.read(artifactId);
+    const { record, bytes } = artifact;
+    if (artifact.kind !== "text" || !isValidUtf8(bytes)) {
       throw new Error(`Artifact ${artifactId} is not valid UTF-8 text`);
     }
 
@@ -116,7 +147,7 @@ export class ArtifactStore {
     };
   }
 
-  private async writeRevision(nodeId: string, logicalName: string, bytes: Buffer, metadata: { description?: string; attempt?: number; activation?: number }): Promise<ArtifactRef> {
+  private async writeRevision(nodeId: string, logicalName: string, bytes: Buffer, metadata: ArtifactMetadata): Promise<ArtifactRef> {
     assertArtifactSegment(nodeId, "node id");
     const safeName = basename(logicalName);
     assertArtifactSegment(safeName, "logical name");
@@ -134,7 +165,7 @@ export class ArtifactStore {
     }
   }
 
-  private allocateRevision(index: ArtifactIndex, nodeId: string, logicalName: string, bytes: Buffer, metadata: { description?: string; attempt?: number; activation?: number }) {
+  private allocateRevision(index: ArtifactIndex, nodeId: string, logicalName: string, bytes: Buffer, metadata: ArtifactMetadata) {
     const revision = Math.max(0, ...index.artifacts.filter((item) => item.node_id === nodeId && item.logical_name === logicalName).map((item) => item.revision)) + 1;
     const record: ArtifactRecord = {
       artifact_id: `${nodeId}/${logicalName}@r${revision}`,
@@ -146,7 +177,9 @@ export class ArtifactStore {
       description: metadata.description ?? "",
       attempt: metadata.attempt ?? 1,
       activation: metadata.activation ?? 1,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      kind: metadata.kind ?? "binary",
+      ...(metadata.mediaType ? { media_type: metadata.mediaType } : {})
     };
     return { path: record.path, record };
   }
@@ -217,9 +250,23 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-export function inferImageMediaType(path: string): ImageMediaType {
+function isValidUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function imageMediaTypeFromPath(path: string): ImageMediaType | undefined {
   const ext = extname(path).toLowerCase();
+  if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   if (ext === ".webp") return "image/webp";
-  return "image/png";
+  return undefined;
+}
+
+export function inferImageMediaType(path: string): ImageMediaType {
+  return imageMediaTypeFromPath(path) ?? "image/png";
 }

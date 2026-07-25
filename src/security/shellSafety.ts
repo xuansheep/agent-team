@@ -24,7 +24,7 @@ export function isDestructiveShellCommand(input: unknown): boolean {
 export function isReadOnlyShellCommand(input: unknown): boolean {
   const command = shellCommandText(input).trim();
   if (!command || isDestructiveShellCommand(input)) return false;
-  const segments = splitTopLevelShellCommands(command);
+  const segments = splitShellCommandSegments(command);
   if (!segments?.length) return false;
   return segments.every((segment) => isReadOnlySimpleShellCommand(segment));
 }
@@ -60,11 +60,19 @@ export function shellCommandText(input: unknown): string {
 function hasShellRedirection(command: string): boolean {
   let singleQuoted = false;
   let doubleQuoted = false;
+  let escaped = false;
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
-    const previous = command[index - 1];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && !singleQuoted) {
+      escaped = true;
+      continue;
+    }
     if (char === "'" && !doubleQuoted) singleQuoted = !singleQuoted;
-    if (char === '"' && !singleQuoted && previous !== "\\") doubleQuoted = !doubleQuoted;
+    if (char === '"' && !singleQuoted) doubleQuoted = !doubleQuoted;
     if (char === ">" && !singleQuoted && !doubleQuoted) return true;
   }
   return false;
@@ -73,63 +81,95 @@ function hasShellRedirection(command: string): boolean {
 function hasShellMetacharacter(command: string): boolean {
   let singleQuoted = false;
   let doubleQuoted = false;
+  let escaped = false;
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
-    const previous = command[index - 1];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && !singleQuoted) {
+      escaped = true;
+      continue;
+    }
     if (char === "'" && !doubleQuoted) singleQuoted = !singleQuoted;
-    if (char === "\"" && !singleQuoted && previous !== "\\") doubleQuoted = !doubleQuoted;
+    if (char === '"' && !singleQuoted) doubleQuoted = !doubleQuoted;
     if (singleQuoted || doubleQuoted) continue;
     if (char === "`" || char === "\n" || char === "\r") return true;
     if (char === "$" && command[index + 1] === "(") return true;
     if (";&|<>".includes(char)) return true;
   }
-  return singleQuoted || doubleQuoted;
+  return singleQuoted || doubleQuoted || escaped;
 }
 
-function splitTopLevelShellCommands(command: string): string[] | undefined {
+export function splitShellCommandSegments(command: string): string[] | undefined {
   const segments: string[] = [];
   let current = "";
   let singleQuoted = false;
   let doubleQuoted = false;
+  let escaped = false;
+  let parentheses = 0;
+
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
-    const previous = command[index - 1];
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && !singleQuoted) {
+      current += char;
+      escaped = true;
+      continue;
+    }
     if (char === "'" && !doubleQuoted) {
       singleQuoted = !singleQuoted;
       current += char;
       continue;
     }
-    if (char === "\"" && !singleQuoted && previous !== "\\") {
+    if (char === '"' && !singleQuoted) {
       doubleQuoted = !doubleQuoted;
       current += char;
       continue;
     }
-    if (!singleQuoted && !doubleQuoted) {
-      if (char === "`" || char === "\n" || char === "\r") return undefined;
-      if (char === "$" && command[index + 1] === "(") return undefined;
-      if (char === "<" || char === ">") return undefined;
-      if (char === ";") {
-        if (!pushShellSegment(segments, current)) return undefined;
-        current = "";
-        continue;
-      }
-      if (char === "&") {
-        if (command[index + 1] !== "&") return undefined;
-        if (!pushShellSegment(segments, current)) return undefined;
-        current = "";
-        index += 1;
-        continue;
-      }
-      if (char === "|") {
-        if (!pushShellSegment(segments, current)) return undefined;
-        current = "";
-        if (command[index + 1] === "|") index += 1;
-        continue;
-      }
+    if (singleQuoted || doubleQuoted) {
+      current += char;
+      continue;
+    }
+    if (char === "`" || char === "\n" || char === "\r") return undefined;
+    if (char === "$" && command[index + 1] === "(") return undefined;
+    if (char === "(") {
+      parentheses += 1;
+      if (current.trim()) return undefined;
+      continue;
+    }
+    if (char === ")") {
+      if (parentheses < 1 || !current.trim()) return undefined;
+      parentheses -= 1;
+      continue;
+    }
+    if (char === ";") {
+      if (!pushShellSegment(segments, current)) return undefined;
+      current = "";
+      continue;
+    }
+    if (char === "&") {
+      if (command[index + 1] !== "&") return undefined;
+      if (!pushShellSegment(segments, current)) return undefined;
+      current = "";
+      index += 1;
+      continue;
+    }
+    if (char === "|") {
+      if (!pushShellSegment(segments, current)) return undefined;
+      current = "";
+      if (command[index + 1] === "|") index += 1;
+      continue;
     }
     current += char;
   }
-  if (singleQuoted || doubleQuoted) return undefined;
+
+  if (singleQuoted || doubleQuoted || escaped || parentheses !== 0) return undefined;
   if (!pushShellSegment(segments, current)) return undefined;
   return segments;
 }
@@ -152,7 +192,7 @@ function splitShellWords(command: string): string[] {
       singleQuoted = !singleQuoted;
       continue;
     }
-    if (char === "\"" && !singleQuoted) {
+    if (char === '"' && !singleQuoted) {
       doubleQuoted = !doubleQuoted;
       continue;
     }
@@ -189,52 +229,17 @@ function isReadOnlySedCommand(args: string[]): boolean {
 }
 
 const readOnlyCommands = new Set([
-  "basename",
-  "cat",
-  "date",
-  "dirname",
-  "du",
-  "egrep",
-  "fgrep",
-  "file",
-  "grep",
-  "head",
-  "ls",
-  "pwd",
-  "rg",
-  "stat",
-  "tail",
-  "tree",
-  "uname",
-  "wc",
-  "which",
-  "whoami"
+  "basename", "cat", "date", "dirname", "du", "egrep", "fgrep", "file", "grep", "head",
+  "ls", "pwd", "rg", "stat", "tail", "tree", "uname", "wc", "which", "whoami"
 ]);
 
 const readOnlyPowerShellCommands = new Set([
-  "get-childitem",
-  "gci",
-  "dir",
-  "ls",
-  "get-content",
-  "gc",
-  "cat",
-  "get-location",
-  "pwd",
-  "resolve-path",
-  "select-string"
+  "get-childitem", "gci", "dir", "ls", "get-content", "gc", "cat", "get-location", "pwd",
+  "resolve-path", "select-string"
 ]);
 
 const readOnlyGitSubcommands = new Set([
-  "branch",
-  "describe",
-  "diff",
-  "grep",
-  "log",
-  "ls-files",
-  "rev-parse",
-  "show",
-  "status"
+  "branch", "describe", "diff", "grep", "log", "ls-files", "rev-parse", "show", "status"
 ]);
 
 const destructiveFindArgs = new Set(["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls", "-fprint", "-fprint0", "-fprintf"]);
