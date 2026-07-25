@@ -4,7 +4,8 @@ This project aligns selected `tui-code` architecture concepts without copying ev
 
 Required modules and concepts in scope:
 
-- QueryEngine
+- ExecutionCoordinator
+- TurnEngine
 - Tool
 - PermissionMode
 - Plan Mode

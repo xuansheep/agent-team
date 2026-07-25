@@ -15,6 +15,7 @@ export type PlanApprovalRequest = {
   planFilePath: string;
   empty?: boolean;
   requestedPermissions?: PlanRequestedPermission[];
+  toolCallId?: string;
 };
 
 export type RuntimeUserInputRequest = {
@@ -27,6 +28,7 @@ export type RuntimeUserInputRequest = {
 export type RuntimePermissionRequest = {
   sessionId: string;
   runId?: string;
+  toolCallId: string;
   tool: string;
   input: unknown;
   reason?: string;
@@ -61,8 +63,8 @@ export type RuntimeEvent =
   | { type: "runtime_model_response"; session_id: string; run_id?: string; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "runtime_model_usage"; session_id: string; run_id?: string; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "runtime_user_input_requested"; session_id: string; run_id?: string; tool_call_id: string; questions: unknown[] }
-  | { type: "runtime_permission_requested"; session_id: string; run_id?: string; tool: string; input: unknown; reason?: string; rule?: string }
-  | { type: "runtime_permission_resolved"; session_id: string; run_id?: string; tool: string; decision: RuntimePermissionDecision }
+  | { type: "runtime_permission_requested"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown; reason?: string; rule?: string }
+  | { type: "runtime_permission_resolved"; session_id: string; run_id?: string; tool_call_id: string; tool: string; decision: RuntimePermissionDecision }
   | { type: "runtime_tool_invoked"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown }
   | { type: "runtime_tool_completed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; result: unknown }
   | { type: "runtime_tool_failed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; error: string }
@@ -89,9 +91,9 @@ export type RuntimeTurnInput = {
 };
 
 export type RuntimeTurnResult =
-  | { status: "completed"; messages: ModelMessage[]; result?: unknown }
-  | { status: "waiting_permission"; messages: ModelMessage[]; request?: RuntimePermissionRequest }
-  | { status: "waiting_user_input"; messages: ModelMessage[]; request: RuntimeUserInputRequest }
+  | { status: "completed"; messages: ModelMessage[]; result?: unknown; planState?: PlanSessionState }
+  | { status: "waiting_permission"; messages: ModelMessage[]; request: RuntimePermissionRequest; planState?: PlanSessionState }
+  | { status: "waiting_user_input"; messages: ModelMessage[]; request: RuntimeUserInputRequest; planState?: PlanSessionState }
   | { status: "waiting_plan_approval"; messages: ModelMessage[]; plan: PlanApprovalRequest; planState: PlanSessionState; usage?: ModelUsage }
-  | { status: "aborted"; messages: ModelMessage[] }
-  | { status: "failed"; error: string; messages: ModelMessage[] };
+  | { status: "aborted"; messages: ModelMessage[]; planState?: PlanSessionState }
+  | { status: "failed"; error: string; messages: ModelMessage[]; planState?: PlanSessionState };

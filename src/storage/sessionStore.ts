@@ -9,6 +9,7 @@ import { acquireFileLease } from "./fileLease.js";
 import { projectDirectory, projectPath, ProjectStorageContext, sessionDirectory } from "./projectStorage.js";
 import { AuditStore } from "../audit/auditStore.js";
 import type { AuditEvent } from "../audit/auditEvent.js";
+import { kernelSessionCheckpoint, restoreKernelSession as restoreKernelSessionFromCheckpoint, type KernelSession, type KernelSessionCheckpoint } from "../kernel/session.js";
 
 export type TranscriptPhase = "plan" | "workflow";
 
@@ -38,6 +39,7 @@ export type SessionMetadata = {
   runIds: string[];
   inputPreview?: string;
   plan?: PlanSessionState;
+  execution?: KernelSessionCheckpoint;
   usage?: ModelUsageTotals;
   modelRequestCount?: number;
   promptInjection?: {
@@ -142,6 +144,19 @@ export class SessionStore {
 
   async loadPlanState(sessionId: string): Promise<PlanSessionState | undefined> {
     return (await this.loadMetadata(sessionId))?.plan;
+  }
+
+  async saveKernelCheckpoint(session: KernelSession): Promise<SessionMetadata> {
+    return this.saveMetadata(session.id, {
+      ...(session.planState ? { plan: session.planState } : {}),
+      execution: kernelSessionCheckpoint(session)
+    });
+  }
+
+  async restoreKernelSession(sessionId: string, cwd: string): Promise<KernelSession | undefined> {
+    const metadata = await this.loadMetadata(sessionId);
+    if (!metadata?.execution) return undefined;
+    return restoreKernelSessionFromCheckpoint({ id: sessionId, cwd, checkpoint: metadata.execution });
   }
 
   async recordUsage(sessionId: string, usage: ModelUsage): Promise<SessionMetadata> {

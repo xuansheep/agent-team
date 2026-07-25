@@ -2,8 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
+import { dirname, join } from "node:path";
+import { TurnEngine } from "../../src/runtime/turnEngine.js";
 import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { settingsSchema } from "../../src/settings/types.js";
@@ -20,7 +20,20 @@ import { writeTool as localWriteTool } from "../../src/tools/local/write.js";
 import { Tool } from "../../src/tools/types.js";
 import { writeProjectConfig } from "../helpers/projectConfig.js";
 
-describe("RuntimeTurnExecutor", () => {
+describe("TurnEngine", () => {
+  it("does not impose the query turn limit on shared loop drivers", async () => {
+    let iterations = 0;
+
+    const result = await new TurnEngine().runLoop({
+      async runIteration() {
+        iterations += 1;
+        return iterations === 25 ? "done" : undefined;
+      }
+    });
+
+    assert.equal(result, "done");
+    assert.equal(iterations, 25);
+  });
   it("returns completed for a provider response without tools and preserves the assistant message", async () => {
     const provider: ModelProvider = {
       async generate() {
@@ -28,7 +41,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     };
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "hello" }],
       model: "test-model",
       provider,
@@ -56,7 +69,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     };
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "hello" }],
       model: "test-model",
       provider,
@@ -96,7 +109,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(echoTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "use a tool" }],
       model: "test-model",
       provider,
@@ -147,7 +160,7 @@ describe("RuntimeTurnExecutor", () => {
       metadata: {}
     }]);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "use the planner skill" }],
       model: "test-model",
       provider,
@@ -183,7 +196,7 @@ describe("RuntimeTurnExecutor", () => {
       metadata: {}
     }]);
 
-    await new RuntimeTurnExecutor().execute({
+    await new TurnEngine().execute({
       messages: [{ role: "user", content: "implement carefully" }],
       model: "test-model",
       provider,
@@ -220,7 +233,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     });
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "hello" }],
       model: "test-model",
       provider,
@@ -249,7 +262,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     };
     const events: RuntimeEvent[] = [];
-    const executor = new RuntimeTurnExecutor();
+    const executor = new TurnEngine();
     const common = {
       model: "test-model",
       provider,
@@ -317,7 +330,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     };
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan this" }],
       model: "test-model",
       provider,
@@ -342,7 +355,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     };
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before execution" }],
       model: "test-model",
       provider,
@@ -373,7 +386,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(bashTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "inspect before planning" }],
       model: "test-model",
       provider,
@@ -407,7 +420,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(enterPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before execution" }],
       model: "test-model",
       provider,
@@ -446,7 +459,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(bashTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before running tests" }],
       model: "test-model",
       provider,
@@ -477,7 +490,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(bashTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before changing files" }],
       model: "test-model",
       provider,
@@ -515,7 +528,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(todoWriteTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan with todos" }],
       model: "test-model",
       provider,
@@ -585,7 +598,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(askUserQuestionTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan rollout" }],
       model: "test-model",
       provider,
@@ -656,7 +669,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     });
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan rollout" }],
       model: "test-model",
       provider,
@@ -711,7 +724,7 @@ describe("RuntimeTurnExecutor", () => {
     });
     tools.add(askUserQuestionTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan rollout" }],
       model: "test-model",
       provider,
@@ -741,7 +754,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(exitPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before implementation" }],
       model: "test-model",
       provider,
@@ -787,7 +800,7 @@ describe("RuntimeTurnExecutor", () => {
     tools.add(localWriteTool);
     tools.add(exitPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before implementation" }],
       model: "test-model",
       provider,
@@ -841,7 +854,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     });
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before implementation" }],
       model: "test-model",
       provider,
@@ -876,7 +889,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(exitPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "continue implementation" }],
       model: "test-model",
       provider,
@@ -910,7 +923,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(exitPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before implementation" }],
       model: "test-model",
       provider,
@@ -959,7 +972,7 @@ describe("RuntimeTurnExecutor", () => {
     const tools = new ToolRegistry();
     tools.add(askUserQuestionTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan rollout" }],
       model: "test-model",
       provider,
@@ -1010,7 +1023,7 @@ describe("RuntimeTurnExecutor", () => {
     tools.add(delayedReadTool("ReadThree"));
 
     const startedAt = Date.now();
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "use tools" }],
       model: "test-model",
       provider,
@@ -1041,7 +1054,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     });
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "use a tool" }],
       model: "test-model",
       provider,
@@ -1063,7 +1076,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     };
 
-    await new RuntimeTurnExecutor().execute({
+    await new TurnEngine().execute({
       messages: [{ role: "user", content: "hello" }],
       model: "test-model",
       provider,
@@ -1094,7 +1107,7 @@ describe("RuntimeTurnExecutor", () => {
 
   it("emits one successful response event without usage and none for provider failures", async () => {
     const events: RuntimeEvent[] = [];
-    const successful = await new RuntimeTurnExecutor().execute({
+    const successful = await new TurnEngine().execute({
       messages: [{ role: "user", content: "hello" }],
       model: "test-model",
       provider: { async generate() { return { content: "ready" }; } },
@@ -1110,7 +1123,7 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal(events.some((event) => event.type === "runtime_model_usage"), false);
 
     const failedEvents: RuntimeEvent[] = [];
-    await assert.rejects(() => new RuntimeTurnExecutor().execute({
+    await assert.rejects(() => new TurnEngine().execute({
       messages: [{ role: "user", content: "hello" }],
       model: "test-model",
       provider: { async generate() { throw new Error("provider failed"); } },
@@ -1148,7 +1161,7 @@ describe("RuntimeTurnExecutor", () => {
     tools.add(writeTool(() => { executions += 1; }));
     tools.add(exitPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan only" }],
       model: "test-model",
       provider,
@@ -1196,7 +1209,7 @@ describe("RuntimeTurnExecutor", () => {
     tools.add(localWriteTool);
     tools.add(exitPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "remove edges" }],
       model: "test-model",
       provider,
@@ -1244,7 +1257,7 @@ describe("RuntimeTurnExecutor", () => {
     tools.add(localWriteTool);
     tools.add(exitPlanModeTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "remove edges" }],
       model: "test-model",
       provider,
@@ -1269,6 +1282,147 @@ describe("RuntimeTurnExecutor", () => {
     assert.equal((writeCall?.input as { file_path?: unknown } | undefined)?.file_path, truncatedPlanFilePath);
   });
 
+  it("names the first plan file from assistant text when the draft has no heading", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-turn-engine-plan-name-"));
+    const sessionId = "session-plan-name";
+    const initialPlanFilePath = getPlanFilePath(sessionId, cwd);
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "Plan Dir Create",
+            tool_calls: [{
+              id: "call-write-plan",
+              name: "Write",
+              input: { file_path: initialPlanFilePath, content: "No markdown heading here.\n" }
+            }]
+          };
+        }
+        return { content: "Plan saved." };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.add(localWriteTool);
+
+    const result = await new TurnEngine().execute({
+      messages: [{ role: "user", content: "build" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "plan", prePlanMode: "default", allow: [], ask: [], deny: [], planFilePath: initialPlanFilePath },
+      cwd,
+      sessionId,
+      planState: {
+        mode: "planning",
+        sessionId,
+        planFilePath: initialPlanFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "build" },
+        feedbackMessages: []
+      }
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.match(result.planState?.planFilePath ?? "", /[\\/]plans[\\/]plan-dir-create[.]md$/);
+    assert.equal(await readPlan(result.planState?.planFilePath ?? ""), "No markdown heading here.\n");
+    assert.equal(await readPlan(initialPlanFilePath), undefined);
+  });
+
+  it("adds a numeric suffix when the finalized plan filename already exists", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-turn-engine-plan-suffix-"));
+    const sessionId = "session-plan-suffix";
+    const initialPlanFilePath = getPlanFilePath(sessionId, cwd);
+    await writePlan(join(dirname(initialPlanFilePath), "plan-dir-create.md"), "# Existing\n");
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "Writing the plan.",
+            tool_calls: [{
+              id: "call-write-plan",
+              name: "Write",
+              input: { file_path: initialPlanFilePath, content: "# Plan Dir Create\n\nNew plan.\n" }
+            }]
+          };
+        }
+        return { content: "Plan saved." };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.add(localWriteTool);
+
+    const result = await new TurnEngine().execute({
+      messages: [{ role: "user", content: "build" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "plan", prePlanMode: "default", allow: [], ask: [], deny: [], planFilePath: initialPlanFilePath },
+      cwd,
+      sessionId,
+      planState: {
+        mode: "planning",
+        sessionId,
+        planFilePath: initialPlanFilePath,
+        prePlanMode: "default",
+        originalInput: { request: "build" },
+        feedbackMessages: []
+      }
+    });
+
+    assert.equal(result.status, "completed");
+    assert.match(result.planState?.planFilePath ?? "", /[\\/]plans[\\/]plan-dir-create-2[.]md$/);
+    assert.equal(await readPlan(result.planState?.planFilePath ?? ""), "# Plan Dir Create\n\nNew plan.\n");
+  });
+
+  it("emits and audits model retries before recording the successful response", async () => {
+    const events: RuntimeEvent[] = [];
+    const audits: import("../../src/audit/auditEvent.js").AuditEvent[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        await request.onRetry?.({
+          phase: "request",
+          retryAttempt: 1,
+          maxRetries: 10,
+          retryInMs: 500,
+          scheduledAt: "2026-06-23T00:00:00.000Z",
+          retryAt: "2026-06-23T00:00:00.500Z",
+          errorKind: "server",
+          status: 503,
+          message: "service unavailable",
+          detail: "upstream overloaded",
+          discardedContentChars: 0,
+          discardedThinkingChars: 0
+        });
+        return { content: "planned" };
+      }
+    };
+
+    const result = await new TurnEngine().execute({
+      messages: [{ role: "user", content: "plan this" }],
+      model: "test-model",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { mode: "plan", allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-retry",
+      eventSink: (event) => { events.push(event); },
+      auditSink: (event) => { audits.push(event); }
+    });
+
+    assert.equal(result.status, "completed");
+    const retryIndex = events.findIndex((event) => event.type === "runtime_model_retry_scheduled");
+    const responseIndex = events.findIndex((event) => event.type === "runtime_model_response");
+    assert.ok(retryIndex >= 0 && retryIndex < responseIndex);
+    const retry = events[retryIndex];
+    assert.equal(retry?.type === "runtime_model_retry_scheduled" ? retry.retry_attempt : undefined, 1);
+    assert.equal(retry?.type === "runtime_model_retry_scheduled" ? retry.status : undefined, 503);
+    assert.deepEqual(audits.map((event) => event.type), ["model_retry"]);
+  });
   it("does not run custom Plan Mode plain-text repair loops", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-runtime-plan-no-repair-loop-"));
     const planFilePath = getPlanFilePath("session-plan-no-repair-loop", cwd);
@@ -1280,7 +1434,7 @@ describe("RuntimeTurnExecutor", () => {
       }
     };
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "remove edges" }],
       model: "test-model",
       provider,

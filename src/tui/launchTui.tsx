@@ -16,13 +16,14 @@ import { prepareProjectStorage } from "../storage/projectStorage.js";
 import { SessionStore } from "../storage/sessionStore.js";
 import { loadDisabledSkillNames, type SkillAvailabilityOptions } from "../skills/availability.js";
 import { SkillRuntime } from "../skills/runtime.js";
+import { ExecutionCoordinator } from "../runtime/executionCoordinator.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { TuiApp } from "./TuiApp.js";
 
 export type PreparedTuiRuntime = {
   config: AgentTeamConfig;
   workflows: string[];
-  engine: WorkflowEngine;
+  engine: ExecutionCoordinator;
   settings: ResolvedAgentTeamSettings;
   promptHistoryStore: PromptHistoryStore;
   sessionStore: SessionStore;
@@ -61,7 +62,8 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
     legacyUserSkillRoot: join(options.homeDir ?? homedir(), ".agents", "skills"),
     disabledSkillNames: await loadDisabledSkillNames(skillConfigOptions)
   });
-  const engine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, projectStorage, mcpRuntime, skillRuntime });
+  const workflowEngine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, projectStorage, mcpRuntime, skillRuntime });
+  const engine = new ExecutionCoordinator(workflowEngine, { sessionStore });
   const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
   return { config, workflows, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions, skillConfigOptions };
 }
@@ -70,7 +72,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
   let initialError: string | undefined;
   let config: AgentTeamConfig | undefined;
   let workflows: string[] = [];
-  let engine: WorkflowEngine | undefined;
+  let engine: ExecutionCoordinator | undefined;
   let settings: ResolvedAgentTeamSettings | undefined;
   let promptHistoryStore: PromptHistoryStore | undefined;
   let sessionStore: SessionStore | undefined;

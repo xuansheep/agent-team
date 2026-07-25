@@ -8,6 +8,8 @@ import {
   type PlanSessionState
 } from "../../plans/planSession.js";
 import { readPlan } from "../../plans/planFiles.js";
+import { readRequiredPlan } from "../../plans/planGuards.js";
+import type { PlanApprovalRequest } from "../../runtime/types.js";
 import type { KernelExecutionHandoff, KernelSession, PlanApprovalResolveMetadata } from "../session.js";
 import { reduceKernelSession } from "../session.js";
 import { createPlanApprovalPending } from "../pendingInteraction.js";
@@ -33,12 +35,6 @@ export type PlanApprovalResolutionResult = {
   execution?: KernelExecutionHandoff;
 };
 
-type PlanApprovalMetadata = {
-  approvalId?: string;
-  approvedPlanHash?: string;
-  approvalToolCallId?: string;
-};
-
 export class PlanModeController {
   enterPlanMode(session: KernelSession, originalInput: unknown): KernelSession {
     const entered = enterPlanMode({ sessionId: session.id, cwd: session.cwd, originalInput, permissions: session.toolPermissionContext });
@@ -48,25 +44,53 @@ export class PlanModeController {
   async requestPlanApproval(session: KernelSession, request: ExitPlanModeRequest = {}): Promise<KernelSession> {
     if (!session.planState || session.planState.mode !== "planning") throw new Error("Plan Mode is not active");
     const exited = await exitPlanMode(session.planState, { requestedPermissions: request.requestedPermissions });
-    const document = (await readPlan(exited.plan.planFilePath))?.trim() ?? "";
+    return this.adoptPlanApproval(session, {
+      planState: exited.state,
+      plan: { ...exited.plan, toolCallId: request.toolCallId }
+    });
+  }
+
+  async adoptPlanApproval(session: KernelSession, input: { planState: PlanSessionState; plan: PlanApprovalRequest }): Promise<KernelSession> {
+    if (input.planState.mode !== "waiting_approval") throw new Error("Plan approval state must be waiting_approval");
+    if (input.plan.sessionId !== session.id || input.planState.sessionId !== session.id) {
+      throw new Error(`Plan approval session mismatch for ${session.id}`);
+    }
+    if (input.plan.planFilePath !== input.planState.planFilePath) {
+      throw new Error(`Plan approval file mismatch for ${session.id}`);
+    }
+    const document = await readRequiredPlan(input.plan.planFilePath);
     const planHash = hashText(document);
     const interaction = createPlanApprovalPending({
       sessionId: session.id,
-      planFilePath: exited.plan.planFilePath,
+      planFilePath: input.plan.planFilePath,
       planHash,
-      empty: exited.plan.empty,
-      requestedPermissions: exited.plan.requestedPermissions,
-      toolCallId: request.toolCallId
+      empty: input.plan.empty ?? !document,
+      requestedPermissions: input.plan.requestedPermissions,
+      toolCallId: input.plan.toolCallId
     });
-    const planState = withApprovalMetadata(exited.state, { approvalId: interaction.id, approvedPlanHash: planHash, approvalToolCallId: request.toolCallId });
+    const planState: PlanSessionState = {
+      ...input.planState,
+      requestedPermissions: input.plan.requestedPermissions,
+      approvalId: interaction.id,
+      approvedPlanHash: planHash,
+      approvalToolCallId: input.plan.toolCallId
+    };
     return reduceKernelSession({ ...session, planState }, { type: "pending_interaction_set", interaction });
   }
 
   async resolvePlanApproval(session: KernelSession, input: { decision: "continue" | "stay" } & PlanApprovalResolveMetadata): Promise<PlanApprovalResolutionResult> {
-    if (!session.planState) throw new Error("Plan Mode is not active");
+    if (!session.planState || session.planState.mode !== "waiting_approval") {
+      throw new Error("Plan approval is not pending");
+    }
+    if (session.pendingInteraction?.type !== "plan_approval") {
+      throw new Error("Plan approval interaction is not pending");
+    }
+    if (session.pendingInteraction.sessionId !== session.id || session.pendingInteraction.planFilePath !== session.planState.planFilePath) {
+      throw new Error(`Plan approval interaction mismatch for ${session.id}`);
+    }
     if (input.decision === "continue") {
       const sessionWithToolResult = closePlanApprovalToolCall(session, "continue", input.feedback);
-      const document = (await readPlan(session.planState.planFilePath))?.trim() ?? "";
+      const document = await readRequiredPlan(session.planState.planFilePath);
       const approved = approvePlan(session.planState, document, input.feedback);
       const resolved = resolvePlanApproval(approved, "continue");
       const restoredPermissions = { ...resolved.permissions, mode: restoredExecutionPermissionMode(session, resolved.permissions.mode) };
@@ -101,10 +125,9 @@ export class PlanModeController {
     if (!session.planState) throw new Error("Plan Mode is not active");
     const planText = session.planState.approvedPlan ?? "";
     const planHash = hashText(planText);
-    const metadata = approvalMetadata(session.planState);
     return {
       sessionId: session.id,
-      approvalId: metadata.approvalId ?? (session.pendingInteraction?.type === "plan_approval" ? session.pendingInteraction.id : `${session.id}:approved:${planHash}`),
+      approvalId: session.planState.approvalId ?? (session.pendingInteraction?.type === "plan_approval" ? session.pendingInteraction.id : `${session.id}:approved:${planHash}`),
       planFilePath: session.planState.planFilePath,
       planText,
       planHash,
@@ -117,14 +140,6 @@ export class PlanModeController {
     if (!session.planState) return undefined;
     return readPlan(session.planState.planFilePath);
   }
-}
-
-function withApprovalMetadata(state: PlanSessionState, metadata: PlanApprovalMetadata): PlanSessionState {
-  return { ...state, ...metadata } as PlanSessionState;
-}
-
-function approvalMetadata(state: PlanSessionState): PlanApprovalMetadata {
-  return state as PlanSessionState & PlanApprovalMetadata;
 }
 
 function closePlanApprovalToolCall(session: KernelSession, decision: "continue" | "stay", feedback: unknown): KernelSession {

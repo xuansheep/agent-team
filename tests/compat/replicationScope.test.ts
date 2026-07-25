@@ -7,7 +7,8 @@ describe("tui-code replication scope", () => {
   it("documents required modules and excluded capabilities", async () => {
     const scope = await readFile(resolve("docs/tui-code-replication-scope.md"), "utf8");
     const requiredTerms = [
-      "QueryEngine",
+      "ExecutionCoordinator",
+      "TurnEngine",
       "Tool",
       "PermissionMode",
       "Plan Mode",

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
 import type { AuditEvent } from "../audit/auditEvent.js";
 import { ModelMessage, ModelRequest, ModelResponse, ModelRetryEvent, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import { hasModelUsage } from "../model/usage.js";
 import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { isHumanUserMessage, withRuntimeAttachments } from "../context/messages.js";
-import { readPlan } from "../plans/planFiles.js";
+import { isDefaultPlanFilePath, planFilenameSlug, readPlan, uniquePlanFilePath } from "../plans/planFiles.js";
 import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } from "../plans/planSession.js";
 import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
@@ -20,7 +21,23 @@ const planModeAttachmentConfig = {
   turnsBetweenAttachments: 5,
   fullReminderEveryAttachments: 5
 } as const;
-export class RuntimeTurnExecutor {
+export type TurnLoopDriver<T> = {
+  maxIterations?: number;
+  runIteration(iteration: number): Promise<T | undefined>;
+  onLimit?(maxIterations: number): Promise<T> | T;
+};
+
+export class TurnEngine {
+  async runLoop<T>(driver: TurnLoopDriver<T>): Promise<T> {
+    const maxIterations = driver.maxIterations ?? Number.POSITIVE_INFINITY;
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      const value = await driver.runIteration(iteration);
+      if (value !== undefined) return value;
+    }
+    if (driver.onLimit) return driver.onLimit(maxIterations);
+    throw new Error(`TURN_LIMIT_EXCEEDED: exceeded ${maxIterations} turn iterations`);
+  }
+
   async requestModel(input: RuntimeModelTurnInput): Promise<RuntimeModelTurnResult> {
     const streamed = Boolean(input.provider.stream);
     if (!input.provider.stream) return { streamed, response: await input.provider.generate(input.request) };
@@ -38,8 +55,10 @@ export class RuntimeTurnExecutor {
     if (promptInjection) await emit(input, { type: "runtime_prompt_injection", session_id: input.sessionId, run_id: input.runId, record: promptInjection });
     await emit(input, { type: "runtime_turn_started", session_id: input.sessionId, run_id: input.runId });
     try {
-      for (let iteration = 0; iteration < maxToolIterations; iteration += 1) {
-        throwIfAborted(input.abortSignal);
+      return await this.runLoop<RuntimeTurnResult>({
+        maxIterations: maxToolIterations,
+        runIteration: async (iteration) => {
+          throwIfAborted(input.abortSignal);
         const discovery = input.tools.mcpRuntime
           ? prepareMcpDiscovery({
             runtime: input.tools.mcpRuntime,
@@ -89,9 +108,10 @@ export class RuntimeTurnExecutor {
           messages.push({ role: "assistant", content: response.content });
           await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content });
         }
-        return { status: "completed", messages };
+        return { status: "completed", messages, planState: input.planState };
       }
-      const toolCalls = await executableToolCalls(response.tool_calls, input.tools);
+      let toolCalls = await executableToolCalls(response.tool_calls, input.tools);
+      toolCalls = await finalizeInitialPlanPath(input, response.content ?? "", toolCalls, messages);
       const kernelTools = createKernelToolRegistry(input.tools);
       messages.push({ role: "assistant", content: response.content ?? "", tool_calls: toolCalls });
       await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content ?? "" });
@@ -124,11 +144,11 @@ export class RuntimeTurnExecutor {
             planModePermissionBlocked = true;
             continue;
           }
-          const request = { sessionId: input.sessionId, runId: input.runId, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule };
-          await emit(input, { type: "runtime_permission_requested", session_id: input.sessionId, run_id: input.runId, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule });
-          if (!input.permissionCallback) return { status: "waiting_permission", messages, request };
+          const request = { sessionId: input.sessionId, runId: input.runId, toolCallId: call.id, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule };
+          await emit(input, { type: "runtime_permission_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule });
+          if (!input.permissionCallback) return { status: "waiting_permission", messages, request, planState: input.planState };
           const decision = await input.permissionCallback(request);
-          await emit(input, { type: "runtime_permission_resolved", session_id: input.sessionId, run_id: input.runId, tool: call.name, decision });
+          await emit(input, { type: "runtime_permission_resolved", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, decision });
           await audit(input, {
             type: "permission_decision",
             tool: call.name,
@@ -140,7 +160,7 @@ export class RuntimeTurnExecutor {
           if (decision === "deny") {
             const error = permissionDeniedMessage(call.name, "callback denied");
             await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
-            return { status: "failed", error, messages };
+            return { status: "failed", error, messages, planState: input.planState };
           }
         }
         if (permission.decision === "deny") {
@@ -151,7 +171,7 @@ export class RuntimeTurnExecutor {
             continue;
           }
           await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
-          return { status: "failed", error, messages };
+          return { status: "failed", error, messages, planState: input.planState };
         }
         permissionResults.push({ call, decision: "allow" });
       }
@@ -160,12 +180,20 @@ export class RuntimeTurnExecutor {
         for (const result of permissionResults) {
           if (result.decision === "deny") {
             const error = result.error ?? permissionDeniedMessage(result.call.name, "Permission denied");
+            await emit(input, {
+              type: "runtime_tool_failed",
+              session_id: input.sessionId,
+              run_id: input.runId,
+              tool_call_id: result.call.id,
+              tool: result.call.name,
+              error
+            });
             messages.push(permissionDeniedToolMessage(result.call.id, error));
             continue;
           }
           messages.push(skippedPlanModeToolMessage(result.call.id, result.call.name));
         }
-        continue;
+        return undefined;
       }
 
       const callsToExecute = pendingPlanApprovalCall
@@ -201,7 +229,7 @@ export class RuntimeTurnExecutor {
         const userInput = userInputFromToolResult(execution.call.id, execution.result, input);
         if (userInput) {
           await emit(input, { type: "runtime_user_input_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: userInput.toolCallId, questions: userInput.questions });
-          return { status: "waiting_user_input", messages, request: userInput };
+          return { status: "waiting_user_input", messages, request: userInput, planState: input.planState };
           }
           const tool = execution.result && input.tools.has(execution.call.name) ? input.tools.get(execution.call.name) : undefined;
           messages.push(execution.result && tool
@@ -247,7 +275,7 @@ export class RuntimeTurnExecutor {
           const planApproval = planApprovalFromToolResult(execution.result);
         if (planApproval) {
           await emit(input, planApproval.event);
-          return { status: "waiting_plan_approval", messages, plan: planApproval.plan, planState: planApproval.state, usage: response.usage };
+          return { status: "waiting_plan_approval", messages, plan: { ...planApproval.plan, toolCallId: execution.call.id }, planState: planApproval.state, usage: response.usage };
         }
       }
 
@@ -256,17 +284,23 @@ export class RuntimeTurnExecutor {
           const planApproval = await requestPlanApprovalFromRuntime(input, pendingPlanApprovalCall.input);
           messages.push(planApproval.toolMessage(pendingPlanApprovalCall.id));
           await emit(input, planApproval.event);
-          return { status: "waiting_plan_approval", messages, plan: planApproval.plan, planState: planApproval.state, usage: response.usage };
+          return { status: "waiting_plan_approval", messages, plan: { ...planApproval.plan, toolCallId: pendingPlanApprovalCall.id }, planState: planApproval.state, usage: response.usage };
         } catch (error) {
           messages.push({ role: "tool", tool_call_id: pendingPlanApprovalCall.id, content: planApprovalBlockedMessage(error, input.permissions.planFilePath) });
-          continue;
+          return undefined;
         }
       }
-    }
-
-      return { status: "failed", error: `Exceeded ${maxToolIterations} tool iterations`, messages };
+      return undefined;
+        },
+        onLimit: (maxIterations) => ({
+          status: "failed",
+          error: `TURN_LIMIT_EXCEEDED: exceeded ${maxIterations} turn iterations`,
+          messages,
+          planState: input.planState
+        })
+      });
     } catch (error) {
-      if (isAbortLikeError(error) || input.abortSignal?.aborted) return { status: "aborted", messages };
+      if (isAbortLikeError(error) || input.abortSignal?.aborted) return { status: "aborted", messages, planState: input.planState };
       throw error;
     }
   }
@@ -611,4 +645,64 @@ function modelRetryAuditEvent(retry: ModelRetryEvent): AuditEvent {
     discarded_content_chars: retry.discardedContentChars,
     discarded_thinking_chars: retry.discardedThinkingChars
   };
+}
+
+async function finalizeInitialPlanPath(
+  input: RuntimeTurnInput,
+  assistantContent: string,
+  calls: ModelToolCall[],
+  messages: ModelMessage[]
+): Promise<ModelToolCall[]> {
+  const state = input.planState;
+  const currentPath = state?.planFilePath;
+  if (input.permissions.mode !== "plan" || !state || !currentPath) return calls;
+  if (state.planFileFinalized === true || !isDefaultPlanFilePath(currentPath)) return calls;
+
+  const existing = await readPlan(currentPath);
+  if (existing !== undefined) {
+    input.planState = { ...state, planFileFinalized: true };
+    return calls;
+  }
+
+  const writeIndex = calls.findIndex((call) => call.name === "Write" && callInputPathMatchesPlan(call.input, currentPath, input.cwd));
+  if (writeIndex < 0) return calls;
+
+  const writeCall = calls[writeIndex]!;
+  const writeInput = objectInput(writeCall.input);
+  const planContent = typeof writeInput?.content === "string" ? writeInput.content : undefined;
+  const slug = planFilenameSlug(planContent, assistantContent);
+  const nextPath = await uniquePlanFilePath(currentPath, slug);
+  input.planState = { ...state, planFilePath: nextPath, planFileFinalized: true };
+  input.permissions.planFilePath = nextPath;
+  const nextCalls = calls.slice();
+  nextCalls[writeIndex] = { ...writeCall, input: { ...writeInput, file_path: nextPath } };
+  replacePlanFilePathInMessages(messages, currentPath, nextPath);
+  return nextCalls;
+}
+
+function callInputPathMatchesPlan(input: unknown, planFilePath: string, cwd: string): boolean {
+  const value = objectInput(input)?.file_path;
+  if (typeof value !== "string" || !value.trim()) return false;
+  const target = isAbsolute(value) ? resolve(value) : resolve(cwd, value);
+  const plan = isAbsolute(planFilePath) ? resolve(planFilePath) : resolve(cwd, planFilePath);
+  return target === plan;
+}
+
+function replacePlanFilePathInMessages(messages: ModelMessage[], from: string, to: string): void {
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      message.content = message.content.split(from).join(to);
+      continue;
+    }
+    if (!Array.isArray(message.content)) continue;
+    message.content = message.content.map((part) => (
+      part.type === "text" ? { ...part, text: part.text.split(from).join(to) } : part
+    ));
+  }
+}
+
+function objectInput(input: unknown): Record<string, unknown> | undefined {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : undefined;
 }

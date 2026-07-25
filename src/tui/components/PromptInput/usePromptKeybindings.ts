@@ -208,10 +208,10 @@ function submit(input: PromptKeybindingInput) {
   input.onHistory(pushHistory(input.history, text));
   input.onRecordHistory?.(text);
   input.onBuffer(clearBuffer());
-  if (input.isLoading) {
-    input.onEvent({ type: "queue", text, ...(images.length ? { images } : {}) });
-  } else if (processed.type === "command") {
+  if (processed.type === "command") {
     input.onEvent({ type: "command", name: processed.command.type, args: processed.command.args });
+  } else if (input.isLoading) {
+    input.onEvent({ type: "queue", text, ...(images.length ? { images } : {}) });
   } else if (processed.type === "query" && text.startsWith("/")) {
     const [name, ...args] = text.slice(1).split(/\s+/);
     if (name && input.skillNames.includes(name)) input.onEvent({ type: "command", name, args });

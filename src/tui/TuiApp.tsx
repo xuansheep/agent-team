@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, relative } from "node:path";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, ScrollBox, Text, useApp, useHasSelection, useInput, useSelection, useStdin, useStdout } from "./ink.js";
 import type { ScrollBoxHandle } from "./ink.js";
 import { useCopyOnSelect } from "../ink/hooks/use-copy-on-select.js";
@@ -8,11 +8,9 @@ import { AgentTeamConfig } from "../config/schema.js";
 import type { RuntimeDiagnostics } from "../diagnostics/runtimeDiagnostics.js";
 import { enterPlanMode, readPlanOrRecoverFromTranscript } from "../plans/planSession.js";
 import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
-import { PlanModeController } from "../kernel/plan/planModeController.js";
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "../kernel/plan/planToolCallMessages.js";
-import { QueryEngine } from "../kernel/queryEngine.js";
+import { ExecutionCoordinator } from "../runtime/executionCoordinator.js";
 import { isHumanUserMessage } from "../context/messages.js";
-import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
 import { contextTokensFromUsage, contextUsedPercent } from "../model/contextUsage.js";
@@ -95,7 +93,7 @@ export function TuiApp({
   config?: AgentTeamConfig;
   workflows?: string[];
   workflowId?: string;
-  engine?: WorkflowEngine;
+  engine?: WorkflowEngine | ExecutionCoordinator;
   providerFactory?: (providerId: string) => ModelProvider;
   editPlanFile?: ExternalEditor;
   editQuestionText?: ExternalTextEditor;
@@ -118,6 +116,10 @@ export function TuiApp({
   const { stdout } = useStdout();
   const selection = useSelection();
   const hasSelection = useHasSelection();
+  const executionCore = useMemo(
+    () => engine instanceof ExecutionCoordinator ? engine : new ExecutionCoordinator(engine),
+    [engine]
+  );
   const selectionEscapeConsumedRef = useRef(false);
   useCopyOnSelect(selection, settings?.copyOnSelect ?? true);
   ensureRefableStdin(stdin);
@@ -320,7 +322,12 @@ export function TuiApp({
   };
   const failUi = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    setState((current) => ({ ...current, mode: "failed", error: message }));
+    setState((current) => ({
+      ...current,
+      mode: "failed",
+      error: message,
+      logMessages: [...current.logMessages, statusLog(`Error: ${message}`)]
+    }));
   };
   const interruptAndExit = () => {
     const session = sessionRef.current;
@@ -435,7 +442,7 @@ export function TuiApp({
       return;
     }
     try {
-      const session = await engine.startInteractive(config, selectedWorkflowId, input, {
+      const session = await executionCore.startInteractive(config, selectedWorkflowId, input, {
         permissionMode: options.permissionMode ?? workflowPermissionMode(state.inputPermissionMode),
         ...(options.clearContext === true ? { clearContext: true } : {}),
         sessionId: options.sessionId ?? currentSessionIdRef.current
@@ -456,7 +463,7 @@ export function TuiApp({
       return;
     }
     try {
-      const session = await engine.resumeInteractive(config, runId);
+      const session = await executionCore.resumeInteractive(config, runId);
       currentSessionIdRef.current = session.sessionId ?? currentSessionIdRef.current;
       setSelectedWorkflowId(session.state.workflow_id);
       attachSession(session, session.state.workflow_id);
@@ -613,16 +620,15 @@ export function TuiApp({
         workflowBinding: null,
         pendingInteraction: null
       };
-      const result = await new QueryEngine().run({
+      const result = await executionCore.executeSession({
         session: kernelSession,
         model: providerSelection.model,
         effort: providerSelection.effort,
         provider: providerSelection.provider,
-        tools: createKernelToolRegistry(legacyTools),
-        nodeId: "runtime",
+        tools: legacyTools,
         globalPrompt: config?.global_prompt,
         globalPromptMetadata: config?.global_prompt_metadata,
-        signal: abortController.signal,
+        abortSignal: abortController.signal,
         auditSink: (event) => sessionStore.appendAudit(currentPlan.sessionId, event),
         eventSink: async (event) => {
           if (planTurnGenerationRef.current !== turnGeneration) return;
@@ -649,11 +655,18 @@ export function TuiApp({
         }
       });
       if (planTurnGenerationRef.current !== turnGeneration) return;
+      if (result.outcome.status === "aborted") {
+        const error = new Error("Plan turn aborted");
+        error.name = "AbortError";
+        throw error;
+      }
+      if (result.outcome.status === "failed") throw new Error(result.outcome.error);
+      const pending = result.session.pendingInteraction;
+      if (pending?.type === "tool_permission") throw new Error("Plan Mode cannot wait on a generic tool permission");
       const newMessages = planRuntimeNewMessages(messages, result.session.messages);
       planMessagesRef.current = result.session.messages;
       appendPlanTranscriptMessages(currentPlan.sessionId, newMessages);
 
-      const pending = result.session.pendingInteraction;
       if (pending?.type === "ask_user_question") {
         resetPlanQuestionImages();
         planQuestionRef.current = { toolCallId: pending.toolCallId, questions: pending.questions, index: 0, answers: {} };
@@ -1176,7 +1189,6 @@ export function TuiApp({
     const currentPlan = planSessionRef.current;
     const document = state.pendingReview?.document ?? "";
     if (!currentPlan) return false;
-    const controller = new PlanModeController();
     const kernelSession = planApprovalKernelSession({
       cwd,
       plan: currentPlan,
@@ -1186,7 +1198,7 @@ export function TuiApp({
       defaultExecutionMode: state.defaultExecutionMode
     });
     if (decision === "stay") {
-      const resolved = (await controller.resolvePlanApproval(kernelSession, { decision: "stay", feedback })).session;
+      const resolved = (await executionCore.resolvePlanApproval(kernelSession, { decision: "stay", feedback })).session;
       const nextPlan = resolved.planState!;
       const rejectionMessage = planRejectionMessage(document, feedback);
       const review = state.pendingReview;
@@ -1228,12 +1240,19 @@ ${message.detailText}` : ""}` }
       void executePlanMessages(nextPlan, planMessagesRef.current).catch((error) => failUi(error));
       return true;
     }
-    const resolved = await controller.resolvePlanApproval(kernelSession, {
-      decision: "continue",
+    if (!config || !engine || !selectedWorkflowId) {
+      failUi("TUI is missing workflow configuration");
+      return false;
+    }
+    const transition = await executionCore.resolvePlanApprovalAndStart({
+      session: kernelSession,
+      config,
+      workflowId: selectedWorkflowId,
       permissionMode: mode === "plan" ? "default" : mode,
       clearContext: options.clearContext === true,
       feedback: feedbackText(feedback)
     });
+    const resolved = transition.resolution;
     const nextPlan = resolved.session.planState!;
     const resolvedMessages = planRuntimeNewMessages(planMessagesRef.current, resolved.session.messages);
     planSessionRef.current = nextPlan;
@@ -1241,17 +1260,9 @@ ${message.detailText}` : ""}` }
     appendPlanTranscriptMessages(nextPlan.sessionId, resolvedMessages);
     savePlanSession(nextPlan);
     resetPlanApprovalFeedback();
-    const execution = resolved.execution;
-    setState((current) => ({ ...current, mode: "running", inputPermissionMode: execution?.permissionMode ?? current.inputPermissionMode, planSession: nextPlan, pendingReview: undefined, error: undefined }));
-    if (!execution) return true;
-    const handoff = execution.handoff as { legacyHandoff?: unknown };
-    const workflowInput = execution.clearContext ? execution.initialInput : handoff.legacyHandoff;
-    void startWorkflowInput(workflowInput, {
-      permissionMode: execution.permissionMode,
-      inputPermissionMode: execution.permissionMode,
+    attachSession(transition.workflow, selectedWorkflowId, {
       preserveLogs: true,
-      sessionId: nextPlan.sessionId,
-      ...(execution.clearContext ? { clearContext: true } : {})
+      inputPermissionMode: resolved.execution?.permissionMode
     });
     return true;
   };
@@ -1295,7 +1306,9 @@ ${message.detailText}` : ""}` }
     }
 
     planSessionRef.current = plan;
-    planMessagesRef.current = planTranscript.map((entry) => entry.message);
+    planMessagesRef.current = metadata?.execution?.messages?.length
+      ? metadata.execution.messages
+      : planTranscript.map((entry) => entry.message);
     const transcriptLogs = planLogMessagesFromTranscript(planMessagesRef.current);
     const base = (current: TuiState) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
@@ -1305,6 +1318,27 @@ ${message.detailText}` : ""}` }
       planSession: plan,
       error: undefined
     });
+    const restoredInteraction = metadata?.execution?.pendingInteraction;
+    if (restoredInteraction?.type === "ask_user_question") {
+      resetPlanQuestionImages();
+      planQuestionRef.current = {
+        toolCallId: restoredInteraction.toolCallId,
+        questions: restoredInteraction.questions,
+        index: 0,
+        answers: {}
+      };
+      setState((current) => ({
+        ...base(current),
+        mode: "question",
+        questions: nextQuestionSlice(restoredInteraction.questions, 0),
+        logMessages: [
+          statusLog("Plan Mode restored", plan.planFilePath),
+          ...transcriptLogs,
+          statusLog("Plan Mode needs user input", questionLogDetail(restoredInteraction.questions))
+        ]
+      }));
+      return;
+    }
 
     if (plan.mode === "waiting_approval") {
       const document = (await readPlanOrRecoverFromTranscript({ planFilePath: plan.planFilePath, cwd, messages: planMessagesRef.current }))?.trim() ?? plan.approvedPlan ?? "";
@@ -1324,7 +1358,20 @@ ${message.detailText}` : ""}` }
       setState((current) => ({
         ...base(current),
         mode: "waiting_plan_approval",
-        pendingReview: { type: "plan", nodeId: "global-plan", attempt: 1, document, planFilePath: plan.planFilePath, empty, requestedPermissions: plan.requestedPermissions, toolCallId: plan.approvalToolCallId },
+        pendingReview: {
+          type: "plan",
+          nodeId: "global-plan",
+          attempt: 1,
+          document,
+          planFilePath: plan.planFilePath,
+          empty,
+          requestedPermissions: restoredInteraction?.type === "plan_approval"
+            ? restoredInteraction.requestedPermissions
+            : plan.requestedPermissions,
+          toolCallId: restoredInteraction?.type === "plan_approval"
+            ? restoredInteraction.toolCallId
+            : plan.approvalToolCallId
+        },
         logMessages: [statusLog("Plan Mode restored", plan.planFilePath), ...transcriptLogs, globalPlanLog(document, plan.planFilePath, plan.requestedPermissions, empty)]
       }));
       return;
@@ -1358,7 +1405,7 @@ ${message.detailText}` : ""}` }
 
   const openResumePicker = async () => {
     try {
-      const runs = engine ? await engine.listRuns({ limit: 30 }) : [];
+      const runs = engine ? await executionCore.listRuns({ limit: 30 }) : [];
       const runById = new Map(runs.map((run) => [run.runId, run]));
       const sessions = await sessionStore.listSessions({ limit: 30 });
       const sessionEntries = (await Promise.all(sessions.map(async (metadata) => {
@@ -1463,6 +1510,23 @@ ${message.detailText}` : ""}` }
       failUi(error);
     }
   };
+  const runPlanCommand = (args: string[]) => {
+    const description = args.join(" ").trim();
+    const openPlan = args[0] === "open";
+    const currentPlanMode = planSessionRef.current?.mode;
+    const inPendingPlanApproval = state.mode === "waiting_plan_approval" || Boolean(state.pendingReview) || currentPlanMode === "waiting_approval";
+    const inActivePlanMode = state.mode === "planning" || isPlanSessionAcceptingInput(planSessionRef.current);
+    if (inPendingPlanApproval) {
+      if (openPlan) void refreshPendingPlanReview({ openEditor: true });
+      else void showPendingPlanReview();
+    } else if (inActivePlanMode) {
+      if (openPlan) void openCurrentPlan();
+      else void showCurrentPlan();
+    } else {
+      enterGlobalPlanMode();
+      if (description && description !== "open") enqueuePlanTurn(description);
+    }
+  };
   const handlePromptEvent = (event: PromptInputEvent) => {
     if (event.type === "cancel") {
       cancelActiveChoice();
@@ -1509,6 +1573,15 @@ ${message.detailText}` : ""}` }
       return;
     }
     if (event.type === "command") {
+      if (planWorkCount > 0 && (event.name === "clear" || event.name === "plan")) {
+        planTurnQueueRef.current = planTurnQueueRef.current
+          .then(() => {
+            if (event.name === "clear") clearTuiContext();
+            else runPlanCommand(event.args);
+          })
+          .catch((error) => failUi(error));
+        return;
+      }
       if (event.name === "skills") {
         if (event.args[0] === "refresh") {
           void skillRuntime?.refresh().then(() => {
@@ -1547,23 +1620,7 @@ ${message.detailText}` : ""}` }
         if (isActiveSessionMode(state.mode)) setState((current) => ({ ...current, mode: "confirm_new", modeBeforeConfirmation: current.mode }));
         else resetSession();
       }
-      if (event.name === "plan") {
-        const description = event.args.join(" ").trim();
-        const openPlan = event.args[0] === "open";
-        const currentPlanMode = planSessionRef.current?.mode;
-        const inPendingPlanApproval = state.mode === "waiting_plan_approval" || Boolean(state.pendingReview) || currentPlanMode === "waiting_approval";
-        const inActivePlanMode = state.mode === "planning" || isPlanSessionAcceptingInput(planSessionRef.current);
-        if (inPendingPlanApproval) {
-          if (openPlan) void refreshPendingPlanReview({ openEditor: true });
-          else void showPendingPlanReview();
-        } else if (inActivePlanMode) {
-          if (openPlan) void openCurrentPlan();
-          else void showCurrentPlan();
-        } else {
-          enterGlobalPlanMode();
-          if (description && description !== "open") enqueuePlanTurn(description);
-        }
-      }
+      if (event.name === "plan") runPlanCommand(event.args);
       if (event.name === "clear") {
         clearTuiContext();
       }
@@ -1629,7 +1686,9 @@ ${message.detailText}` : ""}` }
   const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : hasPlanQuestion ? "question" : state.mode;
   const planApprovalActive = interactionMode === "waiting_plan_approval" && Boolean(state.pendingReview);
   const planApprovalOverlayVisible = planApprovalActive && !planApprovalCollapsed;
-  const planApprovalPlanFilePath = state.pendingReview?.planFilePath ? displayPlanFilePath(state.pendingReview.planFilePath, cwd) : undefined;
+  const planApprovalPlanFilePath = state.pendingReview?.planFilePath
+    ? compactPlanApprovalPath(displayPlanFilePath(state.pendingReview.planFilePath, cwd))
+    : undefined;
   const logMessages = state.logMessages;
   const retryDetail = state.activeModelRetry ? modelRetryStatusDetail(state.activeModelRetry.retryAt, state.activeModelRetry.retryAttempt, state.activeModelRetry.maxRetries, clockMs) : undefined;
   const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: retryDetail ?? workStatusDetail });
@@ -1839,7 +1898,9 @@ ${message.detailText}` : ""}` }
     choice: halfScreenChoice ? undefined : activeChoice,
     activityStatusVisible: Boolean(activityStatus && !activeChoice)
   });
-  const planApprovalDocumentMaxLines = state.pendingReview ? planApprovalOverlayMaxDocumentLines(state.pendingReview, layout.mainHeight) : 0;
+  const planApprovalDocumentMaxLines = state.pendingReview
+    ? planApprovalOverlayMaxDocumentLines(state.pendingReview, layout.mainHeight, terminalColumns, planApprovalPlanFilePath)
+    : 0;
   const scrollPlanApprovalDocument = (delta: number): boolean => {
     const review = state.pendingReview;
     if (!review || !planApprovalOverlayVisible) return false;
@@ -3068,21 +3129,37 @@ function PlanApprovalOverlay({
   );
 }
 
-function planApprovalOverlayMaxDocumentLines(review: NonNullable<TuiState["pendingReview"]>, height: number): number {
+function planApprovalOverlayMaxDocumentLines(
+  review: NonNullable<TuiState["pendingReview"]>,
+  height: number,
+  width: number,
+  planFilePath?: string
+): number {
   const empty = review.empty === true || !review.document.trim();
   const detail = empty
     ? "Einstein wants to exit plan mode"
     : planApprovalDetail({
         requestedPermissions: review.requestedPermissions,
         savedMessage: review.savedMessage,
-        planFilePath: review.planFilePath
+        planFilePath
       });
   const document = planApprovalOverlayDocument(review);
   const documentLines = document.split(/\r?\n/).length;
-  const fixedRows = 1 + detail.split(/\r?\n/).length + 1 + 1 + (review.planFilePath ? 1 : 0) + 2;
+  const pathRows = planFilePath
+    ? wrappedTextRows(`Plan saved to: ${planFilePath} · /plan to edit`, width)
+    : 0;
+  const fixedRows = 1 + wrappedTextRows(detail, width) + 1 + 1 + pathRows + 2;
   const available = Math.max(1, height - fixedRows);
   if (documentLines <= available) return documentLines;
   return Math.max(1, available - 3);
+}
+
+function wrappedTextRows(text: string, width: number): number {
+  const safeWidth = Math.max(1, width);
+  return text.split(/\r?\n/).reduce(
+    (rows, line) => rows + Math.max(1, Math.ceil(line.length / safeWidth)),
+    0
+  );
 }
 
 function planApprovalOverlayDocument(review: NonNullable<TuiState["pendingReview"]>): string {

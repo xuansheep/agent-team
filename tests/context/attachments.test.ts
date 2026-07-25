@@ -7,7 +7,7 @@ import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReen
 import { isHumanUserMessage } from "../../src/context/messages.js";
 import { buildNodeMessages } from "../../src/harness/context.js";
 import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
-import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
+import { TurnEngine } from "../../src/runtime/turnEngine.js";
 import { ModelMessage, ModelProvider } from "../../src/providers/types.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 
@@ -86,7 +86,7 @@ describe("runtime context attachments", () => {
       }
     };
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "make a plan" }],
       model: "test-model",
       provider,
@@ -184,7 +184,7 @@ describe("runtime context attachments", () => {
       }
     };
 
-    const first = await new RuntimeTurnExecutor().execute({
+    const first = await new TurnEngine().execute({
       messages: [{ role: "user", content: "replan this" }],
       model: "test-model",
       provider,
@@ -206,7 +206,7 @@ describe("runtime context attachments", () => {
     assert.ok(firstSystemMessages.some((content) => /ATTACHMENT plan_mode_reentry/.test(content)));
     assert.ok(firstSystemMessages.some((content) => /ATTACHMENT plan_mode/.test(content)));
 
-    await new RuntimeTurnExecutor().execute({
+    await new TurnEngine().execute({
       messages: [...first.messages, { role: "user", content: "continue" }],
       model: "test-model",
       provider,
@@ -245,7 +245,7 @@ describe("runtime context attachments", () => {
       }
     };
 
-    await new RuntimeTurnExecutor().execute({
+    await new TurnEngine().execute({
       messages: priorMessages,
       model: "test-model",
       provider,
@@ -281,7 +281,7 @@ describe("runtime context attachments", () => {
       }
     };
 
-    await new RuntimeTurnExecutor().execute({
+    await new TurnEngine().execute({
       messages: priorMessages,
       model: "test-model",
       provider,
@@ -314,7 +314,7 @@ describe("runtime context attachments", () => {
     };
 
     for (const text of ["make a plan", "revise it", "add tests", "include risks", "final check", "one more detail"]) {
-      const result = await new RuntimeTurnExecutor().execute({
+      const result = await new TurnEngine().execute({
         messages: [...messages, { role: "user", content: text }],
         model: "test-model",
         provider,
@@ -345,7 +345,7 @@ describe("runtime context attachments", () => {
     };
 
     for (let turn = 1; turn <= 21; turn += 1) {
-      const result = await new RuntimeTurnExecutor().execute({
+      const result = await new TurnEngine().execute({
         messages: [...messages, { role: "user", content: `turn ${turn}` }],
         model: "test-model",
         provider,
@@ -389,7 +389,7 @@ describe("runtime context attachments", () => {
       }
     };
 
-    await new RuntimeTurnExecutor().execute({
+    await new TurnEngine().execute({
       messages,
       model: "test-model",
       provider,

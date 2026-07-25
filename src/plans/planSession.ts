@@ -19,6 +19,8 @@ export type PlanSessionState = {
   reentry?: boolean;
   requestedPermissions?: PlanRequestedPermission[];
   feedbackMessages?: unknown[];
+  approvalId?: string;
+  approvedPlanHash?: string;
   approvalToolCallId?: string;
 };
 

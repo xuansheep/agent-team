@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AuditEvent } from "../../src/audit/auditEvent.js";
-import { RuntimeTurnExecutor } from "../../src/runtime/turnExecutor.js";
+import { TurnEngine } from "../../src/runtime/turnEngine.js";
 import { ModelProvider } from "../../src/providers/types.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import { Tool } from "../../src/tools/types.js";
@@ -28,7 +28,7 @@ describe("runtime audit", () => {
     const tools = new ToolRegistry();
     tools.add(echoTool);
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "use a tool" }],
       model: "test-model",
       provider,
@@ -53,7 +53,7 @@ describe("runtime audit", () => {
     const tools = new ToolRegistry();
     tools.add({ ...echoTool, async execute() { executions += 1; return { output: "unexpected" }; } });
 
-    const result = await new RuntimeTurnExecutor().execute({
+    const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "use a tool" }],
       model: "test-model",
       provider: oneToolProvider("Echo", { value: "ok" }),
@@ -85,7 +85,7 @@ describe("runtime audit", () => {
       }
     });
 
-    const waiting = await new RuntimeTurnExecutor().execute({
+    const waiting = await new TurnEngine().execute({
       messages: [{ role: "user", content: "reset" }],
       model: "test-model",
       provider: oneToolProvider("Bash", { command: "git reset --hard" }),
@@ -99,7 +99,7 @@ describe("runtime audit", () => {
     assert.equal(executions, 0);
 
     let calls = 0;
-    const approved = await new RuntimeTurnExecutor().execute({
+    const approved = await new TurnEngine().execute({
       messages: [{ role: "user", content: "reset" }],
       model: "test-model",
       provider: {
@@ -130,7 +130,7 @@ describe("runtime audit", () => {
       const tools = new ToolRegistry();
       tools.add(blockedTool(tool));
 
-      const result = await new RuntimeTurnExecutor().execute({
+      const result = await new TurnEngine().execute({
         messages: [{ role: "user", content: "plan only" }],
         model: "test-model",
         provider: oneToolProvider(tool, input),

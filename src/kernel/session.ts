@@ -53,6 +53,8 @@ export type KernelSession = {
   pendingInteraction: PendingInteraction | null;
 };
 
+export type KernelSessionCheckpoint = Omit<KernelSession, "id" | "cwd">;
+
 export type KernelIntent =
   | { type: "submit_user_message"; content: string }
   | { type: "resolve_plan_approval"; decision: "continue" | "stay"; metadata?: PlanApprovalResolveMetadata }
@@ -88,6 +90,27 @@ export function createKernelSession(input: {
     workflowBinding: null,
     pendingInteraction: null
   };
+}
+
+export function kernelSessionCheckpoint(session: KernelSession): KernelSessionCheckpoint {
+  return {
+    status: session.status,
+    messages: session.messages.filter((message) => !message.metadata?.runtimeAttachment),
+    toolPermissionContext: { ...session.toolPermissionContext },
+    defaultExecutionMode: session.defaultExecutionMode,
+    planState: session.planState ? { ...session.planState } : null,
+    workflowBinding: session.workflowBinding ? { ...session.workflowBinding } : null,
+    pendingInteraction: session.pendingInteraction ? { ...session.pendingInteraction } : null
+  };
+}
+
+export function restoreKernelSession(input: {
+  id: string;
+  cwd: string;
+  checkpoint: KernelSessionCheckpoint;
+}): KernelSession {
+  const checkpoint = kernelSessionCheckpoint({ id: input.id, cwd: input.cwd, ...input.checkpoint });
+  return { id: input.id, cwd: input.cwd, ...checkpoint };
 }
 
 export function reduceKernelSession(session: KernelSession, action: KernelAction): KernelSession {

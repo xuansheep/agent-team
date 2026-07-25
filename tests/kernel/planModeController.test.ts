@@ -27,6 +27,17 @@ describe("PlanModeController", () => {
     assert.equal(await readPlan(planning.planState!.planFilePath), "# Plan\n\nShip safely.");
   });
 
+  it("refuses to resolve approval before a pending approval interaction exists", async () => {
+    const cwd = await workspace();
+    const controller = new PlanModeController();
+    const session = createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: [], ask: [], deny: [] } });
+    const planning = controller.enterPlanMode(session, { request: "build" });
+
+    await assert.rejects(
+      controller.resolvePlanApproval(planning, { decision: "continue" }),
+      /Plan approval is not pending/
+    );
+  });
   it("continues by restoring pre-plan permissions and building approved handoff", async () => {
     const cwd = await workspace();
     const controller = new PlanModeController();

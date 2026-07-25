@@ -26,7 +26,7 @@ import { buildNodeMessages } from "./context.js";
 import { NodeResult, nodeResultJsonSchema, nodeResultSchema, parseNodeResult, visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { PermissionDecision, PermissionRequest } from "./permissionController.js";
 import { HarnessEvent, StoredEvent } from "./events.js";
-import { RuntimeTurnExecutor } from "../runtime/turnExecutor.js";
+import { TurnEngine } from "../runtime/turnEngine.js";
 import { formatRunErrorText } from "../runtime/errorFormatting.js";
 import type { ToolPermissionContext } from "../permissions/context.js";
 import { checkToolPermission } from "../permissions/checkToolPermission.js";
@@ -180,7 +180,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await publishContext();
   }
 
-  const turnExecutor = new RuntimeTurnExecutor();
+  const turnEngine = new TurnEngine();
   let resultRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
   const toolFailureCounts = new Map<string, { category: string; count: number }>();
@@ -259,7 +259,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       let summaryResponse: ModelResponse | undefined;
       for (let retry = 0; ; retry += 1) {
         try {
-          ({ response: summaryResponse } = await turnExecutor.requestModel({
+          ({ response: summaryResponse } = await turnEngine.requestModel({
             provider: options.provider,
             request: {
               model: compactionModel,
@@ -406,7 +406,8 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await performLocalCompaction("pre_turn", preTurnReason, preTurnModel, preTurnDialogue, pendingPreTurnMessages);
   }
 
-  for (;;) {
+  return turnEngine.runLoop<NodeResult>({
+    runIteration: async () => {
     options.abortSignal?.throwIfAborted();
     if (hasSampledModel) {
       const sampledLimits = getModelContextLimits(lastSampledModel, options.modelRegistry, options.maxOutputTokens);
@@ -474,7 +475,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     let streamed: boolean;
     let response: ModelResponse;
     try {
-      ({ streamed, response } = await turnExecutor.requestModel({
+      ({ streamed, response } = await turnEngine.requestModel({
         provider: options.provider,
         request,
         onStreamEvent(event) {
@@ -530,7 +531,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       if (!assistantContent.trim() && shouldRepairToolPreamble(response.content) && toolPreambleRepairAttempts < 1) {
         toolPreambleRepairAttempts += 1;
         await appendDialogueMessage({ role: "user", content: toolPreambleRepairPrompt(response.content, response.tool_calls), metadata: { userMessageKind: "runtime_context" } });
-        continue;
+        return undefined;
       }
       await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls }, responseIncludedInUsage);
       let shellFailureInResponse: { tool: string; toolCallId: string; error: string } | undefined;
@@ -701,7 +702,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
           }
         }
       }
-      continue;
+      return undefined;
     }
     if (!response.content) throw new Error(`Node ${options.node.id} returned no content and no tool calls`);
     try {
@@ -713,9 +714,10 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       resultRepairAttempts += 1;
       await appendDialogueMessage({ role: "assistant", content: response.content }, responseIncludedInUsage);
       await appendDialogueMessage({ role: "user", content: nodeResultRepairPrompt(error), metadata: { userMessageKind: "runtime_context" } });
-      continue;
+      return undefined;
     }
-  }
+    }
+  });
 }
 
 const submitNodeResultTool: Tool = {
