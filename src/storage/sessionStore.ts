@@ -153,6 +153,51 @@ export class SessionStore {
     });
   }
 
+  async syncWorkflowRunStatus(
+    sessionId: string,
+    runId: string,
+    status: "running" | "completed"
+  ): Promise<SessionMetadata | undefined> {
+    const current = await this.loadMetadata(sessionId);
+    if (!current || current.currentRunId !== runId) return current;
+    if (!current.execution?.workflowBinding) {
+      return this.touch(sessionId, { force: status === "completed" });
+    }
+    if (current.execution.workflowBinding.runId !== runId) return current;
+
+    const sessionStatus = status === "completed" ? "idle_input" : "running_workflow";
+    if (
+      current.execution.status === sessionStatus
+      && current.execution.workflowBinding.status === status
+      && current.execution.pendingInteraction === null
+    ) {
+      return current;
+    }
+
+    return this.updateMetadata(sessionId, (metadata) => {
+      const execution = metadata.execution;
+      if (
+        metadata.currentRunId !== runId
+        || !execution?.workflowBinding
+        || execution.workflowBinding.runId !== runId
+      ) {
+        return metadata;
+      }
+      return {
+        ...metadata,
+        execution: {
+          ...execution,
+          status: sessionStatus,
+          workflowBinding: {
+            ...execution.workflowBinding,
+            status
+          },
+          pendingInteraction: null
+        }
+      };
+    });
+  }
+
   async restoreKernelSession(sessionId: string, cwd: string): Promise<KernelSession | undefined> {
     const metadata = await this.loadMetadata(sessionId);
     if (!metadata?.execution) return undefined;

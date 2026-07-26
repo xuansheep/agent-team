@@ -82,7 +82,15 @@ describe("ExecutionCoordinator", () => {
     };
     let capturedWorkflowInput: unknown;
     let capturedWorkflowOptions: unknown;
-    const workflowSession = { sessionId: planning.id, runId: "run-approved" } as WorkflowSession;
+    const workflowSession = {
+      sessionId: planning.id,
+      runId: "run-approved",
+      result: Promise.resolve({
+        status: "completed" as const,
+        workflow_id: "main",
+        attempts: []
+      })
+    } as unknown as WorkflowSession;
     const workflowEngine = {
       async startInteractive(_config: AgentTeamConfig, _workflowId: string, input: unknown, options: unknown) {
         capturedWorkflowInput = input;
@@ -127,6 +135,19 @@ describe("ExecutionCoordinator", () => {
     const transitionedMetadata = await store.loadMetadata(planning.id);
     assert.equal(transitionedMetadata?.currentRunId, "run-approved");
     assert.equal(transitionedMetadata?.execution?.workflowBinding?.runId, "run-approved");
+
+    await transition.workflow.result;
+    const completedMetadata = await store.loadMetadata(planning.id);
+    assert.equal(completedMetadata?.execution?.status, "idle_input");
+    assert.equal(completedMetadata?.execution?.workflowBinding?.status, "completed");
+    assert.equal(
+      completedMetadata?.execution?.workflowBinding?.approvalId,
+      transition.resolution.session.workflowBinding?.approvalId
+    );
+    assert.equal(
+      completedMetadata?.execution?.workflowBinding?.planHash,
+      transition.resolution.session.workflowBinding?.planHash
+    );
   });
 
   it("repairs a historical dangling ExitPlanMode call before the next model request", async () => {

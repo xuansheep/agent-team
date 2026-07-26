@@ -7,6 +7,7 @@ import { SessionStore } from "../../src/storage/sessionStore.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { PlanSessionState } from "../../src/plans/planSession.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
+import { createKernelSession } from "../../src/kernel/session.js";
 
 async function workspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agent-team-session-store-"));
@@ -143,6 +144,82 @@ describe("SessionStore", () => {
 });
 
 describe("RunStore session hierarchy", () => {
+  it("keeps the bound Session status aligned with Run completion and continuation", async () => {
+    const root = await workspace();
+    const runs = new RunStore(root);
+    const sessions = new SessionStore(root);
+    const run = await runs.createRun("delivery", { request: "start" }, { sessionId: "session-status" });
+    const base = createKernelSession({
+      id: "session-status",
+      cwd: root,
+      permissions: { mode: "default", allow: [], ask: [], deny: [] }
+    });
+    await sessions.saveKernelCheckpoint({
+      ...base,
+      status: "running_workflow",
+      workflowBinding: {
+        runId: run.runId,
+        status: "running",
+        approvalId: "approval-1",
+        planHash: "plan-hash-1"
+      }
+    });
+
+    await runs.appendEvent(run.runId, { type: "run_completed", result: { status: "completed" } });
+
+    const completed = await sessions.loadMetadata("session-status");
+    assert.equal(completed?.execution?.status, "idle_input");
+    assert.equal(completed?.execution?.workflowBinding?.status, "completed");
+    assert.equal(completed?.execution?.workflowBinding?.approvalId, "approval-1");
+    assert.equal(completed?.execution?.workflowBinding?.planHash, "plan-hash-1");
+    assert.equal(completed?.execution?.pendingInteraction, null);
+
+    await runs.appendEvent(run.runId, {
+      type: "run_continued",
+      workflow_id: "delivery",
+      input: { request: "continue" }
+    });
+
+    const continued = await sessions.loadMetadata("session-status");
+    assert.equal(continued?.execution?.status, "running_workflow");
+    assert.equal(continued?.execution?.workflowBinding?.status, "running");
+
+    await runs.appendEvent(run.runId, { type: "run_completed", result: { status: "completed" } });
+    await runs.appendEvent(run.runId, { type: "user_message", text: "continue again" });
+
+    const messaged = await sessions.loadMetadata("session-status");
+    assert.equal(messaged?.execution?.status, "running_workflow");
+    assert.equal(messaged?.execution?.workflowBinding?.status, "running");
+    assert.equal(messaged?.execution?.workflowBinding?.approvalId, "approval-1");
+    assert.equal(messaged?.execution?.workflowBinding?.planHash, "plan-hash-1");
+  });
+
+  it("does not let an old Run completion overwrite the current bound Run status", async () => {
+    const root = await workspace();
+    const runs = new RunStore(root);
+    const sessions = new SessionStore(root);
+    const oldRun = await runs.createRun("delivery", { request: "old" }, { sessionId: "session-current-run" });
+    const currentRun = await runs.createRun("delivery", { request: "current" }, { sessionId: "session-current-run" });
+    const base = createKernelSession({
+      id: "session-current-run",
+      cwd: root,
+      permissions: { mode: "default", allow: [], ask: [], deny: [] }
+    });
+    await sessions.saveKernelCheckpoint({
+      ...base,
+      status: "running_workflow",
+      workflowBinding: { runId: currentRun.runId, status: "running" }
+    });
+
+    await runs.appendEvent(oldRun.runId, { type: "run_completed", result: { status: "completed" } });
+
+    const metadata = await sessions.loadMetadata("session-current-run");
+    assert.equal(metadata?.currentRunId, currentRun.runId);
+    assert.equal(metadata?.execution?.status, "running_workflow");
+    assert.equal(metadata?.execution?.workflowBinding?.runId, currentRun.runId);
+    assert.equal(metadata?.execution?.workflowBinding?.status, "running");
+  });
+
   it("links runs to sessions, records workflow dialogue once, and ignores stream deltas for activity time", async () => {
     const root = await workspace();
     const runs = new RunStore(root);

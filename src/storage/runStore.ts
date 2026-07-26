@@ -488,6 +488,13 @@ export class RunStore {
       await this.sessionStore.recordModelResponse(sessionId, event.usage);
       return;
     }
+    if (event.type === "run_completed") {
+      await this.sessionStore.syncWorkflowRunStatus(sessionId, runId, "completed");
+      return;
+    }
+    if (event.type === "run_continued" || event.type === "user_message") {
+      await this.sessionStore.syncWorkflowRunStatus(sessionId, runId, "running");
+    }
     const message = workflowUserMessage(event);
     if (message) {
       await this.sessionStore.appendWorkflowTranscriptEntries(sessionId, [{

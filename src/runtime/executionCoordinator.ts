@@ -173,6 +173,15 @@ export class ExecutionCoordinator {
     const resolution = { ...resolved, session: boundSession };
     if (this.sessionStore) await this.sessionStore.attachRun(boundSession.id, workflow.runId);
     await this.persistSession(boundSession);
+    const sessionStore = this.sessionStore;
+    if (sessionStore) {
+      workflow.result = workflow.result.then(async (state) => {
+        if (state.status === "completed") {
+          await sessionStore.syncWorkflowRunStatus(boundSession.id, workflow.runId, "completed");
+        }
+        return state;
+      });
+    }
     return { resolution, workflow };
   }
 
