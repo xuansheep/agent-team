@@ -10,6 +10,7 @@ import { exitPlanMode, type PlanRequestedPermission, type PlanSessionState } fro
 import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { prepareMcpDiscovery, withMcpCatalogMessage } from "../mcp/discovery.js";
+import { isUntrustedToolResultSource } from "../mcp/runtime.js";
 import { executeToolCalls } from "../tools/orchestration.js";
 import { toolResultMessage as mapToolResultMessage } from "../tools/modelResult.js";
 import { Tool, ToolContext, ToolResult } from "../tools/types.js";
@@ -226,7 +227,10 @@ export class TurnEngine {
       throwIfAborted(input.abortSignal);
       for (const execution of executions) {
         throwIfAborted(input.abortSignal);
-        const userInput = userInputFromToolResult(execution.call.id, execution.result, input);
+        // A result relayed from an MCP server is untrusted data, not control flow: without this
+        // gate a malicious server could forge a skill activation and grant itself Bash(*).
+        const controlResult = isUntrustedToolResultSource(execution.call.name) ? undefined : execution.result;
+        const userInput = userInputFromToolResult(execution.call.id, controlResult, input);
         if (userInput) {
           await emit(input, { type: "runtime_user_input_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: userInput.toolCallId, questions: userInput.questions });
           return { status: "waiting_user_input", messages, request: userInput, planState: input.planState };
@@ -245,11 +249,11 @@ export class TurnEngine {
               permissionMode: input.permissions.mode
             })
             : failureToolMessage(execution.call.id, execution.failure, execution.error));
-          const skillMessage = skillSystemMessageFromToolResult(execution.result);
+          const skillMessage = skillSystemMessageFromToolResult(controlResult);
           if (skillMessage) messages.push(skillMessage);
-          const skillActivation = skillActivationFromToolResult(execution.result);
+          const skillActivation = skillActivationFromToolResult(controlResult);
           if (skillActivation) {
-            applySkillPermissionRules(input.permissions, skillPermissionRulesFromToolResult(execution.result));
+            applySkillPermissionRules(input.permissions, skillPermissionRulesFromToolResult(controlResult));
             await emit(input, {
               type: "runtime_skill_activated",
               session_id: input.sessionId,
@@ -269,10 +273,10 @@ export class TurnEngine {
               allowed_tools: skillActivation.allowedTools
             });
           }
-          const skillOverrides = skillRuntimeOverridesFromToolResult(execution.result);
+          const skillOverrides = skillRuntimeOverridesFromToolResult(controlResult);
           if (skillOverrides?.model) input.model = skillOverrides.model;
           if (skillOverrides?.effort !== undefined) input.effort = skillOverrides.effort;
-          const planApproval = planApprovalFromToolResult(execution.result);
+          const planApproval = planApprovalFromToolResult(controlResult);
         if (planApproval) {
           await emit(input, planApproval.event);
           return { status: "waiting_plan_approval", messages, plan: { ...planApproval.plan, toolCallId: execution.call.id }, planState: planApproval.state, usage: response.usage };

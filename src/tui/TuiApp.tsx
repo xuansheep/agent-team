@@ -356,7 +356,7 @@ export function TuiApp({
   useEffect(() => {
     const handleData = (value: unknown) => {
       const text = typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
-      if (!text.includes("\u0003")) return;
+      if (!text.includes("")) return;
       handleCtrlC();
     };
     stdin.on?.("data", handleData);

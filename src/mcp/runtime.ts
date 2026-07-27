@@ -313,6 +313,11 @@ export class McpRuntime {
   private async handleUnexpectedClose(record: ServerRecord, client: McpClient): Promise<void> {
     if (record.client !== client || !this.isCurrent(record) || this.closed) return;
     record.client = undefined;
+    // Dropping the reference is not enough: the transport still owns a child process or an open
+    // socket, and every reconnect would otherwise stack another live one on top. This must not be
+    // awaited -- it runs from the transport's own onclose callback, and a close() that never
+    // settles would leave this handler (and the reconnect it schedules) pending forever.
+    void closeClient(client);
     clearCatalog(record);
     record.status = { name: record.config.name, state: "failed", error: "MCP connection closed unexpectedly" };
     this.bumpCatalogRevision();
@@ -321,9 +326,10 @@ export class McpRuntime {
   }
 
   private scheduleReconnect(record: ServerRecord): void {
+    // stdio servers are the common case and crash like any other process, so they must be able to
+    // reconnect too; without this a single OOM left them permanently failed until a manual retry.
     if (
       this.closed
-      || record.config.type === "stdio"
       || record.config.disabled
       || !this.isCurrent(record)
       || record.reconnectAttempts >= MAX_MCP_RECONNECT_ATTEMPTS
@@ -390,6 +396,15 @@ export function mcpToolName(server: string, tool: string): string {
 
 export function mcpPromptCommandName(server: string, prompt: string): string {
   return `mcp__${sanitizeName(server)}__${sanitizeName(prompt)}`;
+}
+
+const mcpBridgeTools = new Set(["ListMcpPrompts", "GetMcpPrompt", "RunMcpPrompt", "ListMcpResources", "ReadMcpResource"]);
+
+// These tools hand a remote server's own payload back as ToolResult.data. That payload is
+// untrusted input, so it must never be able to activate a skill, widen permissions, or drive
+// plan approval the way a first-party tool result can.
+export function isUntrustedToolResultSource(toolName: string): boolean {
+  return toolName.startsWith("mcp__") || mcpBridgeTools.has(toolName);
 }
 
 function runtimeTools(server: string, tools: McpTool[]): RuntimeMcpTool[] {

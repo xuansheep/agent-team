@@ -56,6 +56,21 @@ describe("PlanModeController", () => {
     assert.equal(handoff.approvalId, approvalId);
   });
 
+  it("keeps the user's deny rules after leaving Plan Mode", async () => {
+    const cwd = await workspace();
+    const controller = new PlanModeController();
+    const deny = ["Bash(rm -rf *)", "Read(**/.env)"];
+    const session = createKernelSession({ id: "s1", cwd, permissions: { mode: "default", allow: ["Read"], ask: [], deny } });
+    const planning = controller.enterPlanMode(session, { request: "build" });
+    await writePlan(planning.planState!.planFilePath, "# Plan\n\nShip safely.");
+    const waiting = await controller.requestPlanApproval(planning);
+
+    const approved = (await controller.resolvePlanApproval(waiting, { decision: "continue" })).session;
+
+    assert.deepEqual(approved.toolPermissionContext.deny, deny);
+    assert.deepEqual(approved.toolPermissionContext.allow, ["Read"]);
+  });
+
   it("continues with the current default execution mode after changing it in Plan Mode", async () => {
     const cwd = await workspace();
     const controller = new PlanModeController();

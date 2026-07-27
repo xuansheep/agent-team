@@ -5,6 +5,7 @@ import type { McpServerStatus, RuntimeMcpTool } from "./runtime.js";
 import type { McpToolCallResult } from "./types.js";
 
 const MAX_MCP_TEXT_LENGTH = 2048;
+const MAX_MCP_TOOL_RESULT_LENGTH = 200_000;
 
 export type McpToolSearchRuntime = {
   listTools(): RuntimeMcpTool[];
@@ -317,20 +318,21 @@ function formatSearchOutput(data: McpToolSearchData): string {
   return lines.join("\n");
 }
 
+// A server controls how much it returns, so an unbounded result is both an OOM risk and a way to
+// flood the model's context. Control characters are stripped for the same reason descriptions are.
 function toolResultText(result: McpToolCallResult): string {
   const text = (result.content ?? [])
     .flatMap((content) => content.type === "text" && typeof content.text === "string" ? [content.text] : [])
     .join("\n");
-  if (text) return text;
-  if (result.structuredContent) return JSON.stringify(result.structuredContent);
-  return JSON.stringify(result);
+  const value = text || (result.structuredContent ? JSON.stringify(result.structuredContent) : JSON.stringify(result));
+  return sanitizedText(value ?? "", MAX_MCP_TOOL_RESULT_LENGTH) ?? "";
 }
 
-function sanitizedText(value: string | undefined): string | undefined {
+function sanitizedText(value: string | undefined, maxLength = MAX_MCP_TEXT_LENGTH): string | undefined {
   if (!value) return undefined;
   const sanitized = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trim();
   if (!sanitized) return undefined;
-  return sanitized.length <= MAX_MCP_TEXT_LENGTH ? sanitized : sanitized.slice(0, MAX_MCP_TEXT_LENGTH - 1) + "…";
+  return sanitized.length <= maxLength ? sanitized : sanitized.slice(0, maxLength - 1) + "…";
 }
 
 function isDenied(name: string, permissions: { deny: string[] } | undefined): boolean {

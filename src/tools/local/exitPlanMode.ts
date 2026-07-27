@@ -72,7 +72,10 @@ export const exitPlanModeTool: Tool = {
   mapToolResultToModelResult: (result) => exitPlanModePendingApprovalMessage(result),
   async execute(input, context) {
     const parsed = inputSchema.parse(input) as { state?: PlanSessionState; allowedPrompts?: PlanRequestedPermission[] };
-    const state = parsed.state ?? context.planState;
+    // `state` is not part of input_schema, but the model can still send it. The runtime's own
+    // plan state must win, or a forged payload could raise prePlanMode to fullAccess and point the
+    // approval UI at a file that is not the real plan.
+    const state = context.planState ?? parsed.state;
     if (!state) return { error: "Plan Mode is not active", exit_code: 1 };
     try {
       const result = await exitPlanMode(state, { requestedPermissions: parsed.allowedPrompts });

@@ -33,6 +33,9 @@ const defaultRequestTimeoutMs = 600_000;
 const defaultStreamIdleTimeoutMs = 90_000;
 const retryBaseDelayMs = 500;
 const retryMaxDelayMs = 32_000;
+// Retry-After wins over our own backoff, but an hour-long (or 2^31-overflowing) value from a
+// gateway must not park the process or wrap around into a busy loop.
+const maxRetryAfterMs = 60_000;
 
 export function buildApiKeyHeaders(apiKey: string, mode: ApiKeyMode): Record<string, string> {
   return mode === "x-api-key"
@@ -110,6 +113,11 @@ export async function withProviderRetry<T>(input: {
       unlink();
     }
 
+    // The failed attempt can still hold an open socket and a half-consumed response body. Once a
+    // stream has started its idle timer is gone too, so without this abort every retry leaks a
+    // connection that nothing will ever close.
+    controller.abort(failure);
+
     if (!failure.retryable) throw failure;
     const phase = failure.phase;
     const maxRetries = phase === "stream" ? retry.streamMaxRetries : retry.requestMaxRetries;
@@ -119,7 +127,9 @@ export async function withProviderRetry<T>(input: {
     const retryAttempt = completedRetries + 1;
     if (phase === "stream") streamRetries = retryAttempt;
     else requestRetries = retryAttempt;
-    const retryInMs = failure.retryAfterMs ?? retry.calculateDelay(retryAttempt);
+    const retryInMs = failure.retryAfterMs === undefined
+      ? retry.calculateDelay(retryAttempt)
+      : Math.min(failure.retryAfterMs, maxRetryAfterMs);
     const scheduledAt = new Date();
     await input.request.onRetry?.({
       phase,
@@ -218,27 +228,33 @@ export async function consumeSseBlocks(
   let buffer = "";
   let done = false;
 
-  while (!done) {
-    const chunk = await readSseChunk(reader, options);
-    if (chunk.done) {
-      buffer += decoder.decode();
-      done = true;
-    } else {
-      buffer += decoder.decode(chunk.value, { stream: true });
+  try {
+    while (!done) {
+      const chunk = await readSseChunk(reader, options);
+      if (chunk.done) {
+        buffer += decoder.decode();
+        done = true;
+      } else {
+        buffer += decoder.decode(chunk.value, { stream: true });
+      }
+
+      buffer = normalizeSseLineEndings(buffer, done);
+      let separatorIndex = buffer.indexOf("\n\n");
+      while (separatorIndex !== -1) {
+        const block = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + 2);
+        if (consumeSseBlock(block, onData)) return true;
+        separatorIndex = buffer.indexOf("\n\n");
+      }
     }
 
-    buffer = normalizeSseLineEndings(buffer, done);
-    let separatorIndex = buffer.indexOf("\n\n");
-    while (separatorIndex !== -1) {
-      const block = buffer.slice(0, separatorIndex);
-      buffer = buffer.slice(separatorIndex + 2);
-      if (consumeSseBlock(block, onData)) return true;
-      separatorIndex = buffer.indexOf("\n\n");
-    }
+    if (buffer.trim()) return consumeSseBlock(buffer, onData);
+    return false;
+  } finally {
+    // Returning early on [DONE] leaves the body unread and the reader locked, so undici can never
+    // hand the connection back to its pool.
+    await Promise.resolve(reader.cancel?.()).catch(() => undefined);
   }
-
-  if (buffer.trim()) return consumeSseBlock(buffer, onData);
-  return false;
 }
 
 export function providerRetryDelay(attempt: number, random = Math.random): number {

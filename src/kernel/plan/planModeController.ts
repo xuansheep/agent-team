@@ -92,7 +92,7 @@ export class PlanModeController {
       const sessionWithToolResult = closePlanApprovalToolCall(session, "continue", input.feedback);
       const document = await readRequiredPlan(session.planState.planFilePath);
       const approved = approvePlan(session.planState, document, input.feedback);
-      const resolved = resolvePlanApproval(approved, "continue");
+      const resolved = resolvePlanApproval(approved, "continue", undefined, session.toolPermissionContext);
       const restoredPermissions = { ...resolved.permissions, mode: restoredExecutionPermissionMode(session, resolved.permissions.mode) };
       const nextSession = reduceKernelSession({ ...sessionWithToolResult, planState: resolved.state, toolPermissionContext: restoredPermissions }, {
         type: "pending_interaction_cleared",
@@ -112,7 +112,7 @@ export class PlanModeController {
       };
     }
     const sessionWithToolResult = closePlanApprovalToolCall(session, "stay", input.feedback);
-    const resolved = resolvePlanApproval(session.planState, "stay", input.feedback);
+    const resolved = resolvePlanApproval(session.planState, "stay", input.feedback, session.toolPermissionContext);
     return {
       session: reduceKernelSession({ ...sessionWithToolResult, planState: resolved.state, toolPermissionContext: resolved.permissions }, {
         type: "pending_interaction_cleared",

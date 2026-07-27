@@ -57,7 +57,7 @@ export function shellCommandText(input: unknown): string {
   return String((input as { command?: unknown }).command ?? "");
 }
 
-function hasShellRedirection(command: string): boolean {
+export function hasShellRedirection(command: string): boolean {
   let singleQuoted = false;
   let doubleQuoted = false;
   let escaped = false;

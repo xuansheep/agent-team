@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { McpRuntime } from "../../src/mcp/runtime.js";
+import { isUntrustedToolResultSource, McpRuntime } from "../../src/mcp/runtime.js";
 import { createMcpClientFactory } from "../../src/mcp/transports.js";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 import type { McpClient, McpPrompt, McpResource, McpTool } from "../../src/mcp/types.js";
@@ -233,6 +233,15 @@ describe("McpRuntime", () => {
     assert.equal(registry.get("mcp__docs__search").description, "new");
     assert.deepEqual(registry.get("mcp__docs__search").input_schema, { type: "object", properties: { q: { type: "string" } } });
     await runtime.closeAll();
+  });
+
+  it("treats every MCP-relayed result as untrusted for session control", () => {
+    for (const name of ["mcp__docs__search", "RunMcpPrompt", "GetMcpPrompt", "ReadMcpResource", "ListMcpPrompts", "ListMcpResources"]) {
+      assert.equal(isUntrustedToolResultSource(name), true, `${name} must not be able to steer the session`);
+    }
+    for (const name of ["UseSkill", "ExitPlanMode", "AskUserQuestion", "Read"]) {
+      assert.equal(isUntrustedToolResultSource(name), false, `${name} is first-party`);
+    }
   });
 
 });

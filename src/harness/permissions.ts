@@ -1,5 +1,5 @@
 import { PermissionSet } from "../config/schema.js";
-import { splitShellCommandSegments } from "../security/shellSafety.js";
+import { hasShellRedirection, splitShellCommandSegments } from "../security/shellSafety.js";
 
 export type PermissionDecision = {
   decision: "allow" | "ask" | "deny";
@@ -44,9 +44,14 @@ function matchesRule(rule: string, tool: string, specifier: string, decision: Pe
   if (!matchesToolName(parsed.tool, tool)) return false;
   if (!parsed.specifier) return true;
 
-  const wholeCommandMatches = matchesSpecifier(parsed.specifier, tool, specifier);
+  // Windows paths are case-insensitive, so `.ENV` must not slip past a `.env` deny rule.
+  // Only deny/ask relax case; allow stays strict so it never widens by accident.
+  const relaxCase = decision !== "allow" && !isShellTool(tool);
+  const wholeCommandMatches = matchesSpecifier(parsed.specifier, tool, specifier, relaxCase);
   if (decision === "allow") {
     if (!wholeCommandMatches || !isShellTool(tool) || parsed.specifier === "*") return wholeCommandMatches;
+    // Redirection turns a read-only-looking command into a write, so a rule without one must not allow it.
+    if (hasShellRedirection(specifier) && !hasShellRedirection(parsed.specifier)) return false;
     const commandSegments = splitShellCommandSegments(specifier);
     if (!commandSegments || commandSegments.length < 2) return Boolean(commandSegments);
     const ruleSegments = splitShellCommandSegments(parsed.specifier);
@@ -57,14 +62,14 @@ function matchesRule(rule: string, tool: string, specifier: string, decision: Pe
 
   const segments = splitShellCommandSegments(specifier);
   if (!segments) return decision === "deny";
-  return segments.some((segment) => matchesSpecifier(parsed.specifier!, tool, segment));
+  return segments.some((segment) => matchesSpecifier(parsed.specifier!, tool, segment, relaxCase));
 }
 
-function matchesSpecifier(pattern: string, tool: string, specifier: string): boolean {
+function matchesSpecifier(pattern: string, tool: string, specifier: string, caseInsensitive = false): boolean {
   if (pattern.toLowerCase().startsWith("prompt:")) {
     return matchesPromptRule(tool, pattern.slice("prompt:".length), specifier);
   }
-  return wildcardMatch(pattern, specifier);
+  return wildcardMatch(pattern, specifier, caseInsensitive);
 }
 
 function isShellTool(tool: string): boolean {
@@ -82,15 +87,15 @@ function parseRule(rule: string): ParsedRule {
   return { tool: match.groups.tool, specifier: match.groups.specifier };
 }
 
-function wildcardMatch(pattern: string, value: string): boolean {
+function wildcardMatch(pattern: string, value: string, caseInsensitive = false): boolean {
   const escaped = pattern
-    .replace(/[.+^\${}()|[\]\\]/g, "\\$&")
+    .replace(/[.+^\${}()|[\]\\?]/g, "\\$&")
     .replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`).test(value);
+  return new RegExp(`^${escaped}$`, caseInsensitive ? "i" : "").test(value);
 }
 
 function matchesPromptRule(tool: string, prompt: string, specifier: string): boolean {
-  if (tool !== "Bash") return false;
+  if (!isShellTool(tool)) return false;
   const normalizedPrompt = prompt.toLowerCase();
   const command = specifier.trim().toLowerCase();
   if (!command || hasUnsafeShellSyntax(command)) return false;

@@ -87,6 +87,32 @@ describe("local tools", () => {
     assert.match(result.output ?? "", /[.]einsteins[\\/]AGENTS[.]md/);
   });
 
+  it("refuses WebFetch against private and non-http targets", async () => {
+    const cwd = await workspace();
+    const tools = createLocalToolRegistry();
+
+    for (const url of [
+      "http://169.254.169.254/latest/meta-data/",
+      "http://127.0.0.1:8080/admin",
+      "http://[::1]/",
+      "http://10.0.0.5/",
+      "file:///etc/passwd"
+    ]) {
+      await assert.rejects(() => tools.get("WebFetch").execute({ url }, { cwd }), /private address|only http/, `expected ${url} to be refused`);
+    }
+  });
+
+  it("keeps Glob and Grep inside the workspace", async () => {
+    const cwd = await workspace();
+    const outside = join(cwd, "..", "outside-secret.txt");
+    await writeFile(outside, "AKIAIOSFODNN7EXAMPLE\n", "utf8");
+    const tools = createLocalToolRegistry();
+
+    await assert.rejects(() => tools.get("Glob").execute({ pattern: "../**/outside-secret.txt" }, { cwd }), /escapes workspace/);
+    await assert.rejects(() => tools.get("Grep").execute({ pattern: "AKIA", glob: "../**/*" }, { cwd }), /escapes workspace/);
+    await assert.rejects(() => tools.get("Glob").execute({ pattern: join(cwd, "..", "**", "*.txt") }, { cwd }), /escapes workspace/);
+  });
+
   it("normalizes glob backslashes only for Windows patterns", () => {
     assert.equal(normalizeGlobPatternForFastGlob("C:\\repo\\**\\AGENTS.md", "win32"), "C:/repo/**/AGENTS.md");
     assert.equal(normalizeGlobPatternForFastGlob("dir\\*.ts", "linux"), "dir\\*.ts");

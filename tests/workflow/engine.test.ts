@@ -294,7 +294,9 @@ describe("WorkflowEngine", () => {
     });
 
     assert.equal(failed.status, "completed");
-    assert.deepEqual(failed.plan_requested_permission_rules, ["Bash(prompt:run tests)"]);
+    // The runtime treats Bash and PowerShell alike, so an approved prompt must cover both or it
+    // is dead on Windows, where the model reaches for PowerShell.
+    assert.deepEqual(failed.plan_requested_permission_rules, ["Bash(prompt:run tests)", "PowerShell(prompt:run tests)"]);
 
     assert.equal(calls, 5);
   });

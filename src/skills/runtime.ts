@@ -3,6 +3,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { projectDirectoriesToGitRoot } from "../context/projectDirectories.js";
 import type { ModelMessage, ModelProvider } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { executeTool } from "../tools/errors.js";
+import type { ToolContext } from "../tools/types.js";
 import {
   canonicalSkillPath,
   loadSkillsDirectory,
@@ -31,6 +33,7 @@ export type SkillActivationOptions = {
   sessionId?: string;
   parentPermissionMode?: "default" | "fullAccess" | "plan";
   signal?: AbortSignal;
+  auditSink?: ToolContext["auditSink"];
 };
 
 export type SkillActivationResult =
@@ -265,14 +268,21 @@ async function renderSkillPrompt(skill: LoadedSkill, options: SkillActivationOpt
 
 function substituteArguments(content: string, args: string | undefined, names: string[]): string {
   if (args === undefined) return content;
-  const values = parseArguments(args);
+  const safeArgs = neutralizeShellExpansion(args);
+  const values = parseArguments(args).map(neutralizeShellExpansion);
   const original = content;
-  names.forEach((name, index) => { content = content.replace(new RegExp(`\\$${escapeRegExp(name)}(?![\\[\\w])`, "g"), values[index] ?? ""); });
+  names.forEach((name, index) => { content = content.replace(new RegExp(`\\$${escapeRegExp(name)}(?![\\[\\w])`, "g"), () => values[index] ?? ""); });
   content = content.replace(/\$ARGUMENTS\[(\d+)\]/g, (_match, index) => values[Number(index)] ?? "");
   content = content.replace(/\$(\d+)(?!\w)/g, (_match, index) => values[Number(index)] ?? "");
-  content = content.replaceAll("$ARGUMENTS", args);
-  if (content === original && args) content += `\n\nARGUMENTS: ${args}`;
+  content = content.replaceAll("$ARGUMENTS", () => safeArgs);
+  if (content === original && args) content += `\n\nARGUMENTS: ${safeArgs}`;
   return content;
+}
+
+// Arguments are caller-controlled, so they must never introduce shell expansions that
+// skillRequiresShell() did not see when it classified the skill as safe.
+function neutralizeShellExpansion(value: string): string {
+  return value.replace(/```!/g, "``` !").replace(/!`/g, "! `");
 }
 
 function parseArguments(args: string): string[] {
@@ -295,12 +305,14 @@ async function executeShellExpansions(content: string, skill: LoadedSkill, optio
   for (const match of matches) {
     const command = match[1]?.trim();
     if (!command) continue;
-    const execution = await tool.execute({ command }, {
+    // executeTool rather than tool.execute: the raw call skipped shell input validation and,
+    // without the audit sink, left commands run through skills entirely absent from audit.ndjson.
+    const execution = await executeTool(tool, { command }, {
       cwd: options.cwd ?? process.cwd(),
       sessionId: options.sessionId,
-      abortSignal: options.signal
+      abortSignal: options.signal,
+      auditSink: options.auditSink
     });
-    if (execution.error || execution.exit_code && execution.exit_code !== 0) throw new Error(execution.error ?? `${toolName} exited with ${execution.exit_code}`);
     result = `${result.slice(0, match.index!)}${execution.output ?? ""}${result.slice(match.index! + match[0].length)}`;
   }
   return result;

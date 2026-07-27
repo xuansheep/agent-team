@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, stat, unlink, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { projectDirectoriesToGitRoot } from "../context/projectDirectories.js";
 import { logForDebugging } from "../utils/debug.js";
+import { acquireLockFile, releaseLockFile } from "./lockFile.js";
 
 const MAX_HISTORY_ITEMS = 100;
 const READ_CHUNK_SIZE = 4096;
@@ -117,37 +117,16 @@ async function ensureHistoryFile(path: string): Promise<void> {
 
 async function withHistoryLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
   const lockPath = `${path}.lock`;
-  let lock: FileHandle | undefined;
-
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
-    try {
-      lock = await open(lockPath, "wx", 0o600);
-      break;
-    } catch (error) {
-      if ((error as { code?: unknown }).code !== "EEXIST") throw error;
-      if (await isStaleLock(lockPath)) {
-        await unlink(lockPath).catch(() => undefined);
-        continue;
-      }
-      await delay(LOCK_RETRY_DELAY_MS);
-    }
-  }
-
-  if (!lock) throw new Error(`Timed out acquiring prompt history lock ${lockPath}`);
+  const lock = await acquireLockFile(lockPath, {
+    attempts: LOCK_RETRY_COUNT,
+    delayMs: LOCK_RETRY_DELAY_MS,
+    staleMs: STALE_LOCK_MS,
+    label: "prompt history lock"
+  });
   try {
     return await operation();
   } finally {
-    await lock.close();
-    await unlink(lockPath).catch(() => undefined);
-  }
-}
-
-async function isStaleLock(path: string): Promise<boolean> {
-  try {
-    return Date.now() - (await stat(path)).mtimeMs >= STALE_LOCK_MS;
-  } catch (error) {
-    if ((error as { code?: unknown }).code === "ENOENT") return false;
-    throw error;
+    await releaseLockFile(lock, lockPath);
   }
 }
 

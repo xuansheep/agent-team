@@ -101,7 +101,8 @@ export function createUseSkillTool(runtime: SkillRuntime): Tool {
         model: context.model,
         tools: context.toolRegistry,
         parentPermissionMode: context.permissionMode,
-        signal: context.abortSignal
+        signal: context.abortSignal,
+        auditSink: context.auditSink
       });
       const systemMessage = activation.mode === "inline"
         ? activation.messages.at(-1)

@@ -96,7 +96,17 @@ export class SessionStore {
     try {
       const text = await readFile(join(this.sessionDir(sessionId), "transcript.jsonl"), "utf8");
       if (!text.trim()) return [];
-      return text.trim().split("\n").map((line) => JSON.parse(line) as TranscriptEntry);
+      // Skip torn lines left by a crash mid-append rather than discarding the whole transcript.
+      const entries: TranscriptEntry[] = [];
+      for (const line of text.trim().split("\n")) {
+        if (!line) continue;
+        try {
+          entries.push(JSON.parse(line) as TranscriptEntry);
+        } catch {
+          continue;
+        }
+      }
+      return entries;
     } catch (error) {
       if (isErrno(error, "ENOENT")) return [];
       throw error;

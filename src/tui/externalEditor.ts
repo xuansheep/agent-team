@@ -40,7 +40,11 @@ export function editFileInExternalEditor(filePath: string): ExternalEditorResult
   try {
     const [bin, ...args] = command;
     if (!bin) return { content: null };
-    const result = spawnSync(bin, [...args, filePath], { stdio: "inherit" });
+    // On Windows `code`, `cursor` and friends are .cmd shims. Node refuses to spawn those without
+    // a shell (CVE-2024-27980) and does not apply PATHEXT, so every GUI editor would fail here.
+    // Under shell:true the path is not escaped for us, hence the quoting.
+    const shell = process.platform === "win32";
+    const result = spawnSync(bin, [...args, shell ? `"${filePath}"` : filePath], { stdio: "inherit", shell });
     if (result.status && result.status !== 0) {
       return { content: null, error: `${basename(bin)} exited with code ${result.status}` };
     }

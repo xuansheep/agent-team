@@ -198,6 +198,33 @@ describe("checkToolPermission", () => {
     })).decision, "allow");
   });
 
+  it("denies a path rule however the model spells the path", async () => {
+    const cwd = await workspace();
+    const deny = ["Read(.env)"];
+    for (const filePath of ["./.env", ".\\.env", "src/../.env", join(cwd, ".env"), ".ENV"]) {
+      assert.equal(
+        (await checkToolPermission(readTool, { file_path: filePath }, { mode: "default", allow: ["Read"], ask: [], deny, cwd })).decision,
+        "deny",
+        `expected ${filePath} to be denied`
+      );
+    }
+  });
+
+  it("does not let redirection smuggle a write past an allow rule", async () => {
+    const cwd = await workspace();
+    const permissions = { mode: "default" as const, allow: ["Bash(npm run build*)"], ask: [], deny: [], cwd };
+
+    assert.equal((await checkToolPermission(bashTool, { command: "npm run build" }, permissions)).decision, "allow");
+    assert.notEqual((await checkToolPermission(bashTool, { command: "npm run build > ~/.bashrc" }, permissions)).decision, "allow");
+  });
+
+  it("applies plan-approved prompt rules to PowerShell as well as Bash", async () => {
+    const cwd = await workspace();
+    const permissions = { mode: "default" as const, allow: ["PowerShell(prompt:run tests)"], ask: [], deny: [], cwd };
+
+    assert.equal((await checkToolPermission(powerShellTool, { command: "npm test" }, permissions)).decision, "allow");
+  });
+
 });
 
 const readTool: Tool = {

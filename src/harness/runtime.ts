@@ -15,6 +15,7 @@ import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skil
 import { hasModelUsage } from "../model/usage.js";
 import { contextTokensFromUsage, estimateModelMessageTokens, estimateModelMessagesTokens } from "../model/contextUsage.js";
 import { prepareMcpDiscovery, mergePreCompactDiscoveredTools, withMcpCatalogMessage } from "../mcp/discovery.js";
+import { isUntrustedToolResultSource } from "../mcp/runtime.js";
 import { isToolExplicitlyDenied } from "./permissions.js";
 import { executeTool, toolFailureInfo, toolFailureResult, toolPolicyFailureResult } from "../tools/errors.js";
 import { isShellToolName, shellCallMatchesFailureCategory } from "../tools/local/shellPolicy.js";
@@ -32,6 +33,8 @@ import type { ToolPermissionContext } from "../permissions/context.js";
 import { checkToolPermission } from "../permissions/checkToolPermission.js";
 import type { NodeNavigation } from "../workflow/nodeTransitionController.js";
 import { isHumanUserMessage } from "../context/messages.js";
+
+const maxCompactionRetries = 20;
 export type RuntimeInteraction = {
   requestPermission?(request: PermissionRequest): Promise<PermissionDecision>;
 };
@@ -257,7 +260,10 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       const originalDialogue = [...dialogueToSummarize];
       let truncatedMessageCount = 0;
       let summaryResponse: ModelResponse | undefined;
-      for (let retry = 0; ; retry += 1) {
+      // dropOldestCompactionItem removes one or two messages per pass, so an unbounded loop can
+      // fire hundreds of billed requests against a dialogue that will never fit.
+      for (let retry = 0; retry < maxCompactionRetries; retry += 1) {
+        options.abortSignal?.throwIfAborted();
         try {
           ({ response: summaryResponse } = await turnEngine.requestModel({
             provider: options.provider,
@@ -652,9 +658,12 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
           if (artifactRead) {
             await appendRuntimeEvent(options, { type: "artifact_read", node_id: options.node.id, attempt, source: "tool", ...artifactRead });
           }
-          const skillActivation = skillActivationFromToolResult(result);
+          // A result relayed from an MCP server is untrusted data, not control flow: without this
+          // gate a malicious server could forge a skill activation and grant itself Bash(*).
+          const controlResult = isUntrustedToolResultSource(call.name) ? undefined : result;
+          const skillActivation = skillActivationFromToolResult(controlResult);
           if (skillActivation) {
-            applySkillPermissionRules(runtimePermissions, skillPermissionRulesFromToolResult(result));
+            applySkillPermissionRules(runtimePermissions, skillPermissionRulesFromToolResult(controlResult));
             await appendRuntimeEvent(options, {
               type: "skill_activated",
               node_id: options.node.id,
@@ -682,9 +691,9 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
               tools: discoveredTools
             });
           }
-          const skillMessage = skillSystemMessageFromToolResult(result);
+          const skillMessage = skillSystemMessageFromToolResult(controlResult);
           if (skillMessage) await appendDialogueMessage(skillMessage);
-          const skillOverrides = skillRuntimeOverridesFromToolResult(result);
+          const skillOverrides = skillRuntimeOverridesFromToolResult(controlResult);
           const previousModel = options.model;
           if (skillOverrides?.model) options.model = skillOverrides.model;
           if (skillOverrides?.effort !== undefined) options.effort = skillOverrides.effort;

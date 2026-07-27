@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -46,10 +47,13 @@ class SdkMcpClient implements McpClient {
       { name: "agent-team", version: "0.1.0" },
       {
         capabilities,
+        // These handlers are async and can reject (a follow-up list call may fail or time out).
+        // Node turns an unhandled rejection into a fatal error, so a buggy server could otherwise
+        // take the whole TUI down with one list_changed notification.
         listChanged: {
-          tools: { onChanged: (error, tools) => { if (!error && tools) void this.handlers.tools?.(tools as McpTool[]); } },
-          resources: { onChanged: (error, resources) => { if (!error && resources) void this.handlers.resources?.(resources as McpResource[]); } },
-          prompts: { onChanged: (error, prompts) => { if (!error && prompts) void this.handlers.prompts?.(prompts as McpPrompt[]); } }
+          tools: { onChanged: (error, tools) => { if (!error && tools) runDetached(this.handlers.tools?.(tools as McpTool[])); } },
+          resources: { onChanged: (error, resources) => { if (!error && resources) runDetached(this.handlers.resources?.(resources as McpResource[])); } },
+          prompts: { onChanged: (error, prompts) => { if (!error && prompts) runDetached(this.handlers.prompts?.(prompts as McpPrompt[])); } }
         }
       }
     );
@@ -70,6 +74,9 @@ class SdkMcpClient implements McpClient {
   async initialize(): Promise<void> {
     if (this.connected) return;
     await this.client.connect(this.transport, requestOptions(this.server));
+    // The stdio child's stderr is piped but never read. Once the OS buffer fills, the server
+    // blocks in write() and stops answering JSON-RPC, so the pipe has to be drained.
+    (this.transport as { stderr?: { resume?: () => void } }).stderr?.resume?.();
     this.connected = true;
   }
 
@@ -201,7 +208,14 @@ function headersFrom(headers: HeadersInit | undefined): Record<string, string> {
   return headers ? Object.fromEntries(new Headers(headers).entries()) : {};
 }
 
+function runDetached(work: void | Promise<void> | undefined): void {
+  void Promise.resolve(work).catch(() => undefined);
+}
+
 function normalizeRootUri(value: string): string {
+  // `new URL("D:\\repo")` succeeds by reading `D:` as a scheme and yields `d:repo`, silently
+  // dropping the separators, so filesystem paths must be converted before any URL parsing.
+  if (isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) return pathToFileURL(value).toString();
   try {
     return new URL(value).toString();
   } catch {

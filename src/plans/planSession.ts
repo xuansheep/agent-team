@@ -75,13 +75,22 @@ export async function exitPlanMode(state: PlanSessionState, input: { requestedPe
 export function resolvePlanApproval(
   state: PlanSessionState,
   decision: "continue" | "stay",
-  feedback?: unknown
+  feedback?: unknown,
+  current?: ToolPermissionContext
 ): { state: PlanSessionState; permissions: ToolPermissionContext; event: PlanModeEvent } {
+  // Leaving Plan Mode must not drop the user's configured rules; deny in particular is a hard boundary.
+  const retained = {
+    allow: current?.allow ?? [],
+    ask: current?.ask ?? [],
+    deny: current?.deny ?? [],
+    ...(current?.transientAllow ? { transientAllow: current.transientAllow } : {}),
+    ...(current?.source ? { source: current.source } : {})
+  };
   if (decision === "continue") {
     const approvedPlan = state.approvedPlan ?? "";
     return {
       state: { ...state, mode: "inactive", approvedPlan },
-      permissions: { mode: state.prePlanMode, allow: [], ask: [], deny: [] },
+      permissions: { ...retained, mode: state.prePlanMode },
       event: { type: "plan_approval_resolved", session_id: state.sessionId, decision: "continue" }
     };
   }
@@ -91,7 +100,7 @@ export function resolvePlanApproval(
       mode: "planning",
       feedbackMessages: feedback === undefined ? state.feedbackMessages ?? [] : [...state.feedbackMessages ?? [], feedback]
     },
-    permissions: { mode: "plan", prePlanMode: state.prePlanMode, allow: [], ask: [], deny: [], planFilePath: state.planFilePath },
+    permissions: { ...retained, mode: "plan", prePlanMode: state.prePlanMode, planFilePath: state.planFilePath },
     event: { type: "plan_approval_resolved", session_id: state.sessionId, decision: "stay" }
   };
 }

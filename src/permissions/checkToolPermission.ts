@@ -1,4 +1,4 @@
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { decidePermission } from "../harness/permissions.js";
 import { Tool } from "../tools/types.js";
 import { ToolPermissionCheckContext, ToolPermissionDecision } from "./context.js";
@@ -8,8 +8,9 @@ export async function checkToolPermission(
   input: unknown,
   context: ToolPermissionCheckContext
 ): Promise<ToolPermissionDecision> {
-  const specifier = toolSpecifier(tool.name, input);
-  const denyDecision = firstRuleDecision(tool.name, specifier, context.deny, "deny");
+  const specifiers = toolSpecifierCandidates(tool.name, input, context.cwd);
+  const specifier = specifiers[0]!;
+  const denyDecision = firstRuleDecision(tool.name, specifiers, context.deny, "deny");
   if (denyDecision) return denyDecision;
   if (tool.name === "ExitPlanMode" && context.mode !== "plan") {
     return {
@@ -21,7 +22,7 @@ export async function checkToolPermission(
   if (context.mode === "plan") return checkPlanModePermission(tool, input, context);
   if (tool.name === "ToolSearch") return { decision: "allow", reason: "safe deferred tool discovery" };
 
-  const askDecision = firstRuleDecision(tool.name, specifier, context.ask, "ask");
+  const askDecision = firstRuleDecision(tool.name, specifiers, context.ask, "ask");
   if (askDecision) return askDecision;
 
   if (await tool.requiresPermissionPrompt?.(input, context)) {
@@ -76,7 +77,7 @@ function samePath(left: string, right: string): boolean {
 
 function firstRuleDecision(
   tool: string,
-  specifier: string,
+  specifiers: string[],
   rules: string[],
   decision: "ask" | "deny"
 ): ToolPermissionDecision | undefined {
@@ -84,8 +85,10 @@ function firstRuleDecision(
     const permissions = decision === "deny"
       ? { allow: [], ask: [], deny: [rule] }
       : { allow: [], ask: [rule], deny: [] };
-    const result = decidePermission(tool, specifier, permissions);
-    if (result.decision === decision) return result;
+    for (const specifier of specifiers) {
+      const result = decidePermission(tool, specifier, permissions);
+      if (result.decision === decision) return result;
+    }
   }
   return undefined;
 }
@@ -94,12 +97,20 @@ function isWorkflowExecutionTool(toolName: string): boolean {
   return toolName === "WorkflowRun" || toolName === "WorkflowResume" || toolName === "RunWorkflow";
 }
 
-function toolSpecifier(tool: string, input: unknown): string {
+// Rules are matched against every form a path can arrive in, so `./.env`, `src/../.env` and an
+// absolute path all still hit a `Read(.env)` deny rule. The first entry is the canonical form.
+function toolSpecifierCandidates(tool: string, input: unknown, cwd: string): string[] {
   const value = input as Record<string, unknown>;
-  if (tool === "Bash" || tool === "PowerShell") return String(value.command ?? "");
-  if (tool === "UseSkill") return String(value.name ?? "").trim().replace(/^\//, "");
-  if (typeof value.file_path === "string") return value.file_path;
-  if (typeof value.path === "string") return value.path;
-  if (typeof value.url === "string") return value.url;
-  return "";
+  if (tool === "Bash" || tool === "PowerShell") return [String(value.command ?? "")];
+  if (tool === "UseSkill") return [String(value.name ?? "").trim().replace(/^\//, "")];
+  const filePath = typeof value.file_path === "string" ? value.file_path : typeof value.path === "string" ? value.path : undefined;
+  if (filePath !== undefined) return [...new Set([workspaceRelativePath(cwd, filePath), filePath])];
+  if (typeof value.url === "string") return [value.url];
+  return [""];
+}
+
+function workspaceRelativePath(cwd: string, value: string): string {
+  const absolute = isAbsolute(value) ? resolve(value) : resolve(cwd, value);
+  const rel = relative(resolve(cwd), absolute);
+  return (rel === "" ? "." : rel).split(sep).join("/");
 }

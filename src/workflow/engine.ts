@@ -1193,9 +1193,14 @@ function publicWorkflowInput(input: unknown): unknown {
 }
 function planRequestedPermissionRulesFromHandoff(handoff: unknown): string[] {
     const permissions = collectPlanRequestedPermissions(handoff);
+    // The runtime treats Bash and PowerShell alike, so emitting only a Bash rule left every
+    // approved permission dead on Windows, where the model reaches for PowerShell.
     return permissions
         .filter((permission) => permission.tool === "Bash" && permission.prompt.trim())
-        .map((permission) => `Bash(prompt:${permission.prompt.replace(/[()]/g, " ").trim()})`);
+        .flatMap((permission) => {
+            const prompt = permission.prompt.replace(/[()]/g, " ").trim();
+            return [`Bash(prompt:${prompt})`, `PowerShell(prompt:${prompt})`];
+        });
 }
 function clearContextPlanHandoff(input: unknown): unknown {
     if (!input || typeof input !== "object" || Array.isArray(input))
@@ -1546,10 +1551,13 @@ function resolveReworkLimitInput(state: WorkflowState, workflow: WorkflowConfig,
     };
     return { type: "continue", state: nextState, targetNodeId: resolved.target_node_id, handoff, resume, fromNodeId: state.current_node_id, activation, reason: result.direction };
 }
+// Searching the whole payload for a keyword made "continue, don't cancel" resolve to cancel and
+// irreversibly kill the run, so the decision must come from the start of the user's own answer.
 function reworkDecision(input: unknown): "continue" | "cancel" | undefined {
-    const value = JSON.stringify(input).toLowerCase();
-    if (value.includes("cancel") || value.includes("终止")) return "cancel";
-    if (value.includes("continue") || value.includes("继续")) return "continue";
+    const explicit = input && typeof input === "object" ? (input as { decision?: unknown }).decision : undefined;
+    const text = (typeof explicit === "string" ? explicit : userMessageText(input) ?? "").trim().toLowerCase();
+    if (/^(cancel|终止|取消)/.test(text)) return "cancel";
+    if (/^(continue|继续)/.test(text)) return "continue";
     return undefined;
 }
 function userMessageText(input: unknown): string {
@@ -1562,5 +1570,7 @@ function userMessageText(input: unknown): string {
         if (typeof value.request === "string")
             return value.request;
     }
-    return JSON.stringify(input);
+    // JSON.stringify(undefined) is undefined, not a string, and every caller here treats the
+    // result as one.
+    return JSON.stringify(input) ?? "";
 }

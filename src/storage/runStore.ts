@@ -316,15 +316,14 @@ export class RunStore {
     if (!text.trim()) return [];
     const lines = text.split("\n");
     const events: StoredEvent[] = [];
-    for (let index = 0; index < lines.length; index += 1) {
-      const line = lines[index];
+    for (const line of lines) {
       if (!line) continue;
+      // A crash mid-append leaves a torn line. Losing that one event is recoverable; refusing to
+      // read the file at all would make the whole run permanently unresumable.
       try {
         events.push(JSON.parse(line) as StoredEvent);
-      } catch (error) {
-        const isTrailingPartial = index === lines.length - 1 && !text.endsWith("\n");
-        if (isTrailingPartial) break;
-        throw error;
+      } catch {
+        continue;
       }
     }
     return events;
@@ -586,7 +585,9 @@ export class RunStore {
     if (cached !== undefined) return cached;
     try {
       const events = await this.loadEvents(runId);
-      const next = (events.at(-1)?.seq ?? 0) + 1;
+      // Use the maximum rather than the last entry: a torn line skipped by loadEvents would
+      // otherwise hand out a seq that is already in use.
+      const next = events.reduce((max, event) => Math.max(max, event.seq ?? 0), 0) + 1;
       this.nextSeq.set(runId, next);
       return next;
     } catch {

@@ -1,12 +1,12 @@
-import { chmod, mkdir, open, readFile, rename, stat, unlink, type FileHandle } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 import { resolveSettings } from "./resolveSettings.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { DEFAULT_MODEL_CONTEXT_WINDOW } from "../model/modelRegistry.js";
+import { acquireLockFile, releaseLockFile } from "../storage/lockFile.js";
 
 export type LoadSettingsOptions = {
   cwd: string;
@@ -66,22 +66,11 @@ export async function updateUserSettingsFile(
 
 async function withSettingsLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
   const lockPath = `${path}.lock`;
-  let lock: FileHandle | undefined;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      lock = await open(lockPath, "wx", 0o600);
-      break;
-    } catch (error) {
-      if ((error as { code?: unknown }).code !== "EEXIST") throw error;
-      await delay(50);
-    }
-  }
-  if (!lock) throw new Error(`Timed out acquiring settings lock ${lockPath}`);
+  const lock = await acquireLockFile(lockPath, { attempts: 100, delayMs: 50, staleMs: 30_000, label: "settings lock" });
   try {
     return await operation();
   } finally {
-    await lock.close();
-    await unlink(lockPath).catch(() => undefined);
+    await releaseLockFile(lock, lockPath);
   }
 }
 
