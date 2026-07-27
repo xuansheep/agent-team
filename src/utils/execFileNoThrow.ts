@@ -3,14 +3,14 @@ import { execFile } from "node:child_process";
 export function execFileNoThrow(
   file: string,
   args: string[],
-  options: { input?: string; timeout?: number; useCwd?: boolean } = {}
+  options: { input?: string; timeout?: number; useCwd?: boolean; cwd?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = execFile(
       file,
       args,
       {
-        cwd: options.useCwd === false ? undefined : process.cwd(),
+        cwd: options.cwd ?? (options.useCwd === false ? undefined : process.cwd()),
         timeout: options.timeout,
         windowsHide: true
       },

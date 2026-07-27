@@ -9,6 +9,7 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
   return {
     cwd: input.cwd,
     mode: "boot",
+    runState: "starting",
     inputPermissionMode: input.inputPermissionMode ?? "default",
     defaultExecutionMode: defaultExecutionModeFrom(input.inputPermissionMode),
     sessionUsage: emptyModelUsage(),
@@ -45,7 +46,8 @@ export function resetTuiRunState(state: TuiState, input: { workflowId: string; r
     modelRequestCount: state.modelRequestCount,
     workflowId: input.workflowId,
     runId: input.runId,
-    mode: "running"
+    mode: "running",
+    runState: "working"
   };
   if (!input.preserveLogs) return reset;
   return {
@@ -62,6 +64,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
       const withModel = updateNodeDetails(clearTuiModelRetry(next), event.node_id, event.attempt, event.activation, { model: event.model });
       return {
         ...withModel,
+        runState: "working",
         sessionUsage: addModelUsage(withModel.sessionUsage, event.usage),
         modelRequestCount: withModel.modelRequestCount + 1
       };
@@ -73,7 +76,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         contextLimit: event.context_limit
       });
     case "node_context_compaction_started":
-      return appendConversation(next, {
+      return appendConversation({ ...next, runState: "working" }, {
         kind: "status",
         nodeId: event.node_id,
         attempt: event.attempt,
@@ -82,7 +85,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         detailText: `阶段：${event.phase}\n原因：${event.reason}\n模型：${event.model}\n压缩前：${event.context_tokens}\n自动压缩上限：${event.context_limit}\n窗口：${event.window_number}`
       }, event);
     case "node_context_compacted": {
-      const withContext = updateNodeDetails(next, event.node_id, event.attempt, event.activation, {
+      const withContext = updateNodeDetails({ ...next, runState: "thinking" }, event.node_id, event.attempt, event.activation, {
         contextTokens: event.context_tokens_after,
         contextLimit: event.context_limit
       });
@@ -96,7 +99,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
       }, event);
     }
     case "node_context_compaction_failed":
-      return appendConversation(next, {
+      return appendConversation({ ...next, runState: "thinking" }, {
         kind: "status",
         nodeId: event.node_id,
         attempt: event.attempt,
@@ -105,11 +108,11 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         detailText: `阶段：${event.phase}\n原因：${event.reason}\n模型：${event.model}\n${event.error}`
       }, event);
     case "run_started":
-      return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running" }, { kind: "user", text: inputText(event.input) }, event);
+      return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running", runState: "working" }, { kind: "user", text: inputText(event.input) }, event);
     case "user_message":
-      return appendConversation({ ...next, questions: [] }, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text }, event);
+      return appendConversation({ ...next, questions: [], runState: "thinking" }, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text }, event);
     case "node_started":
-      return upsertNode({ ...next, mode: "running", currentNodeId: event.node_id, questions: [] }, event.node_id, event.attempt, event.activation ?? 1, "running");
+      return upsertNode({ ...next, mode: "running", runState: "thinking", currentNodeId: event.node_id, questions: [] }, event.node_id, event.attempt, event.activation ?? 1, "running");
     case "complete_summary_available":
       return appendConversation(next, {
         kind: "status",
@@ -127,7 +130,7 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
 路径：${event.path}`
       }, event);
     case "transition":
-      return appendConversation({ ...next, mode: "running", currentNodeId: event.to, suspendedStack: nextSuspendedStack(next.suspendedStack, event) }, {
+      return appendConversation({ ...next, mode: "running", runState: "working", currentNodeId: event.to, suspendedStack: nextSuspendedStack(next.suspendedStack, event) }, {
         kind: "status",
         text: `流程流转：${event.from} -> ${event.to}（${event.reason}）`,
         detailText: `from：${event.from}
@@ -136,15 +139,15 @@ reason：${event.reason}`
       }, event);
     case "model_thinking_delta": {
       const activation = event.activation ?? findActivation(next, event.node_id);
-      return appendThinkingLog(next, event.node_id, event.attempt, activation, event.text, event);
+      return appendThinkingLog({ ...next, runState: "thinking" }, event.node_id, event.attempt, activation, event.text, event);
     }
     case "model_stream_delta": {
       const activation = event.activation ?? findActivation(next, event.node_id);
-      return appendAssistantStreamLog(appendModelStream(next, event.node_id, event.attempt, activation, event.text), event.node_id, event.attempt, activation, event);
+      return appendAssistantStreamLog(appendModelStream({ ...next, runState: "thinking" }, event.node_id, event.attempt, activation, event.text), event.node_id, event.attempt, activation, event);
     }
     case "model_retry_scheduled": {
       const activation = event.activation ?? findActivation(next, event.node_id);
-      const rolledBack = rollbackRetryStream(next, event.node_id, event.attempt, activation, event.discarded_content_chars, event.discarded_thinking_chars);
+      const rolledBack = rollbackRetryStream({ ...next, runState: "thinking" }, event.node_id, event.attempt, activation, event.discarded_content_chars, event.discarded_thinking_chars);
       return applyTuiModelRetry(rolledBack, {
         nodeId: event.node_id,
         attempt: event.attempt,
@@ -166,7 +169,7 @@ reason：${event.reason}`
       const activation = event.activation ?? findActivation(next, event.node_id);
       const formatted = nodeCompletedLog(event.node_id, event.status, event.result);
       const status = event.status === "success" ? "completed" : event.status;
-      return appendConversation(upsertNode(next, event.node_id, attempt, activation, status), {
+      return appendConversation(upsertNode({ ...next, runState: "working" }, event.node_id, attempt, activation, status), {
         kind: "status",
         nodeId: event.node_id,
         attempt,
@@ -180,7 +183,7 @@ reason：${event.reason}`
       const existing = next.nodes.find((node) => node.nodeId === event.node_id && node.attempt === attempt);
       const status = existing?.status === "failure" ? "failure" : "waiting_user";
       return appendConversation(
-        upsertNode({ ...next, mode: "question", currentNodeId: event.node_id, questions: event.questions }, event.node_id, attempt, activation, status),
+        upsertNode({ ...next, mode: "question", runState: "waiting", currentNodeId: event.node_id, questions: event.questions }, event.node_id, attempt, activation, status),
         { kind: "status", nodeId: event.node_id, attempt, text: `${event.node_id} 需要用户补充信息${questionSummary(event.questions)}`, detailText: questionDetail(event.questions) },
         event
       );
@@ -190,6 +193,7 @@ reason：${event.reason}`
       const toolCallId = event.tool_call_id ?? `${event.node_id}:${next.tools.length + 1}`;
       const withTool = {
         ...next,
+        runState: "working" as const,
         tools: [
           ...next.tools,
           {
@@ -209,13 +213,14 @@ reason：${event.reason}`
       return appendToolLog(withTool, event, attempt, activation, toolCallId, parentLogId);
     }
     case "tool_completed":
-      return updateToolLog(updateTool(next, event.tool_call_id, "completed", event.result), event.tool_call_id, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result));
+      return updateRunStateAfterTool(updateToolLog(updateTool(next, event.tool_call_id, "completed", event.result), event.tool_call_id, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result)));
     case "tool_failed":
-      return updateToolLog(updateTool(next, event.tool_call_id, "failed", undefined, event.error), event.tool_call_id, "failed", `错误：${event.error}`);
+      return updateRunStateAfterTool(updateToolLog(updateTool(next, event.tool_call_id, "failed", undefined, event.error), event.tool_call_id, "failed", `错误：${event.error}`));
     case "permission_requested":
       return appendPermissionLog({
         ...next,
         mode: "permission",
+        runState: "waiting",
         permissionRequests: [
           ...next.permissionRequests,
           {
@@ -234,6 +239,7 @@ reason：${event.reason}`
       return updatePermissionLog({
         ...next,
         mode: "running",
+        runState: "working",
         permissionRequests: next.permissionRequests.filter((request) => request.requestId !== event.request_id)
       }, event.request_id, event.decision === "allow_once" ? "allowed" : "denied");
     case "node_interrupted":
@@ -245,20 +251,24 @@ reason：${event.reason}`
         detailText: `节点：${event.node_id}\n第 ${event.attempt} 次尝试`
       }, event);
     case "run_interrupted":
-      return appendConversation({ ...clearTuiModelRetry(next), mode: "interrupted" }, { kind: "status", text: "运行已中断", detailText: "原因：用户中断" }, event);
+      return appendConversation({ ...clearTuiModelRetry(next), mode: "interrupted", runState: "ready" }, { kind: "status", text: "运行已中断", detailText: "原因：用户中断" }, event);
     case "run_failed":
       return appendConversation(
-        { ...clearTuiModelRetry(next), mode: "failed", error: event.error },
+        { ...clearTuiModelRetry(next), mode: "failed", runState: "ready", error: event.error },
         { kind: "status", text: `运行失败：${event.error}`, detailText: event.detail ? `错误：${event.error}\n${event.detail}` : `错误：${event.error}` },
         event
       );
     case "run_completed":
-      return appendConversation({ ...clearTuiModelRetry(next), mode: "completed" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) }, event);
+      return appendConversation({ ...clearTuiModelRetry(next), mode: "completed", runState: "ready" }, { kind: "status", text: "运行完成", detailText: runResultDetail(event.result) }, event);
     case "run_cancelled":
-      return appendConversation({ ...clearTuiModelRetry(next), mode: "interrupted" }, { kind: "status", text: "运行已取消", detailText: event.reason }, event);
+      return appendConversation({ ...clearTuiModelRetry(next), mode: "interrupted", runState: "ready" }, { kind: "status", text: "运行已取消", detailText: event.reason }, event);
     default:
       return next;
   }
+}
+
+function updateRunStateAfterTool(state: TuiState): TuiState {
+  return { ...state, runState: state.tools.some((tool) => tool.status === "running") ? "working" : "thinking" };
 }
 
 export function applyTuiModelRetry(state: TuiState, retry: TuiModelRetryState): TuiState {

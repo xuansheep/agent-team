@@ -21,6 +21,7 @@ export type InteractionChoice = {
   allowPromptInput?: boolean;
   visibleOptionCount?: number;
   multiSelect?: boolean;
+  enableOrdering?: boolean;
   selectedValues?: string[];
   submitButtonText?: string;
   promptInputTakesFocus?: boolean;
@@ -306,6 +307,7 @@ export function InteractionArea({
                     isDisabled={!canUseInput || footerFocused}
                     options={renderedOptions}
                     defaultValue={choice.selectedValues}
+                    enableOrdering={choice.enableOrdering}
                     visibleOptionCount={visibleOptionCount}
                     submitButtonText={choice.submitButtonText ?? "Done"}
                     onChange={choice.onChangeValues}

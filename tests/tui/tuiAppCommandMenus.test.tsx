@@ -14,7 +14,7 @@ function menu(input: { state: CommandMenuState; diagnostics: RuntimeDiagnostics;
     state: input.state,
     diagnostics: input.diagnostics,
     mcpRuntime: input.mcpRuntime,
-    statuslineElements: ["mode", "workflow"],
+    statuslineElements: ["permission", "run-state", "workflow"],
     setStatuslineElements: () => undefined,
     setCommandMenu: (state) => { nextState = state; },
     closeCommandMenu: (message) => { closed = message; },

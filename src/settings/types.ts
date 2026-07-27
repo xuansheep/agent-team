@@ -5,6 +5,43 @@ import { mcpServersSettingsSchema } from "../mcp/schema.js";
 
 export const settingsPermissionModeSchema = z.enum(["default", "fullAccess", "plan"]);
 
+export const statusLineElementIds = [
+  "run-state",
+  "permission",
+  "current-dir",
+  "git-branch",
+  "workflow",
+  "run-id",
+  "tokens-io",
+  "tokens-cache",
+  "requests",
+  "selection"
+] as const;
+
+export const statusLineElementSchema = z.enum(statusLineElementIds);
+export type StatusLineElement = z.infer<typeof statusLineElementSchema>;
+
+export const defaultStatusLineElements: StatusLineElement[] = [
+  "run-state",
+  "permission",
+  "current-dir",
+  "git-branch",
+  "tokens-io",
+  "tokens-cache",
+  "run-id",
+  "selection"
+];
+
+const statusLineSchema = z.preprocess(
+  (value) => Array.isArray(value)
+    ? value.filter((element) => element !== "mode" && element !== "work-mode" && element !== "loading")
+    : value,
+  z.array(statusLineElementSchema).refine(
+    (elements) => new Set(elements).size === elements.length,
+    "Status line elements must be unique"
+  )
+);
+
 const settingsShape = {
   permissions: z.object({
     defaultMode: settingsPermissionModeSchema.optional()
@@ -45,6 +82,7 @@ export const projectSettingsSchema = z.object({
 
 export const settingsSchema = z.object({
   ...settingsShape,
+  statusLine: statusLineSchema.optional(),
   providers: z.record(providerSchema).optional(),
   mcpServers: mcpServersSettingsSchema.optional(),
   projects: z.record(mcpProjectStateSchema).optional()

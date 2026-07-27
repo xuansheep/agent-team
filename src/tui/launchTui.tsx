@@ -9,7 +9,7 @@ import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } fr
 import { McpRuntime } from "../mcp/runtime.js";
 import { createMcpClientFactory } from "../mcp/transports.js";
 import { createProvider } from "../providers/registry.js";
-import { defaultProjectSettingsPath, loadSettings, setUserDefaultPermissionMode } from "../settings/loadSettings.js";
+import { defaultProjectSettingsPath, loadSettings, setUserDefaultPermissionMode, setUserStatusLineElements } from "../settings/loadSettings.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import { createPromptHistoryStore, type PromptHistoryStore } from "../storage/promptHistoryStore.js";
 import { prepareProjectStorage } from "../storage/projectStorage.js";
@@ -19,6 +19,7 @@ import { SkillRuntime } from "../skills/runtime.js";
 import { ExecutionCoordinator } from "../runtime/executionCoordinator.js";
 import { WorkflowEngine } from "../workflow/engine.js";
 import { TuiApp } from "./TuiApp.js";
+import { currentGitBranch } from "./gitBranch.js";
 
 export type PreparedTuiRuntime = {
   config: AgentTeamConfig;
@@ -115,6 +116,8 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         mcpRuntime={mcpRuntime}
         skillRuntime={skillRuntime}
         diagnostics={diagnostics}
+        resolveGitBranch={currentGitBranch}
+        saveStatuslineElements={(elements) => setUserStatusLineElements(elements, mcpConfigOptions?.userSettingsPath)}
         saveDefaultPermissionMode={(mode) => setUserDefaultPermissionMode(mode, mcpConfigOptions?.userSettingsPath)}
         collectDiagnostics={() => collectRuntimeDiagnostics({ mcpRuntime, skillRuntime })}
         mcpConfigOptions={mcpConfigOptions}

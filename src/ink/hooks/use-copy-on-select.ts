@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { useSelection } from './use-selection.js'
 
 type Selection = ReturnType<typeof useSelection>
@@ -7,24 +7,32 @@ type Selection = ReturnType<typeof useSelection>
 export function useCopyOnSelect(
   selection: Selection,
   enabled: boolean,
-): void {
+): number | undefined {
   const copiedRef = useRef(false)
+  const [copiedCharacterCount, setCopiedCharacterCount] = useState<number>()
 
   useEffect(() => {
+    copiedRef.current = false
+    if (!enabled) setCopiedCharacterCount(undefined)
+
     const unsubscribe = selection.subscribe(() => {
       const state = selection.getState()
       const hasSelection = selection.hasSelection()
 
       if (state?.isDragging || !hasSelection) {
         copiedRef.current = false
+        setCopiedCharacterCount(undefined)
         return
       }
       if (!enabled || copiedRef.current) return
 
       copiedRef.current = true
-      selection.copySelectionNoClear()
+      const copiedText = selection.copySelectionNoClear()
+      setCopiedCharacterCount(copiedText.trim() ? Array.from(copiedText).length : undefined)
     })
 
     return unsubscribe
   }, [enabled, selection])
+
+  return copiedCharacterCount
 }

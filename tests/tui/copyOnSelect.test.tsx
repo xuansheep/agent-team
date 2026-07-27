@@ -9,6 +9,7 @@ type FakeSelection = {
   selected: boolean;
   state: { isDragging: boolean };
   copies: number;
+  copiedText: string;
   listeners: Set<() => void>;
   hasSelection: () => boolean;
   getState: () => { isDragging: boolean };
@@ -16,11 +17,12 @@ type FakeSelection = {
   copySelectionNoClear: () => string;
 };
 
-function createFakeSelection(): FakeSelection {
+function createFakeSelection(copiedText = "selected text"): FakeSelection {
   const selection: FakeSelection = {
     selected: false,
     state: { isDragging: false },
     copies: 0,
+    copiedText,
     listeners: new Set(),
     hasSelection: () => selection.selected,
     getState: () => selection.state,
@@ -30,7 +32,7 @@ function createFakeSelection(): FakeSelection {
     },
     copySelectionNoClear: () => {
       selection.copies += 1;
-      return "selected text";
+      return selection.copiedText;
     },
   };
   return selection;
@@ -41,13 +43,13 @@ function notify(selection: FakeSelection): void {
 }
 
 function Probe({ selection, enabled }: { selection: FakeSelection; enabled: boolean }) {
-  useCopyOnSelect(selection as never, enabled);
-  return <Text>probe</Text>;
+  const copiedCharacterCount = useCopyOnSelect(selection as never, enabled);
+  return <Text>{copiedCharacterCount === undefined ? "not copied" : `copied ${copiedCharacterCount} chars`}</Text>;
 }
 
 describe("copy on select", () => {
-  it("copies each settled selection once without clearing it", async () => {
-    const selection = createFakeSelection();
+  it("copies each settled selection once and exposes its Unicode code-point count", async () => {
+    const selection = createFakeSelection("A中😀\n");
     const output = render(<Probe selection={selection} enabled />);
 
     try {
@@ -55,32 +57,57 @@ describe("copy on select", () => {
       selection.selected = true;
       selection.state.isDragging = true;
       notify(selection);
+      await settleEffects();
       assert.equal(selection.copies, 0);
+      assert.match(output.lastFrame() ?? "", /not copied/);
 
       selection.state.isDragging = false;
       notify(selection);
+      await settleEffects();
       assert.equal(selection.copies, 1);
       assert.equal(selection.selected, true);
+      assert.match(output.lastFrame() ?? "", /copied 4 chars/);
 
       notify(selection);
       assert.equal(selection.copies, 1);
 
       selection.selected = false;
       notify(selection);
+      await settleEffects();
+      assert.match(output.lastFrame() ?? "", /not copied/);
+
       selection.selected = true;
       selection.state.isDragging = true;
       notify(selection);
       selection.state.isDragging = false;
       notify(selection);
+      await settleEffects();
       assert.equal(selection.copies, 2);
-      assert.equal(selection.selected, true);
+      assert.match(output.lastFrame() ?? "", /copied 4 chars/);
     } finally {
       output.unmount();
       output.cleanup();
     }
   });
 
-  it("does not copy when copyOnSelect is disabled", async () => {
+  it("does not report copied content for whitespace-only selections", async () => {
+    const selection = createFakeSelection(" \n");
+    const output = render(<Probe selection={selection} enabled />);
+
+    try {
+      await settleEffects();
+      selection.selected = true;
+      notify(selection);
+      await settleEffects();
+      assert.equal(selection.copies, 1);
+      assert.match(output.lastFrame() ?? "", /not copied/);
+    } finally {
+      output.unmount();
+      output.cleanup();
+    }
+  });
+
+  it("does not copy or report a selection when copyOnSelect is disabled", async () => {
     const selection = createFakeSelection();
     const output = render(<Probe selection={selection} enabled={false} />);
 
@@ -88,8 +115,10 @@ describe("copy on select", () => {
       await settleEffects();
       selection.selected = true;
       notify(selection);
+      await settleEffects();
       assert.equal(selection.copies, 0);
       assert.equal(selection.selected, true);
+      assert.match(output.lastFrame() ?? "", /not copied/);
     } finally {
       output.unmount();
       output.cleanup();

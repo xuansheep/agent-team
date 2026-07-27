@@ -1262,4 +1262,25 @@ ${semanticPermissionLog?.detailText ?? ""}`, /\{"command"/);
     assert.match(toolLog?.detailText ?? "", /输出：\.git/);
   });
 
+  it("tracks Codex-style run-state transitions without leaving Working while parallel tools run", () => {
+    let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
+    assert.equal(state.runState, "starting");
+
+    state = resetTuiRunState(state, { workflowId: "delivery", runId: "run-state" });
+    assert.equal(state.runState, "working");
+    state = reduceStoredEvent(state, { type: "node_started", node_id: "dev", attempt: 1, activation: 1, ts: "2026-06-23T00:00:00.000Z", seq: 1 });
+    assert.equal(state.runState, "thinking");
+    state = reduceStoredEvent(state, { type: "tool_invoked", node_id: "dev", attempt: 1, activation: 1, tool_call_id: "tool-1", tool: "Bash", input: {}, ts: "2026-06-23T00:00:01.000Z", seq: 2 });
+    state = reduceStoredEvent(state, { type: "tool_invoked", node_id: "dev", attempt: 1, activation: 1, tool_call_id: "tool-2", tool: "Read", input: {}, ts: "2026-06-23T00:00:02.000Z", seq: 3 });
+    assert.equal(state.runState, "working");
+    state = reduceStoredEvent(state, { type: "tool_completed", node_id: "dev", attempt: 1, activation: 1, tool_call_id: "tool-1", tool: "Bash", result: {}, ts: "2026-06-23T00:00:03.000Z", seq: 4 });
+    assert.equal(state.runState, "working");
+    state = reduceStoredEvent(state, { type: "tool_completed", node_id: "dev", attempt: 1, activation: 1, tool_call_id: "tool-2", tool: "Read", result: {}, ts: "2026-06-23T00:00:04.000Z", seq: 5 });
+    assert.equal(state.runState, "thinking");
+    state = reduceStoredEvent(state, { type: "node_waiting_user", node_id: "dev", attempt: 1, activation: 1, questions: [], ts: "2026-06-23T00:00:05.000Z", seq: 6 });
+    assert.equal(state.runState, "waiting");
+    state = reduceStoredEvent(state, { type: "run_completed", result: {}, ts: "2026-06-23T00:00:06.000Z", seq: 7 });
+    assert.equal(state.runState, "ready");
+  });
+
 });

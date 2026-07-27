@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { getPlanFilePath } from "../../src/plans/planFiles.js";
-import { defaultUserSettingsPath, loadSettings, setUserDefaultPermissionMode } from "../../src/settings/loadSettings.js";
+import { defaultUserSettingsPath, loadSettings, setUserDefaultPermissionMode, setUserStatusLineElements } from "../../src/settings/loadSettings.js";
 import { resolveSettings } from "../../src/settings/resolveSettings.js";
 import { settingsSchema } from "../../src/settings/types.js";
 import { writeProjectConfig } from "../helpers/projectConfig.js";
@@ -42,11 +42,13 @@ describe("settings", () => {
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
     const generated = await readFile(userSettingsPath, "utf8");
     const parsed = JSON.parse(generated) as {
+      statusLine: string[];
       models: { defaultContextWindow: number };
       providers: Record<string, { api_key: string; effort: string }>;
     };
 
     assert.deepEqual(Object.keys(settings.providers ?? {}), ["default", "openai_compatible", "anthropic"]);
+    assert.deepEqual(parsed.statusLine, ["run-state", "permission", "current-dir", "git-branch", "tokens-io", "tokens-cache", "run-id", "selection"]);
     assert.equal(parsed.models.defaultContextWindow, 272000);
     assert.equal(Object.hasOwn(parsed.models, "defaultContextCompression"), false);
     assert.equal(parsed.providers.default.api_key, "");
@@ -98,6 +100,47 @@ describe("settings", () => {
     assert.equal(stored.mcpServers.docs.url, "${DOCS_MCP_URL}");
     assert.equal(stored.mcpServers.docs.headers.Authorization, "Bearer ${DOCS_MCP_TOKEN}");
     assert.deepEqual(stored.projects[resolve(cwd)].disabledMcpServers, ["docs"]);
+  });
+
+  it("persists ordered user statusline elements without losing unrelated settings", async () => {
+    const cwd = await workspace();
+    const userSettingsPath = join(cwd, "home", ".einsteins", "settings.json");
+    const projectSettingsPath = join(cwd, "project-settings.json");
+    await writeJson(userSettingsPath, {
+      providers: { default: provider({ api_key: "preserved-key" }) },
+      permissions: { defaultMode: "fullAccess" }
+    });
+
+    await setUserStatusLineElements(["git-branch", "current-dir", "permission"], userSettingsPath);
+    const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
+    const stored = JSON.parse(await readFile(userSettingsPath, "utf8"));
+
+    assert.deepEqual(settings.statusLine, ["git-branch", "current-dir", "permission"]);
+    assert.deepEqual(stored.statusLine, ["git-branch", "current-dir", "permission"]);
+    assert.equal(stored.providers.default.api_key, "preserved-key");
+    assert.equal(stored.permissions.defaultMode, "fullAccess");
+
+    await setUserStatusLineElements([], userSettingsPath);
+    assert.deepEqual(JSON.parse(await readFile(userSettingsPath, "utf8")).statusLine, []);
+  });
+
+  it("filters removed statusline elements while rejecting invalid, duplicate, and project-level settings", async () => {
+    assert.throws(() => settingsSchema.parse({ statusLine: ["run"] }), /Invalid enum value/);
+    assert.deepEqual(
+      settingsSchema.parse({ statusLine: ["mode", "run-state", "work-mode", "loading", "permission"] }).statusLine,
+      ["run-state", "permission"]
+    );
+    assert.throws(() => settingsSchema.parse({ statusLine: ["run-state", "run-state"] }), /Status line elements must be unique/);
+
+    const cwd = await workspace();
+    const userSettingsPath = join(cwd, "user-settings.json");
+    const projectSettingsPath = join(cwd, "project-settings.json");
+    await writeJson(userSettingsPath, {});
+    await writeJson(projectSettingsPath, { statusLine: ["mode"] });
+    await assert.rejects(
+      () => loadSettings({ cwd, userSettingsPath, projectSettingsPath }),
+      /Unrecognized key/
+    );
   });
 
   it("rejects YAML content instead of applying legacy compatibility", async () => {

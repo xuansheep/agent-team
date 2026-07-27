@@ -2,7 +2,8 @@ import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/prom
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
+import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, defaultStatusLineElements, projectSettingsSchema, settingsSchema } from "./types.js";
+import type { StatusLineElement } from "./types.js";
 import { resolveSettings } from "./resolveSettings.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { DEFAULT_MODEL_CONTEXT_WINDOW } from "../model/modelRegistry.js";
@@ -50,6 +51,16 @@ export async function setUserDefaultPermissionMode(
   await updateUserSettingsFile(path, (settings) => ({
     ...settings,
     permissions: { ...settings.permissions, defaultMode: mode }
+  }));
+}
+
+export async function setUserStatusLineElements(
+  elements: StatusLineElement[],
+  path = defaultUserSettingsPath()
+): Promise<void> {
+  await updateUserSettingsFile(path, (settings) => ({
+    ...settings,
+    statusLine: [...elements]
   }));
 }
 
@@ -117,6 +128,7 @@ function parseSettingsJson(raw: string, path: string): unknown {
 }
 
 export const DEFAULT_USER_SETTINGS = JSON.stringify({
+  statusLine: defaultStatusLineElements,
   models: {
     defaultContextWindow: DEFAULT_MODEL_CONTEXT_WINDOW
   },

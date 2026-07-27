@@ -35,7 +35,7 @@ import { WorkflowEngine } from "../workflow/engine.js";
 import { WorkflowSession } from "../workflow/session.js";
 import { applyTuiModelRetry, clearTuiModelRetry, initialTuiState, reduceStoredEvent, resetTuiRunState } from "./eventAdapter.js";
 import { ensureRefableStdin } from "./inkStdin.js";
-import { TuiDefaultExecutionMode, TuiState } from "./state.js";
+import { TuiDefaultExecutionMode, TuiRunState, TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
@@ -51,6 +51,7 @@ import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
 import { editFileInExternalEditor, editTextInExternalEditor, externalEditorDisplayName, ExternalEditor, ExternalTextEditor } from "./externalEditor.js";
 import { resolveImagePaste } from "./imagePaste.js";
 import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail } from "./toolDisplay.js";
+import type { GitBranchResolver } from "./gitBranch.js";
 
 export type CommandMenuState =
   | { kind: "skills:list" }
@@ -85,6 +86,8 @@ export function TuiApp({
   mcpConfigOptions,
   skillConfigOptions,
   executeMcpActionForTest,
+  resolveGitBranch,
+  saveStatuslineElements,
   saveDefaultPermissionMode,
   onExit
 }: {
@@ -108,6 +111,8 @@ export function TuiApp({
   mcpConfigOptions?: McpConfigSourceOptions;
   skillConfigOptions?: SkillAvailabilityOptions;
   executeMcpActionForTest?: (action: McpMenuAction, serverName?: string) => Promise<McpActionResult>;
+  resolveGitBranch?: GitBranchResolver;
+  saveStatuslineElements?: (elements: StatusLineElement[]) => Promise<void>;
   saveDefaultPermissionMode?: (mode: TuiDefaultExecutionMode) => Promise<void>;
   onExit?: () => void;
 }) {
@@ -121,7 +126,7 @@ export function TuiApp({
     [engine]
   );
   const selectionEscapeConsumedRef = useRef(false);
-  useCopyOnSelect(selection, settings?.copyOnSelect ?? true);
+  const copiedSelectionChars = useCopyOnSelect(selection, settings?.copyOnSelect ?? true);
   ensureRefableStdin(stdin);
   const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
   const terminalColumns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
@@ -132,11 +137,19 @@ export function TuiApp({
   const [state, setState] = useState<TuiState>(() => ({
     ...initialTuiState({ cwd, inputPermissionMode: settings?.permissions?.defaultMode ?? "default" }),
     mode: initialWorkflowId ? "input" as const : workflows.length ? "select_workflow" as const : "input" as const,
+    runState: "ready",
     workflowId: initialWorkflowId
   }));
   const [queued, setQueued] = useState<QueuedPrompt[]>([]);
   const [promptText, setPromptText] = useState("");
-  const [statuslineElements, setStatuslineElements] = useState<StatusLineElement[]>(defaultStatusLineElements);
+  const [statuslineElements, setStatuslineElements] = useState<StatusLineElement[]>(
+    () => [...(settings?.statusLine ?? defaultStatusLineElements)]
+  );
+  const statuslineElementsRef = useRef(statuslineElements);
+  const persistedStatuslineElementsRef = useRef(statuslineElements);
+  const statuslineSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const statuslineSaveRevisionRef = useRef(0);
+  const [gitBranch, setGitBranch] = useState<string>();
   const [planWorkCount, setPlanWorkCount] = useState(0);
   const [workStartedAtMs, setWorkStartedAtMs] = useState<number>();
   const [lastWorkDurationMs, setLastWorkDurationMs] = useState<number>();
@@ -422,6 +435,7 @@ export function TuiApp({
         setState((current) => ({
           ...current,
           mode: workflowResultMode(result.status),
+          runState: workflowResultRunState(result.status),
           workflowId: nextWorkflowId,
           runId: session.runId
         }));
@@ -550,6 +564,7 @@ export function TuiApp({
     setState((current) => ({
       ...current,
       mode: "planning",
+      runState: "ready",
       inputPermissionMode: "plan",
       planSession: entered.state,
       pendingReview: undefined,
@@ -599,6 +614,7 @@ export function TuiApp({
     const abortController = new AbortController();
     planAbortControllerRef.current = abortController;
     setPlanWorkCount((current) => current + 1);
+    setState((current) => ({ ...current, runState: "thinking" }));
     let lastUsage: ModelUsage | undefined;
     try {
       const legacyTools = createLocalToolRegistry({ mcpRuntime, skillRuntime });
@@ -673,6 +689,7 @@ export function TuiApp({
         setState((current) => ({
           ...current,
           mode: "question",
+          runState: "waiting",
           questions: nextQuestionSlice(pending.questions, 0),
           error: undefined,
           logMessages: [...current.logMessages, statusLog("Plan Mode needs user input", questionLogDetail(pending.questions))]
@@ -690,6 +707,7 @@ export function TuiApp({
         setState((current) => ({
           ...current,
           mode: "waiting_plan_approval",
+          runState: "waiting",
           planSession: nextPlan,
           pendingReview: {
             type: "plan",
@@ -716,6 +734,7 @@ export function TuiApp({
       setState((current) => ({
         ...appendPlanAssistantLogsFromMessages(appendMissingUserLogMessage(current, options.ensureUserLogText), newMessages),
         mode: "planning",
+        runState: "ready",
         pendingReview: undefined,
         error: undefined
       }));
@@ -726,6 +745,7 @@ export function TuiApp({
         setState((current) => ({
           ...clearTuiModelRetry(current),
           mode: "planning",
+          runState: "ready",
           pendingReview: undefined,
           questions: [],
           error: undefined,
@@ -734,7 +754,7 @@ export function TuiApp({
         requestMainScrollToBottom();
         return;
       }
-      setState((current) => ({ ...clearTuiModelRetry(current), mode: "planning", error: error instanceof Error ? error.message : String(error) }));
+      setState((current) => ({ ...clearTuiModelRetry(current), mode: "planning", runState: "ready", error: error instanceof Error ? error.message : String(error) }));
     } finally {
       if (planAbortControllerRef.current === abortController) planAbortControllerRef.current = undefined;
       setPlanWorkCount((current) => Math.max(0, current - 1));
@@ -756,6 +776,7 @@ export function TuiApp({
     setState((current) => ({
       ...current,
       mode: "planning",
+      runState: "ready",
       planSession: nextPlan ?? current.planSession,
       pendingReview: undefined,
       error: undefined,
@@ -796,6 +817,7 @@ export function TuiApp({
     setState((current) => ({
       ...current,
       mode: "planning",
+      runState: "thinking",
       error: undefined
     }));
     setWorkStatusDetail("Plan Mode is thinking");
@@ -812,9 +834,38 @@ export function TuiApp({
     }));
     requestMainScrollToBottom();
   };
+  const applyStatuslineElements = (elements: StatusLineElement[]) => {
+    if (sameStatuslineElements(statuslineElementsRef.current, elements)) return;
+    const next = [...elements];
+    statuslineElementsRef.current = next;
+    setStatuslineElements(next);
+    setState((current) => current.error?.startsWith("Failed to save statusline settings:")
+      ? { ...current, error: undefined }
+      : current);
+    if (!saveStatuslineElements) {
+      persistedStatuslineElementsRef.current = next;
+      return;
+    }
+    const revision = ++statuslineSaveRevisionRef.current;
+    const save = statuslineSaveQueueRef.current.then(() => saveStatuslineElements(next));
+    statuslineSaveQueueRef.current = save.then(() => undefined, () => undefined);
+    void save.then(
+      () => {
+        persistedStatuslineElementsRef.current = next;
+      },
+      (error) => {
+        if (revision !== statuslineSaveRevisionRef.current) return;
+        const rollback = [...persistedStatuslineElementsRef.current];
+        statuslineElementsRef.current = rollback;
+        setStatuslineElements(rollback);
+        const message = error instanceof Error ? error.message : String(error);
+        setState((current) => ({ ...current, error: "Failed to save statusline settings: " + message }));
+      }
+    );
+  };
   const updateStatusline = (args: string[]) => {
     const result = parseStatuslineArgs(args, statuslineElements);
-    if (result.elements) setStatuslineElements(result.elements);
+    if (result.elements) applyStatuslineElements(result.elements);
     setState((current) => ({
       ...current,
       error: undefined,
@@ -1699,7 +1750,7 @@ ${message.detailText}` : ""}` }
     diagnostics: currentDiagnosticsForMenu,
     mcpRuntime,
     statuslineElements,
-    setStatuslineElements,
+    setStatuslineElements: applyStatuslineElements,
     setCommandMenu,
     closeCommandMenu,
     runMcpAction,
@@ -2040,6 +2091,24 @@ ${message.detailText}` : ""}` }
               ? "confirm_interrupt"
               : "input";
   const isLoading = state.mode === "running" || state.mode === "permission" || planWorkCount > 0;
+  const gitBranchEnabled = statuslineElements.includes("git-branch");
+  useEffect(() => {
+    if (!gitBranchEnabled || !resolveGitBranch) {
+      setGitBranch(undefined);
+      return;
+    }
+    let active = true;
+    void resolveGitBranch(cwd)
+      .then((branch) => {
+        if (active) setGitBranch(branch);
+      })
+      .catch(() => {
+        if (active) setGitBranch(undefined);
+      });
+    return () => {
+      active = false;
+    };
+  }, [cwd, gitBranchEnabled, resolveGitBranch]);
   return (
     <Box flexDirection="column" height={terminalRows}>
       <Header cwd={cwd} workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
@@ -2088,12 +2157,14 @@ ${message.detailText}` : ""}` }
         onPromptTextChange={handlePromptTextChange}
       />
       <StatusLine
+        cwd={cwd}
+        gitBranch={gitBranch}
         mode={interactionMode}
+        runState={state.runState}
         permissionMode={state.inputPermissionMode}
         workflowId={state.workflowId}
         runId={state.runId}
-        isLoading={isLoading}
-        hasSelection={hasSelection}
+        copiedSelectionChars={copiedSelectionChars}
         sessionUsage={state.sessionUsage}
         modelRequestCount={state.modelRequestCount}
         elements={statuslineElements}
@@ -2155,8 +2226,10 @@ function runtimeWorkStatusDetail(event: RuntimeEvent): string | undefined {
 }
 function reducePlanRuntimeEvent(state: TuiState, event: RuntimeEvent): TuiState {
   switch (event.type) {
+    case "runtime_turn_started":
+      return { ...state, runState: "thinking" };
     case "runtime_model_retry_scheduled":
-      return applyTuiModelRetry(state, {
+      return applyTuiModelRetry({ ...state, runState: "thinking" }, {
         nodeId: planRuntimeNodeId,
         attempt: planRuntimeAttempt,
         operation: event.operation,
@@ -2171,22 +2244,33 @@ function reducePlanRuntimeEvent(state: TuiState, event: RuntimeEvent): TuiState 
         detail: event.detail
       });
     case "runtime_model_response":
-      return clearTuiModelRetry(state);
+      return { ...clearTuiModelRetry(state), runState: "working" };
     case "runtime_assistant_message":
       return appendPlanAssistantLog(state, event.content);
     case "runtime_tool_invoked":
-      if (event.tool === "AskUserQuestion") return state;
-      return appendPlanToolLog(state, event.tool_call_id, event.tool, event.input);
+      if (event.tool === "AskUserQuestion") return { ...state, runState: "waiting" };
+      return appendPlanToolLog({ ...state, runState: "working" }, event.tool_call_id, event.tool, event.input);
     case "runtime_tool_completed":
-      if (event.tool === "AskUserQuestion") return state;
-      return updatePlanToolLog(state, event.tool_call_id, event.tool, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result));
+      if (event.tool === "AskUserQuestion") return { ...state, runState: "waiting" };
+      return updatePlanRunStateAfterTool(updatePlanToolLog(state, event.tool_call_id, event.tool, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result)));
     case "runtime_tool_failed":
-      if (event.tool === "AskUserQuestion") return state;
-      return updatePlanToolLog(state, event.tool_call_id, event.tool, "failed", `错误：${event.error}`);
+      if (event.tool === "AskUserQuestion") return { ...state, runState: "waiting" };
+      return updatePlanRunStateAfterTool(updatePlanToolLog(state, event.tool_call_id, event.tool, "failed", `错误：${event.error}`));
+    case "runtime_user_input_requested":
+    case "runtime_permission_requested":
+    case "plan_approval_requested":
+      return { ...state, runState: "waiting" };
+    case "runtime_permission_resolved":
+      return { ...state, runState: "working" };
     default:
       return state;
   }
 }
+function updatePlanRunStateAfterTool(state: TuiState): TuiState {
+  const hasRunningTool = state.logMessages.some((message) => message.kind === "tool" && message.nodeId === planRuntimeNodeId && message.status === "running");
+  return { ...state, runState: hasRunningTool ? "working" : "thinking" };
+}
+
 function appendPlanAssistantLog(state: TuiState, content: string): TuiState {
   const text = content.trim();
   if (!text) return state;
@@ -2726,6 +2810,20 @@ function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiStat
       return "running";
   }
 }
+function workflowResultRunState(status: WorkflowSession["state"]["status"]): TuiRunState {
+  switch (status) {
+    case "waiting_user":
+    case "paused":
+      return "waiting";
+    case "completed":
+    case "failed":
+    case "cancelled":
+      return "ready";
+    case "running":
+    case "pending":
+      return "working";
+  }
+}
 function buildActiveChoice(input: {
   mode: TuiState["mode"];
   workflows: string[];
@@ -3178,6 +3276,10 @@ function isStatusLineElement(value: string): value is StatusLineElement {
 
 function uniqueStatuslineElements(elements: StatusLineElement[]): StatusLineElement[] {
   return elements.filter((element, index) => elements.indexOf(element) === index);
+}
+
+function sameStatuslineElements(left: StatusLineElement[], right: StatusLineElement[]): boolean {
+  return left.length === right.length && left.every((element, index) => element === right[index]);
 }
 
 function isPlanSessionAcceptingInput(plan: PlanSessionState | undefined): boolean {

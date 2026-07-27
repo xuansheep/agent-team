@@ -1,37 +1,44 @@
 import type { ModelUsageTotals } from "../../model/usage.js";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
-import type { TuiMode } from "../state.js";
+import type { TuiMode, TuiRunState } from "../state.js";
 import { Box, Text } from "../ink.js";
 
-export type StatusLineElement = "mode" | "permission" | "workflow" | "run" | "tokens" | "cache" | "requests" | "selection" | "loading";
+import { defaultStatusLineElements, statusLineElementIds } from "../../settings/types.js";
+import type { StatusLineElement } from "../../settings/types.js";
 
-export const defaultStatusLineElements: StatusLineElement[] = ["mode", "workflow", "run", "tokens", "cache", "requests", "selection"];
-export const availableStatusLineElements: StatusLineElement[] = ["mode", "permission", "workflow", "run", "tokens", "cache", "requests", "selection", "loading"];
+export { defaultStatusLineElements };
+export type { StatusLineElement };
+
+export const availableStatusLineElements: StatusLineElement[] = [...statusLineElementIds];
 
 export function StatusLine({
+  cwd,
+  gitBranch,
   mode,
+  runState,
   permissionMode,
   workflowId,
   runId,
-  isLoading,
-  hasSelection,
+  copiedSelectionChars,
   sessionUsage,
   modelRequestCount,
   elements,
   columns = 80
 }: {
+  cwd: string;
+  gitBranch?: string;
   mode: TuiMode;
+  runState: TuiRunState;
   permissionMode: PermissionMode;
   workflowId?: string;
   runId?: string;
-  isLoading: boolean;
-  hasSelection: boolean;
+  copiedSelectionChars?: number;
   sessionUsage: ModelUsageTotals;
   modelRequestCount: number;
   elements: StatusLineElement[];
   columns?: number;
 }) {
-  const text = statusLineText({ mode, permissionMode, workflowId, runId, isLoading, hasSelection, sessionUsage, modelRequestCount, elements });
+  const text = statusLineText({ cwd, gitBranch, mode, runState, permissionMode, workflowId, runId, copiedSelectionChars, sessionUsage, modelRequestCount, elements });
   if (!text) return null;
   const remainder = text.length % Math.max(1, columns);
   const padding = remainder === 0 ? "" : " ".repeat(Math.max(0, columns - remainder));
@@ -43,12 +50,14 @@ export function StatusLine({
 }
 
 export function statusLineText(input: {
+  cwd: string;
+  gitBranch?: string;
   mode: TuiMode;
+  runState: TuiRunState;
   permissionMode: PermissionMode;
   workflowId?: string;
   runId?: string;
-  isLoading: boolean;
-  hasSelection: boolean;
+  copiedSelectionChars?: number;
   sessionUsage: ModelUsageTotals;
   modelRequestCount: number;
   elements: StatusLineElement[];
@@ -57,29 +66,34 @@ export function statusLineText(input: {
 }
 
 function statusLinePart(element: StatusLineElement, input: {
+  cwd: string;
+  gitBranch?: string;
   mode: TuiMode;
+  runState: TuiRunState;
   permissionMode: PermissionMode;
   workflowId?: string;
   runId?: string;
-  isLoading: boolean;
-  hasSelection: boolean;
+  copiedSelectionChars?: number;
   sessionUsage: ModelUsageTotals;
   modelRequestCount: number;
 }): string[] {
-  if (element === "mode") return [`mode ${effectiveModeLabel(input.mode, input.permissionMode)}`];
-  if (element === "permission") return [`permission ${permissionModeLabel(input.permissionMode)}`];
-  if (element === "workflow") return [`workflow ${input.workflowId ?? "unselected"}`];
-  if (element === "run") return input.runId ? [`run ${input.runId}`] : [];
-  if (element === "tokens") return [`tokens I/O ${formatTokenCount(input.sessionUsage.inputTokens)}/${formatTokenCount(input.sessionUsage.outputTokens)}`];
-  if (element === "cache") {
+  if (element === "run-state") return [runStateLabel(effectiveRunState(input.runState, input.mode))];
+  if (element === "permission") return [permissionModeLabel(input.permissionMode)];
+  if (element === "current-dir") return [input.cwd];
+  if (element === "git-branch") return input.gitBranch ? [input.gitBranch] : [];
+  if (element === "workflow") return [input.workflowId ?? "unselected"];
+  if (element === "run-id") return input.runId ? [input.runId] : [];
+  if (element === "tokens-io") return [`tokens ${formatTokenCount(input.sessionUsage.inputTokens)}/${formatTokenCount(input.sessionUsage.outputTokens)}`];
+  if (element === "tokens-cache") {
     const inputTokens = Math.max(0, input.sessionUsage.inputTokens);
     const cachedInputTokens = Math.max(0, input.sessionUsage.cachedInputTokens);
     const hitRate = inputTokens === 0 ? 0 : Math.min(100, Math.round((cachedInputTokens / inputTokens) * 100));
-    return [`cache tokens ${formatTokenCount(cachedInputTokens)} (${hitRate}%)`];
+    return [`cache ${formatTokenCount(cachedInputTokens)} (${hitRate}%)`];
   }
   if (element === "requests") return [`requests ${input.modelRequestCount.toLocaleString("en-US")}`];
-  if (element === "selection") return input.hasSelection ? ["selection active"] : [];
-  if (element === "loading") return input.isLoading ? ["running"] : [];
+  if (element === "selection" && input.copiedSelectionChars !== undefined) {
+    return [`copied ${input.copiedSelectionChars.toLocaleString("en-US")} chars`];
+  }
   return [];
 }
 
@@ -95,12 +109,13 @@ export function formatTokenCount(tokens: number): string {
   return `${(value / unit.threshold).toFixed(1).replace(/\.0$/, "")}${unit.suffix}`;
 }
 
-function effectiveModeLabel(mode: TuiMode, permissionMode: PermissionMode): string {
-  if (mode === "waiting_plan_approval") return "Plan Review";
-  if (mode === "planning" || (mode === "input" && permissionMode === "plan")) return "Plan";
-  if (mode === "input" && permissionMode === "fullAccess") return "Full access";
-  if (mode === "input") return "Default";
-  return mode.replaceAll("_", " ");
+function effectiveRunState(runState: TuiRunState, mode: TuiMode): TuiRunState {
+  if (mode === "permission" || mode === "question" || mode === "waiting_plan_approval" || mode === "paused" || mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume") return "waiting";
+  return runState;
+}
+
+function runStateLabel(runState: TuiRunState): string {
+  return runState[0]!.toUpperCase() + runState.slice(1);
 }
 
 function permissionModeLabel(mode: PermissionMode): string {

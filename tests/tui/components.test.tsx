@@ -379,105 +379,69 @@ describe("PromptInput component", () => {
 
 
 
-  it("renders mode and selection in the statusline", () => {
+  it("renders statusline values without element prefixes and includes the copied character count", () => {
     const output = render(
       <StatusLine
+        cwd="/repo"
+        gitBranch="main"
         mode="input"
+        runState="ready"
         permissionMode="fullAccess"
         workflowId="delivery"
-        isLoading={false}
-        hasSelection
+        runId="run-123"
+        copiedSelectionChars={12}
         sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
         modelRequestCount={0}
-        elements={["mode", "workflow", "selection"]}
+        elements={["run-state", "permission", "current-dir", "git-branch", "workflow", "run-id", "selection"]}
+        columns={200}
       />
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /mode Full access/);
-    assert.match(frame, /workflow delivery/);
-    assert.match(frame, /selection active/);
+    assert.match(frame, /Ready \| full access \| \/repo \| main \| delivery \| run-123 \| copied 12 chars/);
+    for (const prefix of ["run-state", "permission", "current-dir", "git-branch", "workflow", "run-id", "selection"]) {
+      assert.doesNotMatch(frame, new RegExp(prefix + " "));
+    }
     output.unmount();
     output.cleanup();
   });
 
-  it("does not show Plan as the mode after workflow execution has started", () => {
-    const running = render(
-      <StatusLine
-        mode="running"
-        permissionMode="plan"
-        workflowId="delivery"
-        isLoading
-        hasSelection={false}
-        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
-        modelRequestCount={0}
-        elements={["mode", "workflow"]}
-      />
-    );
-
-    const runningFrame = running.lastFrame() ?? "";
-    assert.match(runningFrame, /mode running/);
-    assert.doesNotMatch(runningFrame, /mode Plan/);
-    running.unmount();
-    running.cleanup();
-
-    const input = render(
-      <StatusLine
-        mode="input"
-        permissionMode="plan"
-        workflowId="delivery"
-        isLoading={false}
-        hasSelection={false}
-        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
-        modelRequestCount={0}
-        elements={["mode", "workflow"]}
-      />
-    );
-
-    const inputFrame = input.lastFrame() ?? "";
-    assert.match(inputFrame, /mode Plan/);
-    input.unmount();
-    input.cleanup();
-
-    const review = render(
-      <StatusLine
-        mode="waiting_plan_approval"
-        permissionMode="plan"
-        workflowId="delivery"
-        isLoading={false}
-        hasSelection={false}
-        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
-        modelRequestCount={0}
-        elements={["mode", "workflow"]}
-      />
-    );
-
-    const reviewFrame = review.lastFrame() ?? "";
-    assert.match(reviewFrame, /mode Plan Review/);
-    review.unmount();
-    review.cleanup();
-  });
-
-
-
-  it("renders current-session input, output, cache tokens, and model response count", () => {
+  it("renders blocking interactions as Waiting without a run-state prefix", () => {
     const output = render(
       <StatusLine
+        cwd="/repo"
+        mode="permission"
+        runState="thinking"
+        permissionMode="default"
+        sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 }}
+        modelRequestCount={0}
+        elements={["run-state"]}
+      />
+    );
+
+    assert.match(output.lastFrame() ?? "", /Waiting/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /run-state/);
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("renders token metrics and model response count with concise prefixes", () => {
+    const output = render(
+      <StatusLine
+        cwd="/repo"
         mode="input"
+        runState="ready"
         permissionMode="default"
         workflowId="delivery"
-        isLoading={false}
-        hasSelection={false}
         sessionUsage={{ inputTokens: 15_000, cachedInputTokens: 3_000, outputTokens: 300, totalTokens: 15_300 }}
         modelRequestCount={1_234}
-        elements={["tokens", "cache", "requests"]}
+        elements={["tokens-io", "tokens-cache", "requests"]}
       />
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /tokens I\/O 15K\/300/);
-    assert.match(frame, /cache tokens 3K \(20%\)/);
-    assert.match(frame, /requests 1,234/);
+    assert.match(frame, /tokens 15K\/300 \| cache 3K \(20%\) \| requests 1,234/);
+    assert.doesNotMatch(frame, /tokens-io|tokens-cache/);
     output.unmount();
     output.cleanup();
   });
@@ -485,51 +449,48 @@ describe("PromptInput component", () => {
   it("configures token I/O and cache metrics independently and handles zero input", () => {
     const tokenOutput = render(
       <StatusLine
+        cwd="/repo"
         mode="input"
+        runState="ready"
         permissionMode="default"
-        workflowId="delivery"
-        isLoading={false}
-        hasSelection={false}
         sessionUsage={{ inputTokens: 0, cachedInputTokens: 100, outputTokens: 25, totalTokens: 25 }}
         modelRequestCount={0}
-        elements={["tokens"]}
+        elements={["tokens-io"]}
       />
     );
-    assert.match(tokenOutput.lastFrame() ?? "", /tokens I\/O 0\/25/);
-    assert.doesNotMatch(tokenOutput.lastFrame() ?? "", /cache tokens/);
+    assert.match(tokenOutput.lastFrame() ?? "", /tokens 0\/25/);
+    assert.doesNotMatch(tokenOutput.lastFrame() ?? "", /\(0%\)/);
     tokenOutput.unmount();
     tokenOutput.cleanup();
 
     const cacheOutput = render(
       <StatusLine
+        cwd="/repo"
         mode="input"
+        runState="ready"
         permissionMode="default"
-        workflowId="delivery"
-        isLoading={false}
-        hasSelection={false}
         sessionUsage={{ inputTokens: 0, cachedInputTokens: 0, outputTokens: 25, totalTokens: 25 }}
         modelRequestCount={0}
-        elements={["cache"]}
+        elements={["tokens-cache"]}
       />
     );
-    assert.match(cacheOutput.lastFrame() ?? "", /cache tokens 0 \(0%\)/);
-    assert.doesNotMatch(cacheOutput.lastFrame() ?? "", /tokens I\/O/);
+    assert.match(cacheOutput.lastFrame() ?? "", /cache 0 \(0%\)/);
+    assert.doesNotMatch(cacheOutput.lastFrame() ?? "", /0\/25/);
     cacheOutput.unmount();
     cacheOutput.cleanup();
 
     const roundedCacheOutput = render(
       <StatusLine
+        cwd="/repo"
         mode="input"
+        runState="ready"
         permissionMode="default"
-        workflowId="delivery"
-        isLoading={false}
-        hasSelection={false}
         sessionUsage={{ inputTokens: 3, cachedInputTokens: 1, outputTokens: 0, totalTokens: 3 }}
         modelRequestCount={0}
-        elements={["cache"]}
+        elements={["tokens-cache"]}
       />
     );
-    assert.match(roundedCacheOutput.lastFrame() ?? "", /cache tokens 1 \(33%\)/);
+    assert.match(roundedCacheOutput.lastFrame() ?? "", /cache 1 \(33%\)/);
     roundedCacheOutput.unmount();
     roundedCacheOutput.cleanup();
   });
@@ -3166,6 +3127,52 @@ it("toggles CustomSelect multi-select options with space without submitting", as
   output.unmount();
   output.cleanup();
 });
+
+  it("reorders selected CustomSelect values with horizontal arrows without sorting toggles", async () => {
+    const changes: string[][] = [];
+    const output = render(
+      <RefableStdinSelectMultiProbe
+        options={[
+          { label: "One", value: "one" },
+          { label: "Two", value: "two" },
+          { label: "Three", value: "three" }
+        ]}
+        defaultValue={["one", "two", "three"]}
+        enableOrdering
+        onChange={(values) => changes.push(values)}
+        onSubmit={() => undefined}
+      />
+    );
+
+    await settleInkInput();
+    output.stdin.write("\u001b[C");
+    await settleInkInput();
+    output.stdin.write("\u001b[C");
+    await settleInkInput();
+    output.stdin.write("\u001b[C");
+    await settleInkInput();
+    output.stdin.write("\u001b[D");
+    await settleInkInput();
+
+    let frame = output.lastFrame() ?? "";
+    assert.ok(frame.indexOf("[\u2713] Two") < frame.indexOf("[\u2713] One"));
+    assert.ok(frame.indexOf("[\u2713] One") < frame.indexOf("[\u2713] Three"));
+
+    output.stdin.write(" ");
+    await settleInkInput();
+    frame = output.lastFrame() ?? "";
+    assert.ok(frame.indexOf("[\u2713] Two") < frame.indexOf("[ ] One"));
+    assert.ok(frame.indexOf("[ ] One") < frame.indexOf("[\u2713] Three"));
+
+    assert.deepEqual(changes, [
+      ["two", "one", "three"],
+      ["two", "three", "one"],
+      ["two", "one", "three"],
+      ["two", "three"]
+    ]);
+    output.unmount();
+    output.cleanup();
+  });
 
 it("keeps CustomSelect input cursor position across typed updates", async () => {
   let latest = "";
@@ -8341,6 +8348,7 @@ describe("TuiApp", () => {
     );
 
     try {
+      await sendTuiLine(output, "/statusline selection");
       output.stdin.write("\u001b[99;9u");
       await settleTerminalEscape();
       assert.equal(copied, 0);
@@ -8356,14 +8364,14 @@ describe("TuiApp", () => {
       await settleInkInput();
       assert.equal(autoCopied, 1);
       assert.equal(fakeInk.selected, true);
-      assert.match(output.lastFrame() ?? "", /selection\s+active/);
+      assert.match(output.lastFrame() ?? "", /copied\s+13 chars/);
 
       output.stdin.write("\u001b[99;9u");
       await settleTerminalEscape();
       assert.equal(copied, 1);
       assert.equal(exited, 0);
       assert.equal(fakeInk.selected, false);
-      assert.doesNotMatch(output.lastFrame() ?? "", /selection\s+active/);
+      assert.doesNotMatch(output.lastFrame() ?? "", /copied\s+13 chars/);
 
       fakeInk.selected = true;
       for (const listener of fakeInk.listeners) listener();

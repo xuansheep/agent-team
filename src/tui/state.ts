@@ -4,6 +4,8 @@ import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RunSummary } from "../storage/runStore.js";
 import type { TuiLogMessage } from "./logTypes.js";
 
+export type TuiRunState = "starting" | "ready" | "working" | "waiting" | "thinking";
+
 export type TuiMode =
   | "boot"
   | "select_workflow"
@@ -133,6 +135,7 @@ export type TuiDefaultExecutionMode = Extract<PermissionMode, "default" | "fullA
 export type TuiState = {
   cwd: string;
   mode: TuiMode;
+  runState: TuiRunState;
   inputPermissionMode: PermissionMode;
   defaultExecutionMode: TuiDefaultExecutionMode;
   sessionUsage: ModelUsageTotals;

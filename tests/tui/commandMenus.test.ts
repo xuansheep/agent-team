@@ -23,20 +23,23 @@ describe("command menu builders", () => {
   it("builds an immediately applied statusline checklist in canonical order", () => {
     const changes: string[][] = [];
     const choice = buildStatuslineChoice({
-      selectedElements: ["workflow", "mode"],
+      selectedElements: ["workflow", "run-state"],
       onChange: (elements) => changes.push(elements),
       onClose: noop
     });
 
-    assert.deepEqual(choice.options.map((item) => item.value), ["mode", "permission", "workflow", "run", "tokens", "cache", "requests", "selection", "loading"]);
-    assert.deepEqual(choice.options.map((item) => String(item.label ?? "").trim()), ["mode", "permission", "workflow", "run", "tokens I/O", "cache tokens", "requests", "selection", "loading"]);
-    assert.deepEqual(choice.selectedValues, ["mode", "workflow"]);
+    assert.deepEqual(choice.options.map((item) => item.value), ["workflow", "run-state", "permission", "current-dir", "git-branch", "run-id", "tokens-io", "tokens-cache", "requests", "selection"]);
+    assert.deepEqual(choice.options.map((item) => String(item.label ?? "").trim()), ["workflow", "run-state", "permission", "current-dir", "git-branch", "run-id", "tokens-io", "tokens-cache", "requests", "selection"]);
+    assert.deepEqual(choice.selectedValues, ["workflow", "run-state"]);
     assert.equal(choice.multiSelect, true);
+    assert.equal(choice.enableOrdering, true);
+    assert.match(choice.detail ?? "", /without moving rows/);
+    assert.match(choice.detail ?? "", /save immediately/);
     assert.equal(choice.submitButtonText, "Close");
 
-    choice.onChangeValues?.(["loading", "mode"]);
+    choice.onChangeValues?.(["selection", "run-state"]);
     choice.onChangeValues?.([]);
-    assert.deepEqual(changes, [["mode", "loading"], []]);
+    assert.deepEqual(changes, [["selection", "run-state"], []]);
   });
 
   it("builds an empty mcp list", () => {
