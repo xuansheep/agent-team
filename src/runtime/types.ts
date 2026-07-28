@@ -5,6 +5,7 @@ import type { GlobalPromptMetadata, GlobalPromptSourceMetadata } from "../config
 import { ToolRegistry } from "../tools/registry.js";
 import { ToolPermissionContext } from "../permissions/context.js";
 import { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
+import type { PendingTurnInput } from "./activeTurnInput.js";
 
 export type { ToolPermissionContext } from "../permissions/context.js";
 export type { PermissionMode } from "../permissions/PermissionMode.js";
@@ -59,6 +60,7 @@ export type RuntimeEvent =
   | { type: "runtime_turn_started"; session_id: string; run_id?: string }
   | { type: "runtime_prompt_injection"; session_id: string; run_id?: string; record: PromptInjectionRecord }
   | { type: "runtime_assistant_message"; session_id: string; run_id?: string; content: string }
+  | { type: "runtime_user_input_injected"; session_id: string; run_id?: string; input_id: string; content: ModelMessage["content"] }
   | { type: "runtime_model_retry_scheduled"; session_id: string; run_id?: string; operation: "sampling" | "compaction"; phase: "request" | "stream"; retry_attempt: number; max_retries: number; retry_in_ms: number; retry_at: string; error_kind: string; status?: number; error: string; detail?: string; discarded_content_chars: number; discarded_thinking_chars: number }
   | { type: "runtime_model_response"; session_id: string; run_id?: string; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "runtime_model_usage"; session_id: string; run_id?: string; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
@@ -87,6 +89,7 @@ export type RuntimeTurnInput = {
   auditSink?: AuditSink;
   abortSignal?: AbortSignal;
   permissionCallback?: (request: RuntimePermissionRequest) => RuntimePermissionDecision | Promise<RuntimePermissionDecision>;
+  drainPendingUserInputs?: () => PendingTurnInput<ModelMessage>[];
   planState?: PlanSessionState;
 };
 

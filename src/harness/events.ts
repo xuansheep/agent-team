@@ -5,6 +5,8 @@ export type HarnessEvent =
   | { type: "run_started"; workflow_id: string; input: unknown }
   | { type: "run_continued"; workflow_id: string; input: unknown }
   | { type: "user_message"; text: string; node_id?: string; attempt?: number }
+  | { type: "user_input_injected"; input_id: string; text: string; node_id: string; attempt: number; activation?: number }
+  | { type: "user_input_deferred"; input_id: string; text: string; node_id: string; attempt: number; activation?: number }
   | { type: "node_started"; node_id: string; attempt: number; activation?: number }
   | { type: "node_waiting_user"; node_id: string; attempt?: number; activation?: number; questions: unknown[] }
   | { type: "complete_summary_available"; node_id: string; attempt: number; activation?: number; document: string }

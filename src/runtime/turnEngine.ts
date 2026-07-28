@@ -60,6 +60,11 @@ export class TurnEngine {
         maxIterations: maxToolIterations,
         runIteration: async (iteration) => {
           throwIfAborted(input.abortSignal);
+        while (true) {
+          const pendingInputs = input.drainPendingUserInputs?.() ?? [];
+          if (!pendingInputs.length) break;
+          await appendPendingUserInputs(input, messages, pendingInputs);
+        }
         const discovery = input.tools.mcpRuntime
           ? prepareMcpDiscovery({
             runtime: input.tools.mcpRuntime,
@@ -109,6 +114,14 @@ export class TurnEngine {
           messages.push({ role: "assistant", content: response.content });
           await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content });
         }
+        let injectedInput = false;
+        while (true) {
+          const pendingInputs = input.drainPendingUserInputs?.() ?? [];
+          if (!pendingInputs.length) break;
+          injectedInput = true;
+          await appendPendingUserInputs(input, messages, pendingInputs);
+        }
+        if (injectedInput) return undefined;
         return { status: "completed", messages, planState: input.planState };
       }
       let toolCalls = await executableToolCalls(response.tool_calls, input.tools);
@@ -310,6 +323,23 @@ export class TurnEngine {
   }
 }
 
+
+async function appendPendingUserInputs(
+  input: RuntimeTurnInput,
+  messages: ModelMessage[],
+  pendingInputs: Array<{ id: string; input: ModelMessage }>
+): Promise<void> {
+  for (const pending of pendingInputs) {
+    messages.push(pending.input);
+    await emit(input, {
+      type: "runtime_user_input_injected",
+      session_id: input.sessionId,
+      run_id: input.runId,
+      input_id: pending.id,
+      content: pending.input.content
+    });
+  }
+}
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;

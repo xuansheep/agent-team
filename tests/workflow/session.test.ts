@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../../src/workflow/state.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { RunStore } from "../../src/storage/runStore.js";
 
@@ -84,6 +85,11 @@ describe("WorkflowSession", () => {
     const state = await store.loadState(session.runId);
     assert.equal(state.status, "paused");
     assert.equal(state.attempts.at(-1)?.status, "waiting_user");
+    assert.deepEqual(state.pending_interaction, {
+      type: "node_user",
+      node_id: "dev",
+      questions: [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }]
+    });
   });
 
   it("aborts the active provider and emits one pause event", async () => {
@@ -113,6 +119,8 @@ describe("WorkflowSession", () => {
     const state = await store.loadState(session.runId);
     assert.equal(providerAborted, true);
     assert.equal(state.status, "paused");
+    const waitingEvent = events.find((event) => event.type === "node_waiting_user");
+    assert.deepEqual(waitingEvent?.questions, [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }]);
     assert.equal(events.filter((event) => event.type === "node_waiting_user").length, 1);
     assert.equal(events.some((event) => event.type === "node_completed" && event.status === "failure"), false);
   });
@@ -663,6 +671,51 @@ describe("WorkflowSession", () => {
     assert.equal(calls, 1);
     assert.equal(events.includes("node_waiting_user"), true);
     assert.equal(events.includes("run_interrupted"), false);
+  });
+
+  it("injects queued user input into the running node at a model boundary", async () => {
+    let calls = 0;
+    let firstRequestStarted = false;
+    let releaseFirst!: () => void;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          firstRequestStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          return { content: JSON.stringify({ direction: "forward", summary: "first", handoff: { instruction: "old" } }) };
+        }
+        const userText = request.messages
+          .filter((message) => message.role === "user")
+          .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))
+          .join(" ");
+        assert.match(userText, /follow-up while running/);
+        return { content: JSON.stringify({ direction: "forward", summary: "updated", handoff: { instruction: "done" } }) };
+      }
+    };
+    const runRoot = `.tmp/session-active-input-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const session = await new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot })
+      .startInteractive(config(), "flow", { request: "initial" });
+
+    await waitUntil(() => firstRequestStarted && typeof releaseFirst === "function");
+    assert.ok(session.queueUserInput);
+    const receipt = await session.queueUserInput({ request: "follow-up while running" }, "input-running-1");
+    assert.deepEqual(receipt, { id: "input-running-1", disposition: "active_turn" });
+    releaseFirst();
+
+    const result = await session.result;
+    const events = await new RunStore(runRoot).loadEvents(session.runId);
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(
+      events.filter((event) => event.type === "user_input_injected").map((event) => event.input_id),
+      ["input-running-1"]
+    );
   });
 
 });

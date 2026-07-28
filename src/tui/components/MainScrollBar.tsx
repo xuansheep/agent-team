@@ -1,7 +1,7 @@
 import React, {
   type RefObject,
   useCallback,
-  useLayoutEffect,
+  useEffect,
   useState,
   useSyncExternalStore,
 } from 'react'
@@ -108,23 +108,33 @@ export function MainScrollBar({
   const trackHeight = Math.max(0, Math.floor(height))
   const [layoutMetrics, setLayoutMetrics] = useState<LayoutMetrics>()
 
-  useLayoutEffect(() => {
-    const scroll = scrollRef.current
-    if (!scroll) {
-      setLayoutMetrics(undefined)
-      return
-    }
+  useEffect(() => {
+    // Local Ink paints updated Yoga viewport bounds on its throttled frame.
+    // Measure after that frame so a closed menu cannot leave stale scrollbar geometry.
+    let active = true
+    const measurementTimer = setTimeout(() => {
+      if (!active) return
+      const scroll = scrollRef.current
+      if (!scroll) {
+        setLayoutMetrics(undefined)
+        return
+      }
 
-    const next = {
-      contentHeight: scroll.getFreshScrollHeight(),
-      viewportHeight: scroll.getViewportHeight() || trackHeight,
+      const next = {
+        contentHeight: scroll.getFreshScrollHeight(),
+        viewportHeight: scroll.getViewportHeight() || trackHeight,
+      }
+      setLayoutMetrics(current =>
+        current?.contentHeight === next.contentHeight &&
+        current.viewportHeight === next.viewportHeight
+          ? current
+          : next,
+      )
+    }, 20)
+    return () => {
+      active = false
+      clearTimeout(measurementTimer)
     }
-    setLayoutMetrics(current =>
-      current?.contentHeight === next.contentHeight &&
-      current.viewportHeight === next.viewportHeight
-        ? current
-        : next,
-    )
   }, [
     scrollRef,
     trackHeight,

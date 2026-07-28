@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { initialTuiState, reduceStoredEvent, resetTuiRunState } from "../../src/tui/eventAdapter.js";
+import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../../src/workflow/state.js";
 
 
 
@@ -587,11 +588,31 @@ describe("TUI event adapter", () => {
 
     });
 
+    state = reduceStoredEvent(state, {
+
+      type: "user_input_injected",
+
+      input_id: "input-1",
+
+      text: "运行中补充信息",
+
+      node_id: "user_acceptance",
+
+      attempt: 1,
+
+      activation: 1,
+
+      ts: "2026-06-23T00:00:02.000Z",
+
+      seq: 3
+
+    });
 
 
-    assert.deepEqual(state.conversation.filter((item) => item.kind === "user").map((item) => item.text), ["实现 TUI 布局", "验收通过"]);
 
-    assert.deepEqual(state.logMessages.filter((item) => item.kind === "user").map((item) => item.text), ["实现 TUI 布局", "验收通过"]);
+    assert.deepEqual(state.conversation.filter((item) => item.kind === "user").map((item) => item.text), ["实现 TUI 布局", "验收通过", "运行中补充信息"]);
+
+    assert.deepEqual(state.logMessages.filter((item) => item.kind === "user").map((item) => item.text), ["实现 TUI 布局", "验收通过", "运行中补充信息"]);
 
   });
 
@@ -729,6 +750,48 @@ describe("TUI event adapter", () => {
 
   });
 
+
+  it("maps conversation interruptions to the warning activity notice", () => {
+    let state = initialTuiState({ cwd: "D:\\CodeAI\\agent-team" });
+    state = reduceStoredEvent(state, {
+      type: "node_started",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      ts: "2026-06-23T00:00:00.000Z",
+      seq: 1
+    });
+    const conversationCount = state.conversation.length;
+    const logCount = state.logMessages.length;
+
+    state = reduceStoredEvent(state, {
+      type: "node_waiting_user",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      questions: [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }],
+      ts: "2026-06-23T00:00:01.000Z",
+      seq: 2
+    });
+
+    assert.equal(state.mode, "question");
+    assert.equal(state.runState, "waiting");
+    assert.deepEqual(state.activityNotice, { text: CONVERSATION_INTERRUPTED_TEXT, tone: "warning" });
+    assert.equal(state.conversation.length, conversationCount);
+    assert.equal(state.logMessages.length, logCount);
+
+    state = reduceStoredEvent(state, {
+      type: "user_message",
+      text: "continue",
+      node_id: "dev",
+      attempt: 1,
+      ts: "2026-06-23T00:00:02.000Z",
+      seq: 3
+    });
+
+    assert.equal(state.activityNotice, undefined);
+    assert.deepEqual(state.questions, []);
+  });
 
   it("logs workflow transitions as visible timeline entries", () => {
 

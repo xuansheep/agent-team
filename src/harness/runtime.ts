@@ -33,6 +33,7 @@ import type { ToolPermissionContext } from "../permissions/context.js";
 import { checkToolPermission } from "../permissions/checkToolPermission.js";
 import type { NodeNavigation } from "../workflow/nodeTransitionController.js";
 import { isHumanUserMessage } from "../context/messages.js";
+import type { PendingTurnInput } from "../runtime/activeTurnInput.js";
 
 const maxCompactionRetries = 20;
 export type RuntimeInteraction = {
@@ -63,6 +64,7 @@ export type NodeRuntimeOptions = {
   onDialogueCompacted?: (messages: ModelMessage[], cursor: number) => Promise<void> | void;
   interaction?: RuntimeInteraction;
   eventSink?: (event: StoredEvent) => void;
+  drainPendingUserInputs?: () => PendingTurnInput<ModelMessage>[];
   abortSignal?: AbortSignal;
 };
 export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> {
@@ -202,6 +204,23 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await options.onDialogueMessages?.(messages.slice(baseMessageCount));
     if (!includedInLatestResponse) contextTokens += estimateModelMessageTokens(message);
     await publishContext();
+  };
+  const injectPendingUserInputs = async (pendingInputs: PendingTurnInput<ModelMessage>[]) => {
+    for (const pending of pendingInputs) {
+      await appendDialogueMessage(pending.input);
+      const content = pending.input.content;
+      const text = typeof content === "string"
+        ? content
+        : content.filter((part) => part.type === "text").map((part) => part.type === "text" ? part.text : "").join("\n");
+      await appendRuntimeEvent(options, {
+        type: "user_input_injected",
+        input_id: pending.id,
+        text: text || "See attached image.",
+        node_id: options.node.id,
+        attempt,
+        activation: options.activation
+      });
+    }
   };
   const recordToolFailure = async (call: ModelToolCall, failure: ToolResult, countFailure = true) => {
     const message = failure.error ?? "Tool failed";
@@ -430,6 +449,11 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       hasSampledModel = false;
     }
 
+    while (true) {
+      const pendingInputs = options.drainPendingUserInputs?.() ?? [];
+      if (!pendingInputs.length) break;
+      await injectPendingUserInputs(pendingInputs);
+    }
     assertResolvedToolCallHistory(messages);
     const discovery = options.tools.mcpRuntime
       ? prepareMcpDiscovery({
@@ -531,7 +555,15 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       if (submittedResult) {
         await appendDialogueMessage({ role: "assistant", content: assistantToolCallContent(response.content), tool_calls: [submittedResult] }, responseIncludedInUsage);
         await appendDialogueMessage(submitNodeResultToolMessage(submittedResult.id));
-        return mergeArtifactDeliverables(nodeResultSchema.parse(submittedResult.input), artifactDeliverables);
+        const submittedNodeResult = mergeArtifactDeliverables(nodeResultSchema.parse(submittedResult.input), artifactDeliverables);
+        let injectedInput = false;
+        while (true) {
+          const pendingInputs = options.drainPendingUserInputs?.() ?? [];
+          if (!pendingInputs.length) break;
+          injectedInput = true;
+          await injectPendingUserInputs(pendingInputs);
+        }
+        return injectedInput ? undefined : submittedNodeResult;
       }
       const assistantContent = assistantToolCallContent(response.content);
       if (!assistantContent.trim() && shouldRepairToolPreamble(response.content) && toolPreambleRepairAttempts < 1) {
@@ -717,7 +749,14 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     try {
       const result = mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
       await appendDialogueMessage({ role: "assistant", content: response.content }, responseIncludedInUsage);
-      return result;
+      let injectedInput = false;
+      while (true) {
+        const pendingInputs = options.drainPendingUserInputs?.() ?? [];
+        if (!pendingInputs.length) break;
+        injectedInput = true;
+        await injectPendingUserInputs(pendingInputs);
+      }
+      return injectedInput ? undefined : result;
     } catch (error) {
       if (resultRepairAttempts >= 1) throw new Error(`Invalid NodeResult after repair attempt: ${errorMessage(error)}`, { cause: error });
       resultRepairAttempts += 1;

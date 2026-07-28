@@ -2,6 +2,7 @@ import { addModelUsage, emptyModelUsage } from "../model/usage.js";
 import { visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { StoredEvent } from "../harness/events.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
+import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../workflow/state.js";
 import { TuiLogMessage, TuiToolLogMessage } from "./logTypes.js";
 import { TuiConversationItem, TuiModelRetryState, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
 import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail, readableRecord, readableValue } from "./toolDisplay.js";
@@ -108,11 +109,15 @@ export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState
         detailText: `阶段：${event.phase}\n原因：${event.reason}\n模型：${event.model}\n${event.error}`
       }, event);
     case "run_started":
-      return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running", runState: "working" }, { kind: "user", text: inputText(event.input) }, event);
+      return appendConversation({ ...next, workflowId: event.workflow_id, mode: "running", runState: "working", activityNotice: undefined }, { kind: "user", text: inputText(event.input) }, event);
     case "user_message":
-      return appendConversation({ ...next, questions: [], runState: "thinking" }, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text }, event);
+      return appendConversation({ ...next, questions: [], activityNotice: undefined, runState: "thinking" }, { kind: "user", nodeId: event.node_id, attempt: event.attempt, text: event.text }, event);
+    case "user_input_injected":
+      return appendConversation({ ...next, questions: [], activityNotice: undefined, runState: "thinking" }, { kind: "user", nodeId: event.node_id, attempt: event.attempt, activation: event.activation, text: event.text }, event);
+    case "user_input_deferred":
+      return next;
     case "node_started":
-      return upsertNode({ ...next, mode: "running", runState: "thinking", currentNodeId: event.node_id, questions: [] }, event.node_id, event.attempt, event.activation ?? 1, "running");
+      return upsertNode({ ...next, mode: "running", runState: "thinking", currentNodeId: event.node_id, questions: [], activityNotice: undefined }, event.node_id, event.attempt, event.activation ?? 1, "running");
     case "complete_summary_available":
       return appendConversation(next, {
         kind: "status",
@@ -182,8 +187,22 @@ reason：${event.reason}`
       const activation = event.activation ?? findActivation(next, event.node_id);
       const existing = next.nodes.find((node) => node.nodeId === event.node_id && node.attempt === attempt);
       const status = existing?.status === "failure" ? "failure" : "waiting_user";
+      const isConversationInterrupted = event.questions.some((question) => (
+        question !== null
+        && typeof question === "object"
+        && (question as { id?: unknown }).id === CONVERSATION_INTERRUPTED_QUESTION_ID
+      ));
+      const waitingState = upsertNode({
+        ...next,
+        mode: "question",
+        runState: "waiting",
+        currentNodeId: event.node_id,
+        questions: event.questions,
+        activityNotice: isConversationInterrupted ? { text: CONVERSATION_INTERRUPTED_TEXT, tone: "warning" } : undefined
+      }, event.node_id, attempt, activation, status);
+      if (isConversationInterrupted) return waitingState;
       return appendConversation(
-        upsertNode({ ...next, mode: "question", runState: "waiting", currentNodeId: event.node_id, questions: event.questions }, event.node_id, attempt, activation, status),
+        waitingState,
         { kind: "status", nodeId: event.node_id, attempt, text: `${event.node_id} 需要用户补充信息${questionSummary(event.questions)}`, detailText: questionDetail(event.questions) },
         event
       );

@@ -21,6 +21,7 @@ import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../mo
 import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { RuntimeEvent } from "../runtime/types.js";
+import { ActiveTurnInputChannel } from "../runtime/activeTurnInput.js";
 import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
 import { setMcpServerDisabledState } from "../mcp/configMutations.js";
 import type { McpRuntime } from "../mcp/runtime.js";
@@ -45,7 +46,7 @@ import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from ".
 import { ResultPanel } from "./components/ResultPanel.js";
 import { MainScrollBar } from "./components/MainScrollBar.js";
 import { RunLogPanel } from "./components/RunLogPanel.js";
-import { availableStatusLineElements, defaultStatusLineElements, StatusLine } from "./components/StatusLine.js";
+import { availableStatusLineElements, defaultStatusLineElements, StatusLine, statusLineRowCount, statusLineText } from "./components/StatusLine.js";
 import type { StatusLineElement } from "./components/StatusLine.js";
 import { WorkflowFlowChart } from "./components/WorkflowFlowChart.js";
 import { editFileInExternalEditor, editTextInExternalEditor, externalEditorDisplayName, ExternalEditor, ExternalTextEditor } from "./externalEditor.js";
@@ -63,7 +64,8 @@ export type CommandMenuState =
   | { kind: "mcp:toolDetail"; serverName: string; toolName: string };
 
 type McpActionResult = { title: string; detail: string };
-type QueuedPrompt = { text: string; images: PromptInputImageAttachment[] };
+type PreparedPlanTurn = { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean };
+type QueuedPrompt = { id: string; text: string; images: PromptInputImageAttachment[] };
 const SKILL_SETTINGS_RELOAD_ERROR_PREFIX = "Failed to reload skill settings: ";
 export function TuiApp({
   cwd,
@@ -171,6 +173,8 @@ export function TuiApp({
   const planQuestionRef = useRef<{ toolCallId: string; questions: unknown[]; index: number; answers: Record<string, unknown> }>();
   const planTurnQueueRef = useRef<Promise<void>>(Promise.resolve());
   const planAbortControllerRef = useRef<AbortController>();
+  const planInputChannelRef = useRef<ActiveTurnInputChannel<ModelMessage>>();
+  const pendingPlanTurnsRef = useRef(new Map<string, PreparedPlanTurn>());
   const planTurnGenerationRef = useRef(0);
   const planTranscriptWriteRef = useRef<Promise<void>>(Promise.resolve());
   const planAuditWriteRef = useRef<Promise<void>>(Promise.resolve());
@@ -411,6 +415,7 @@ export function TuiApp({
       try {
         for await (const event of session.events) {
           if (abandonedRunIdsRef.current.has(session.runId)) continue;
+          if (event.type === "user_input_injected") setQueued((current) => current.filter((item) => item.id !== event.input_id));
           if (event.type === "model_response_recorded") sessionAuditGenerationRef.current += 1;
           setState((current) => reduceStoredEvent({ ...current, runId: session.runId, workflowId: nextWorkflowId }, event));
         }
@@ -499,6 +504,17 @@ export function TuiApp({
     listenSession(session, nextWorkflowId);
     return continuation;
   };
+  const queueWorkflowInput = (text: string, images: PromptInputImageAttachment[] = []) => {
+    const id = randomUUID();
+    const item = { id, text, images };
+    setQueued((current) => [...current, item]);
+    setState((current) => ({ ...current, timeline: [...current.timeline, `queued:${text}`] }));
+    const session = sessionRef.current;
+    if (!session?.queueUserInput) return;
+    void session.queueUserInput({ request: text, images }, id).catch((error) => {
+      setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error) }));
+    });
+  };
   const resumeSession = (text: string) => {
     const session = sessionRef.current;
     if (!session) {
@@ -506,7 +522,7 @@ export function TuiApp({
       return;
     }
     lastWorkflowPromptRef.current = text;
-    setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
+    setState((current) => ({ ...current, mode: "running", questions: [], activityNotice: undefined, error: undefined }));
     void session.resumeWithUserInput({ answer: text }).catch((error) => failUi(error));
   };
   useEffect(() => {
@@ -613,9 +629,13 @@ export function TuiApp({
     planAbortControllerRef.current?.abort();
     const abortController = new AbortController();
     planAbortControllerRef.current = abortController;
+    const inputChannel = new ActiveTurnInputChannel<ModelMessage>();
+    inputChannel.open();
+    planInputChannelRef.current = inputChannel;
     setPlanWorkCount((current) => current + 1);
     setState((current) => ({ ...current, runState: "thinking" }));
     let lastUsage: ModelUsage | undefined;
+    const renderedAssistantMessages: string[] = [];
     try {
       const legacyTools = createLocalToolRegistry({ mcpRuntime, skillRuntime });
       const kernelSession: KernelSession = {
@@ -645,12 +665,20 @@ export function TuiApp({
         globalPrompt: config?.global_prompt,
         globalPromptMetadata: config?.global_prompt_metadata,
         abortSignal: abortController.signal,
+        drainPendingUserInputs: () => inputChannel.drain(),
         auditSink: (event) => sessionStore.appendAudit(currentPlan.sessionId, event),
         eventSink: async (event) => {
           if (planTurnGenerationRef.current !== turnGeneration) return;
           if (abortController.signal.aborted && event.type !== "runtime_model_response") return;
           if (event.type === "runtime_prompt_injection") {
             void sessionStore.saveMetadata(currentPlan.sessionId, { promptInjection: { globalPrompt: event.record } }).catch((error) => failUi(error));
+          }
+          if (event.type === "runtime_user_input_injected") {
+            pendingPlanTurnsRef.current.delete(event.input_id);
+            setQueued((current) => current.filter((item) => item.id !== event.input_id));
+          }
+          if (event.type === "runtime_assistant_message" && event.content.trim()) {
+            renderedAssistantMessages.push(event.content.trim());
           }
           if (event.type === "runtime_model_response") {
             sessionAuditGenerationRef.current += 1;
@@ -680,6 +708,14 @@ export function TuiApp({
       const pending = result.session.pendingInteraction;
       if (pending?.type === "tool_permission") throw new Error("Plan Mode cannot wait on a generic tool permission");
       const newMessages = planRuntimeNewMessages(messages, result.session.messages);
+      const unmatchedRenderedAssistantMessages = [...renderedAssistantMessages];
+      const fallbackMessages = newMessages.filter((message) => {
+        if (message.role !== "assistant" || message.tool_calls?.length || typeof message.content !== "string") return true;
+        const renderedIndex = unmatchedRenderedAssistantMessages.indexOf(message.content.trim());
+        if (renderedIndex < 0) return true;
+        unmatchedRenderedAssistantMessages.splice(renderedIndex, 1);
+        return false;
+      });
       planMessagesRef.current = result.session.messages;
       appendPlanTranscriptMessages(currentPlan.sessionId, newMessages);
 
@@ -732,7 +768,7 @@ export function TuiApp({
         savePlanSession(result.session.planState);
       }
       setState((current) => ({
-        ...appendPlanAssistantLogsFromMessages(appendMissingUserLogMessage(current, options.ensureUserLogText), newMessages),
+        ...appendPlanAssistantLogsFromMessages(appendMissingUserLogMessage(current, options.ensureUserLogText), fallbackMessages),
         mode: "planning",
         runState: "ready",
         pendingReview: undefined,
@@ -757,6 +793,20 @@ export function TuiApp({
       setState((current) => ({ ...clearTuiModelRetry(current), mode: "planning", runState: "ready", error: error instanceof Error ? error.message : String(error) }));
     } finally {
       if (planAbortControllerRef.current === abortController) planAbortControllerRef.current = undefined;
+      if (planInputChannelRef.current === inputChannel) planInputChannelRef.current = undefined;
+      const deferredInputs = inputChannel.close();
+      for (const pending of deferredInputs) {
+        const turn = pendingPlanTurnsRef.current.get(pending.id);
+        if (!turn) continue;
+        pendingPlanTurnsRef.current.delete(pending.id);
+        planTurnQueueRef.current = planTurnQueueRef.current
+          .catch(() => undefined)
+          .then(async () => {
+            setQueued((current) => current.filter((item) => item.id !== pending.id));
+            await runPreparedPlanTurn(turn);
+          })
+          .catch((error) => failUi(error));
+      }
       setPlanWorkCount((current) => Math.max(0, current - 1));
     }
   };
@@ -785,7 +835,7 @@ export function TuiApp({
     requestMainScrollToBottom();
     return true;
   };
-  const preparePlanTurn = (text: string, images: ModelContentPart[] = [], options: { logUser?: boolean; ensureUserLog?: boolean } = {}): { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean } | undefined => {
+  const preparePlanTurn = (text: string, images: ModelContentPart[] = [], options: { logUser?: boolean; ensureUserLog?: boolean } = {}): PreparedPlanTurn | undefined => {
     let currentPlan = planSessionRef.current;
     if (!currentPlan) {
       enterGlobalPlanMode();
@@ -811,7 +861,7 @@ export function TuiApp({
     }
     return { plan: currentPlan, userMessage, displayText, ensureUserLog: options.ensureUserLog === true };
   };
-  const runPreparedPlanTurn = async (turn: { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean }) => {
+  const runPreparedPlanTurn = async (turn: PreparedPlanTurn) => {
     const currentPlan = planSessionRef.current?.sessionId === turn.plan.sessionId ? planSessionRef.current : turn.plan;
     if (currentPlan?.mode === "waiting_approval") return;
     setState((current) => ({
@@ -959,6 +1009,21 @@ export function TuiApp({
       .catch(() => undefined)
       .then(() => runPreparedPlanTurn(turn))
       .catch((error) => failUi(error));
+  };
+  const queueActivePlanInput = (text: string, images: ModelContentPart[] = []): boolean => {
+    const inputChannel = planInputChannelRef.current;
+    if (!inputChannel?.isOpen()) return false;
+    const turn = preparePlanTurn(text, images);
+    if (!turn) return true;
+    const receipt = inputChannel.offer(turn.userMessage);
+    if (receipt.disposition !== "active_turn") return false;
+    pendingPlanTurnsRef.current.set(receipt.id, turn);
+    setQueued((current) => [...current, {
+      id: receipt.id,
+      text: turn.displayText,
+      images: images.filter((image): image is PromptInputImageAttachment => image.type === "image")
+    }]);
+    return true;
   };
   const approveEnterPlanModeRequest = (requestId: string) => {
     const session = sessionRef.current;
@@ -1586,11 +1651,10 @@ ${message.detailText}` : ""}` }
     if (event.type === "queue") {
       const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
       if (!hasPlanQuestion && (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || (state.mode !== "question" && isPlanSessionAcceptingInput(planSessionRef.current)))) {
-        enqueuePlanTurn(event.text, event.images);
+        if (!queueActivePlanInput(event.text, event.images)) enqueuePlanTurn(event.text, event.images);
         return;
       }
-      setQueued((current) => [...current, { text: event.text, images: event.images ?? [] }]);
-      setState((current) => ({ ...current, timeline: [...current.timeline, `queued:${event.text}`] }));
+      queueWorkflowInput(event.text, event.images ?? []);
       return;
     }
     if (event.type === "cycle_mode") {
@@ -1743,7 +1807,7 @@ ${message.detailText}` : ""}` }
   const logMessages = state.logMessages;
   const retryDetail = state.activeModelRetry ? modelRetryStatusDetail(state.activeModelRetry.retryAt, state.activeModelRetry.retryAttempt, state.activeModelRetry.maxRetries, clockMs) : undefined;
   const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: retryDetail ?? workStatusDetail });
-  const activityStatus = hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus;
+  const activityStatus = state.activityNotice?.text ?? (hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus);
   const currentDiagnosticsForMenu = collectDiagnostics?.() ?? diagnostics ?? { mcp: [], skills: [] };
   const commandMenuChoice = commandMenu ? buildCommandMenuChoice({
     state: commandMenu,
@@ -1944,10 +2008,24 @@ ${message.detailText}` : ""}` }
     };
   }, [stdin, cancelCurrentInteraction, transcriptMode, selection]);
   const halfScreenChoice = activeChoice?.placement === "half-screen";
+  const statusLineRows = statusLineLayoutRows({
+    cwd,
+    gitBranch,
+    mode: interactionMode,
+    runState: state.runState,
+    permissionMode: state.inputPermissionMode,
+    workflowId: state.workflowId,
+    runId: state.runId,
+    copiedSelectionChars,
+    sessionUsage: state.sessionUsage,
+    modelRequestCount: state.modelRequestCount,
+    elements: statuslineElements
+  }, terminalColumns);
   const layout = layoutMetrics({
     terminalRows,
     choice: halfScreenChoice ? undefined : activeChoice,
-    activityStatusVisible: Boolean(activityStatus && !activeChoice)
+    activityStatusVisible: Boolean(activityStatus && !activeChoice),
+    statusLineRows
   });
   const planApprovalDocumentMaxLines = state.pendingReview
     ? planApprovalOverlayMaxDocumentLines(state.pendingReview, layout.mainHeight, terminalColumns, planApprovalPlanFilePath)
@@ -2114,7 +2192,7 @@ ${message.detailText}` : ""}` }
       <Header cwd={cwd} workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
       <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
       {halfScreenChoice ? null : (
-        <Box flexDirection="row" height={layout.mainHeight}>
+        <Box flexDirection="row" height={layout.mainHeight} flexShrink={1} minHeight={1} opaque>
           <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
           {planApprovalOverlayVisible && state.pendingReview ? (
             <PlanApprovalOverlay review={state.pendingReview} planFilePath={planApprovalPlanFilePath} editorName={externalEditorDisplayName()} maxDocumentLines={planApprovalDocumentMaxLines} scrollOffset={planApprovalDocumentOffset} />
@@ -2144,7 +2222,7 @@ ${message.detailText}` : ""}` }
         queued={queued.map((item) => item.text)}
         workflows={workflows}
         skills={[...(skillRuntime?.listSkills().map((skill) => ({ name: skill.name, description: skill.description, argumentHint: skill.argumentHint })) ?? []), ...(mcpRuntime?.listPromptCommands().map((command) => ({ name: command.name, description: command.description, argumentHint: command.argumentHint })) ?? [])]}
-        questions={state.questions}
+        questions={state.activityNotice ? [] : state.questions}
         isLoading={isLoading}
         permissionMode={state.inputPermissionMode}
         historyStore={promptHistoryStore}
@@ -2152,10 +2230,12 @@ ${message.detailText}` : ""}` }
         promptText={promptText}
         inputDisabled={transcriptMode}
         activityStatus={activityStatus}
+        activityStatusTone={state.activityNotice?.tone}
         resolvePromptImagePaste={state.pendingReview || state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") ? resolvePlanPromptImagePaste : undefined}
         onPromptEvent={handlePromptEvent}
         onPromptTextChange={handlePromptTextChange}
       />
+      {activeChoice || statusLineRows === 0 ? null : <Box height={1} flexShrink={0} />}
       <StatusLine
         cwd={cwd}
         gitBranch={gitBranch}
@@ -3637,10 +3717,16 @@ function questionAllowsFreeform(question: unknown): boolean {
 function questionIsMultiSelect(question: unknown): boolean {
   return Boolean(question && typeof question === "object" && (question as { multiSelect?: unknown }).multiSelect === true);
 }
-function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string }; activityStatusVisible?: boolean }): { mainHeight: number; planReviewHeight: number } {
+function statusLineLayoutRows(input: Parameters<typeof statusLineText>[0], columns: number): number {
+  const text = statusLineText(input);
+  return statusLineRowCount(text, columns);
+}
+
+function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string }; activityStatusVisible?: boolean; statusLineRows?: number }): { mainHeight: number; planReviewHeight: number } {
   const headerRows = 3;
   const flowRows = 4;
-  const promptRows = input.choice ? 0 : input.activityStatusVisible ? 8 : 6;
+  const statusLineExtraRows = Math.max(0, (input.statusLineRows ?? 1) - 1);
+  const promptRows = (input.choice ? 0 : input.activityStatusVisible ? 8 : 6) + statusLineExtraRows;
   const choiceRows = input.choice ? estimateChoiceRows(input.choice) : 0;
   const available = Math.max(1, input.terminalRows - headerRows - flowRows - promptRows - choiceRows);
   const planReviewHeight = input.planReview ? Math.max(0, Math.min(12, available - 1)) : 0;

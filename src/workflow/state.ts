@@ -1,6 +1,9 @@
 import { ModelMessage } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 
+export const CONVERSATION_INTERRUPTED_QUESTION_ID = "conversation_interrupted";
+export const CONVERSATION_INTERRUPTED_TEXT = "■ Conversation interrupted";
+
 export type RunStatus = "running" | "waiting_user" | "paused" | "completed" | "failed" | "cancelled" | "pending";
 
 export type NodeActivationState = {

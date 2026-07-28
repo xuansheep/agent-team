@@ -449,12 +449,38 @@ function renderNodeToOutput(
       y = 0
     }
 
+    // A fixed-height ScrollBox can keep identical Yoga bounds while its flex
+    // parent grows or shrinks around an interaction panel. Its effective
+    // viewport then changes even though the node rect does not, so the cached
+    // subtree must not be blitted with stale scroll bounds.
+    const earlyOverflowY = node.style.overflowY ?? node.style.overflow
+    const parentYoga = node.parentNode?.yogaNode
+    let scrollViewportChanged = false
+    if (earlyOverflowY === 'scroll' && parentYoga) {
+      const parentY = y - yogaTop
+      const viewportTop =
+        Math.max(
+          y + yogaNode.getComputedBorder(LayoutEdge.Top),
+          parentY + parentYoga.getComputedBorder(LayoutEdge.Top),
+        ) + yogaNode.getComputedPadding(LayoutEdge.Top)
+      const viewportBottom =
+        Math.min(
+          y + height - yogaNode.getComputedBorder(LayoutEdge.Bottom),
+          parentY +
+            parentYoga.getComputedHeight() -
+            parentYoga.getComputedBorder(LayoutEdge.Bottom),
+        ) - yogaNode.getComputedPadding(LayoutEdge.Bottom)
+      const nextViewportHeight = Math.max(0, viewportBottom - viewportTop)
+      scrollViewportChanged = node.scrollViewportHeight !== nextViewportHeight
+    }
+
     // Check if we can skip this subtree (clean node with unchanged layout).
     // Blit cells from previous screen instead of re-rendering.
     const cached = nodeCache.get(node)
     if (
       !node.dirty &&
       !skipSelfBlit &&
+      !scrollViewportChanged &&
       node.pendingScrollDelta === undefined &&
       cached &&
       cached.x === x &&
@@ -681,6 +707,25 @@ function renderNodeToOutput(
             yogaNode.getComputedHeight() -
             yogaNode.getComputedBorder(LayoutEdge.Bottom)
           : undefined
+
+        // Yoga may shrink a layout parent while a fixed-height ScrollBox child
+        // keeps its requested height. Keep the scroll viewport and DECSTBM region
+        // inside the parent's visible bounds; otherwise terminal row scrolling can
+        // overwrite interaction/status rows below the log area.
+        if (isScrollY && y1 !== undefined && y2 !== undefined) {
+          const parent = node.parentNode
+          const parentYoga = parent?.yogaNode
+          if (parentYoga) {
+            const parentY = y - yogaTop
+            const parentY1 = parentY + parentYoga.getComputedBorder(LayoutEdge.Top)
+            const parentY2 =
+              parentY +
+              parentYoga.getComputedHeight() -
+              parentYoga.getComputedBorder(LayoutEdge.Bottom)
+            y1 = Math.max(y1, parentY1)
+            y2 = Math.max(y1, Math.min(y2, parentY2))
+          }
+        }
 
         output.clip({ x1, x2, y1, y2 })
       }

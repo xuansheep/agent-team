@@ -798,21 +798,49 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("shows queued Plan Mode user messages immediately while the previous turn is still running", async () => {
+  it("shows and injects Plan Mode user input while the previous request is running", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
+    let calls = 0;
+    let releaseFirst!: () => void;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          return { content: "First planning response." };
+        }
+        assert.match(requestText(request), /Second planning message should be injected\./);
+        return { content: "Second planning input was handled in the active turn." };
+      }
+    };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={hangingPlanProviderFactory} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "First planning message is still running.");
     await waitForFrame(output, /First planning message is still running\./);
+    for (let attempt = 0; attempt < 100 && typeof releaseFirst !== "function"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(typeof releaseFirst, "function");
 
-    await sendTuiLine(output, "Second planning message should still be visible.");
-    await waitForFrame(output, /Second planning message should still be visible\./);
+    await sendTuiLine(output, "Second planning message should be injected.");
+    await waitForFrame(output, /Second planning message should be injected\./);
+    releaseFirst();
+    await waitForFrame(output, /Second planning input was handled in the active turn\./);
 
     assert.equal(starts, 0);
-    assert.match(output.lastFrame() ?? "", /Plan Mode/);
+    assert.equal(calls, 2);
+    assert.equal(requests.length, 2);
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Ready \| plan \|/);
+    assert.equal((frame.match(/First planning response\./g) ?? []).length, 1);
+    assert.equal((frame.match(/Second planning input was handled in the active turn\./g) ?? []).length, 1);
 
     output.unmount();
     output.cleanup();

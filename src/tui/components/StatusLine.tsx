@@ -2,6 +2,7 @@ import type { ModelUsageTotals } from "../../model/usage.js";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
 import type { TuiMode, TuiRunState } from "../state.js";
 import { Box, Text } from "../ink.js";
+import { stringWidth } from "../../ink/stringWidth.js";
 
 import { defaultStatusLineElements, statusLineElementIds } from "../../settings/types.js";
 import type { StatusLineElement } from "../../settings/types.js";
@@ -40,13 +41,16 @@ export function StatusLine({
 }) {
   const text = statusLineText({ cwd, gitBranch, mode, runState, permissionMode, workflowId, runId, copiedSelectionChars, sessionUsage, modelRequestCount, elements });
   if (!text) return null;
-  const remainder = text.length % Math.max(1, columns);
-  const padding = remainder === 0 ? "" : " ".repeat(Math.max(0, columns - remainder));
   return (
-    <Box flexShrink={0}>
-      <Text dimColor>{text}{padding}</Text>
+    <Box flexShrink={0} width={Math.max(1, columns)} opaque>
+      <Text dimColor>{text}</Text>
     </Box>
   );
+}
+
+export function statusLineRowCount(text: string, columns = 80): number {
+  const width = stringWidth(text);
+  return width ? Math.ceil(width / Math.max(1, columns)) : 0;
 }
 
 export function statusLineText(input: {

@@ -56,6 +56,46 @@ describe("TurnEngine", () => {
     assert.equal(result.messages.at(-1)?.content, "ready");
   });
 
+
+  it("injects pending user input before completing the active turn", async () => {
+    let calls = 0;
+    let injected = false;
+    const events: RuntimeEvent[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) return { content: "first answer" };
+        assert.deepEqual(request.messages.map((message) => message.role), ["user", "assistant", "user"]);
+        assert.equal(request.messages.at(-1)?.content, "follow-up");
+        return { content: "second answer" };
+      }
+    };
+
+    const result = await new TurnEngine().execute({
+      messages: [{ role: "user", content: "initial" }],
+      model: "test-model",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { mode: "default", allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-active-input",
+      drainPendingUserInputs: () => {
+        if (calls !== 1 || injected) return [];
+        injected = true;
+        return [{ id: "input-1", input: { role: "user", content: "follow-up" } }];
+      },
+      eventSink: (event) => { events.push(event); }
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.deepEqual(result.messages.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
+    assert.deepEqual(
+      events.filter((event) => event.type === "runtime_user_input_injected").map((event) => event.input_id),
+      ["input-1"]
+    );
+  });
+
   it("returns aborted when the active model request is cancelled", async () => {
     const abortController = new AbortController();
     let capturedSignal: AbortSignal | undefined;

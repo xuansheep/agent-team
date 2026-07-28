@@ -265,6 +265,7 @@ import { UserQuestionPrompt } from "../../src/tui/components/UserQuestionPrompt.
 
 
 import { InteractionArea } from "../../src/tui/components/InteractionArea.js";
+import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../../src/workflow/state.js";
 import { StatusLine } from "../../src/tui/components/StatusLine.js";
 
 
@@ -3343,13 +3344,13 @@ describe("UserQuestionPrompt", () => {
 
   it("renders question text without raw JSON", () => {
 
-    const output = render(<UserQuestionPrompt questions={[{ id: "next_step", text: "用户已暂停当前节点，请输入下一步处理方式。", required: true }]} />);
+    const output = render(<UserQuestionPrompt questions={[{ id: "next_step", text: "如何继续？", required: true }]} />);
 
 
 
     const frame = output.lastFrame() ?? "";
 
-    assert.match(frame, /用户已暂停当前节点，请输入下一步处理方式。/);
+    assert.match(frame, /如何继续？/);
 
     assert.doesNotMatch(frame, /User input required/);
 
@@ -5414,6 +5415,30 @@ describe("InteractionArea", () => {
     output.cleanup();
   });
 
+  it("renders conversation interruption as a warning activity row", () => {
+    const output = render(
+      <InteractionArea
+        mode="question"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        questions={[]}
+        isLoading={false}
+        activityStatus={CONVERSATION_INTERRUPTED_TEXT}
+        activityStatusTone="warning"
+        onPromptEvent={() => undefined}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /■ Conversation interrupted -+/);
+    assert.equal(frame.split(CONVERSATION_INTERRUPTED_TEXT).length - 1, 1);
+    assert.ok(frame.indexOf(CONVERSATION_INTERRUPTED_TEXT) < frame.indexOf("> Type a request or /help"));
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("keeps activity status out of active choice layouts", () => {
     const output = render(
       <InteractionArea
@@ -6500,6 +6525,45 @@ describe("TuiApp", () => {
 
 
 
+
+  it("shows conversation interruptions only in the warning activity row", async () => {
+    const resumed: unknown[] = [];
+    const session = fakeInteractiveSession({
+      runId: "run-conversation-interrupted",
+      workflowId: "delivery",
+      events: [
+        { type: "node_started", node_id: "product", attempt: 1, activation: 1, ts: "2026-06-24T00:00:00.000Z", seq: 1 },
+        {
+          type: "node_waiting_user",
+          node_id: "product",
+          attempt: 1,
+          activation: 1,
+          questions: [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }],
+          ts: "2026-06-24T00:00:01.000Z",
+          seq: 2
+        }
+      ],
+      resumeWithUserInput: (input) => {
+        resumed.push(input);
+      }
+    });
+    const engine = { async startInteractive() { return session; } };
+    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+
+    await sendTuiLine(output, "start work");
+
+    const frame = output.lastFrame() ?? "";
+    assert.equal(frame.split(CONVERSATION_INTERRUPTED_TEXT).length - 1, 1);
+    assert.doesNotMatch(frame, /product 需要用户补充信息/);
+    assert.ok(frame.indexOf(CONVERSATION_INTERRUPTED_TEXT) < frame.indexOf("> Type a request or /help"));
+
+    await sendTuiLine(output, "continue");
+    assert.deepEqual(resumed, [{ answer: "continue" }]);
+    assert.doesNotMatch(output.lastFrame() ?? "", /■ Conversation interrupted/);
+
+    output.unmount();
+    output.cleanup();
+  });
 
   it("renders assistant preambles and completed command tools in the main transcript", async () => {
 

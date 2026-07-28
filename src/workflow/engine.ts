@@ -8,7 +8,8 @@ import { PermissionController } from "../harness/permissionController.js";
 import { RuntimeInteraction, runNode } from "../harness/runtime.js";
 import type { ToolPermissionContext } from "../permissions/context.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
-import { ModelMessage, ModelProvider } from "../providers/types.js";
+import { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
+import { ActiveTurnInputChannel } from "../runtime/activeTurnInput.js";
 import { getProviderMaxOutputTokens, modelRegistryFromProviderConfig } from "../model/modelRegistry.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import { formatRunError } from "../runtime/errorFormatting.js";
@@ -22,7 +23,7 @@ import { NodeResult, nodeResultSchema } from "../team/nodeResult.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
-import { WorkflowState } from "./state.js";
+import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT, WorkflowState } from "./state.js";
 import { WorkflowSession } from "./session.js";
 import { firstNodeId } from "./transitions.js";
 import { NodeTransitionController } from "./nodeTransitionController.js";
@@ -49,6 +50,7 @@ type ContinueOptions = {
     reworkLimit?: number;
     eventSink?: (event: StoredEvent) => void;
     interaction?: RuntimeInteraction;
+    activeInputChannel?: ActiveTurnInputChannel<ModelMessage>;
     abortSignal?: AbortSignal;
     isInterrupted?: () => boolean;
     onState?: (state: WorkflowState) => void;
@@ -186,6 +188,7 @@ export class WorkflowEngine {
             stream.push(event);
         }
         const permissions = new PermissionController();
+        const activeInputChannel = new ActiveTurnInputChannel<ModelMessage>();
         let interrupted = false;
         let resultSettled = false;
         let activeRun: Promise<WorkflowState> | undefined;
@@ -252,6 +255,7 @@ export class WorkflowEngine {
                 interaction: {
                     requestPermission: (request) => permissions.request(request)
                 },
+                activeInputChannel,
                 abortSignal: abortController.signal,
                 isInterrupted: () => interrupted,
                 onState: (next) => {
@@ -284,7 +288,6 @@ export class WorkflowEngine {
                 runId,
                 workflowId,
                 latestState,
-                reason: "用户已暂停当前节点，请输入下一步处理方式。",
                 eventSink: (event) => stream.push(event)
             });
             latestState = waitingState;
@@ -365,6 +368,7 @@ export class WorkflowEngine {
                 });
                 finishWhenTerminal(nextState);
             }),
+            queueUserInput: async (input, inputId) => activeInputChannel.offer(userInputModelMessage(input), inputId),
             continueWithInput: (input) => {
                 stream.reopen();
                 return withRunLease(async () => {
@@ -431,6 +435,7 @@ export class WorkflowEngine {
             stream.push(event);
         }
         const permissions = new PermissionController();
+        const activeInputChannel = new ActiveTurnInputChannel<ModelMessage>();
         const startNodeId = firstNodeId(workflow);
         const runPermissionMode = options.permissionMode;
         let interrupted = false;
@@ -513,6 +518,7 @@ export class WorkflowEngine {
                 interaction: {
                     requestPermission: (request) => permissions.request(request)
                 },
+                activeInputChannel,
                 abortSignal: abortController.signal,
                 isInterrupted: () => interrupted,
                 onState: (state) => {
@@ -563,7 +569,6 @@ export class WorkflowEngine {
                     runId: run.runId,
                     workflowId,
                     latestState,
-                    reason: "用户已暂停当前节点，请输入下一步处理方式。",
                     eventSink: (event) => stream.push(event)
                 });
                 latestState = state;
@@ -618,6 +623,7 @@ export class WorkflowEngine {
                 });
                 finishWhenTerminal(state);
             }),
+            queueUserInput: async (input, inputId) => activeInputChannel.offer(userInputModelMessage(input), inputId),
             continueWithInput: (input) => {
                 stream.reopen();
                 return withRunLease(async () => {
@@ -754,7 +760,7 @@ export class WorkflowEngine {
         while (currentId) {
             syncOptions();
             if (options.isInterrupted?.()) {
-                return this.pauseNodeForUser(options, currentId, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。");
+                return this.pauseNodeForUser(options, currentId, attempts, handoff);
             }
             const node = options.workflow.nodes.find((item) => item.id === currentId);
             if (!node) throw new Error(`Unknown node ${currentId}`);
@@ -817,6 +823,7 @@ export class WorkflowEngine {
             });
             let result: NodeResult | undefined;
             let nodeError: unknown;
+            options.activeInputChannel?.open();
             try {
                 result = await runNode({
                     node,
@@ -838,6 +845,7 @@ export class WorkflowEngine {
                     activation,
                     interaction: options.interaction,
                     eventSink: options.eventSink,
+                    drainPendingUserInputs: () => options.activeInputChannel?.drain() ?? [],
                     abortSignal: options.abortSignal,
                     dialogueMessages,
                     dialogueCursor,
@@ -855,6 +863,23 @@ export class WorkflowEngine {
             catch (error) {
                 nodeError = error;
             }
+            finally {
+                const deferredInputs = options.activeInputChannel?.close() ?? [];
+                for (const pending of deferredInputs) {
+                    const content = pending.input.content;
+                    const text = typeof content === "string"
+                        ? content
+                        : content.filter((part) => part.type === "text").map((part) => part.type === "text" ? part.text : "").join("\n");
+                    await this.appendEvent(options.store, options.runId, {
+                        type: "user_input_deferred",
+                        input_id: pending.id,
+                        text: text || "See attached image.",
+                        node_id: node.id,
+                        attempt,
+                        activation
+                    }, options.eventSink);
+                }
+            }
             let cleanupError: unknown;
             const cleanupReason = options.isInterrupted?.() || options.abortSignal?.aborted
                 ? "interrupted"
@@ -870,7 +895,7 @@ export class WorkflowEngine {
             if (nodeError || cleanupError) {
                 syncOptions();
                 if (options.isInterrupted?.() || options.abortSignal?.aborted) {
-                    return this.pauseNodeForUser(options, node.id, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。", checkpoint());
+                    return this.pauseNodeForUser(options, node.id, attempts, handoff, checkpoint());
                 }
                 const error = nodeError && cleanupError
                     ? new AggregateError([nodeError, cleanupError], "Node execution and managed process cleanup failed")
@@ -879,7 +904,7 @@ export class WorkflowEngine {
             }
             if (options.isInterrupted?.()) {
                 syncOptions();
-                return this.pauseNodeForUser(options, node.id, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。", checkpoint());
+                return this.pauseNodeForUser(options, node.id, attempts, handoff, checkpoint());
             }
             try {
                 result = await this.ensureNodeDeliverable(options, node.id, attempt, result!, activation);
@@ -991,7 +1016,7 @@ export class WorkflowEngine {
             catch (error) {
                 syncOptions();
                 if (options.isInterrupted?.() || options.abortSignal?.aborted) {
-                    return this.pauseNodeForUser(options, node.id, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。", checkpoint());
+                    return this.pauseNodeForUser(options, node.id, attempts, handoff, checkpoint());
                 }
                 return this.failNodeForUser(options, node.id, attempt, attempts, handoff, error, checkpoint());
             }
@@ -1077,9 +1102,9 @@ export class WorkflowEngine {
         await options.store.saveState(options.runId, state);
         return state;
     }
-    private async pauseNodeForUser(options: ContinueOptions, nodeId: string, attempts: WorkflowState["attempts"], handoff: unknown, reason: string, resumeCheckpoint?: WorkflowState["resume_checkpoint"]): Promise<WorkflowState> {
+    private async pauseNodeForUser(options: ContinueOptions, nodeId: string, attempts: WorkflowState["attempts"], handoff: unknown, resumeCheckpoint?: WorkflowState["resume_checkpoint"]): Promise<WorkflowState> {
         const updatedAttempts = markLatestActiveAttemptWaiting(attempts, nodeId);
-        const questions = waitingQuestions(reason);
+        const questions = conversationInterruptedQuestions();
         const attempt = latestAttemptForNode(updatedAttempts, nodeId);
         const activation = latestActivationForNode(updatedAttempts, nodeId);
         const checkpoint = resumeCheckpoint ?? { node_id: nodeId, handoff, attempt, activation, dialogue_cursor: 0, dialogue_messages: [] };
@@ -1105,7 +1130,6 @@ export class WorkflowEngine {
         runId: string;
         workflowId: string;
         latestState: WorkflowState;
-        reason: string;
         eventSink?: (event: StoredEvent) => void;
     }): Promise<WorkflowState> {
         const nodeId = input.latestState.current_node_id ?? input.latestState.resume_checkpoint?.node_id;
@@ -1116,7 +1140,7 @@ export class WorkflowEngine {
         const checkpoint = input.latestState.resume_checkpoint;
         const handoff = checkpoint?.handoff ?? input.latestState.handoff;
         const attempts = markLatestActiveAttemptWaiting(input.latestState.attempts, nodeId);
-        const questions = waitingQuestions(input.reason);
+        const questions = conversationInterruptedQuestions();
         const state: WorkflowState = {
             ...input.latestState,
             status: "paused",
@@ -1298,6 +1322,9 @@ ${formatted.detail}` : formatted.message;
 }
 function waitingQuestions(text: string): NodeResult["questions"] {
     return [{ id: "next_step", text, required: true }];
+}
+function conversationInterruptedQuestions(): NodeResult["questions"] {
+    return [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }];
 }
 function markLatestActiveAttemptWaiting(attempts: WorkflowState["attempts"], nodeId: string): WorkflowState["attempts"] {
     const next = [...attempts];
@@ -1590,6 +1617,27 @@ function reworkDecision(input: unknown): "continue" | "cancel" | undefined {
     if (/^(continue|继续)/.test(text)) return "continue";
     return undefined;
 }
+function userInputModelMessage(input: unknown): ModelMessage {
+    const text = userMessageText(input);
+    const value = input && typeof input === "object" && !Array.isArray(input)
+        ? input as { images?: unknown }
+        : undefined;
+    const images = Array.isArray(value?.images)
+        ? value.images.filter((image): image is Extract<ModelContentPart, { type: "image" }> => {
+            if (!image || typeof image !== "object") return false;
+            const candidate = image as { type?: unknown; media_type?: unknown; data?: unknown };
+            return candidate.type === "image"
+                && (candidate.media_type === "image/png" || candidate.media_type === "image/jpeg" || candidate.media_type === "image/webp")
+                && typeof candidate.data === "string";
+        })
+        : [];
+    return {
+        role: "user",
+        content: images.length ? [{ type: "text", text: text || "See attached image." }, ...images] : text,
+        metadata: { userMessageKind: "human" }
+    };
+}
+
 function userMessageText(input: unknown): string {
     if (typeof input === "string")
         return input;

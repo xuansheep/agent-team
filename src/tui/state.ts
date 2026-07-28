@@ -151,6 +151,7 @@ export type TuiState = {
   planSession?: PlanSessionState;
   modelStreams: TuiModelStreamState[];
   activeModelRetry?: TuiModelRetryState;
+  activityNotice?: { text: string; tone: "warning" };
   conversation: TuiConversationItem[];
   logMessages: TuiLogMessage[];
   questions: unknown[];

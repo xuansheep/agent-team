@@ -1,11 +1,11 @@
-import React from "react";
+import React, { createRef } from "react";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough, Readable } from "node:stream";
 import { PromptInput } from "../../src/tui/components/PromptInput/PromptInput.js";
 import { PromptInputEvent } from "../../src/tui/components/PromptInput/types.js";
 import type { PromptHistoryStore } from "../../src/storage/promptHistoryStore.js";
-import { Box, Text, renderSync } from "../../src/tui/ink.js";
+import { Box, ScrollBox, Text, renderSync, type ScrollBoxHandle } from "../../src/tui/ink.js";
 import instances from "../../src/ink/instances.js";
 import { charInCellAt, type Screen } from "../../src/ink/screen.js";
 
@@ -82,6 +82,68 @@ describe("PromptInput with local Ink renderer", () => {
       await settleEffects();
       await sendKeys(stdin, ["h", "e", "l", "l", "o", "\r"]);
       assert.deepEqual(events, [{ type: "submit", text: "hello" }]);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+
+  it("keeps accepting text and queues it while work is running", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const events: PromptInputEvent[] = [];
+    const instance = renderSync(
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={true}
+        onEvent={(event) => events.push(event)}
+      />,
+      {
+        stdin,
+        stdout: new FakeStdout() as unknown as NodeJS.WriteStream,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      await sendKeys(stdin, ["f", "o", "l", "l", "o", "w", "\r"]);
+      assert.deepEqual(events, [{ type: "queue", text: "follow" }]);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+  it("clamps a fixed-height ScrollBox to its parent's visible height", async () => {
+    const ref = createRef<ScrollBoxHandle>();
+    const instance = renderSync(
+      <Box height={2} flexDirection="column">
+        <ScrollBox ref={ref} height={5} flexDirection="column">
+          <Text>one</Text>
+          <Text>two</Text>
+          <Text>three</Text>
+          <Text>four</Text>
+          <Text>five</Text>
+        </ScrollBox>
+      </Box>,
+      {
+        stdin: new FakeTtyStdin() as unknown as NodeJS.ReadStream,
+        stdout: new FakeStdout() as unknown as NodeJS.WriteStream,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      assert.equal(ref.current?.getViewportHeight(), 2);
     } finally {
       instance.unmount();
       instance.cleanup();

@@ -1,9 +1,13 @@
 import React from "react";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { PassThrough, Readable } from "node:stream";
 import { render } from "ink-testing-library";
 import type { AgentTeamConfig } from "../../src/config/schema.js";
 import { TuiApp } from "../../src/tui/TuiApp.js";
+import { renderSync } from "../../src/tui/ink.js";
+import instances from "../../src/ink/instances.js";
+import { charInCellAt, type Screen } from "../../src/ink/screen.js";
 
 describe("TUI workflow selection guide", () => {
   it("previews workflows in list order and enters the conversation after confirmation", async () => {
@@ -69,6 +73,151 @@ describe("TUI workflow selection guide", () => {
 
     output.unmount();
   });
+
+  it("pins the statusline to the terminal bottom row during input and menus", async () => {
+    await withTerminalSize(24, 80, async () => {
+      const output = render(
+        <TuiApp
+          cwd="D:\\CodeAI\\agent-team"
+          config={workflowConfig()}
+          workflows={["alpha", "delivery"]}
+          workflowId="delivery"
+        />
+      );
+
+      try {
+        await settle();
+        const frames = [output.lastFrame() ?? ""];
+        output.stdin.write("/permissions");
+        output.stdin.write("\r");
+        await settle();
+        frames.push(output.lastFrame() ?? "");
+
+        assert.match(frames[0]!, /> Type a request or \/help/);
+        assert.match(frames[1]!, /Default execution mode/);
+        for (const frame of frames) {
+          const lines = frame.split("\n");
+          assert.equal(lines.length, 24);
+          assert.match(lines.at(-1) ?? "", /^Ready \| default \|/);
+        }
+      } finally {
+        output.unmount();
+        output.cleanup();
+      }
+    });
+  });
+
+  it("bottom-aligns the complete statusline when it wraps in a narrow terminal", async () => {
+    await withTerminalSize(24, 30, async () => {
+      const cwd = "D:/work/a-very-long-project-directory";
+      const tree = (
+        <TuiApp
+          cwd={cwd}
+          config={workflowConfig()}
+          workflows={["alpha", "delivery"]}
+          workflowId="delivery"
+          settings={{ statusLine: ["current-dir"] }}
+        />
+      );
+      const output = render(tree);
+
+      try {
+        Object.defineProperty(output.stdout, "columns", { value: 30, configurable: true });
+        output.rerender(tree);
+        await settle();
+
+        const lines = (output.lastFrame() ?? "").split("\n");
+        assert.equal(lines.length, 24);
+        assert.equal(lines.slice(-2).join(""), cwd);
+        assert.equal(lines.at(-3), "");
+        assert.match(lines.at(-4) ?? "", /> Type a request or \/help/);
+      } finally {
+        output.unmount();
+        output.cleanup();
+      }
+    });
+  });
+
+  it("restores the local Ink input gap after closing the statusline menu", async () => {
+    await withTerminalSize(24, 80, async () => {
+      const stdin = new LocalFakeStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+      const stdout = new LocalFakeStdout() as unknown as NodeJS.WriteStream;
+      const output = renderSync(
+        <TuiApp cwd="D:/work" config={workflowConfig()} workflows={["delivery"]} workflowId="delivery" />,
+        { stdin, stdout, stderr: new LocalFakeStdout() as unknown as NodeJS.WriteStream, patchConsole: false, exitOnCtrlC: false }
+      );
+
+      try {
+        await settle();
+        const initial = localScreenLines(stdout);
+        assert.match(initial[21] ?? "", /> Type a request or \/help/);
+        assert.equal(initial[22], "");
+        assert.match(initial[23] ?? "", /^Ready \| default \|/);
+
+        await sendLocalKeys(stdin, [...Array.from("/statusline"), "\r"]);
+        assert.match(localScreenLines(stdout).join("\n"), /Left\/right to reorder enabled items/);
+        stdin.send("\u001b");
+        await settle();
+        await settle();
+
+        const closed = localScreenLines(stdout);
+        assert.match(closed[21] ?? "", /> Type a request or \/help/);
+        assert.equal(closed[22], "");
+        assert.match(closed[23] ?? "", /^Ready \| default \|/);
+        assert.doesNotMatch(closed.slice(9, 21).join("\n"), /[│█]/);
+      } finally {
+        output.unmount();
+        output.cleanup();
+      }
+    });
+  });
+
+  it("keeps the local Ink input gap when a paused run wraps the statusline", async () => {
+    await withTerminalSize(24, 80, async () => {
+      const runId = "550e8400-e29b-41d4-a716-446655440000";
+      const pausedState = { status: "paused", workflow_id: "delivery", current_node_id: "delivery-node", attempts: [], questions: [] } as const;
+      let finish!: () => void;
+      const result = new Promise<typeof pausedState>((resolve) => { finish = () => resolve(pausedState); });
+      const session = {
+        runId,
+        sessionId: "session-local-layout",
+        state: { ...pausedState, status: "running" },
+        events: { async *[Symbol.asyncIterator]() { await result; } },
+        result,
+        permissions: { resolve() {} },
+        interrupt: async () => { finish(); },
+        resumeWithUserInput: async () => {},
+        continueWithInput: async () => {}
+      };
+      const engine = { async startInteractive() { return session as never; } };
+      const stdin = new LocalFakeStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+      const stdout = new LocalFakeStdout() as unknown as NodeJS.WriteStream;
+      const output = renderSync(
+        <TuiApp cwd="D:/work/code-ai/agent-team" config={workflowConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />,
+        { stdin, stdout, stderr: new LocalFakeStdout() as unknown as NodeJS.WriteStream, patchConsole: false, exitOnCtrlC: false }
+      );
+
+      try {
+        await settle();
+        await sendLocalKeys(stdin, ["g", "o", "\r"]);
+        await settle();
+        finish();
+        await settle();
+        await settle();
+
+        const lines = localScreenLines(stdout);
+        const promptIndex = lines.findIndex((line) => line.startsWith("> "));
+        const statusIndex = lines.findIndex((line) => line.startsWith("Waiting |"));
+        assert.equal(statusIndex, promptIndex + 2);
+        assert.equal(lines[promptIndex + 1], "");
+        assert.equal(lines.at(-1), runId);
+      } finally {
+        output.unmount();
+        output.cleanup();
+      }
+    });
+  });
+
 });
 
 function workflowConfig(): AgentTeamConfig {
@@ -110,4 +259,65 @@ function workflowConfig(): AgentTeamConfig {
 
 function settle(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 30));
+}
+
+async function withTerminalSize(rows: number, columns: number, run: () => Promise<void>): Promise<void> {
+  const rowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+  const columnsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+  Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true });
+  Object.defineProperty(process.stdout, "columns", { value: columns, configurable: true });
+  try {
+    await run();
+  } finally {
+    if (rowsDescriptor) Object.defineProperty(process.stdout, "rows", rowsDescriptor);
+    else Reflect.deleteProperty(process.stdout, "rows");
+    if (columnsDescriptor) Object.defineProperty(process.stdout, "columns", columnsDescriptor);
+    else Reflect.deleteProperty(process.stdout, "columns");
+  }
+}
+
+
+class LocalFakeStdout extends PassThrough {
+  isTTY = true;
+  columns = 80;
+  rows = 24;
+}
+
+class LocalFakeStdin extends Readable {
+  isTTY = true;
+  isRaw = false;
+
+  _read(): void {}
+
+  setRawMode(value: boolean): this {
+    this.isRaw = value;
+    return this;
+  }
+
+  ref(): this {
+    return this;
+  }
+
+  unref(): this {
+    return this;
+  }
+
+  send(input: string): void {
+    this.push(input);
+    this.emit("readable");
+  }
+}
+
+function localScreenLines(stdout: NodeJS.WriteStream): string[] {
+  const screen = (instances.get(stdout) as unknown as { frontFrame: { screen: Screen } }).frontFrame.screen;
+  return Array.from({ length: screen.height }, (_, y) =>
+    Array.from({ length: screen.width }, (_, x) => charInCellAt(screen, x, y) ?? " ").join("").trimEnd()
+  );
+}
+
+async function sendLocalKeys(stdin: { send(input: string): void }, keys: string[]): Promise<void> {
+  for (const key of keys) {
+    stdin.send(key);
+    await settle();
+  }
 }
