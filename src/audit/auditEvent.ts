@@ -13,6 +13,7 @@ export type AuditEvent = {
   | { type: "tool_invocation"; tool: string; input?: unknown }
   | { type: "tool_result"; tool: string; status: "completed" | "failed"; result?: unknown; error?: string }
   | { type: "shell_command"; tool: "Bash" | "PowerShell"; command: string; destructive: boolean; executor?: "bash" | "powershell"; executable?: string; fallback?: boolean; exit_code?: number }
+  | { type: "managed_process"; action: "started" | "stopped" | "cleanup_failed"; process_id: string; pid: number; executable?: string; reason?: "explicit" | "node_complete" | "node_error" | "interrupted"; exit_code?: number | null; error?: string; output_path?: string }
   | { type: "file_write"; tool: "Write" | "Edit" | "MultiEdit"; path: string }
   | { type: "artifact_read"; artifact_id: string; offset: number; bytes_read: number; total_bytes: number; truncated: boolean; source: "handoff" | "tool" }
   | { type: "skill_activated"; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }

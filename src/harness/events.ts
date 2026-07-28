@@ -22,6 +22,9 @@ export type HarnessEvent =
   | { type: "tool_invoked"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; input: unknown }
   | { type: "tool_completed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; result: unknown }
   | { type: "tool_failed"; node_id: string; attempt?: number; activation?: number; tool_call_id?: string; tool: string; error: string; result?: unknown; failure_category?: string; failure_fingerprint?: string }
+  | { type: "managed_process_started"; node_id: string; attempt?: number; activation?: number; process_id: string; pid: number; executable: string; output_path?: string }
+  | { type: "managed_process_stopped"; node_id: string; attempt?: number; activation?: number; process_id: string; pid: number; reason: "explicit" | "node_complete" | "node_error" | "interrupted"; exit_code: number | null }
+  | { type: "managed_process_cleanup_failed"; node_id: string; attempt?: number; activation?: number; process_id: string; pid: number; reason: "explicit" | "node_complete" | "node_error" | "interrupted"; error: string }
   | { type: "artifact_read"; node_id: string; attempt?: number; artifact_id: string; offset: number; bytes_read: number; total_bytes: number; truncated: boolean; source: "handoff" | "tool" }
   | { type: "skill_activated"; node_id: string; attempt?: number; activation?: number; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }
   | { type: "artifact_created"; node_id: string; artifact_id: string; path: string }

@@ -38,6 +38,39 @@ describe("RunStore", () => {
     assert.equal(typeof state.updated_at, "string");
   });
 
+  it("persists managed process lifecycle events into the audit chain", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-managed-process-audit-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("delivery", { request: "serve" }, { sessionId: "session-process" });
+
+    await store.appendEvent(run.runId, {
+      type: "managed_process_started",
+      node_id: "developer",
+      attempt: 1,
+      process_id: "process-1",
+      pid: 1234,
+      executable: "node"
+    });
+    await store.appendEvent(run.runId, {
+      type: "managed_process_stopped",
+      node_id: "developer",
+      attempt: 1,
+      process_id: "process-1",
+      pid: 1234,
+      reason: "node_complete",
+      exit_code: 0
+    });
+
+    const audit = (await readFile(join(run.runDir, "..", "..", "audit.ndjson"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; action?: string; process_id?: string });
+    assert.deepEqual(
+      audit.filter((event) => event.type === "managed_process").map((event) => `${event.action}:${event.process_id}`),
+      ["started:process-1", "stopped:process-1"]
+    );
+  });
+
   it("lists run summaries newest first and skips unreadable runs", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-list-runs-"));
     const store = new RunStore(root);

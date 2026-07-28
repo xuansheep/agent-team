@@ -292,6 +292,16 @@ workflows:
     assert.deepEqual(workflow.nodes.map((node) => node.id), ["product", "ui", "developer", "tester"]);
     assert.equal(workflow.nodes.every((node) => node.provider === "default"), true);
     assert.equal(workflow.nodes.find((node) => node.id === "tester")?.mode, "complete");
+    for (const nodeId of ["developer", "tester"]) {
+      const allow = workflow.nodes.find((node) => node.id === nodeId)?.permissions?.allow ?? [];
+      assert.equal(allow.includes("ProcessStart"), true);
+      assert.equal(allow.includes("ProcessStatus"), true);
+      assert.equal(allow.includes("ProcessStop"), true);
+    }
+    for (const nodeId of ["product", "ui"]) {
+      const allow = workflow.nodes.find((node) => node.id === nodeId)?.permissions?.allow ?? [];
+      assert.equal(allow.includes("ProcessStart"), false);
+    }
     assert.equal(workflow.max_rework_cycles, 99);
     assert.equal(workflow.edges.length, 0);
     assert.equal(workflow.edges.some((edge) => edge.from === "user_acceptance" || edge.to === "user_acceptance"), false);

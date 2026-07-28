@@ -9,6 +9,7 @@ export function shellToolPrompt(tool: "Bash" | "PowerShell"): string {
     "- Read files with Read, not cat/head/tail/Get-Content.",
     "- Edit existing files with Edit or MultiEdit, not sed/awk or shell string replacement.",
     "- Write files with Write, not echo redirection, cat heredocs, PowerShell here-strings, or large inline scripts.",
+    "- Start long-running processes with ProcessStart and stop them with ProcessStop. Unmanaged shell background processes are rejected.",
     "- If active project instructions require a specialized reader/writer, keep the shell invocation short and do not embed the file body in the command.",
     "- Send independent commands as separate tool calls. Chain commands only when later commands truly depend on earlier success.",
     "Large inline content is rejected because it is unreliable across shells and can exceed operating-system command-line limits.",
@@ -27,6 +28,12 @@ export function validateShellCommandInput(command: string, executor: "bash" | "p
     throw new ToolExecutionError(
       "Large inline file or script content is not allowed. Use Read/Edit/MultiEdit/Write and keep shell commands short.",
       toolPolicyFailureResult("shell.input.large_inline_content", "Large heredoc, here-string, or triple-quoted inline content was rejected", executor)
+    );
+  }
+  if (hasUnmanagedBackgroundProcess(command, executor)) {
+    throw new ToolExecutionError(
+      "Unmanaged background processes are not allowed. Use ProcessStart, ProcessStatus, and ProcessStop.",
+      toolPolicyFailureResult("shell.background.unmanaged", "Use the managed process tools for long-running processes", executor)
     );
   }
 }
@@ -58,4 +65,67 @@ function shellCommand(input: unknown): string {
 
 function hasInlineContentSyntax(command: string): boolean {
   return /<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?|@["']|["']@|'''|"""/.test(command);
+}
+
+export function hasUnmanagedBackgroundProcess(command: string, executor: "bash" | "powershell"): boolean {
+  const visible = unquotedShellText(command);
+  if (executor === "bash") {
+    return /(^|[;&|]\s*)nohup(?:\s|$)/i.test(visible)
+      || /(^|[;&|]\s*)disown(?:\s|$)/i.test(visible)
+      || hasStandaloneBackgroundOperator(visible);
+  }
+  return /\bStart-(?:Thread)?Job\b/i.test(visible)
+    || (/\bStart-Process\b/i.test(visible) && !/(^|\s)-Wait(?:\s|$)/i.test(visible))
+    || hasStandaloneBackgroundOperator(visible, true);
+}
+
+function unquotedShellText(command: string): string {
+  let result = "";
+  let singleQuoted = false;
+  let doubleQuoted = false;
+  let escaped = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (escaped) {
+      result += " ";
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && !singleQuoted) {
+      result += " ";
+      escaped = true;
+      continue;
+    }
+    if (char === "'" && !doubleQuoted) {
+      singleQuoted = !singleQuoted;
+      result += " ";
+      continue;
+    }
+    if (char === '"' && !singleQuoted) {
+      doubleQuoted = !doubleQuoted;
+      result += " ";
+      continue;
+    }
+    result += singleQuoted || doubleQuoted ? " " : char;
+  }
+  return result;
+}
+
+function hasStandaloneBackgroundOperator(command: string, allowCallOperator = false): boolean {
+  for (let index = 0; index < command.length; index += 1) {
+    if (command[index] !== "&") continue;
+    const previous = command[index - 1];
+    const next = command[index + 1];
+    if (previous === "&" || next === "&" || previous === ">" || next === ">") continue;
+    if (allowCallOperator && isPowerShellCallOperator(command, index)) continue;
+    return true;
+  }
+  return false;
+}
+
+function isPowerShellCallOperator(command: string, index: number): boolean {
+  const before = command.slice(0, index).trimEnd();
+  const after = command.slice(index + 1).trimStart();
+  if (!after || after.startsWith(";")) return false;
+  return !before || /[;|({=,]$/.test(before);
 }

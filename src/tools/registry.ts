@@ -23,6 +23,12 @@ import { createListMcpResourcesTool, createReadMcpResourceTool } from "../mcp/re
 import { createGetMcpPromptTool, createListMcpPromptsTool, createRunMcpPromptTool } from "../mcp/promptTools.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import { createListSkillsTool, createUseSkillTool } from "../skills/skillTools.js";
+import {
+  createManagedProcessTools,
+  ManagedProcessManager,
+  type ManagedProcessLifecycleEvent,
+  type ManagedProcessStopReason
+} from "./local/managedProcess.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
@@ -31,7 +37,8 @@ export class ToolRegistry {
 
   constructor(
     readonly skillRuntime?: SkillRuntime,
-    readonly mcpRuntime?: McpRuntime
+    readonly mcpRuntime?: McpRuntime,
+    private readonly managedProcesses = new ManagedProcessManager()
   ) {}
 
   add(tool: Tool): void {
@@ -76,10 +83,19 @@ export class ToolRegistry {
   activateSkillsForInput(input: unknown, cwd: string): string[] {
     return this.skillRuntime?.activateForPaths(candidatePaths(input), cwd) ?? [];
   }
+
+  disposeManagedProcesses(reason: Exclude<ManagedProcessStopReason, "explicit">): Promise<void> {
+    return this.managedProcesses.dispose(reason);
+  }
 }
 
-export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skillRuntime?: SkillRuntime } = {}): ToolRegistry {
-  const registry = new ToolRegistry(options.skillRuntime, options.mcpRuntime);
+export function createLocalToolRegistry(options: {
+  mcpRuntime?: McpRuntime;
+  skillRuntime?: SkillRuntime;
+  onManagedProcessEvent?: (event: ManagedProcessLifecycleEvent) => void | Promise<void>;
+} = {}): ToolRegistry {
+  const managedProcesses = new ManagedProcessManager(options.onManagedProcessEvent);
+  const registry = new ToolRegistry(options.skillRuntime, options.mcpRuntime, managedProcesses);
   for (const tool of [
     readTool,
     writeTool,
@@ -98,7 +114,8 @@ export function createLocalToolRegistry(options: { mcpRuntime?: McpRuntime; skil
     webSearchTool,
     enterPlanModeTool,
     exitPlanModeTool,
-    askUserQuestionTool
+    askUserQuestionTool,
+    ...createManagedProcessTools(managedProcesses)
   ]) {
     registry.add(tool);
   }

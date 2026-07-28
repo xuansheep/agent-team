@@ -498,6 +498,48 @@ describe("WorkflowEngine", () => {
     assert.equal(calls, 2);
   });
 
+  it("automatically stops managed processes before completing a workflow node", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "starting server",
+            tool_calls: [{
+              id: "process-start-1",
+              name: "ProcessStart",
+              input: { executable: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] }
+            }]
+          };
+        }
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const runRoot = `.tmp/managed-process-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+
+    const result = await engine.run({
+      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "fullAccess" }], edges: [] } }
+    }, "flow", { request: "x" });
+
+    assert.equal(result.status, "completed");
+    const runId = await latestRunId(runRoot);
+    const events = await new RunStore(runRoot).loadEvents(runId);
+    const started = events.find((event) => event.type === "managed_process_started");
+    const stopped = events.find((event) => event.type === "managed_process_stopped");
+    assert.ok(started && started.type === "managed_process_started");
+    assert.ok(stopped && stopped.type === "managed_process_stopped");
+    assert.equal(stopped.process_id, started.process_id);
+    assert.equal(stopped.reason, "node_complete");
+    await waitForPidExit(started.pid, 3000);
+    assert.equal(isPidRunning(started.pid), false);
+    assert.ok(events.findIndex((event) => event.type === "managed_process_stopped")
+      < events.findIndex((event) => event.type === "node_completed"));
+  });
+
   it("uses run-level fullAccess permissions for workflow edit tools without Auto Mode attachment", async () => {
     let calls = 0;
     const requests: ModelRequest[] = [];
@@ -1112,6 +1154,22 @@ describe("WorkflowEngine", () => {
   });
 
 });
+
+async function waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (isPidRunning(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function requestMessageText(message: ModelRequest["messages"][number]): string {
   if (typeof message.content === "string") return message.content;

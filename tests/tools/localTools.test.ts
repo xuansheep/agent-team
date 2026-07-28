@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 import { normalizeGlobPatternForFastGlob } from "../../src/tools/local/glob.js";
-import { cleanPowerShellOutput, createPowerShellProvider, executeBash } from "../../src/tools/local/shellProvider.js";
+import { cleanPowerShellOutput, createPowerShellProvider, executeBash, executePowerShell } from "../../src/tools/local/shellProvider.js";
+import { hasUnmanagedBackgroundProcess } from "../../src/tools/local/shellPolicy.js";
+import type { ManagedProcessLifecycleEvent } from "../../src/tools/local/managedProcess.js";
 
 async function workspace() {
   return mkdtemp(join(tmpdir(), "agent-team-tools-"));
@@ -161,6 +163,83 @@ describe("local tools", () => {
     assert.equal(result.timedOut, true);
     assert.equal(result.interrupted, false);
     assert.equal(result.code, 124);
+  });
+
+  it("settles a timed-out PowerShell command when a descendant keeps stdio open", { skip: process.platform !== "win32" }, async () => {
+    const cwd = await workspace();
+    const scriptPath = join(cwd, "hold-open.cjs");
+    await writeFile(scriptPath, "setTimeout(() => {}, 1500);\n", "utf8");
+    const executable = process.execPath.replace(/'/g, "''");
+    const command = `Start-Process -FilePath '${executable}' -ArgumentList './hold-open.cjs' -NoNewWindow`;
+
+    const result = await settlesWithin(executePowerShell(command, { cwd, timeoutMs: 50 }), 3500);
+
+    assert.equal(result.timedOut, true);
+    assert.equal(result.code, 124);
+  });
+
+  it("detects unmanaged background processes without confusing redirection or foreground composition", () => {
+    assert.equal(hasUnmanagedBackgroundProcess("python -m http.server 4173 > out.log 2>&1 &", "bash"), true);
+    assert.equal(hasUnmanagedBackgroundProcess("npm test && npm run lint", "bash"), false);
+    assert.equal(hasUnmanagedBackgroundProcess("python app.py > out.log 2>&1", "bash"), false);
+    assert.equal(hasUnmanagedBackgroundProcess("python app.py &> out.log", "bash"), false);
+    assert.equal(hasUnmanagedBackgroundProcess("Start-Process python -ArgumentList '-m','http.server'", "powershell"), true);
+    assert.equal(hasUnmanagedBackgroundProcess("Start-Process python -ArgumentList '-V' -Wait", "powershell"), false);
+    assert.equal(hasUnmanagedBackgroundProcess("& python -V", "powershell"), false);
+    assert.equal(hasUnmanagedBackgroundProcess("Write-Output ready; & python -V", "powershell"), false);
+    assert.equal(hasUnmanagedBackgroundProcess("$version = & python -V", "powershell"), false);
+  });
+
+  it("starts, inspects, and stops node-scoped managed processes", async () => {
+    const cwd = await workspace();
+    const runDir = join(cwd, ".session", "run-process");
+    const scriptPath = join(cwd, "managed-child.cjs");
+    await writeFile(scriptPath, "process.stdout.write('ready'); setInterval(() => {}, 1000);\n", "utf8");
+    const events: ManagedProcessLifecycleEvent[] = [];
+    const tools = createLocalToolRegistry({ onManagedProcessEvent: (event) => { events.push(event); } });
+
+    const started = await tools.get("ProcessStart").execute({
+      executable: process.execPath,
+      args: [scriptPath]
+    }, { cwd, runDir });
+    const data = started.data as { process_id: string; pid: number };
+    try {
+      assert.equal(isProcessRunning(data.pid), true);
+      const status = await tools.get("ProcessStatus").execute({ process_id: data.process_id }, { cwd, runDir });
+      assert.equal((status.data as { state: string }).state, "running");
+
+      const stopped = await tools.get("ProcessStop").execute({ process_id: data.process_id }, { cwd, runDir });
+      assert.equal((stopped.data as { state: string }).state, "exited");
+      await waitForProcessExit(data.pid, 3000);
+      assert.equal(isProcessRunning(data.pid), false);
+      assert.deepEqual(events.map((event) => event.type), ["managed_process_started", "managed_process_stopped"]);
+    } finally {
+      forceKill(data.pid);
+    }
+  });
+
+  it("automatically cleans managed processes when a node ends", async () => {
+    const cwd = await workspace();
+    const scriptPath = join(cwd, "managed-cleanup.cjs");
+    await writeFile(scriptPath, "setInterval(() => {}, 1000);\n", "utf8");
+    const events: ManagedProcessLifecycleEvent[] = [];
+    const tools = createLocalToolRegistry({ onManagedProcessEvent: (event) => { events.push(event); } });
+
+    const started = await tools.get("ProcessStart").execute({
+      executable: process.execPath,
+      args: [scriptPath]
+    }, { cwd });
+    const data = started.data as { pid: number };
+    try {
+      await tools.disposeManagedProcesses("node_complete");
+      await waitForProcessExit(data.pid, 3000);
+      assert.equal(isProcessRunning(data.pid), false);
+      const lastEvent = events.at(-1);
+      assert.equal(lastEvent?.type, "managed_process_stopped");
+      assert.equal(lastEvent?.type === "managed_process_stopped" ? lastEvent.reason : undefined, "node_complete");
+    } finally {
+      forceKill(data.pid);
+    }
   });
 
   it("kills nested Bash process trees when aborted", async () => {

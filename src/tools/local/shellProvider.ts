@@ -35,6 +35,28 @@ export type ShellProvider = {
 
 export const SHELL_MAX_OUTPUT_DEFAULT = 30_000;
 export const SHELL_MAX_OUTPUT_UPPER_LIMIT = 150_000;
+export const SHELL_TERMINATION_SETTLE_MS = 2_000;
+
+export function terminateProcessTree(pid: number, fallbackKill?: () => void): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(fallbackTimer);
+      resolve();
+    };
+    const fallbackTimer = setTimeout(() => {
+      fallbackKill?.();
+      finish();
+    }, SHELL_TERMINATION_SETTLE_MS);
+    fallbackTimer.unref();
+    treeKill(pid, "SIGKILL", (error) => {
+      if (error) fallbackKill?.();
+      finish();
+    });
+  });
+}
 
 export class ShellStartError extends Error {
   constructor(message: string, readonly executable?: string) {
@@ -132,6 +154,8 @@ function executeProcess(provider: ShellProvider, command: string, options: Shell
     let interrupted = false;
     let timedOut = false;
     let terminationStarted = false;
+    let exitCode: number | null = null;
+    let settleTimer: NodeJS.Timeout | undefined;
     const collector = new ShellOutputCollector(
       options.maxOutputLength ?? getShellMaxOutputLength(),
       options.outputDir
@@ -156,25 +180,48 @@ function executeProcess(provider: ShellProvider, command: string, options: Shell
       return;
     }
 
-    const finish = async (action: (output: Awaited<ReturnType<ShellOutputCollector["finish"]>>) => void) => {
+    const finish = async (
+      action: (output: Awaited<ReturnType<ShellOutputCollector["finish"]>>) => void,
+      forceCloseStreams = false
+    ) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (settleTimer) clearTimeout(settleTimer);
       options.signal?.removeEventListener("abort", abort);
+      if (forceCloseStreams) {
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
       try {
         action(await collector.finish());
       } catch (error) {
         reject(error);
       }
     };
+    const finishResult = (code: number | null, forceCloseStreams = false) => {
+      void finish((output) => resolve({
+        ...output,
+        code: timedOut ? 124 : interrupted ? 130 : code ?? 1,
+        interrupted,
+        timedOut,
+        executable: provider.shellPath
+      }), forceCloseStreams);
+    };
+    const armForcedSettlement = () => {
+      if (settleTimer || settled) return;
+      settleTimer = setTimeout(() => finishResult(exitCode, true), SHELL_TERMINATION_SETTLE_MS);
+      settleTimer.unref();
+    };
     const terminate = (reason: "abort" | "timeout") => {
       if (terminationStarted || settled) return;
       terminationStarted = true;
       interrupted = reason === "abort";
       timedOut = reason === "timeout";
+      armForcedSettlement();
       if (child.pid) {
-        treeKill(child.pid, "SIGKILL", (error) => {
-          if (error && !child.killed) child.kill("SIGKILL");
+        void terminateProcessTree(child.pid, () => {
+          if (!child.killed) child.kill("SIGKILL");
         });
       } else {
         child.kill("SIGKILL");
@@ -194,14 +241,12 @@ function executeProcess(provider: ShellProvider, command: string, options: Shell
     child.once("error", (error) => {
       void finish(() => reject(new ShellStartError(error.message, provider.shellPath)));
     });
+    child.once("exit", (code) => {
+      exitCode = code;
+      armForcedSettlement();
+    });
     child.once("close", (code) => {
-      void finish((output) => resolve({
-        ...output,
-        code: timedOut ? 124 : interrupted ? 130 : code ?? 1,
-        interrupted,
-        timedOut,
-        executable: provider.shellPath
-      }));
+      finishResult(code);
     });
   });
 }

@@ -163,7 +163,14 @@ export class RunStore {
       const stored: StoredEvent = { ...event, ts: new Date().toISOString(), seq };
       this.nextSeq.set(runId, seq + 1);
       const line = `${JSON.stringify(stored)}\n`;
-      if (event.type === "tool_invoked" || event.type === "tool_completed" || event.type === "tool_failed") {
+      if (
+        event.type === "tool_invoked"
+        || event.type === "tool_completed"
+        || event.type === "tool_failed"
+        || event.type === "managed_process_started"
+        || event.type === "managed_process_stopped"
+        || event.type === "managed_process_cleanup_failed"
+      ) {
         const handle = await open(eventsPath, "a");
         try {
           await handle.writeFile(line, "utf8");
@@ -542,6 +549,45 @@ export class RunStore {
     if (event.type === "tool_failed") {
       return [{ ...identity, type: "tool_result", node_id: event.node_id, attempt: event.attempt, tool: event.tool, status: "failed", error: event.error }];
     }
+    if (event.type === "managed_process_started") {
+      return [{
+        ...identity,
+        type: "managed_process",
+        action: "started",
+        node_id: event.node_id,
+        attempt: event.attempt,
+        process_id: event.process_id,
+        pid: event.pid,
+        executable: event.executable,
+        output_path: event.output_path
+      }];
+    }
+    if (event.type === "managed_process_stopped") {
+      return [{
+        ...identity,
+        type: "managed_process",
+        action: "stopped",
+        node_id: event.node_id,
+        attempt: event.attempt,
+        process_id: event.process_id,
+        pid: event.pid,
+        reason: event.reason,
+        exit_code: event.exit_code
+      }];
+    }
+    if (event.type === "managed_process_cleanup_failed") {
+      return [{
+        ...identity,
+        type: "managed_process",
+        action: "cleanup_failed",
+        node_id: event.node_id,
+        attempt: event.attempt,
+        process_id: event.process_id,
+        pid: event.pid,
+        reason: event.reason,
+        error: event.error
+      }];
+    }
     if (event.type === "artifact_read") {
       return [{ ...identity, type: "artifact_read", node_id: event.node_id, attempt: event.attempt, artifact_id: event.artifact_id, offset: event.offset, bytes_read: event.bytes_read, total_bytes: event.total_bytes, truncated: event.truncated, source: event.source }];
     }
@@ -771,6 +817,9 @@ function isAuditableEvent(event: HarnessEvent): boolean {
     || event.type === "tool_invoked"
     || event.type === "tool_completed"
     || event.type === "tool_failed"
+    || event.type === "managed_process_started"
+    || event.type === "managed_process_stopped"
+    || event.type === "managed_process_cleanup_failed"
     || event.type === "artifact_read"
     || event.type === "skill_activated"
     || event.type === "permission_requested"

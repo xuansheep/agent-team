@@ -803,8 +803,20 @@ export class WorkflowEngine {
             options.onState?.(runningState);
             await options.store.saveState(options.runId, runningState);
             await this.appendEvent(options.store, options.runId, { type: "node_started", node_id: node.id, attempt, activation }, options.eventSink);
-            const tools = createLocalToolRegistry({ mcpRuntime: this.options.mcpRuntime, skillRuntime: this.options.skillRuntime });
-            let result: NodeResult;
+            const tools = createLocalToolRegistry({
+                mcpRuntime: this.options.mcpRuntime,
+                skillRuntime: this.options.skillRuntime,
+                onManagedProcessEvent: async (event) => {
+                    await this.appendEvent(options.store, options.runId, {
+                        ...event,
+                        node_id: node.id,
+                        attempt,
+                        activation
+                    }, options.eventSink);
+                }
+            });
+            let result: NodeResult | undefined;
+            let nodeError: unknown;
             try {
                 result = await runNode({
                     node,
@@ -841,10 +853,28 @@ export class WorkflowEngine {
                 });
             }
             catch (error) {
+                nodeError = error;
+            }
+            let cleanupError: unknown;
+            const cleanupReason = options.isInterrupted?.() || options.abortSignal?.aborted
+                ? "interrupted"
+                : nodeError
+                    ? "node_error"
+                    : "node_complete";
+            try {
+                await tools.disposeManagedProcesses(cleanupReason);
+            }
+            catch (error) {
+                cleanupError = error;
+            }
+            if (nodeError || cleanupError) {
                 syncOptions();
                 if (options.isInterrupted?.() || options.abortSignal?.aborted) {
                     return this.pauseNodeForUser(options, node.id, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。", checkpoint());
                 }
+                const error = nodeError && cleanupError
+                    ? new AggregateError([nodeError, cleanupError], "Node execution and managed process cleanup failed")
+                    : nodeError ?? cleanupError;
                 return this.failNodeForUser(options, node.id, attempt, attempts, handoff, error, checkpoint());
             }
             if (options.isInterrupted?.()) {
@@ -852,7 +882,7 @@ export class WorkflowEngine {
                 return this.pauseNodeForUser(options, node.id, attempts, handoff, "用户已暂停当前节点，请输入下一步处理方式。", checkpoint());
             }
             try {
-                result = await this.ensureNodeDeliverable(options, node.id, attempt, result, activation);
+                result = await this.ensureNodeDeliverable(options, node.id, attempt, result!, activation);
                 const resolution = this.transitionController.resolve({
                     workflow: options.workflow,
                     nodeId: node.id,

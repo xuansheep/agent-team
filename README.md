@@ -138,7 +138,8 @@ MVP 支持：
 - 重试采用 500ms 指数退避、32 秒上限和 0-25% 抖动，并优先遵循 `Retry-After`；认证、权限、普通 4xx、上下文超限和用户取消不会重试
 - TUI 连续重试只更新一条临时重连状态，失败流残片会回滚，终态后自动移除；完整记录持久化到 `events.ndjson` 与 Session `audit.ndjson`
 - Claude Code 风格 `allow`、`ask`、`deny` 权限规则
-- 本地工具集：`Read`、`Write`、`Edit`、`MultiEdit`、`LS`、`Glob`、`Grep`、`Bash`、`PowerShell`、`TodoWrite`、`AttachImage`、`WebFetch`、`WebSearch`
+- 本地工具集：`Read`、`Write`、`Edit`、`MultiEdit`、`LS`、`Glob`、`Grep`、`Bash`、`PowerShell`、`ProcessStart`、`ProcessStatus`、`ProcessStop`、`TodoWrite`、`AttachImage`、`WebFetch`、`WebSearch`
+- 长时间运行的本地进程必须通过 `ProcessStart` 启动，并使用 `ProcessStatus`、`ProcessStop` 管理；节点完成、失败或中断时会自动回收。Bash `&`、PowerShell `Start-Process` 等非托管后台启动会被拒绝。
 - 默认按 `nodes` 顺序执行，节点必须显式提交 `forward`、`backward` 或 `retry`；退回节点与上游节点保持原 attempt，并以新的 activation 从对话检查点继续
 - 只有首节点可以 `backward` 到用户；用户回答后首节点原位继续，末节点 `forward` 到用户后完成工作流
 - 默认 `delivery` 为 `product -> ui -> developer -> tester`，全部使用 `default` Provider，tester 兼任最终交付
