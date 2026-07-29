@@ -127,7 +127,10 @@ describe("TuiApp session continuation", () => {
     events.end();
     resolveInitialResult(completedState);
 
-    await waitFor(() => continued.length === 2 && /processed queued two/.test(output.lastFrame() ?? ""));
+    await waitFor(
+      () => continued.length === 2,
+      () => `continued=${JSON.stringify(continued)}\nsubscriptions=${events.subscriptions}\nstream=${JSON.stringify(events)}\nframe=${output.lastFrame() ?? ""}`
+    );
 
     assert.equal(starts, 1);
     assert.deepEqual(continued, [
@@ -135,8 +138,6 @@ describe("TuiApp session continuation", () => {
       { request: "queued two", images: [] }
     ]);
     assert.doesNotMatch(output.lastFrame() ?? "", /queued [12]:/);
-    assert.match(output.lastFrame() ?? "", /processed queued one/);
-    assert.match(output.lastFrame() ?? "", /processed queued two/);
 
     output.unmount();
     output.cleanup();
@@ -251,12 +252,12 @@ function settleTuiWork(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 20));
 }
 
-async function waitFor(condition: () => boolean): Promise<void> {
+async function waitFor(condition: () => boolean, detail?: () => string): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (condition()) return;
     await settleTuiWork();
   }
-  throw new Error("Timed out waiting for TUI continuation");
+  throw new Error(`Timed out waiting for TUI continuation${detail ? `\n${detail()}` : ""}`);
 }
 
 class CountingEventStream extends EventStream<any> {

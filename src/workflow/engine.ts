@@ -184,7 +184,8 @@ export class WorkflowEngine {
         if (!workflow)
             throw new Error(`Unknown workflow ${workflowId}`);
         const stream = new EventStream<StoredEvent>();
-        for (const event of await store.loadEvents(runId)) {
+        const replayEvents = await store.loadEvents(runId);
+        for (const event of replayEvents) {
             stream.push(event);
         }
         const permissions = new PermissionController();
@@ -316,6 +317,7 @@ export class WorkflowEngine {
             runId,
             state: latestState,
             events: stream,
+            replayEventCount: replayEvents.length,
             permissions,
             interrupt: interruptRun,
             resumeWithUserInput: (input) => withRunLease(async () => {

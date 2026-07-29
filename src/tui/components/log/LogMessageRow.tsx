@@ -1,9 +1,10 @@
+import { memo } from "react";
 import { Box, Text } from "../../ink.js";
 import type { TuiLogMessage, TuiPermissionLogMessage, TuiPlanLogMessage } from "../../logTypes.js";
 import { truncate, truncateToolDetail } from "../../toolDisplay.js";
 import { MessageResponse } from "./MessageResponse.js";
 import { ToolUseLoader } from "./ToolUseLoader.js";
-export function LogMessageRow({ item, detailMode }: { item: TuiLogMessage; detailMode: boolean }) {
+function LogMessageRowComponent({ item, detailMode }: { item: TuiLogMessage; detailMode: boolean }) {
   switch (item.kind) {
     case "user":
       return <UserLogMessage item={item} />;
@@ -19,6 +20,10 @@ export function LogMessageRow({ item, detailMode }: { item: TuiLogMessage; detai
       return <StatusLogMessage item={item} detailMode={detailMode} />;
   }
 }
+export const LogMessageRow = memo(
+  LogMessageRowComponent,
+  (previous, next) => previous.item === next.item && previous.detailMode === next.detailMode
+);
 function UserLogMessage({ item }: { item: TuiLogMessage & { kind: "user" } }) {
   return (
     <Box flexDirection="column" marginTop={1} backgroundColor="ansi256(236)" paddingX={1}>

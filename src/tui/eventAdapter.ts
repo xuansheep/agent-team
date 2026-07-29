@@ -20,10 +20,10 @@ export function initialTuiState(input: { cwd: string; inputPermissionMode?: Perm
     tools: [],
     permissionRequests: [],
     modelStreams: [],
+    modelStreamLocations: {},
     conversation: [],
     logMessages: [],
     questions: [],
-    timeline: [],
     resumeRuns: []
   };
 }
@@ -55,11 +55,12 @@ export function resetTuiRunState(state: TuiState, input: { workflowId: string; r
     ...reset,
     planSession: state.planSession,
     conversation: state.conversation,
-    logMessages: state.logMessages
+    logMessages: state.logMessages,
+    modelStreamLocations: state.modelStreamLocations
   };
 }
 export function reduceStoredEvent(state: TuiState, event: StoredEvent): TuiState {
-  const next: TuiState = { ...state, timeline: [...state.timeline, event.type] };
+  const next = state;
   switch (event.type) {
     case "model_response_recorded": {
       const withModel = updateNodeDetails(clearTuiModelRetry(next), event.node_id, event.attempt, event.activation, { model: event.model });
@@ -424,24 +425,26 @@ function appendModelStream(state: TuiState, nodeId: string, attempt: number, act
   return { ...state, modelStreams };
 }
 function appendAssistantStreamLog(state: TuiState, nodeId: string, attempt: number, activation: number, event: StoredEvent): TuiState {
-  const stream = state.modelStreams.find((s) => s.nodeId === nodeId && s.attempt === attempt && (s.activation ?? 1) === activation);
+  const stream = state.modelStreams.find((item) => item.nodeId === nodeId && item.attempt === attempt && (item.activation ?? 1) === activation);
   const streamText = visibleAssistantStreamText(stream?.text ?? "");
   if (!streamText) return state;
-  const previousEnd = currentAssistantStreamEnd(state.logMessages, nodeId, attempt, activation);
+  const location = resolveModelStreamLocation(state, nodeId, attempt, activation);
+  const last = location ? state.logMessages[location.logIndex] : undefined;
+  const previousEnd = last?.kind === "assistant" ? last.streamEnd ?? 0 : 0;
   if (streamText.length < previousEnd) return trimAssistantStreamLog(state, nodeId, attempt, activation, streamText, previousEnd);
   if (streamText.length === previousEnd) return state;
   const delta = streamText.slice(previousEnd);
-  const last = [...state.logMessages].reverse().find(
-    (item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream"
-  );
-  if (!last || hasChildLog(state.logMessages, last.id)) {
+  if (!location || !last || last.kind !== "assistant" || hasChildLogAfter(state.logMessages, last.id, location.logIndex)) {
     return appendConversation(state, { kind: "assistant", nodeId, attempt, activation, text: delta, source: "model_stream", streamEnd: streamText.length }, event);
   }
   const text = `${last.text}${delta}`;
+  const logMessages = [...state.logMessages];
+  logMessages[location.logIndex] = { ...last, text, streamEnd: streamText.length };
   return {
     ...state,
-    conversation: updateAssistantConversation(state.conversation, nodeId, attempt, activation, text, streamText.length),
-    logMessages: state.logMessages.map((item) => item.id === last.id ? { ...item, text, streamEnd: streamText.length } : item)
+    conversation: updateAssistantConversation(state.conversation, location.conversationIndex, text, streamText.length),
+    logMessages,
+    modelStreamLocations: { ...state.modelStreamLocations, [modelStreamKey(nodeId, attempt, activation)]: location }
   };
 }
 function appendThinkingLog(state: TuiState, nodeId: string, attempt: number, activation: number, text: string, event: StoredEvent): TuiState {
@@ -472,9 +475,24 @@ function appendThinkingLog(state: TuiState, nodeId: string, attempt: number, act
 }
 function appendConversation(state: TuiState, item: TuiConversationItem, event?: StoredEvent): TuiState {
   if (!item.text) return state;
+  const conversationIndex = state.conversation.length;
   const conversation = [...state.conversation, item];
   if (!event) return { ...state, conversation };
-  return { ...state, conversation, logMessages: [...state.logMessages, conversationToLogMessage(item, event)] };
+  const logIndex = state.logMessages.length;
+  const logMessages = [...state.logMessages, conversationToLogMessage(item, event)];
+  if (item.kind !== "assistant" || item.source !== "model_stream" || item.nodeId === undefined || item.attempt === undefined) {
+    return { ...state, conversation, logMessages };
+  }
+  const activation = item.activation ?? 1;
+  return {
+    ...state,
+    conversation,
+    logMessages,
+    modelStreamLocations: {
+      ...state.modelStreamLocations,
+      [modelStreamKey(item.nodeId, item.attempt, activation)]: { conversationIndex, logIndex }
+    }
+  };
 }
 function conversationToLogMessage(item: TuiConversationItem, event: StoredEvent): TuiLogMessage {
   const base = {
@@ -508,34 +526,73 @@ function isThinkingFlowLog(item: TuiLogMessage, nodeId: string, attempt: number)
   if (item.nodeId !== nodeId || item.attempt !== attempt) return false;
   return item.kind === "status" && item.text === "Reasoning";
 }
-function updateAssistantConversation(items: TuiConversationItem[], nodeId: string, attempt: number, activation: number, text: string, streamEnd: number): TuiConversationItem[] {
-  const index = [...items].reverse().findIndex((item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream");
-  if (index === -1) return items;
-  const actualIndex = items.length - 1 - index;
+function updateAssistantConversation(items: TuiConversationItem[], index: number, text: string, streamEnd: number): TuiConversationItem[] {
+  const current = items[index];
+  if (!current) return items;
   const next = [...items];
-  next[actualIndex] = { ...next[actualIndex], text, streamEnd };
+  next[index] = { ...current, text, streamEnd };
   return next;
 }
 function trimAssistantStreamLog(state: TuiState, nodeId: string, attempt: number, activation: number, streamText: string, previousEnd: number): TuiState {
-  const last = [...state.logMessages].reverse().find((item) => item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream");
-  if (!last || last.kind !== "assistant") return state;
+  const location = resolveModelStreamLocation(state, nodeId, attempt, activation);
+  const last = location ? state.logMessages[location.logIndex] : undefined;
+  if (!location || !last || last.kind !== "assistant") return state;
   const lastEnd = last.streamEnd ?? previousEnd;
   const lastStart = Math.max(0, lastEnd - last.text.length);
   const text = streamText.slice(lastStart);
+  const logMessages = [...state.logMessages];
+  logMessages[location.logIndex] = { ...last, text, streamEnd: streamText.length };
   return {
     ...state,
-    conversation: updateAssistantConversation(state.conversation, nodeId, attempt, activation, text, streamText.length),
-    logMessages: state.logMessages.map((item) => item.id === last.id ? { ...item, text, streamEnd: streamText.length } : item)
+    conversation: updateAssistantConversation(state.conversation, location.conversationIndex, text, streamText.length),
+    logMessages,
+    modelStreamLocations: { ...state.modelStreamLocations, [modelStreamKey(nodeId, attempt, activation)]: location }
   };
 }
-function currentAssistantStreamEnd(items: TuiLogMessage[], nodeId: string, attempt: number, activation: number): number {
-  return items.reduce((max, item) => {
-    if (item.kind !== "assistant" || item.nodeId !== nodeId || item.attempt !== attempt || item.activation !== activation || item.source !== "model_stream") return max;
-    return Math.max(max, item.streamEnd ?? 0);
-  }, 0);
+function resolveModelStreamLocation(state: TuiState, nodeId: string, attempt: number, activation: number): { conversationIndex: number; logIndex: number } | undefined {
+  const cached = state.modelStreamLocations[modelStreamKey(nodeId, attempt, activation)];
+  const cachedLog = cached ? state.logMessages[cached.logIndex] : undefined;
+  const cachedConversation = cached ? state.conversation[cached.conversationIndex] : undefined;
+  if (
+    cachedLog?.kind === "assistant" &&
+    cachedLog.nodeId === nodeId &&
+    cachedLog.attempt === attempt &&
+    cachedLog.activation === activation &&
+    cachedLog.source === "model_stream" &&
+    cachedConversation?.kind === "assistant" &&
+    cachedConversation.nodeId === nodeId &&
+    cachedConversation.attempt === attempt &&
+    cachedConversation.activation === activation &&
+    cachedConversation.source === "model_stream"
+  ) {
+    return cached;
+  }
+  let logIndex = -1;
+  for (let index = state.logMessages.length - 1; index >= 0; index -= 1) {
+    const item = state.logMessages[index];
+    if (item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream") {
+      logIndex = index;
+      break;
+    }
+  }
+  let conversationIndex = -1;
+  for (let index = state.conversation.length - 1; index >= 0; index -= 1) {
+    const item = state.conversation[index];
+    if (item.kind === "assistant" && item.nodeId === nodeId && item.attempt === attempt && item.activation === activation && item.source === "model_stream") {
+      conversationIndex = index;
+      break;
+    }
+  }
+  return logIndex >= 0 && conversationIndex >= 0 ? { conversationIndex, logIndex } : undefined;
 }
-function hasChildLog(items: TuiLogMessage[], parentLogId: string): boolean {
-  return items.some((item) => item.parentLogId === parentLogId);
+function modelStreamKey(nodeId: string, attempt: number, activation: number): string {
+  return `${nodeId}:${attempt}:${activation}`;
+}
+function hasChildLogAfter(items: TuiLogMessage[], parentLogId: string, parentIndex: number): boolean {
+  for (let index = parentIndex + 1; index < items.length; index += 1) {
+    if (items[index].parentLogId === parentLogId) return true;
+  }
+  return false;
 }
 function visibleAssistantStreamText(text: string): string {
   return visibleAssistantTextBeforeNodeResult(text);

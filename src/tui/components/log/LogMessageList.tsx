@@ -1,27 +1,67 @@
-import { Box } from "../../ink.js";
+import { useMemo, type RefObject } from "react";
+import { Box, type ScrollBoxHandle } from "../../ink.js";
 import type { TuiLogMessage } from "../../logTypes.js";
+import { useVirtualScroll } from "../../useVirtualScroll.js";
 import { LogMessageRow } from "./LogMessageRow.js";
+
+type LogMessageListProps = {
+  items: TuiLogMessage[];
+  detailMode: boolean;
+  scrollRef?: RefObject<ScrollBoxHandle | null>;
+  columns?: number;
+};
 
 export function LogMessageList({
   items,
   detailMode,
-  offset = 0,
-  visibleRows
-}: {
-  items: TuiLogMessage[];
-  detailMode: boolean;
-  offset?: number;
-  visibleRows?: number;
-}) {
-  const maxOffset = visibleRows === undefined ? 0 : Math.max(0, items.length - visibleRows);
-  const start = visibleRows === undefined ? 0 : Math.min(offset, maxOffset);
-  const visible = visibleRows === undefined ? items : items.slice(start, start + visibleRows);
+  scrollRef,
+  columns = 80
+}: LogMessageListProps) {
+  if (!scrollRef) {
+    return (
+      <Box flexDirection="column" flexShrink={0}>
+        {items.map((item) => (
+          <LogMessageRow key={item.id} item={item} detailMode={detailMode} />
+        ))}
+      </Box>
+    );
+  }
 
   return (
-    <Box flexDirection="column" flexShrink={0}>
-      {visible.map((item) => (
-        <LogMessageRow key={item.id} item={item} detailMode={detailMode} />
+    <VirtualLogMessageList
+      items={items}
+      detailMode={detailMode}
+      scrollRef={scrollRef}
+      columns={Math.max(1, columns)}
+    />
+  );
+}
+
+function VirtualLogMessageList({
+  items,
+  detailMode,
+  scrollRef,
+  columns
+}: Required<LogMessageListProps>) {
+  const itemKeys = useMemo(() => items.map((item) => item.id), [items]);
+  const { range, topSpacer, bottomSpacer, measureRef, spacerRef } =
+    useVirtualScroll(scrollRef, itemKeys, columns);
+  const [start, end] = range;
+
+  return (
+    <>
+      <Box ref={spacerRef} height={topSpacer} flexShrink={0} />
+      {items.slice(start, end).map((item) => (
+        <Box
+          key={item.id}
+          ref={measureRef(item.id)}
+          flexDirection="column"
+          flexShrink={0}
+        >
+          <LogMessageRow item={item} detailMode={detailMode} />
+        </Box>
       ))}
-    </Box>
+      {bottomSpacer > 0 ? <Box height={bottomSpacer} flexShrink={0} /> : null}
+    </>
   );
 }

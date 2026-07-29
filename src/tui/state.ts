@@ -150,12 +150,12 @@ export type TuiState = {
   pendingReview?: TuiPlanReviewState;
   planSession?: PlanSessionState;
   modelStreams: TuiModelStreamState[];
+  modelStreamLocations: Record<string, { conversationIndex: number; logIndex: number }>;
   activeModelRetry?: TuiModelRetryState;
   activityNotice?: { text: string; tone: "warning" };
   conversation: TuiConversationItem[];
   logMessages: TuiLogMessage[];
   questions: unknown[];
-  timeline: string[];
   resumeRuns: TuiResumeEntry[];
   pendingResumeRunId?: string;
   modeBeforeConfirmation?: TuiMode;

@@ -8,6 +8,7 @@ export type WorkflowSession = {
   runId: string;
   state: WorkflowState;
   events: AsyncIterable<StoredEvent>;
+  replayEventCount?: number;
   permissions: PermissionController;
   interrupt(): Promise<void>;
   resumeWithUserInput(input: unknown): Promise<void>;

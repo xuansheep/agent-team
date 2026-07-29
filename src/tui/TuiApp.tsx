@@ -20,6 +20,7 @@ import type { ModelUsage } from "../model/usage.js";
 import { resolveEffortForWorkflowNode, resolveModelForWorkflowNode } from "../model/modelRouting.js";
 import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
+import type { StoredEvent } from "../harness/events.js";
 import type { RuntimeEvent } from "../runtime/types.js";
 import { ActiveTurnInputChannel } from "../runtime/activeTurnInput.js";
 import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
@@ -192,6 +193,8 @@ export function TuiApp({
   const currentSessionIdRef = useRef(promptHistoryStore?.sessionId ?? randomUUID());
   const sessionAuditGenerationRef = useRef(0);
   const listeningSessionRef = useRef<WorkflowSession>();
+  const listeningSessionGenerationRef = useRef(0);
+  const pendingSessionRelistenRef = useRef<WorkflowSession>();
   const sessionResultGenerationRef = useRef(0);
   const queuedContinuationRef = useRef(false);
   const abandonedRunIdsRef = useRef<Set<string>>(new Set());
@@ -409,18 +412,47 @@ export function TuiApp({
     }));
   };
   const listenSession = (session: WorkflowSession, nextWorkflowId: string) => {
-    if (listeningSessionRef.current === session) return;
+    if (listeningSessionRef.current === session) {
+      pendingSessionRelistenRef.current = session;
+      return;
+    }
     listeningSessionRef.current = session;
+    const listenerGeneration = ++listeningSessionGenerationRef.current;
     void (async () => {
+      const replayEvents: StoredEvent[] = [];
+      let replayRemaining = session.replayEventCount ?? 0;
       try {
         for await (const event of session.events) {
           if (abandonedRunIdsRef.current.has(session.runId)) continue;
           if (event.type === "user_input_injected") setQueued((current) => current.filter((item) => item.id !== event.input_id));
           if (event.type === "model_response_recorded") sessionAuditGenerationRef.current += 1;
+          if (event.type === "run_completed") queuedContinuationRef.current = false;
+          if (replayRemaining > 0) {
+            replayEvents.push(event);
+            replayRemaining -= 1;
+            if (replayRemaining > 0) continue;
+            setState((current) => replayEvents.reduce(
+              (replayed, replayEvent) => reduceStoredEvent(
+                { ...replayed, runId: session.runId, workflowId: nextWorkflowId },
+                replayEvent
+              ),
+              current
+            ));
+            continue;
+          }
           setState((current) => reduceStoredEvent({ ...current, runId: session.runId, workflowId: nextWorkflowId }, event));
         }
       } finally {
-        if (listeningSessionRef.current === session) listeningSessionRef.current = undefined;
+        if (listeningSessionGenerationRef.current !== listenerGeneration) return;
+        listeningSessionRef.current = undefined;
+        if (
+          pendingSessionRelistenRef.current === session &&
+          sessionRef.current === session &&
+          !abandonedRunIdsRef.current.has(session.runId)
+        ) {
+          pendingSessionRelistenRef.current = undefined;
+          listenSession(session, nextWorkflowId);
+        }
       }
     })();
   };
@@ -508,7 +540,6 @@ export function TuiApp({
     const id = randomUUID();
     const item = { id, text, images };
     setQueued((current) => [...current, item]);
-    setState((current) => ({ ...current, timeline: [...current.timeline, `queued:${text}`] }));
     const session = sessionRef.current;
     if (!session?.queueUserInput) return;
     void session.queueUserInput({ request: text, images }, id).catch((error) => {
@@ -2201,6 +2232,8 @@ ${message.detailText}` : ""}` }
               <RunLogPanel
                 items={logMessages}
                 detailMode={transcriptMode}
+                scrollRef={mainScrollRef}
+                columns={Math.max(1, terminalColumns - 1)}
               />
               <ResultPanel mode={state.mode} error={state.error} runId={state.runId} />
             </>

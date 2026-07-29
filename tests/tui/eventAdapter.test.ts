@@ -548,7 +548,6 @@ describe("TUI event adapter", () => {
 
     assert.equal(thinkingLogs[0]?.detailText, "先检查约束，再定位渲染入口。");
 
-    assert.deepEqual(state.timeline, ["model_thinking_delta", "model_thinking_delta"]);
 
   });
 
@@ -793,7 +792,7 @@ describe("TUI event adapter", () => {
     assert.deepEqual(state.questions, []);
   });
 
-  it("logs workflow transitions as visible timeline entries", () => {
+  it("logs workflow transitions as visible entries", () => {
 
     let state = initialTuiState({ cwd: "D:\CodeAI\agent-team" });
 
@@ -911,7 +910,6 @@ describe("TUI event adapter", () => {
 
       questions: [{ id: "q1" }],
 
-      timeline: ["old"],
 
       error: "old error"
 
@@ -947,7 +945,6 @@ describe("TUI event adapter", () => {
 
     assert.deepEqual(reset.questions, []);
 
-    assert.deepEqual(reset.timeline, []);
 
     assert.equal(reset.error, undefined);
 
@@ -964,7 +961,6 @@ describe("TUI event adapter", () => {
       nodes: [{ nodeId: "global-plan", attempt: 1, status: "success" as const }],
       tools: [{ nodeId: "global-plan", attempt: 1, toolCallId: "tool-1", tool: "Write", status: "completed" as const, expanded: false }],
       questions: [{ id: "q1" }],
-      timeline: ["plan"]
     };
 
     const reset = resetTuiRunState(state, { workflowId: "delivery", runId: "workflow-run", preserveLogs: true, inputPermissionMode: "default" });
@@ -975,7 +971,6 @@ describe("TUI event adapter", () => {
     assert.deepEqual(reset.nodes, []);
     assert.deepEqual(reset.tools, []);
     assert.deepEqual(reset.questions, []);
-    assert.deepEqual(reset.timeline, []);
     assert.deepEqual(reset.conversation, state.conversation);
     assert.deepEqual(reset.logMessages, state.logMessages);
   });
