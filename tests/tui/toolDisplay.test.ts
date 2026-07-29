@@ -1,8 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { getCompactToolResultDetail, getToolResultDetail } from "../../src/tui/toolDisplay.js";
+import { getCompactToolResultDetail, getToolResultDetail, sanitizeToolLogText } from "../../src/tui/toolDisplay.js";
 
 describe("toolDisplay", () => {
+  it("strips ANSI control sequences from tool log text", () => {
+    const text = `before\u001b[31mred\u001b[0mafter\u001b]8;;https://example.com\u0007link\u001b]8;;\u0007`;
+
+    assert.equal(sanitizeToolLogText(text), "beforeredafterlink");
+  });
+
   it("keeps full command output in detailed tool results", () => {
     const output = Array.from({ length: 10 }, (_, index) => `line-${index + 1}`).join("\n");
 

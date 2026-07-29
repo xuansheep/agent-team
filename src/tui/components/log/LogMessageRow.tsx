@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { Box, Text } from "../../ink.js";
 import type { TuiLogMessage, TuiPermissionLogMessage, TuiPlanLogMessage } from "../../logTypes.js";
-import { truncate, truncateToolDetail } from "../../toolDisplay.js";
+import { sanitizeToolLogText, truncate, truncateToolDetail } from "../../toolDisplay.js";
 import { MessageResponse } from "./MessageResponse.js";
 import { ToolUseLoader } from "./ToolUseLoader.js";
 function LogMessageRowComponent({ item, detailMode }: { item: TuiLogMessage; detailMode: boolean }) {
@@ -33,7 +33,9 @@ function UserLogMessage({ item }: { item: TuiLogMessage & { kind: "user" } }) {
 }
 function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "tool" }; detailMode: boolean }) {
   const title = toolLogTitle(item);
-  const detailText = detailMode ? item.detailText : compactToolDetail(item);
+  const detailText = detailMode
+    ? item.detailText ? sanitizeToolLogText(item.detailText) : undefined
+    : compactToolDetail(item);
   const showDetail = Boolean(detailText);
   const content = (
     <Box flexDirection="column" marginTop={item.parentLogId ? 0 : 1}>
@@ -52,18 +54,20 @@ function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "t
   return item.parentLogId ? <MessageResponse>{content}</MessageResponse> : content;
 }
 function compactToolDetail(item: TuiLogMessage & { kind: "tool" }): string | undefined {
-  if (item.compactDetailText) return item.compactDetailText;
+  if (item.compactDetailText) return sanitizeToolLogText(item.compactDetailText);
   if (!item.detailText) return undefined;
-  const lines = item.detailText.split(/\r?\n/).filter(Boolean);
+  const lines = sanitizeToolLogText(item.detailText).split(/\r?\n/).filter(Boolean);
   const hint = lines.find((line) => line.includes("ctrl + o to view transcript"));
   const error = item.status === "failed" ? lines.find((line) => line.startsWith("错误：")) : undefined;
   return [error, hint].filter(Boolean).join("\n") || undefined;
 }
 function toolLogTitle(item: TuiLogMessage & { kind: "tool" }): { text: string; summary?: string } {
   const verb = item.status === "running" ? "Running" : "Ran";
-  if ((item.tool === "Bash" || item.tool === "PowerShell") && item.summary) return { text: `${verb} ${truncate(item.summary, 240)}` };
-  const detail = item.summary ? ` ${truncate(item.summary, 240)}` : "";
-  return { text: `${verb} ${item.text}${detail}` };
+  const summary = sanitizeToolLogText(item.summary);
+  const displayName = sanitizeToolLogText(item.text);
+  if ((item.tool === "Bash" || item.tool === "PowerShell") && summary) return { text: `${verb} ${truncate(summary, 240)}` };
+  const detail = summary ? ` ${truncate(summary, 240)}` : "";
+  return { text: `${verb} ${displayName}${detail}` };
 }
 function PermissionLogMessage({ item, detailMode }: { item: TuiPermissionLogMessage; detailMode: boolean }) {
   const color = item.status === "allowed" ? "green" : item.status === "denied" ? "red" : "yellow";

@@ -1,3 +1,9 @@
+import stripAnsi from "strip-ansi";
+
+export function sanitizeToolLogText(text: string): string {
+  return stripAnsi(text);
+}
+
 export function getToolDisplayName(tool: string): string {
   if (tool === "LS") return "List";
   return tool;

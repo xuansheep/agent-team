@@ -6,6 +6,64 @@ import { RunLogPanel } from "../../src/tui/components/RunLogPanel.js";
 const transcriptHint = "ctrl + o to view transcript";
 
 describe("RunLogPanel compact tool output", () => {
+  it("strips tool-provided ANSI styles from the title and detail", () => {
+    const red = "\u001b[31m";
+    const reset = "\u001b[0m";
+    const output = render(
+      <RunLogPanel
+        detailMode
+        items={[{
+          id: "tool-ansi",
+          kind: "tool",
+          nodeId: "product",
+          attempt: 1,
+          toolCallId: "tool-ansi",
+          tool: "Bash",
+          status: "completed",
+          text: "Bash",
+          summary: `${red}npm test${reset}`,
+          detailText: `输出：gray ${reset}white ${red}red${reset}\n退出码：0`
+        }]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Ran npm test/);
+    assert.match(frame, /输出：gray white red/);
+    assert.doesNotMatch(frame, /\u001b\[31m|\u001b\[0m/);
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("strips tool-provided ANSI styles from compact detail", () => {
+    const red = "\u001b[31m";
+    const reset = "\u001b[0m";
+    const output = render(
+      <RunLogPanel
+        detailMode={false}
+        items={[{
+          id: "tool-ansi-compact",
+          kind: "tool",
+          nodeId: "product",
+          attempt: 1,
+          toolCallId: "tool-ansi-compact",
+          tool: "Bash",
+          status: "completed",
+          text: "Bash",
+          summary: "npm test",
+          detailText: "unused",
+          compactDetailText: `output: gray ${reset}white ${red}red${reset}`
+        }]}
+      />
+    );
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /output: gray white red/);
+    assert.doesNotMatch(frame, /\u001b\[31m|\u001b\[0m/);
+    output.unmount();
+    output.cleanup();
+  });
+
   it("renders system status logs without execution dots", () => {
     const output = render(
       <RunLogPanel
