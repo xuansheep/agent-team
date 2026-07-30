@@ -11,7 +11,21 @@ export const multiEditTool: Tool = {
   description: "Apply ordered exact string replacements in a file",
   input_schema: {
     type: "object",
-    properties: { file_path: { type: "string" }, edits: { type: "array" } },
+    properties: {
+      file_path: { type: "string" },
+      edits: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          properties: {
+            old_string: { type: "string" },
+            new_string: { type: "string" }
+          },
+          required: ["old_string", "new_string"]
+        }
+      }
+    },
     required: ["file_path", "edits"]
   },
   isReadOnly: () => false,

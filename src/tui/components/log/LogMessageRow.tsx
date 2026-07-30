@@ -37,12 +37,13 @@ function ToolLogMessage({ item, detailMode }: { item: TuiLogMessage & { kind: "t
     ? item.detailText ? sanitizeToolLogText(item.detailText) : undefined
     : compactToolDetail(item);
   const showDetail = Boolean(detailText);
+  const isNested = Boolean(item.parentLogId);
   const content = (
-    <Box flexDirection="column" marginTop={item.parentLogId ? 0 : 1}>
+    <Box flexDirection="column" marginTop={isNested ? 0 : 1}>
       <Box flexDirection="row" flexWrap="nowrap">
-        {item.parentLogId ? null : <ToolUseLoader status={item.status} />}
-        <Text bold>{title.text}</Text>
-        {title.summary ? <Text wrap="truncate-end"> ({truncate(title.summary, 240)})</Text> : null}
+        {isNested ? null : <ToolUseLoader status={item.status} />}
+        <Text bold={!isNested} dimColor={isNested}>{title.text}</Text>
+        {title.summary ? <Text dimColor={isNested} wrap="truncate-end"> ({truncate(title.summary, 240)})</Text> : null}
       </Box>
       {showDetail ? (
         <MessageResponse>

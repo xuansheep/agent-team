@@ -1311,9 +1311,7 @@ ${formatted.detail}` : formatted.message;
         document: "",
         deliverables: [],
         feedback: { defects: [detail], change_requests: [] },
-        questions: waitingQuestions(`节点无法继续执行：${formatted.message}
-
-请说明下一步处理方式，或输入重试要求。`),
+        questions: conversationInterruptedQuestions(),
         handoff: {
             instruction: "等待用户处理节点失败后继续执行。",
             must_follow: [],
@@ -1321,9 +1319,6 @@ ${formatted.detail}` : formatted.message;
             open_questions: []
         }
     };
-}
-function waitingQuestions(text: string): NodeResult["questions"] {
-    return [{ id: "next_step", text, required: true }];
 }
 function conversationInterruptedQuestions(): NodeResult["questions"] {
     return [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }];

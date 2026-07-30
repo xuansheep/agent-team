@@ -185,6 +185,19 @@ function wrapWithOsc8Link(text: string, url: string): string {
   return `${OSC}8;;${url}${BEL}${text}${OSC}8;;${BEL}`
 }
 
+function applySegmentStylesByLine(text: string, segment: StyledSegment): string {
+  return text
+    .split('\n')
+    .map(line => {
+      let styled = applyTextStyles(line, segment.styles)
+      if (segment.hyperlink) {
+        styled = wrapWithOsc8Link(styled, segment.hyperlink)
+      }
+      return styled
+    })
+    .join('\n')
+}
+
 /**
  * Build a mapping from each character position in the plain text to its segment index.
  * Returns an array where charToSegment[i] is the segment index for character i.
@@ -636,15 +649,7 @@ function renderNodeToOutput(
           // wrapWithOsc8Link, similar to how styles are applied per-run.
         } else {
           // No wrapping needed: apply styles directly
-          text = segments
-            .map(segment => {
-              let styledText = applyTextStyles(segment.text, segment.styles)
-              if (segment.hyperlink) {
-                styledText = wrapWithOsc8Link(styledText, segment.hyperlink)
-              }
-              return styledText
-            })
-            .join('')
+          text = segments.map(segment => applySegmentStylesByLine(segment.text, segment)).join('')
         }
 
         text = applyPaddingToText(node, text, softWrap)

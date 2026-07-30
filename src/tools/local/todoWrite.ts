@@ -9,7 +9,23 @@ const inputSchema = z.object({ todos: z.array(todoSchema) });
 export const todoWriteTool: Tool = {
   name: "TodoWrite",
   description: "Store a node-local todo list",
-  input_schema: { type: "object", properties: { todos: { type: "array" } }, required: ["todos"] },
+  input_schema: {
+    type: "object",
+    properties: {
+      todos: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            content: { type: "string" },
+            status: { type: "string", enum: ["pending", "in_progress", "completed"] }
+          },
+          required: ["content", "status"]
+        }
+      }
+    },
+    required: ["todos"]
+  },
   async execute(input, context) {
     const parsed = inputSchema.parse(input);
     const output = JSON.stringify(parsed.todos, null, 2);

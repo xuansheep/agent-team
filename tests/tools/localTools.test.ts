@@ -70,6 +70,49 @@ describe("local tools", () => {
     assert.equal(tools.has("PowerShell"), process.platform === "win32");
   });
 
+  it("publishes complete array schemas for local tools", () => {
+    const tools = createLocalToolRegistry();
+    const multiEditProperties = tools.get("MultiEdit").input_schema.properties as Record<string, unknown>;
+    const todoWriteProperties = tools.get("TodoWrite").input_schema.properties as Record<string, unknown>;
+
+    assert.deepEqual(multiEditProperties.edits, {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        properties: {
+          old_string: { type: "string" },
+          new_string: { type: "string" }
+        },
+        required: ["old_string", "new_string"]
+      }
+    });
+    assert.deepEqual(todoWriteProperties.todos, {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          content: { type: "string" },
+          status: { type: "string", enum: ["pending", "in_progress", "completed"] }
+        },
+        required: ["content", "status"]
+      }
+    });
+
+    for (const tool of tools.list()) {
+      const pending: unknown[] = [tool.input_schema];
+      while (pending.length > 0) {
+        const candidate = pending.pop();
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+        const schema = candidate as Record<string, unknown>;
+        if (schema.type === "array") {
+          assert.ok(schema.items, `${tool.name} contains an array schema without items`);
+        }
+        pending.push(...Object.values(schema));
+      }
+    }
+  });
+
   it("encodes PowerShell commands as UTF-16LE and cleans CLIXML errors", () => {
     const encoded = createPowerShellProvider("pwsh").spawnArgs('Write-Output "中文"').at(-1) ?? "";
     const decoded = Buffer.from(encoded, "base64").toString("utf16le");

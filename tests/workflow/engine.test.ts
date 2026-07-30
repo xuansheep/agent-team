@@ -7,6 +7,7 @@ import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../src/plans/planSession.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { SessionStore } from "../../src/storage/sessionStore.js";
+import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../../src/workflow/state.js";
 
 class FakeProvider implements ModelProvider {
   async generate() {
@@ -702,7 +703,7 @@ describe("WorkflowEngine", () => {
   });
 
 
-  it("turns repeated invalid needs_user_input results into a failure with a concrete question", async () => {
+  it("turns repeated invalid needs_user_input results into a failure with the unified interruption prompt", async () => {
     const invalid = JSON.stringify({ direction: "backward", summary: "need input", document: "", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "", must_follow: [], known_risks: [], open_questions: [] } });
     const provider: ModelProvider = {
       async generate() {
@@ -720,16 +721,15 @@ describe("WorkflowEngine", () => {
 
     assert.equal(state.status, "paused");
     assert.equal(state.attempts.at(-1)?.status, "failure");
-    const result = state.attempts.at(-1)?.result as { questions?: Array<{ text?: string }>; summary?: string };
+    const result = state.attempts.at(-1)?.result as { questions?: Array<{ id?: string; text?: string; required?: boolean }>; summary?: string };
     assert.match(result.summary ?? "", /Invalid NodeResult|concrete user question/i);
-    assert.ok((result.questions?.length ?? 0) > 0);
-    assert.match(result.questions?.[0]?.text ?? "", /节点无法继续执行|NodeResult|needs_user_input/);
+    assert.deepEqual(result.questions, [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }]);
 
     const runId = await latestRunId(runRoot);
     const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; questions?: unknown[]; status?: string });
     const waiting = events.find((event) => event.type === "node_waiting_user");
     assert.ok(waiting);
-    assert.notDeepEqual(waiting?.questions, []);
+    assert.deepEqual(waiting?.questions, [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }]);
   });
 
   it("rejects image handoff when provider has no vision capability", async () => {

@@ -5431,7 +5431,7 @@ describe("InteractionArea", () => {
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /■ Conversation interrupted -+/);
+    assert.match(frame, /■ Conversation interrupted[.] Describe how to proceed, or enter retry instructions[.] -+/);
     assert.equal(frame.split(CONVERSATION_INTERRUPTED_TEXT).length - 1, 1);
     assert.ok(frame.indexOf(CONVERSATION_INTERRUPTED_TEXT) < frame.indexOf("> Type a request or /help"));
 
