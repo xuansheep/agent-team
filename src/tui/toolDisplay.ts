@@ -42,40 +42,34 @@ export function getToolInputDetail(tool: string, input: unknown): string {
 }
 
 export function getToolResultDetail(result: unknown): string {
-  if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
-  const value = result as Record<string, unknown>;
-  const lines: string[] = [];
-  if (typeof value.output === "string") lines.push(`输出：${value.output || "(no output)"}`);
-  if (typeof value.stderr === "string" && value.stderr) lines.push(`标准错误：${value.stderr}`);
-  if (typeof value.error === "string" && value.error) lines.push(`错误：${value.error}`);
-  if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
-  if (typeof value.path === "string") lines.push(`路径：${value.path}`);
-  return lines.length ? lines.join("\n") : readableRecord(value);
+  return formatToolResult(result, false);
 }
 
 export function getCompactToolResultDetail(result: unknown): string {
-  if (!result || typeof result !== "object") return `结果：${readableValue(result)}`;
+  return formatToolResult(result, true);
+}
+
+function formatToolResult(result: unknown, compact: boolean): string {
+  if (!result || typeof result !== "object") return readableValue(result) || "(no output)";
   const value = result as Record<string, unknown>;
-  const output = typeof value.output === "string" ? value.output : undefined;
-  const outputLines = output?.split(/\r?\n/) ?? [];
-  if (output?.endsWith("\n") && outputLines.at(-1) === "") outputLines.pop();
-  if (!value.error && !value.stderr && outputLines.length <= 5) return "";
   const lines: string[] = [];
-  if (output !== undefined) lines.push(`输出：${output ? compactToolOutput(output) : "(no output)"}`);
-  if (typeof value.stderr === "string" && value.stderr) lines.push(`标准错误：${truncate(value.stderr, 500)}`);
-  if (typeof value.error === "string" && value.error) lines.push(`错误：${truncate(value.error, 500)}`);
-  if (typeof value.exit_code === "number") lines.push(`退出码：${value.exit_code}`);
-  if (typeof value.path === "string") lines.push(`路径：${value.path}`);
-  return lines.length ? lines.join("\n") : readableRecord(value);
+  if (typeof value.output === "string") lines.push(value.output || "(no output)");
+  if (typeof value.stderr === "string" && value.stderr) lines.push(value.stderr);
+  if (typeof value.error === "string" && value.error) lines.push(`Error: ${value.error}`);
+  if (typeof value.exit_code === "number" && value.exit_code !== 0) lines.push(`Exit code: ${value.exit_code}`);
+  if (typeof value.path === "string") lines.push(value.path);
+  const detail = lines.length ? lines.join("\n") : readableRecord(value) || "(no output)";
+  return compact ? compactToolOutput(detail) : detail;
 }
 
 function compactToolOutput(output: string): string {
   const lines = output.split(/\r?\n/);
   if (output.endsWith("\n") && lines.at(-1) === "") lines.pop();
-  if (lines.length <= 5) return truncate(output, 500);
+  const safeLines = lines.map((line) => truncate(line, 500));
+  if (safeLines.length <= 5) return safeLines.join("\n");
 
-  const omitted = lines.length - 4;
-  return [...lines.slice(0, 2), `… +${omitted} lines (ctrl + o to view transcript)`, ...lines.slice(-2)].join("\n");
+  const omitted = safeLines.length - 4;
+  return [...safeLines.slice(0, 2), `… +${omitted} lines (ctrl + o to view transcript)`, ...safeLines.slice(-2)].join("\n");
 }
 
 export function readableRecord(value: Record<string, unknown>): string {

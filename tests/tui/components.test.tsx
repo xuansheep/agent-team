@@ -3533,7 +3533,7 @@ describe("RunLogPanel", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Here is Einstein's plan:/);
-    assert.match(frame, /⎿  # Plan/);
+    assert.match(frame, /└\s+# Plan/);
     assert.match(frame, /Requested permissions:/);
     assert.match(frame, /Bash\(prompt: run tests\)/);
 
@@ -3975,7 +3975,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /●\s+Running npm test/);
+    assert.match(frame, /•\s+Running npm test/);
 
 
 
@@ -4121,7 +4121,7 @@ describe("RunLogPanel", () => {
 
     assert.match(compactFrame, /Thinking/);
 
-    assert.doesNotMatch(compactFrame, /● Thinking/);
+    assert.match(compactFrame, /• Thinking/);
 
     assert.doesNotMatch(compactFrame, /正在|生成|处理/);
 
@@ -4173,13 +4173,13 @@ describe("RunLogPanel", () => {
 
     assert.match(detailedFrame, /Thinking/);
 
-    assert.doesNotMatch(detailedFrame, /● Thinking/);
+    assert.match(detailedFrame, /• Thinking/);
 
     assert.doesNotMatch(detailedFrame, /正在|生成|处理/);
 
 
 
-    assert.match(detailedFrame, /⎿\s+Checked constraints/);
+    assert.match(detailedFrame, /└\s+Checked constraints/);
 
 
 
@@ -4439,7 +4439,7 @@ describe("RunLogPanel", () => {
 
 
 
-            detailText: "输出：ok"
+            detailText: "ok"
 
 
 
@@ -4583,7 +4583,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /●\s+Ran npm test/);
+    assert.match(frame, /•\s+Ran npm test/);
 
 
 
@@ -4599,7 +4599,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /⎿/);
+    assert.match(frame, /└/);
 
 
 
@@ -4615,7 +4615,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /输出/);
+    assert.match(frame, /└\s+ok/);
 
 
 
@@ -4713,7 +4713,7 @@ describe("RunLogPanel", () => {
 
 
 
-  it("renders tool rows as assistant message responses when parented", () => {
+  it("renders parented tool rows as sibling status rows", () => {
 
     const output = render(
 
@@ -4725,7 +4725,7 @@ describe("RunLogPanel", () => {
 
           { id: "assistant-1", kind: "assistant", nodeId: "product", attempt: 1, text: "我先运行测试。" },
 
-          { id: "tool-1", kind: "tool", nodeId: "product", attempt: 1, parentLogId: "assistant-1", toolCallId: "tool-1", tool: "Bash", status: "completed", text: "Bash", summary: "npm test", detailText: "输出：ok" }
+          { id: "tool-1", kind: "tool", nodeId: "product", attempt: 1, parentLogId: "assistant-1", toolCallId: "tool-1", tool: "Bash", status: "completed", text: "Bash", summary: "npm test", detailText: "ok" }
 
         ]}
 
@@ -4737,11 +4737,13 @@ describe("RunLogPanel", () => {
 
     assert.match(frame, /我先运行测试/);
 
-    assert.match(frame, /⎿\s+Ran npm test/);
+    assert.match(frame, /• Ran npm test/);
 
-    assert.doesNotMatch(frame, /输出：ok/);
+    assert.doesNotMatch(frame, /└\s+Ran npm test/);
 
-    assert.doesNotMatch(frame, /⎿\s+Bash \(npm test\)/);
+    assert.doesNotMatch(frame, /└\s+ok/);
+
+    assert.doesNotMatch(frame, /└\s+Bash \(npm test\)/);
 
     output.unmount();
 
@@ -4759,7 +4761,7 @@ describe("RunLogPanel", () => {
 
         detailMode={false}
 
-        items={[{ id: "tool-failed", kind: "tool", nodeId: "dev", attempt: 1, toolCallId: "tool-1", tool: "Bash", status: "failed", text: "Bash", summary: "npm test", detailText: "错误：exit 1\n输出：failed tests" }]}
+        items={[{ id: "tool-failed", kind: "tool", nodeId: "dev", attempt: 1, toolCallId: "tool-1", tool: "Bash", status: "failed", text: "Bash", summary: "npm test", detailText: "Error: exit 1\nfailed tests" }]}
 
       />
 
@@ -4771,9 +4773,9 @@ describe("RunLogPanel", () => {
 
     assert.match(frame, /Ran npm test/);
 
-    assert.match(frame, /错误：exit 1/);
+    assert.match(frame, /Error: exit 1/);
 
-    assert.doesNotMatch(frame, /输出：failed tests/);
+    assert.doesNotMatch(frame, /failed tests/);
 
     output.unmount();
 
@@ -6605,7 +6607,7 @@ describe("TuiApp", () => {
 
     assert.match(frame, /我先检查项目结构，再运行测试确认现状。/);
 
-    assert.match(frame, /⎿\s+Ran npm test/);
+    assert.match(frame, /• Ran npm test/);
 
     assert.doesNotMatch(frame, /status/);
 
@@ -6635,7 +6637,7 @@ describe("TuiApp", () => {
 
         { type: "tool_invoked", node_id: "product", attempt: 1, tool_call_id: "tool-1", tool: "Bash", input: { command: "npm test" }, ts: "2026-06-24T00:00:01.000Z", seq: 2 },
 
-        { type: "tool_completed", node_id: "product", attempt: 1, tool_call_id: "tool-1", tool: "Bash", result: { output: "ok", exit_code: 0 }, ts: "2026-06-24T00:00:02.000Z", seq: 3 }
+        { type: "tool_completed", node_id: "product", attempt: 1, tool_call_id: "tool-1", tool: "Bash", result: { output: "line-1\nline-2\nline-3\nline-4\nline-5\nline-6", exit_code: 0 }, ts: "2026-06-24T00:00:02.000Z", seq: 3 }
 
       ]
 
@@ -6648,18 +6650,18 @@ describe("TuiApp", () => {
     await sendTuiLine(output, "run tests");
 
     assert.match(output.lastFrame() ?? "", /Ran npm test/);
-    assert.doesNotMatch(output.lastFrame() ?? "", /输出：ok/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /line-3/);
 
     output.stdin.write("\u000f");
     await settleInkInput();
 
-    assert.match(output.lastFrame() ?? "", /输出：ok/);
+    assert.match(output.lastFrame() ?? "", /line-3/);
 
     output.stdin.write("\u001b");
     await settleTerminalEscape();
 
     assert.match(output.lastFrame() ?? "", /Ran npm test/);
-    assert.doesNotMatch(output.lastFrame() ?? "", /输出：ok/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /line-3/);
 
     output.unmount();
     output.cleanup();

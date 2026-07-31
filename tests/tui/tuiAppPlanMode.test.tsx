@@ -943,7 +943,7 @@ describe("TuiApp global Plan Mode", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Thinking \| plan \|/);
-    assert.doesNotMatch(frame, /● Plan Mode is thinking/);
+    assert.doesNotMatch(frame, /• Plan Mode is thinking/);
     assert.equal(starts, 0);
 
     output.unmount();
@@ -1518,6 +1518,7 @@ describe("TuiApp global Plan Mode", () => {
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Draft the migration first\./);
     assert.match(frame, /workflow from approved plan/);
+    assert.match(frame, /Plan Review \(approved\)/);
     const statusLine = frame.split("\n").filter((line) => line.trim()).at(-1) ?? "";
     assert.match(statusLine, /(?:Working|Ready) \| default \| delivery/);
     assert.doesNotMatch(statusLine, /work-mode|run-state|permission|workflow/);

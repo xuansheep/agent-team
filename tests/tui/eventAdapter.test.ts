@@ -1203,9 +1203,9 @@ describe("TUI event adapter", () => {
 
     assert.equal((toolLog as any)?.status, "completed");
 
-    assert.match((toolLog as any)?.detailText ?? "", /输出：package.json/);
+    assert.match((toolLog as any)?.detailText ?? "", /package.json/);
     assert.match((toolLog as any)?.detailText ?? "", /middle-file/);
-    assert.match((toolLog as any)?.compactDetailText ?? "", /输出：package.json/);
+    assert.match((toolLog as any)?.compactDetailText ?? "", /package.json/);
     assert.match((toolLog as any)?.compactDetailText ?? "", /ctrl \+ o to view transcript/);
     assert.doesNotMatch((toolLog as any)?.compactDetailText ?? "", /middle-file/);
 
@@ -1219,9 +1219,9 @@ describe("TUI event adapter", () => {
 
     assert.equal((toolLogs[0] as any)?.summary, ".");
 
-    assert.match((toolLogs[0] as any)?.detailText ?? "", /输出：package.json/);
+    assert.match((toolLogs[0] as any)?.detailText ?? "", /package.json/);
     assert.match((toolLogs[0] as any)?.detailText ?? "", /middle-file/);
-    assert.match((toolLogs[0] as any)?.compactDetailText ?? "", /输出：package.json/);
+    assert.match((toolLogs[0] as any)?.compactDetailText ?? "", /package.json/);
     assert.match((toolLogs[0] as any)?.compactDetailText ?? "", /ctrl \+ o to view transcript/);
     assert.doesNotMatch((toolLogs[0] as any)?.compactDetailText ?? "", /middle-file/);
 
@@ -1317,7 +1317,7 @@ ${semanticPermissionLog?.detailText ?? ""}`, /\{"command"/);
     assert.equal(state.logMessages.some((item) => item.kind === "assistant"), false);
     const toolLog = state.logMessages.find((item) => item.kind === "tool" && item.toolCallId === "tool-1");
     assert.equal(toolLog?.parentLogId, undefined);
-    assert.match(toolLog?.detailText ?? "", /输出：\.git/);
+    assert.match(toolLog?.detailText ?? "", /\.git/);
   });
 
   it("tracks Codex-style run-state transitions without leaving Working while parallel tools run", () => {

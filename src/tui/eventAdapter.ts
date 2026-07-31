@@ -235,7 +235,7 @@ reason：${event.reason}`
     case "tool_completed":
       return updateRunStateAfterTool(updateToolLog(updateTool(next, event.tool_call_id, "completed", event.result), event.tool_call_id, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result)));
     case "tool_failed":
-      return updateRunStateAfterTool(updateToolLog(updateTool(next, event.tool_call_id, "failed", undefined, event.error), event.tool_call_id, "failed", `错误：${event.error}`));
+      return updateRunStateAfterTool(updateToolLog(updateTool(next, event.tool_call_id, "failed", undefined, event.error), event.tool_call_id, "failed", `Error: ${event.error}`, `Error: ${event.error}`));
     case "permission_requested":
       return appendPermissionLog({
         ...next,

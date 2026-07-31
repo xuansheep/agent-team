@@ -15,7 +15,7 @@ export function MessageResponse({ children }: Props): React.ReactNode {
     <MessageResponseContext.Provider value={true}>
       <Box flexDirection="row" overflowY="hidden">
         <Box flexShrink={0}>
-          <Text dimColor>{"  "}⎿  </Text>
+          <Text dimColor>{"  \u2514 "}</Text>
         </Box>
         <Box flexShrink={1} flexGrow={1}>
           {children}

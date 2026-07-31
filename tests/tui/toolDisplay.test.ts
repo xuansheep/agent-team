@@ -14,13 +14,13 @@ describe("toolDisplay", () => {
 
     const detail = getToolResultDetail({ output, exit_code: 0 });
 
-    assert.match(detail, /输出：line-1/);
+    assert.match(detail, /^line-1/);
     assert.match(detail, /line-3/);
     assert.match(detail, /line-6/);
     assert.match(detail, /line-9/);
-    assert.match(detail, /line-10/);
+    assert.match(detail, /line-10$/);
     assert.doesNotMatch(detail, /ctrl \+ o to view transcript/);
-    assert.match(detail, /退出码：0/);
+    assert.doesNotMatch(detail, /Exit code:/);
   });
 
   it("summarizes compact command output with a transcript hint", () => {
@@ -28,24 +28,29 @@ describe("toolDisplay", () => {
 
     const detail = getCompactToolResultDetail({ output, exit_code: 0 });
 
-    assert.match(detail, /输出：line-1/);
+    assert.match(detail, /^line-1/);
     assert.match(detail, /line-2/);
     assert.match(detail, /… \+6 lines \(ctrl \+ o to view transcript\)/);
     assert.match(detail, /line-9/);
-    assert.match(detail, /line-10/);
+    assert.match(detail, /line-10$/);
     assert.doesNotMatch(detail, /line-3/);
     assert.doesNotMatch(detail, /line-6/);
-    assert.match(detail, /退出码：0/);
+    assert.doesNotMatch(detail, /Exit code:/);
   });
 
-  it("folds short successful output in compact mode", () => {
-    assert.equal(getCompactToolResultDetail({ output: "ok", exit_code: 0 }), "");
+  it("shows short successful output in compact mode", () => {
+    assert.equal(getCompactToolResultDetail({ output: "ok", exit_code: 0 }), "ok");
   });
 
   it("shows empty command output explicitly", () => {
     const detail = getToolResultDetail({ output: "", exit_code: 0 });
 
-    assert.match(detail, /输出：\(no output\)/);
-    assert.match(detail, /退出码：0/);
+    assert.equal(detail, "(no output)");
+  });
+
+  it("uses English error and non-zero exit-code labels", () => {
+    const detail = getToolResultDetail({ output: "failed", stderr: "stderr text", error: "boom", exit_code: 7 });
+
+    assert.equal(detail, "failed\nstderr text\nError: boom\nExit code: 7");
   });
 });

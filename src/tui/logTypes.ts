@@ -42,6 +42,11 @@ export type TuiPlanLogMessage = BaseLogMessage & {
   requestedPermissions?: Array<{ tool: string; prompt: string }>;
 };
 
+export type TuiToolExplorationEntry = {
+  action: "List" | "Read" | "Search" | "Run";
+  summary: string;
+};
+
 export type TuiToolLogMessage = BaseLogMessage & {
   kind: "tool";
   nodeId: string;
@@ -51,6 +56,7 @@ export type TuiToolLogMessage = BaseLogMessage & {
   status: "running" | "completed" | "failed";
   summary: string;
   compactDetailText?: string;
+  exploration?: TuiToolExplorationEntry[];
 };
 
 export type TuiPermissionLogMessage = BaseLogMessage & {

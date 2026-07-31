@@ -86,7 +86,7 @@ describe("local Ink lifecycle", () => {
     }
   });
 
-  it("dims nested tool titles and summaries under response arrows", async () => {
+  it("renders nested tool titles and summaries bold without dimming", async () => {
     const previousChalkLevel = chalk.level;
     chalk.level = 1;
     const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
@@ -112,9 +112,91 @@ describe("local Ink lifecycle", () => {
         const cell = cellAt(screen, column, row);
         if (!cell || cell.char === " ") continue;
         const styles = ink.stylePool.get(cell.styleId);
-        assert.ok(styles.some(style => style.code === "\u001b[2m"));
-        assert.equal(styles.some(style => style.code === "\u001b[1m"), false);
+        assert.equal(styles.some(style => style.code === "\u001b[2m"), false);
+        assert.ok(styles.some(style => style.code === "\u001b[1m"));
       }
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+      chalk.level = previousChalkLevel;
+    }
+  });
+
+  it("maps assistant, tool, status, and plan dots to their lifecycle colors", async () => {
+    const previousChalkLevel = chalk.level;
+    chalk.level = 3;
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const instance = renderSync(
+      <RunLogPanel detailMode={false} items={[
+        { id: "assistant-dot", kind: "assistant", nodeId: "developer", attempt: 1, text: "assistant lifecycle" },
+        { id: "tool-running", kind: "tool", nodeId: "developer", attempt: 1, toolCallId: "tool-running", tool: "ArtifactWrite", status: "running", text: "running lifecycle", summary: "", detailText: "" },
+        { id: "tool-completed", kind: "tool", nodeId: "developer", attempt: 1, toolCallId: "tool-completed", tool: "ArtifactWrite", status: "completed", text: "completed lifecycle", summary: "", detailText: "" },
+        { id: "tool-failed", kind: "tool", nodeId: "developer", attempt: 1, toolCallId: "tool-failed", tool: "ArtifactWrite", status: "failed", text: "failed lifecycle", summary: "", detailText: "" },
+        { id: "status-dot", kind: "status", text: "status lifecycle" },
+        { id: "plan-pending", kind: "plan", nodeId: "global-plan", attempt: 1, status: "pending", text: "Plan Review", document: "pending plan" },
+        { id: "plan-approved", kind: "plan", nodeId: "global-plan", attempt: 2, status: "approved", text: "Plan Review", document: "approved plan" },
+        { id: "plan-rejected", kind: "plan", nodeId: "global-plan", attempt: 3, status: "rejected", text: "Plan Review", document: "rejected plan" }
+      ]} />,
+      { stdout, stderr: new FakeStdout() as unknown as NodeJS.WriteStream, stdin: new FakeStdin() as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false }
+    );
+
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const ink = instances.get(stdout) as unknown as { frontFrame: { screen: Screen }; stylePool: StylePool };
+      const screen = ink.frontFrame.screen;
+      const lines = Array.from({ length: screen.height }, (_, row) =>
+        Array.from({ length: screen.width }, (_, column) => cellAt(screen, column, row)?.char ?? " ").join("").trimEnd()
+      );
+      const cases: Array<[string, string]> = [
+        ["assistant lifecycle", "\u001b[37m"],
+        ["Running running lifecycle", "\u001b[38;5;240m"],
+        ["Ran completed lifecycle", "\u001b[32m"],
+        ["Ran failed lifecycle", "\u001b[31m"],
+        ["status lifecycle", "\u001b[38;5;240m"],
+        ["pending approval", "\u001b[38;5;240m"],
+        ["approved", "\u001b[32m"],
+        ["needs revision", "\u001b[31m"]
+      ];
+      for (const [text, expectedColor] of cases) {
+        const row = lines.findIndex(line => line.includes(text));
+        assert.notEqual(row, -1, `missing row for ${text}`);
+        const dotColumn = lines[row]!.indexOf("•");
+        assert.notEqual(dotColumn, -1, `missing dot for ${text}`);
+        const cell = cellAt(screen, dotColumn, row);
+        assert.ok(cell && ink.stylePool.get(cell.styleId).some(style => style.code === expectedColor), `${text} should use ${JSON.stringify(expectedColor)}`);
+      }
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+      chalk.level = previousChalkLevel;
+    }
+  });
+
+  it("blinks the running tool dot by toggling its dim style", async () => {
+    const previousChalkLevel = chalk.level;
+    chalk.level = 3;
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const instance = renderSync(
+      <RunLogPanel detailMode={false} items={[
+        { id: "tool-running", kind: "tool", nodeId: "developer", attempt: 1, toolCallId: "tool-running", tool: "LS", status: "running", text: "blinking lifecycle", summary: "", detailText: "" }
+      ]} />,
+      { stdout, stderr: new FakeStdout() as unknown as NodeJS.WriteStream, stdin: new FakeStdin() as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false }
+    );
+
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const ink = instances.get(stdout) as unknown as { frontFrame: { screen: Screen }; stylePool: StylePool };
+      const initialCell = cellAt(ink.frontFrame.screen, 0, 1);
+      assert.equal(initialCell?.char, "•");
+      const initiallyDimmed = Boolean(initialCell && ink.stylePool.get(initialCell.styleId).some(style => style.code === "\u001b[2m"));
+      let toggled = false;
+      for (let attempt = 0; attempt < 12 && !toggled; attempt += 1) {
+        await delay(75);
+        const currentCell = cellAt(ink.frontFrame.screen, 0, 1);
+        const currentlyDimmed = Boolean(currentCell && ink.stylePool.get(currentCell.styleId).some(style => style.code === "\u001b[2m"));
+        toggled = currentlyDimmed !== initiallyDimmed;
+      }
+      assert.equal(toggled, true);
     } finally {
       instance.unmount();
       instance.cleanup();

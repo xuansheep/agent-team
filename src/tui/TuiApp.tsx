@@ -456,7 +456,15 @@ export function TuiApp({
       }
     })();
   };
-  const attachSession = (session: WorkflowSession, nextWorkflowId: string, options: { preserveLogs?: boolean; inputPermissionMode?: PermissionMode } = {}) => {
+  const attachSession = (
+    session: WorkflowSession,
+    nextWorkflowId: string,
+    options: {
+      preserveLogs?: boolean;
+      inputPermissionMode?: PermissionMode;
+      approvedPlanReview?: { nodeId: string; attempt: number };
+    } = {}
+  ) => {
     const resultGeneration = ++sessionResultGenerationRef.current;
     sessionRef.current = session;
     const sessionId = session.sessionId ?? currentSessionIdRef.current;
@@ -464,7 +472,28 @@ export function TuiApp({
     if (providedSessionStore) void sessionStore.attachRun(sessionId, session.runId).catch((error) => failUi(error));
     void refreshSessionAudit(sessionId).catch((error) => failUi(error));
     mainScrollRef.current?.scrollToBottom();
-    setState((current) => resetTuiRunState(current, { workflowId: nextWorkflowId, runId: session.runId, preserveLogs: options.preserveLogs === true, inputPermissionMode: options.inputPermissionMode }));
+    setState((current) => {
+      const review = options.approvedPlanReview;
+      const withApprovedPlan = review
+        ? {
+            ...current,
+            logMessages: current.logMessages.map((message) => (
+              message.kind === "plan"
+              && message.nodeId === review.nodeId
+              && message.attempt === review.attempt
+              && message.status === "pending"
+                ? { ...message, status: "approved" as const }
+                : message
+            ))
+          }
+        : current;
+      return resetTuiRunState(withApprovedPlan, {
+        workflowId: nextWorkflowId,
+        runId: session.runId,
+        preserveLogs: options.preserveLogs === true,
+        inputPermissionMode: options.inputPermissionMode
+      });
+    });
     listenSession(session, nextWorkflowId);
     void session.result
       .then((result) => {
@@ -1409,7 +1438,10 @@ ${message.detailText}` : ""}` }
     resetPlanApprovalFeedback();
     attachSession(transition.workflow, selectedWorkflowId, {
       preserveLogs: true,
-      inputPermissionMode: resolved.execution?.permissionMode
+      inputPermissionMode: resolved.execution?.permissionMode,
+      approvedPlanReview: state.pendingReview
+        ? { nodeId: state.pendingReview.nodeId, attempt: state.pendingReview.attempt }
+        : undefined
     });
     return true;
   };
@@ -2368,7 +2400,7 @@ function reducePlanRuntimeEvent(state: TuiState, event: RuntimeEvent): TuiState 
       return updatePlanRunStateAfterTool(updatePlanToolLog(state, event.tool_call_id, event.tool, "completed", getToolResultDetail(event.result), getCompactToolResultDetail(event.result)));
     case "runtime_tool_failed":
       if (event.tool === "AskUserQuestion") return { ...state, runState: "waiting" };
-      return updatePlanRunStateAfterTool(updatePlanToolLog(state, event.tool_call_id, event.tool, "failed", `错误：${event.error}`));
+      return updatePlanRunStateAfterTool(updatePlanToolLog(state, event.tool_call_id, event.tool, "failed", `Error: ${event.error}`, `Error: ${event.error}`));
     case "runtime_user_input_requested":
     case "runtime_permission_requested":
     case "plan_approval_requested":
