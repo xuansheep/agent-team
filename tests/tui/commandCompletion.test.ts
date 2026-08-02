@@ -38,6 +38,10 @@ describe("slash command completion", () => {
     assert.deepEqual(slashCommandSuggestions("/statusline ", context), []);
   });
 
+  it("suggests terminal setup", () => {
+    assert.deepEqual(slashCommandSuggestions("/ter", context).map((item) => item.value), ["/terminal-setup"]);
+  });
+
   it("suggests resume arguments", () => {
     assert.deepEqual(slashCommandSuggestions("/resume del", context).map((item) => item.value), ["/resume delivery-last"]);
   });

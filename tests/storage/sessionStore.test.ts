@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionStore } from "../../src/storage/sessionStore.js";
@@ -56,6 +56,32 @@ describe("SessionStore", () => {
 
     assert.deepEqual(entries.map((entry) => entry.sessionId).sort(), ["session-1", "session-2"]);
     assert.deepEqual(entries.map((entry) => entry.currentRunId).sort(), ["run-1", "run-2"]);
+  });
+
+  it("archives an entire session outside the resumable session list", async () => {
+    const root = await workspace();
+    const sessions = new SessionStore(root);
+    const runs = new RunStore(root);
+    await sessions.saveMetadata("session-archive", { inputPreview: "archive me" });
+    await sessions.appendTranscript("session-archive", { role: "user", content: "keep this transcript" });
+    await runs.createRun("delivery", { request: "keep this run" }, { sessionId: "session-archive", runId: "run-archive" });
+    await sessions.saveMetadata("session-keep", { inputPreview: "keep me" });
+
+    const archived = await sessions.archiveSession("session-archive");
+
+    assert.match(archived.archivePath, /[\\/][.]trash[\\/]sessions[\\/]session-archive-/);
+    await assert.rejects(access(sessions.sessionDir("session-archive")), { code: "ENOENT" });
+    assert.equal(await sessions.loadMetadata("session-archive"), undefined);
+    assert.deepEqual((await sessions.listSessions()).map((entry) => entry.sessionId), ["session-keep"]);
+    assert.match(await readFile(join(archived.archivePath, "transcript.jsonl"), "utf8"), /keep this transcript/);
+    await access(join(archived.archivePath, "runs", "run-archive", "run.json"));
+  });
+
+  it("does not create an archive when the session is missing", async () => {
+    const root = await workspace();
+    const sessions = new SessionStore(root);
+
+    await assert.rejects(() => sessions.archiveSession("missing-session"), /Session missing-session was not found/);
   });
 
   it("recovers Plan Mode state from session metadata", async () => {

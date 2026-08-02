@@ -2,11 +2,10 @@ import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/prom
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, defaultStatusLineElements, projectSettingsSchema, settingsSchema } from "./types.js";
+import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 import type { StatusLineElement } from "./types.js";
 import { resolveSettings } from "./resolveSettings.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
-import { DEFAULT_MODEL_CONTEXT_WINDOW } from "../model/modelRegistry.js";
 import { acquireLockFile, releaseLockFile } from "../storage/lockFile.js";
 
 export type LoadSettingsOptions = {
@@ -128,52 +127,18 @@ function parseSettingsJson(raw: string, path: string): unknown {
 }
 
 export const DEFAULT_USER_SETTINGS = JSON.stringify({
-  statusLine: defaultStatusLineElements,
-  models: {
-    defaultContextWindow: DEFAULT_MODEL_CONTEXT_WINDOW
-  },
   providers: {
     default: {
       type: "responses-api",
       base_url: "https://api.openai.com/v1",
       api_key: "",
-      default_model: "gpt-5.5",
-      effort: "medium",
-      api_key_mode: "bearer",
-      capabilities: {
-        tool_calling: true,
-        vision: true,
-        streaming: true,
-        json_schema_output: true
-      }
-    },
-    openai_compatible: {
-      type: "openai-compatible",
-      base_url: "https://api.example.com/v1",
-      api_key: "",
-      default_model: "model-name",
-      effort: "medium",
-      api_key_mode: "bearer",
-      capabilities: {
-        tool_calling: true,
-        vision: false,
-        streaming: true,
-        json_schema_output: true
-      }
+      default_model: "gpt-5.5"
     },
     anthropic: {
       type: "anthropic",
       base_url: "https://api.anthropic.com",
       api_key: "",
-      default_model: "claude-sonnet-4-5",
-      effort: "medium",
-      api_key_mode: "x-api-key",
-      capabilities: {
-        tool_calling: true,
-        vision: true,
-        streaming: true,
-        json_schema_output: true
-      }
+      default_model: "claude-sonnet-4-5"
     }
   }
 }, null, 2) + "\n";

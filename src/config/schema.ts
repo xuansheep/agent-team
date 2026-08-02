@@ -14,18 +14,31 @@ export const permissionSetSchema = z.object({
 
 export const apiKeyModeSchema = z.enum(["bearer", "x-api-key"]);
 
-const providerCapabilitiesSchema = z.object({
-  tool_calling: z.boolean().default(false),
-  vision: z.boolean().default(false),
-  streaming: z.boolean().default(false),
-  json_schema_output: z.boolean().default(true)
+const providerCapabilitiesSettingsSchema = z.object({
+  tool_calling: z.boolean().optional(),
+  vision: z.boolean().optional(),
+  streaming: z.boolean().optional(),
+  json_schema_output: z.boolean().optional()
 });
 
-const providerBaseSchema = {
+function resolvedProviderCapabilitiesSchema(defaults: {
+  tool_calling: boolean;
+  vision: boolean;
+  streaming: boolean;
+  json_schema_output: boolean;
+}) {
+  return z.object({
+    tool_calling: z.boolean().default(defaults.tool_calling),
+    vision: z.boolean().default(defaults.vision),
+    streaming: z.boolean().default(defaults.streaming),
+    json_schema_output: z.boolean().default(defaults.json_schema_output)
+  }).default(defaults);
+}
+
+const providerCommonShape = {
   base_url: z.string().url(),
   api_key: z.string(),
   default_model: z.string().min(1),
-  effort: z.string().trim().min(1).optional(),
   plan_model: z.string().min(1).optional(),
   model_aliases: z.record(z.string().min(1)).optional(),
   context_windows: z.record(z.number().int().positive()).optional(),
@@ -36,23 +49,50 @@ const providerBaseSchema = {
   auto_compact_token_limit_scope: z.enum(["total", "body_after_prefix"]).optional(),
   tool_output_token_limit: z.number().int().positive().optional(),
   compact_prompt: z.string().min(1).optional(),
+  user_agent: z.string().min(1).optional()
+};
+
+const providerSettingsBaseShape = {
+  ...providerCommonShape,
+  effort: z.string().trim().min(1).optional(),
+  request_max_retries: z.number().int().min(0).max(100).optional(),
+  stream_max_retries: z.number().int().min(0).max(100).optional(),
+  request_timeout_ms: z.number().int().positive().optional(),
+  stream_idle_timeout_ms: z.number().int().positive().optional(),
+  api_key_mode: apiKeyModeSchema.optional(),
+  capabilities: providerCapabilitiesSettingsSchema.optional()
+};
+
+const providerBaseSchema = {
+  ...providerCommonShape,
+  effort: z.string().trim().min(1).default("medium"),
   request_max_retries: z.number().int().min(0).max(100).default(DEFAULT_REQUEST_MAX_RETRIES),
   stream_max_retries: z.number().int().min(0).max(100).default(DEFAULT_STREAM_MAX_RETRIES),
   request_timeout_ms: z.number().int().positive().default(DEFAULT_REQUEST_TIMEOUT_MS),
   stream_idle_timeout_ms: z.number().int().positive().default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
-  api_key_mode: apiKeyModeSchema.default("bearer"),
-  user_agent: z.string().min(1).optional(),
-  capabilities: providerCapabilitiesSchema.default({})
+  api_key_mode: apiKeyModeSchema.default("bearer")
 };
 
 const openAiCompatibleProviderSchema = z.object({
   type: z.literal("openai-compatible"),
-  ...providerBaseSchema
+  ...providerBaseSchema,
+  capabilities: resolvedProviderCapabilitiesSchema({
+    tool_calling: false,
+    vision: false,
+    streaming: false,
+    json_schema_output: true
+  })
 }).strict();
 
 const responsesProviderSchema = z.object({
   type: z.literal("responses-api"),
   ...providerBaseSchema,
+  capabilities: resolvedProviderCapabilitiesSchema({
+    tool_calling: true,
+    vision: true,
+    streaming: true,
+    json_schema_output: true
+  }),
   responses: z.object({
     prompt_cache: z.boolean().default(true),
     parallel_tool_calls: z.boolean().default(true),
@@ -66,6 +106,12 @@ const anthropicProviderSchema = z.object({
   type: z.literal("anthropic"),
   ...providerBaseSchema,
   api_key_mode: apiKeyModeSchema.default("x-api-key"),
+  capabilities: resolvedProviderCapabilitiesSchema({
+    tool_calling: true,
+    vision: true,
+    streaming: true,
+    json_schema_output: true
+  }),
   anthropic: z.object({
     version: z.string().min(1).default("2023-06-01"),
     beta_headers: z.array(z.string().min(1)).default([]),
@@ -82,6 +128,44 @@ export const providerSchema = z.discriminatedUnion("type", [
   openAiCompatibleProviderSchema,
   responsesProviderSchema,
   anthropicProviderSchema
+]);
+
+const openAiCompatibleProviderSettingsSchema = z.object({
+  type: z.literal("openai-compatible"),
+  ...providerSettingsBaseShape
+}).strict();
+
+const responsesProviderSettingsSchema = z.object({
+  type: z.literal("responses-api"),
+  ...providerSettingsBaseShape,
+  responses: z.object({
+    prompt_cache: z.boolean().optional(),
+    parallel_tool_calls: z.boolean().optional(),
+    reasoning: z.object({
+      summary: z.string().optional()
+    }).strict().optional()
+  }).strict().optional()
+}).strict();
+
+const anthropicProviderSettingsSchema = z.object({
+  type: z.literal("anthropic"),
+  ...providerSettingsBaseShape,
+  anthropic: z.object({
+    version: z.string().min(1).optional(),
+    beta_headers: z.array(z.string().min(1)).optional(),
+    max_tokens: z.number().int().positive().optional(),
+    prompt_cache: z.boolean().optional(),
+    thinking: z.object({
+      type: z.enum(["disabled", "enabled"]).optional(),
+      budget_tokens: z.number().int().positive().optional()
+    }).strict().optional()
+  }).strict().optional()
+}).strict();
+
+export const providerSettingsSchema = z.discriminatedUnion("type", [
+  openAiCompatibleProviderSettingsSchema,
+  responsesProviderSettingsSchema,
+  anthropicProviderSettingsSchema
 ]);
 
 export const roleSchema = z.object({
@@ -142,12 +226,14 @@ type ParsedProjectConfig = z.infer<typeof configSchema>;
 type ParsedProviderConfig = z.infer<typeof providerSchema>;
 type ParsedWorkflowConfig = z.infer<typeof workflowSchema>;
 type ParsedWorkflowNodeConfig = z.infer<typeof nodeSchema>;
-type ProviderDefaults = "api_key_mode" | "request_max_retries" | "stream_max_retries" | "request_timeout_ms" | "stream_idle_timeout_ms";
+type ProviderDefaults = "effort" | "api_key_mode" | "request_max_retries" | "stream_max_retries" | "request_timeout_ms" | "stream_idle_timeout_ms";
 export type ProviderConfig = ParsedProviderConfig extends infer Provider
   ? Provider extends Record<ProviderDefaults, unknown>
     ? Omit<Provider, ProviderDefaults> & Partial<Pick<Provider, ProviderDefaults>>
     : Provider
   : never;
+export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
+export type ResolvedProviderConfig = ParsedProviderConfig;
 
 export type GlobalPromptSourceKind = "managed_agents" | "user_agents" | "project_agents" | "local_agents" | "configured_file";
 export type GlobalPromptSourceMetadata = {

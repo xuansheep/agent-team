@@ -12,8 +12,24 @@ A local TUI harness for configurable agent-team workflow sessions.
 
 ## Provider Configuration
 
-The first TUI startup creates `~/.einsteins/settings.json` when it does not exist. Provider definitions and API keys are user-level settings and must be configured under its top-level `providers` key. Existing settings files are never overwritten.
-Provider-level `effort` accepts any non-empty string and defaults to `medium`; a workflow node may override it with its own `effort`.
+The first TUI startup creates `~/.einsteins/settings.json` when it does not exist. The generated file contains only compact Responses API and Anthropic provider definitions under its top-level `providers` key. Existing settings files are never overwritten. Settings changed later through the TUI, such as permissions and status-line elements, are added to the same file without expanding omitted provider defaults.
+
+A provider normally needs only four fields:
+
+```json
+{
+  "providers": {
+    "default": {
+      "type": "responses-api",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "default_model": "gpt-5.5"
+    }
+  }
+}
+```
+
+Advanced fields remain optional. Explicit values override runtime defaults. Responses API and Anthropic providers default to tool calling, vision, streaming, and JSON-schema output support. Provider-level `effort` accepts any non-empty string and defaults to `medium`; a workflow node may override it with its own `effort`.
 
 Each provider also supports the same retry and timeout controls:
 
@@ -85,7 +101,9 @@ Every `agent-team` invocation opens the interactive terminal UI. Former headless
 
 The TUI reads roles and workflows from `~/.einsteins` and opens with a half-screen workflow picker directly below the preview flow chart. Moving through the list previews each workflow's node flow, and pressing Enter on a workflow opens the reusable conversation session with live node, tool, permission, log, and result status. The final disabled `Create new workflow` item is reserved for future TUI workflow creation. The current directory does not need a `config/` directory.
 
-Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Use Shift+Enter or Ctrl+Enter to insert a newline; Alt+Enter is ignored.
+Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Wrapped and explicit input lines remain visible up to a half-screen viewport. Use Shift+Enter or Ctrl+Enter to insert a newline. On Apple Terminal, run `/terminal-setup`, restart Terminal.app, and use Option+Enter.
+
+`/resume` lists resumable sessions rather than individual historical runs. Press `Ctrl+X` on the focused session to open a confirmation dialog; confirmed sessions are moved intact to the project's `.trash/sessions` storage and disappear from the picker. The session currently referenced by the TUI cannot be archived.
 
 Text selections are copied to the clipboard when selection finishes while the highlight remains visible. Set the top-level `copyOnSelect` setting to `false` to disable this behavior. `Ctrl+C`, `Ctrl+Shift+C`, or a terminal-reported `Cmd+C` copies and clears an active selection; terminals such as Apple Terminal consume `Cmd+C` before the TUI can observe it.
 
@@ -129,7 +147,7 @@ The harness follows Claude Code-style local tool execution and permissions where
 
 ## 中文说明
 
-`agent-team` 是一个本地 TUI 版 Agent 团队编排 Harness。Provider 和 API 密钥统一配置在用户目录的 `~/.einsteins/settings.json`，角色和工作流分别从 `~/.einsteins/roles`、`~/.einsteins/workflows` 读取；目录缺失时从应用内置 `config/` 模板初始化，已有目录不会被合并或覆盖。必须遵循的系统提示词固定读取应用内置 `config/prompt.md`。项目自定义提示词与 Skill 分别放在 `.einsteins/AGENTS.md` 和 `.einsteins/skills`，用户级 MCP 与项目级 MCP 分别配置在各自的 `.einsteins/settings.json` 中。系统按 `nodes` 顺序执行模型调用和本地工具调用。会话数据统一保存在 `~/.einsteins/projects/{转义后的项目路径}/{sessionId}`：`session.json`、`transcript.jsonl` 与 `audit.ndjson` 属于 Session，单次执行数据位于 `runs/{runId}` 下的 `run.json`、`state.json`、`events.ndjson` 和 `artifacts`。Session 与 Run 标识不再包含日期前缀，也不再按月份分层。
+`agent-team` 是一个本地 TUI 版 Agent 团队编排 Harness。Provider 和 API 密钥统一配置在用户目录的 `~/.einsteins/settings.json`；首次生成的文件只包含精简的 Responses API 与 Anthropic Provider 节点，高级字段省略时使用运行时默认值，用户显式填写时覆盖默认值。权限、状态栏等通过 TUI 修改的设置会追加到同一文件，并且不会展开未填写的 Provider 默认字段。角色和工作流分别从 `~/.einsteins/roles`、`~/.einsteins/workflows` 读取；目录缺失时从应用内置 `config/` 模板初始化，已有目录不会被合并或覆盖。必须遵循的系统提示词固定读取应用内置 `config/prompt.md`。项目自定义提示词与 Skill 分别放在 `.einsteins/AGENTS.md` 和 `.einsteins/skills`，用户级 MCP 与项目级 MCP 分别配置在各自的 `.einsteins/settings.json` 中。系统按 `nodes` 顺序执行模型调用和本地工具调用。会话数据统一保存在 `~/.einsteins/projects/{转义后的项目路径}/{sessionId}`：`session.json`、`transcript.jsonl` 与 `audit.ndjson` 属于 Session，单次执行数据位于 `runs/{runId}` 下的 `run.json`、`state.json`、`events.ndjson` 和 `artifacts`。Session 与 Run 标识不再包含日期前缀，也不再按月份分层。
 
 MVP 支持：
 

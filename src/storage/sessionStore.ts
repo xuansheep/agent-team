@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, readdir, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, readdir, rename, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ModelMessage } from "../providers/types.js";
 import { PlanSessionState } from "../plans/planSession.js";
@@ -51,6 +52,11 @@ export type SaveSessionMetadataInput = Omit<
   Partial<SessionMetadata>,
   "version" | "sessionId" | "projectPath" | "createdAt" | "updatedAt" | "runIds" | "currentRunId"
 >;
+
+export type ArchivedSession = {
+  sessionId: string;
+  archivePath: string;
+};
 
 const transcriptIndexes = new Map<string, { size: number; entryIds: Set<string> }>();
 const lastSessionTouches = new Map<string, number>();
@@ -133,11 +139,27 @@ export class SessionStore {
       throw error;
     }
     const sessions = (await Promise.all(entries
-      .filter((entry) => entry.isDirectory() && entry.name !== ".lease-history")
+      .filter((entry) => entry.isDirectory() && entry.name !== ".lease-history" && entry.name !== ".trash")
       .map((entry) => this.loadMetadata(entry.name).catch(() => undefined))))
       .filter((entry): entry is SessionMetadata => Boolean(entry))
       .sort((left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt) || right.sessionId.localeCompare(left.sessionId));
     return sessions.slice(0, options.limit ?? sessions.length);
+  }
+
+  async archiveSession(sessionId: string): Promise<ArchivedSession> {
+    const sourcePath = this.sessionDir(sessionId);
+    const metadata = await this.loadMetadata(sessionId);
+    if (!metadata) throw new Error(`Session ${sessionId} was not found`);
+
+    const archiveDir = join(projectDirectory(this.storage), ".trash", "sessions");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const archivePath = join(archiveDir, `${sessionId}-${timestamp}-${randomUUID()}`);
+    await mkdir(archiveDir, { recursive: true, mode: 0o700 });
+    await rename(sourcePath, archivePath);
+
+    transcriptIndexes.delete(join(sourcePath, "transcript.jsonl"));
+    lastSessionTouches.delete(sourcePath);
+    return { sessionId, archivePath };
   }
 
   async attachRun(sessionId: string, runId: string): Promise<SessionMetadata> {

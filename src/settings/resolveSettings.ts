@@ -1,9 +1,10 @@
 import { isAbsolute, relative, resolve } from "node:path";
+import { providerSchema } from "../config/schema.js";
 import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 
 export type ResolveSettingsInput = {
   cwd: string;
-  userSettings?: AgentTeamSettings;
+  userSettings?: AgentTeamSettings | ResolvedAgentTeamSettings;
   projectSettings?: ProjectAgentTeamSettings;
 };
 
@@ -35,7 +36,9 @@ function mergeSettings(userSettings: AgentTeamSettings, projectSettings: Project
   return {
     ...userRuntimeSettings,
     ...projectRuntimeSettings,
-    providers: userRuntimeSettings.providers,
+    providers: userRuntimeSettings.providers
+      ? Object.fromEntries(Object.entries(userRuntimeSettings.providers).map(([id, provider]) => [id, providerSchema.parse(provider)]))
+      : undefined,
     permissions: mergeObject(userRuntimeSettings.permissions, projectRuntimeSettings.permissions),
     models: mergeModels(userRuntimeSettings.models, projectRuntimeSettings.models),
     planMode: mergeObject(userRuntimeSettings.planMode, projectRuntimeSettings.planMode)

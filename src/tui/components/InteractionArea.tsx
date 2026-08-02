@@ -28,6 +28,7 @@ export type InteractionChoice = {
   hidePromptInput?: boolean;
   onCancel?: () => void;
   onFocus?: (value: string) => void;
+  onDelete?: (value: string) => void;
   onSubmit: (value: string) => void;
   onToggle?: (value: string) => void;
   onChangeValues?: (values: string[]) => void;
@@ -327,10 +328,11 @@ export function InteractionArea({
                   />
                 ) : (
                   <Select
+                    key={choice.title}
                     isDisabled={!canUseInput || footerFocused || previewNotesActive || (choice.allowPromptInput && promptHasText)}
                     options={renderedOptions}
                     defaultValue={choice.selectedValue}
-                    defaultFocusValue={focusedChoiceValue ?? choice.selectedValue}
+                    defaultFocusValue={choice.onFocus ? choice.selectedValue : focusedChoiceValue ?? choice.selectedValue}
                     visibleOptionCount={visibleOptionCount}
                     disableSelection={hasPreview ? "numeric" : choice.allowPromptInput && promptHasText}
                     enableVimNavigation={!choice.allowPromptInput}
@@ -339,6 +341,7 @@ export function InteractionArea({
                       choice.onFocus?.(value);
                     }}
                     onChange={choice.onSubmit}
+                    onDelete={choice.onDelete}
                     onSpace={choice.onToggle}
                     onCancel={choice.onCancel}
                     onDownFromLastItem={() => {

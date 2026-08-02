@@ -37,6 +37,7 @@ export function PromptInput(props: {
   const { stdout } = useStdout();
   const terminalFocus = useTerminalFocus();
   const terminalColumns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
+  const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
   const [buffer, setBuffer] = useState(createPromptBuffer());
   const [history, setHistory] = useState(() => createHistory(props.historyStore?.entries));
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
@@ -100,17 +101,19 @@ export function PromptInput(props: {
 
   const hasStash = Boolean(props.stash);
   const inputColumns = Math.max(1, terminalColumns - 2);
+  const maxVisibleLines = Math.max(3, Math.floor(terminalRows / 2) - 5);
   const promptPlaceholder = "Type a request or /help";
-  const cursor = Cursor.fromText(buffer.text, inputColumns, buffer.cursor);
-  const viewportStart = cursor.getViewportCharOffset(1);
-  const viewportEnd = cursor.getViewportCharEnd(1);
-  const visibleText = buffer.text.slice(viewportStart, viewportEnd);
-  const visibleCursor = Math.max(0, buffer.cursor - viewportStart);
-  const visibleCursorPosition = Cursor.fromText(visibleText, inputColumns, visibleCursor).getPosition();
+  // Cursor.fromText reserves one display column for a rendered block cursor.
+  // This input uses the terminal's native cursor instead, so compensate for
+  // that reservation to keep its wrapping model aligned with the Ink box.
+  const cursor = Cursor.fromText(buffer.text, inputColumns + 1, buffer.cursor);
+  const cursorPosition = cursor.getPosition();
+  const viewportStartLine = cursor.getViewportStartLine(maxVisibleLines);
+  const visibleText = cursor.render("", "", (text) => text, undefined, maxVisibleLines);
 
   const cursorRef = useDeclaredCursor({
-    line: 0,
-    column: 2 + visibleCursorPosition.column,
+    line: cursorPosition.line - viewportStartLine,
+    column: 2 + cursorPosition.column,
     active: terminalFocus
   });
 
@@ -122,10 +125,14 @@ export function PromptInput(props: {
             <PromptInputSuggestions suggestions={suggestions} selectedIndex={selectedSuggestion} />
           </Box>
         ) : null}
-        <Text>&gt; </Text>
-        <PromptBufferView text={visibleText} placeholder={promptPlaceholder} />
-        {imageAttachments.length ? <Text dimColor> {imageAttachments.length} image{imageAttachments.length === 1 ? "" : "s"} attached</Text> : null}
-        {argumentHint ? <Text dimColor> {argumentHint}</Text> : null}
+        <Box width={2} flexShrink={0}>
+          <Text>&gt; </Text>
+        </Box>
+        <Box flexGrow={1} flexShrink={1}>
+          <PromptBufferView text={visibleText} placeholder={promptPlaceholder} />
+          {imageAttachments.length ? <Text dimColor> {imageAttachments.length} image{imageAttachments.length === 1 ? "" : "s"} attached</Text> : null}
+          {argumentHint ? <Text dimColor> {argumentHint}</Text> : null}
+        </Box>
       </Box>
       <PromptInputQueuedCommands queued={props.queued} />
       <PromptInputStashNotice hasStash={hasStash} />

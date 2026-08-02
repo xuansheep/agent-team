@@ -78,7 +78,7 @@ export function usePromptKeybindings(input: PromptKeybindingInput) {
       return;
     }
 
-    const inputKey = toTuiInputKey(key, value);
+    const inputKey = toTuiInputKey(key, value, event.keypress.sequence);
     const promptSubmit = inputKey.return && !inputKey.shift && !inputKey.ctrl && !inputKey.meta
       && (current.buffer.text.trim() || current.imageAttachments?.length) && modeAcceptsSubmit(current.mode);
     handleInputEvent({ type: "key", input: value, key: inputKey }, syncedInput);
@@ -86,7 +86,8 @@ export function usePromptKeybindings(input: PromptKeybindingInput) {
   }, { isActive: input.isActive !== false });
 }
 
-function toTuiInputKey(key: Key, input: string): TuiInputKey {
+function toTuiInputKey(key: Key, input: string, sequence = input): TuiInputKey {
+  const optionReturn = sequence === "\u001b\r" || sequence === "\u001b\n";
   return {
     upArrow: key.upArrow || input === "\u001b[A",
     downArrow: key.downArrow || input === "\u001b[B",
@@ -101,7 +102,7 @@ function toTuiInputKey(key: Key, input: string): TuiInputKey {
     return: key.return || input === "\r" || input === "\n",
     escape: key.escape,
     ctrl: key.ctrl,
-    meta: key.meta,
+    meta: key.meta || optionReturn,
     shift: key.shift,
     tab: key.tab,
     ...(input === "\u001b[Z" ? { shift: true, tab: true } : {}),
@@ -129,8 +130,7 @@ function handleInputEvent(event: TuiInputEvent, input: PromptKeybindingInput) {
     if (event.input === "\u0007" || (key.ctrl && event.input === "g")) input.onEvent({ type: "external_editor" });
     return;
   }
-  if (key.return && key.meta) return;
-  if (key.return && (key.shift || key.ctrl)) {
+  if (key.return && (key.shift || key.ctrl || key.meta)) {
     if (modeAcceptsText(input.mode)) input.onBuffer(insertNewline(input.buffer));
     return;
   }

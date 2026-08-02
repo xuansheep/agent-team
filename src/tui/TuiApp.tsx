@@ -54,6 +54,7 @@ import { editFileInExternalEditor, editTextInExternalEditor, externalEditorDispl
 import { resolveImagePaste } from "./imagePaste.js";
 import { getCompactToolResultDetail, getToolDisplayName, getToolInputDetail, getToolInputSummary, getToolResultDetail } from "./toolDisplay.js";
 import type { GitBranchResolver } from "./gitBranch.js";
+import { setupTerminal, type TerminalSetupResult } from "./terminalSetup.js";
 
 export type CommandMenuState =
   | { kind: "skills:list" }
@@ -89,6 +90,7 @@ export function TuiApp({
   mcpConfigOptions,
   skillConfigOptions,
   executeMcpActionForTest,
+  executeTerminalSetup = setupTerminal,
   resolveGitBranch,
   saveStatuslineElements,
   saveDefaultPermissionMode,
@@ -114,6 +116,7 @@ export function TuiApp({
   mcpConfigOptions?: McpConfigSourceOptions;
   skillConfigOptions?: SkillAvailabilityOptions;
   executeMcpActionForTest?: (action: McpMenuAction, serverName?: string) => Promise<McpActionResult>;
+  executeTerminalSetup?: () => Promise<TerminalSetupResult>;
   resolveGitBranch?: GitBranchResolver;
   saveStatuslineElements?: (elements: StatusLineElement[]) => Promise<void>;
   saveDefaultPermissionMode?: (mode: TuiDefaultExecutionMode) => Promise<void>;
@@ -152,6 +155,8 @@ export function TuiApp({
   const persistedStatuslineElementsRef = useRef(statuslineElements);
   const statuslineSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const statuslineSaveRevisionRef = useRef(0);
+  const terminalSetupTaskRef = useRef<Promise<void>>();
+  const resumeArchiveTaskRef = useRef<Promise<void>>();
   const [gitBranch, setGitBranch] = useState<string>();
   const [planWorkCount, setPlanWorkCount] = useState(0);
   const [workStartedAtMs, setWorkStartedAtMs] = useState<number>();
@@ -1582,7 +1587,7 @@ ${message.detailText}` : ""}` }
     else await resumeRun(id);
   };
 
-  const openResumePicker = async () => {
+  const openResumePicker = async (options: { preferredId?: string; notice?: string } = {}) => {
     try {
       const runs = engine ? await executionCore.listRuns({ limit: 30 }) : [];
       const runById = new Map(runs.map((run) => [run.runId, run]));
@@ -1601,7 +1606,6 @@ ${message.detailText}` : ""}` }
         }
         const run = metadata.currentRunId ? runById.get(metadata.currentRunId) : undefined;
         return {
-          kind: "session" as const,
           id: `session:${metadata.sessionId}`,
           sessionId: metadata.sessionId,
           status: plan?.mode ?? run?.status ?? "session",
@@ -1611,21 +1615,90 @@ ${message.detailText}` : ""}` }
           planMode: plan?.mode
         };
       }))).filter((entry) => entry.planMode === "planning" || entry.planMode === "waiting_approval" || entry.workflowRunId);
-      const linkedRunIds = new Set(sessionEntries.flatMap((entry) => entry.workflowRunId ? [entry.workflowRunId] : []));
-      const orphanRunEntries = runs
-        .filter((run) => !linkedRunIds.has(run.runId))
-        .map((run) => ({ ...run, kind: "run" as const, id: `run:${run.runId}` }));
-      const resumeRuns = [...sessionEntries, ...orphanRunEntries]
+      const resumeRuns = sessionEntries
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || right.id.localeCompare(left.id))
         .slice(0, 30);
       if (!resumeRuns.length) {
-        setState((current) => ({ ...current, mode: "input", resumeRuns: [], error: "No sessions found" }));
+        setState((current) => ({
+          ...current,
+          mode: "input",
+          resumeRuns: [],
+          focusedResumeId: undefined,
+          pendingDeleteSessionId: undefined,
+          resumePickerNotice: undefined,
+          error: options.notice ? `${options.notice}\nNo sessions found` : "No sessions found"
+        }));
         return;
       }
-      setState((current) => ({ ...current, mode: "resume_picker", resumeRuns, error: undefined }));
+      const focusedResumeId = options.preferredId && resumeRuns.some((entry) => entry.id === options.preferredId)
+        ? options.preferredId
+        : resumeRuns[0]?.id;
+      setState((current) => ({
+        ...current,
+        mode: "resume_picker",
+        resumeRuns,
+        focusedResumeId,
+        pendingDeleteSessionId: undefined,
+        resumePickerNotice: options.notice,
+        error: undefined
+      }));
     } catch (error) {
       failUi(error);
     }
+  };
+  const requestResumeSessionDelete = (id: string) => {
+    const entry = state.resumeRuns.find((candidate) => candidate.id === id);
+    if (!entry) return;
+    if (entry.sessionId === currentSessionIdRef.current) {
+      setState((current) => ({
+        ...current,
+        focusedResumeId: id,
+        resumePickerNotice: "Cannot delete the current session. Run /new or exit it first."
+      }));
+      return;
+    }
+    setState((current) => ({
+      ...current,
+      mode: "confirm_delete_session",
+      focusedResumeId: id,
+      pendingDeleteSessionId: entry.sessionId,
+      resumePickerNotice: undefined
+    }));
+  };
+  const resolveResumeSessionDelete = (decision: "archive" | "cancel") => {
+    const sessionId = state.pendingDeleteSessionId;
+    const selectedId = state.focusedResumeId;
+    if (decision === "cancel" || !sessionId || !selectedId) {
+      setState((current) => ({
+        ...current,
+        mode: "resume_picker",
+        focusedResumeId: sessionId ? `session:${sessionId}` : current.focusedResumeId,
+        pendingDeleteSessionId: undefined
+      }));
+      return;
+    }
+    if (resumeArchiveTaskRef.current) return;
+    const selectedIndex = state.resumeRuns.findIndex((entry) => entry.id === selectedId);
+    const preferredId = state.resumeRuns[selectedIndex + 1]?.id ?? state.resumeRuns[selectedIndex - 1]?.id;
+    const task = sessionStore.archiveSession(sessionId)
+      .then((archived) => openResumePicker({
+        preferredId,
+        notice: `Session moved to Trash: ${archived.archivePath}`
+      }))
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setState((current) => ({
+          ...current,
+          mode: "resume_picker",
+          pendingDeleteSessionId: undefined,
+          focusedResumeId: selectedId,
+          resumePickerNotice: `Failed to delete session: ${message}`
+        }));
+      })
+      .finally(() => {
+        resumeArchiveTaskRef.current = undefined;
+      });
+    resumeArchiveTaskRef.current = task;
   };
   const dispatchInjectedPrompt = (content: string) => {
     if (state.pendingReview || state.mode === "permission" || state.mode.startsWith("confirm_") || state.mode === "resume_picker" || state.mode === "select_workflow") {
@@ -1706,6 +1779,40 @@ ${message.detailText}` : ""}` }
       if (description && description !== "open") enqueuePlanTurn(description);
     }
   };
+  const runTerminalSetupCommand = () => {
+    if (terminalSetupTaskRef.current) {
+      setState((current) => ({
+        ...current,
+        logMessages: [...current.logMessages, statusLog("Terminal setup is already running")]
+      }));
+      return;
+    }
+    setState((current) => ({
+      ...current,
+      error: undefined,
+      logMessages: [...current.logMessages, statusLog("Terminal setup started")]
+    }));
+    const task = executeTerminalSetup()
+      .then((result) => {
+        setState((current) => ({
+          ...current,
+          error: undefined,
+          logMessages: [...current.logMessages, { ...statusLog(result.title, result.detail), detailVisible: true }]
+        }));
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setState((current) => ({
+          ...current,
+          error: message,
+          logMessages: [...current.logMessages, { ...statusLog("Terminal setup failed", message), detailVisible: true }]
+        }));
+      })
+      .finally(() => {
+        terminalSetupTaskRef.current = undefined;
+      });
+    terminalSetupTaskRef.current = task;
+  };
   const handlePromptEvent = (event: PromptInputEvent) => {
     if (event.type === "cancel") {
       cancelActiveChoice();
@@ -1769,6 +1876,10 @@ ${message.detailText}` : ""}` }
         } else {
           setCommandMenu({ kind: "skills:list" });
         }
+        return;
+      }
+      if (event.name === "terminal-setup") {
+        runTerminalSetupCommand();
         return;
       }
       const mcpPromptCommand = mcpRuntime?.listPromptCommands().find((command) => command.name === event.name);
@@ -1950,8 +2061,28 @@ ${message.detailText}` : ""}` }
       else setState((current) => ({ ...current, mode: current.modeBeforeConfirmation ?? "running", modeBeforeConfirmation: undefined }));
     },
     resumeRuns: state.resumeRuns,
+    focusedResumeId: state.focusedResumeId,
+    pendingDeleteSessionId: state.pendingDeleteSessionId,
+    resumePickerNotice: state.resumePickerNotice,
+    focusResume: (id) => setState((current) => (
+      current.mode !== "resume_picker" || current.focusedResumeId === id
+        ? current
+        : { ...current, focusedResumeId: id }
+    )),
+    requestResumeSessionDelete,
+    resolveResumeSessionDelete,
     resolveResume: (runId) => {
-      setState((current) => ({ ...current, mode: "input", resumeRuns: [], error: undefined, pendingResumeRunId: undefined, modeBeforeConfirmation: undefined }));
+      setState((current) => ({
+        ...current,
+        mode: "input",
+        resumeRuns: [],
+        focusedResumeId: undefined,
+        pendingDeleteSessionId: undefined,
+        resumePickerNotice: undefined,
+        error: undefined,
+        pendingResumeRunId: undefined,
+        modeBeforeConfirmation: undefined
+      }));
       void resumeById(runId);
     },
     resolveNew: (decision) => {
@@ -2013,7 +2144,10 @@ ${message.detailText}` : ""}` }
         ...current,
         mode: action.mode,
         pendingResumeRunId: action.clearPendingResumeRunId ? undefined : current.pendingResumeRunId,
+        pendingDeleteSessionId: action.clearPendingDeleteSessionId ? undefined : current.pendingDeleteSessionId,
         resumeRuns: action.clearResumePicker ? [] : current.resumeRuns,
+        focusedResumeId: action.clearResumePicker ? undefined : current.focusedResumeId,
+        resumePickerNotice: action.clearResumePicker ? undefined : current.resumePickerNotice,
         error: action.clearResumePicker ? undefined : current.error,
         modeBeforeConfirmation: undefined
       }));
@@ -2614,11 +2748,8 @@ function planLogMessagesFromTranscript(messages: ModelMessage[]): TuiLogMessage[
 function resumeEntryLabel(entry: TuiState["resumeRuns"][number]): string {
   const updatedAt = new Date(entry.updatedAt);
   const timestamp = `${String(updatedAt.getMonth() + 1).padStart(2, "0")}-${String(updatedAt.getDate()).padStart(2, "0")} ${String(updatedAt.getHours()).padStart(2, "0")}:${String(updatedAt.getMinutes()).padStart(2, "0")}`;
-  if (entry.kind === "session") {
-    const status = entry.planMode ?? entry.status ?? "session";
-    return `${timestamp} session ${status} ${entry.inputPreview || entry.sessionId}`;
-  }
-  return `${timestamp} ${entry.workflowId} ${entry.status} ${entry.inputPreview || entry.runId}`;
+  const status = entry.planMode ?? entry.status ?? "session";
+  return `${timestamp} session ${status} ${entry.inputPreview || entry.sessionId}`;
 }
 
 function inputPreview(input: unknown): string {
@@ -2902,7 +3033,7 @@ function permissionModeLabel(mode: PermissionMode): string {
 export type ActiveChoiceCancelAction =
   | { type: "none" }
   | { type: "exit"; key: string }
-  | { type: "restore_mode"; mode: TuiState["mode"]; key: string; clearPendingResumeRunId?: boolean; clearResumePicker?: boolean }
+  | { type: "restore_mode"; mode: TuiState["mode"]; key: string; clearPendingResumeRunId?: boolean; clearPendingDeleteSessionId?: boolean; clearResumePicker?: boolean }
   | { type: "deny_permission"; requestId: string; key: string }
   | { type: "cancel_plan_approval"; key: string };
 export function resolveActiveChoiceCancel(state: {
@@ -2910,6 +3041,7 @@ export function resolveActiveChoiceCancel(state: {
   workflowId?: string;
   modeBeforeConfirmation?: TuiState["mode"];
   pendingResumeRunId?: string;
+  pendingDeleteSessionId?: string;
   permissionRequests?: Array<{ requestId: string }>;
   pendingReview?: { nodeId: string; attempt: number };
 }): ActiveChoiceCancelAction {
@@ -2923,6 +3055,10 @@ export function resolveActiveChoiceCancel(state: {
   }
   if (state.mode === "confirm_interrupt") return { type: "restore_mode", mode: state.modeBeforeConfirmation ?? "running", key: "confirm_interrupt" };
   if (state.mode === "confirm_new") return { type: "restore_mode", mode: state.modeBeforeConfirmation ?? "running", key: "confirm_new" };
+  if (state.mode === "confirm_delete_session") {
+    const key = state.pendingDeleteSessionId ? `confirm_delete_session:${state.pendingDeleteSessionId}` : "confirm_delete_session";
+    return { type: "restore_mode", mode: "resume_picker", clearPendingDeleteSessionId: true, key };
+  }
   if (state.mode === "confirm_resume") {
     const key = state.pendingResumeRunId ? `confirm_resume:${state.pendingResumeRunId}` : "confirm_resume";
     return { type: "restore_mode", mode: state.modeBeforeConfirmation ?? "running", clearPendingResumeRunId: true, key };
@@ -2941,7 +3077,7 @@ function isActiveSessionMode(mode: TuiState["mode"]): boolean {
   return mode === "running" || mode === "permission" || mode === "question" || mode === "planning" || mode === "waiting_plan_approval" || mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume";
 }
 function isConfirmationMode(mode: TuiState["mode"]): boolean {
-  return mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume";
+  return mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_delete_session" || mode === "confirm_resume";
 }
 function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiState["mode"] {
   switch (status) {
@@ -2988,6 +3124,12 @@ function buildActiveChoice(input: {
   isFullAccessModeAvailable?: boolean;
   defaultExecutionMode: TuiDefaultExecutionMode;
   resumeRuns: TuiState["resumeRuns"];
+  focusedResumeId?: string;
+  pendingDeleteSessionId?: string;
+  resumePickerNotice?: string;
+  focusResume: (id: string) => void;
+  requestResumeSessionDelete: (id: string) => void;
+  resolveResumeSessionDelete: (decision: "archive" | "cancel") => void;
   selectWorkflow: (workflow: string) => void;
   resolvePermission: (requestId: string, decision: "allow_once" | "deny_once") => void;
   resolvePlan: (decision: "continue" | "stay", mode?: PermissionMode, feedback?: unknown, options?: { clearContext?: boolean }) => void;
@@ -3039,12 +3181,39 @@ function buildActiveChoice(input: {
     };
   }
   if (input.mode === "resume_picker" && input.resumeRuns.length) {
-    const options = input.resumeRuns.map((run) => ({
-      label: resumeEntryLabel(run),
-      value: run.id
+    const options = input.resumeRuns.map((session) => ({
+      label: resumeEntryLabel(session),
+      value: session.id
     }));
-    const selectedValue = options[0]?.value ?? "";
-    return { title: "Resume workflow run", placement: "half-screen", options, selectedValue, onSubmit: input.resolveResume };
+    const selectedValue = input.focusedResumeId && options.some((option) => option.value === input.focusedResumeId)
+      ? input.focusedResumeId
+      : options[0]?.value ?? "";
+    const hint = "Enter resume · Ctrl+X delete · Esc cancel";
+    return {
+      title: "Resume session",
+      detail: input.resumePickerNotice ? `${hint}\n${input.resumePickerNotice}` : hint,
+      placement: "half-screen",
+      options,
+      selectedValue,
+      onFocus: input.focusResume,
+      onDelete: input.requestResumeSessionDelete,
+      onSubmit: input.resolveResume
+    };
+  }
+  if (input.mode === "confirm_delete_session") {
+    const session = input.resumeRuns.find((entry) => entry.sessionId === input.pendingDeleteSessionId);
+    const options = [
+      { label: "Cancel", value: "cancel" },
+      { label: "Move session to Trash", value: "archive" }
+    ];
+    return {
+      title: "Delete session?",
+      detail: session ? resumeEntryLabel(session) : input.pendingDeleteSessionId,
+      options,
+      selectedValue: "cancel",
+      onCancel: () => input.resolveResumeSessionDelete("cancel"),
+      onSubmit: (value) => input.resolveResumeSessionDelete(value === "archive" ? "archive" : "cancel")
+    };
   }
   if (input.mode === "confirm_new") {
     const options = [
@@ -3264,7 +3433,7 @@ export function buildCommandMenuChoice(input: {
 function helpDetailText(): string {
   return [
     "Keyboard shortcuts:",
-    "  Enter submit · Shift+Enter/Ctrl+Enter newline",
+    "  Enter submit · Shift+Enter/Ctrl+Enter/Option+Enter newline",
     "  Shift+Tab cycle mode or approve selected action",
     "  Ctrl+O transcript · Ctrl+G edit plan/focused text",
     "  Esc cancel · Ctrl+C stop current run or copy selection · Ctrl+Shift+C/terminal Cmd+C copy selection",
@@ -3277,7 +3446,8 @@ function helpDetailText(): string {
     "  /mcp enable|disable [server-name] toggle MCP servers",
     "  /mcp reconnect <server-name> reconnect an MCP server",
     "  /statusline configure the bottom statusline",
-    "  /clear clear visible context · /resume [session] resume",
+    "  /terminal-setup configure multiline input for Apple Terminal",
+    "  /clear clear visible context · /resume [session] resume; Ctrl+X archives the focused session",
     "  /new new session · /model <model> switch · /permissions permissions"
   ].join("\n");
 }

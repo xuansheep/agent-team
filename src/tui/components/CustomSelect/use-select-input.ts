@@ -12,6 +12,7 @@ export function useSelectInput<T>({
   state,
   options,
   inputValues,
+  onDelete,
   onSpace,
   onInputModeToggle,
   onUpFromFirstItem,
@@ -23,6 +24,7 @@ export function useSelectInput<T>({
   state: SelectState<T>;
   options: OptionWithDescription<T>[];
   inputValues?: Map<T, string>;
+  onDelete?: (value: T) => void;
   onSpace?: (value: T) => void;
   onInputModeToggle?: (value: T) => void;
   onUpFromFirstItem?: () => void;
@@ -36,6 +38,11 @@ export function useSelectInput<T>({
 
     if (key.escape) {
       state.onCancel?.();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (onDelete && focusedOption && !focusedOption.disabled && (input === "\u0018" || (key.ctrl && input === "x"))) {
+      onDelete(focusedOption.value);
       event.stopImmediatePropagation();
       return;
     }

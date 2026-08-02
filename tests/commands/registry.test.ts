@@ -13,6 +13,7 @@ describe("command registry", () => {
     assert.deepEqual(parseCommandAction("/model gpt-5"), { type: "model", args: ["gpt-5"], model: "gpt-5" });
     assert.deepEqual(parseCommandAction("/permissions"), { type: "permissions", args: [] });
     assert.deepEqual(parseCommandAction("/statusline mode,workflow"), { type: "statusline", args: ["mode,workflow"] });
+    assert.deepEqual(parseCommandAction("/terminal-setup"), { type: "terminal-setup", args: [] });
   });
 
   it("parses skills and mcp commands", () => {
@@ -30,7 +31,7 @@ describe("command registry", () => {
   });
 
   it("exposes stable command names for TUI completion", () => {
-    assert.deepEqual(commandDefinitions().map((command) => command.name).sort(), ["clear", "help", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline"]);
+    assert.deepEqual(commandDefinitions().map((command) => command.name).sort(), ["clear", "help", "mcp", "model", "new", "permissions", "plan", "resume", "skills", "statusline", "terminal-setup"]);
   });
 
   it("documents /plan open in the command hint", () => {

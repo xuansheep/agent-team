@@ -42,19 +42,38 @@ describe("settings", () => {
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
     const generated = await readFile(userSettingsPath, "utf8");
     const parsed = JSON.parse(generated) as {
-      statusLine: string[];
-      models: { defaultContextWindow: number };
-      providers: Record<string, { api_key: string; effort: string }>;
+      providers: Record<string, Record<string, unknown>>;
     };
 
-    assert.deepEqual(Object.keys(settings.providers ?? {}), ["default", "openai_compatible", "anthropic"]);
-    assert.deepEqual(parsed.statusLine, ["run-state", "permission", "current-dir", "git-branch", "tokens-io", "tokens-cache", "run-id", "selection"]);
-    assert.equal(parsed.models.defaultContextWindow, 272000);
-    assert.equal(Object.hasOwn(parsed.models, "defaultContextCompression"), false);
-    assert.equal(parsed.providers.default.api_key, "");
-    assert.equal(parsed.providers.default.effort, "medium");
-    assert.equal(parsed.providers.openai_compatible.effort, "medium");
-    assert.equal(parsed.providers.anthropic.effort, "medium");
+    assert.deepEqual(Object.keys(parsed), ["providers"]);
+    assert.deepEqual(Object.keys(parsed.providers), ["default", "anthropic"]);
+    assert.deepEqual(Object.keys(parsed.providers.default), ["type", "base_url", "api_key", "default_model"]);
+    assert.deepEqual(Object.keys(parsed.providers.anthropic), ["type", "base_url", "api_key", "default_model"]);
+    assert.equal(parsed.providers.default?.api_key, "");
+    assert.deepEqual(Object.keys(settings.providers ?? {}), ["default", "anthropic"]);
+    const defaultProvider = settings.providers?.default;
+    if (defaultProvider?.type !== "responses-api") assert.fail("Expected default Responses API provider");
+    assert.equal(defaultProvider.effort, "medium");
+    assert.deepEqual(defaultProvider.capabilities, {
+      tool_calling: true,
+      vision: true,
+      streaming: true,
+      json_schema_output: true
+    });
+    assert.equal(defaultProvider.responses.prompt_cache, true);
+    assert.equal(defaultProvider.responses.parallel_tool_calls, true);
+    const anthropicProvider = settings.providers?.anthropic;
+    if (anthropicProvider?.type !== "anthropic") assert.fail("Expected Anthropic provider");
+    assert.equal(anthropicProvider.effort, "medium");
+    assert.equal(anthropicProvider.api_key_mode, "x-api-key");
+    assert.deepEqual(anthropicProvider.capabilities, {
+      tool_calling: true,
+      vision: true,
+      streaming: true,
+      json_schema_output: true
+    });
+    assert.equal(anthropicProvider.anthropic.version, "2023-06-01");
+    assert.equal(anthropicProvider.anthropic.max_tokens, 8192);
     if (process.platform !== "win32") assert.equal((await stat(userSettingsPath)).mode & 0o777, 0o600);
 
     await writeJson(userSettingsPath, { permissions: { defaultMode: "plan" } });
@@ -100,6 +119,32 @@ describe("settings", () => {
     assert.equal(stored.mcpServers.docs.url, "${DOCS_MCP_URL}");
     assert.equal(stored.mcpServers.docs.headers.Authorization, "Bearer ${DOCS_MCP_TOKEN}");
     assert.deepEqual(stored.projects[resolve(cwd)].disabledMcpServers, ["docs"]);
+  });
+
+  it("does not expand provider defaults when runtime settings are persisted", async () => {
+    const cwd = await workspace();
+    const userSettingsPath = join(cwd, "home", ".einsteins", "settings.json");
+    const projectSettingsPath = join(cwd, "project-settings.json");
+    const minimalProvider = {
+      type: "responses-api",
+      base_url: "https://api.example.test/v1",
+      api_key: "preserved-key",
+      default_model: "gpt-test"
+    };
+    await writeJson(userSettingsPath, { providers: { default: minimalProvider } });
+
+    await setUserDefaultPermissionMode("fullAccess", userSettingsPath);
+    await setUserStatusLineElements(["run-state", "permission"], userSettingsPath);
+
+    const stored = JSON.parse(await readFile(userSettingsPath, "utf8"));
+    assert.deepEqual(stored.providers.default, minimalProvider);
+    assert.deepEqual(stored.permissions, { defaultMode: "fullAccess" });
+    assert.deepEqual(stored.statusLine, ["run-state", "permission"]);
+
+    const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
+    assert.equal(settings.providers?.default?.effort, "medium");
+    assert.equal(settings.providers?.default?.request_max_retries, 10);
+    assert.equal(settings.providers?.default?.capabilities.streaming, true);
   });
 
   it("persists ordered user statusline elements without losing unrelated settings", async () => {

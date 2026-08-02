@@ -97,10 +97,45 @@ describe("TuiApp global Plan Mode", () => {
 
     assert.match(frame, /\/plan \[open\|text\]/);
     assert.match(frame, /Ctrl\+G/);
+    assert.match(frame, /Option\+Enter/);
     assert.match(frame, /\/mcp list and manage MCP servers/);
+    assert.match(frame, /\/terminal-setup configure multiline input for Apple Terminal/);
+    assert.match(frame, /Ctrl\+X archives the focused session/);
     assert.doesNotMatch(frame, /\/diagnostics/);
     assert.doesNotMatch(frame, /workflow delivery \| mode/);
     assert.doesNotMatch(frame, /mode [^\n]*Ctrl\+C stop/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("routes /terminal-setup through the injected terminal configurator", async () => {
+    const cwd = await makeProjectTmpCwd("agent-team-tui-terminal-setup-");
+    const engine = { async startInteractive() { return fakeSession(); } };
+    let calls = 0;
+    const output = render(<TuiApp
+      cwd={cwd}
+      config={config}
+      workflows={["delivery"]}
+      workflowId="delivery"
+      engine={engine as never}
+      providerFactory={planProviderFactory}
+      executeTerminalSetup={async () => {
+        calls += 1;
+        return {
+          status: "configured",
+          title: "Apple Terminal configured",
+          detail: "Restart Terminal.app, then use Option+Enter."
+        };
+      }}
+    />);
+
+    await sendTuiLine(output, "/terminal-setup");
+    await waitForFrame(output, /Apple Terminal configured/);
+    const frame = output.lastFrame() ?? "";
+
+    assert.equal(calls, 1);
+    assert.match(frame, /Restart Terminal[.]app, then use Option\+Enter[.]/);
 
     output.unmount();
     output.cleanup();
@@ -2808,7 +2843,7 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
 
     await sendTuiLine(output, "/resume");
-    await waitForFrame(output, /Resume workflow run/);
+    await waitForFrame(output, /Resume session/);
     output.stdin.write(String.fromCharCode(13));
     await settleTuiWork();
     await waitForFrame(output, /Ready to code\?/);
@@ -2830,7 +2865,7 @@ describe("TuiApp global Plan Mode", () => {
   });
 
 
-  it("sorts mixed resume entries by recent activity and timestamps session and run labels", async () => {
+  it("shows only sessions in /resume and omits orphan runs", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
     await store.savePlanState("session-planning", {
@@ -2848,11 +2883,130 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
 
     await sendTuiLine(output, "/resume");
-    await waitForFrame(output, /Resume workflow run/);
+    await waitForFrame(output, /Resume session/);
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /> 1\. 12-31 23:59 delivery completed orphan request/);
-    assert.match(frame, /2\. \d{2}-\d{2} \d{2}:\d{2} session planning session request/);
+    assert.match(frame, /> 1\. \d{2}-\d{2} \d{2}:\d{2} session planning session request/);
+    assert.doesNotMatch(frame, /orphan request/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("archives the focused /resume session with Ctrl+X after explicit confirmation", async () => {
+    const cwd = await makeProjectTmpCwd("agent-team-tui-resume-delete-");
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+    await store.saveMetadata("session-alpha", { inputPreview: "alpha request" });
+    await store.attachRun("session-alpha", "run-alpha");
+    await store.saveMetadata("session-beta", { inputPreview: "beta request" });
+    await store.attachRun("session-beta", "run-beta");
+    const resumed: string[] = [];
+    const engine = {
+      async listRuns() {
+        return [
+          { runId: "run-alpha", workflowId: "delivery", status: "completed", updatedAt: "2026-08-02T00:00:00.000Z", inputPreview: "alpha request" },
+          { runId: "run-beta", workflowId: "delivery", status: "completed", updatedAt: "2026-08-02T00:00:01.000Z", inputPreview: "beta request" }
+        ];
+      },
+      async resumeInteractive(_config: unknown, runId: string) {
+        resumed.push(runId);
+        return fakeSession();
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} sessionStore={store} />);
+
+    await sendTuiLine(output, "/resume");
+    await waitForFrame(output, /beta request/);
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    assert.match(output.lastFrame() ?? "", /> 2[.] .*alpha request/);
+    output.stdin.write("\u0018");
+    await waitForFrame(output, /Delete session[?]/);
+    assert.match(output.lastFrame() ?? "", /alpha request/);
+    assert.match(output.lastFrame() ?? "", /1[.] Cancel/);
+
+    await settleTuiWork();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Resume session/);
+    assert.ok(await store.loadMetadata("session-alpha"));
+    assert.match(output.lastFrame() ?? "", /> 2[.] .*alpha request/);
+
+    await settleTuiWork();
+    output.stdin.write("\u0018");
+    await waitForFrame(output, /Delete session[?]/);
+    await settleTuiWork();
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Session moved to Trash/);
+
+    assert.equal(await store.loadMetadata("session-alpha"), undefined);
+    assert.ok(await store.loadMetadata("session-beta"));
+    assert.deepEqual(resumed, []);
+    assert.match(output.lastFrame() ?? "", /> 1[.] .*beta request/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /alpha request/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("refuses to delete the current session from /resume", async () => {
+    const cwd = await makeProjectTmpCwd("agent-team-tui-resume-current-");
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+    await store.saveMetadata("session-current", { inputPreview: "current request" });
+    await store.attachRun("session-current", "run-current");
+    const historyStore = {
+      path: join(cwd, ".tmp-history.jsonl"),
+      project: "project",
+      sessionId: "session-current",
+      entries: [],
+      add: () => undefined,
+      flush: async () => undefined
+    };
+    const engine = {
+      async listRuns() {
+        return [{ runId: "run-current", workflowId: "delivery", status: "completed", updatedAt: "2026-08-02T00:00:00.000Z", inputPreview: "current request" }];
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} sessionStore={store} promptHistoryStore={historyStore} />);
+
+    await sendTuiLine(output, "/resume");
+    await waitForFrame(output, /current request/);
+    output.stdin.write("\u0018");
+    await waitForFrame(output, /Cannot delete the current session/);
+
+    assert.ok(await store.loadMetadata("session-current"));
+    assert.doesNotMatch(output.lastFrame() ?? "", /Delete session[?]/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("keeps the session visible when archiving from /resume fails", async () => {
+    const cwd = await makeProjectTmpCwd("agent-team-tui-resume-delete-fail-");
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+    await store.saveMetadata("session-fail", { inputPreview: "must remain" });
+    await store.attachRun("session-fail", "run-fail");
+    store.archiveSession = async () => { throw new Error("archive unavailable"); };
+    const engine = {
+      async listRuns() {
+        return [{ runId: "run-fail", workflowId: "delivery", status: "completed", updatedAt: "2026-08-02T00:00:00.000Z", inputPreview: "must remain" }];
+      }
+    };
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} sessionStore={store} />);
+
+    await sendTuiLine(output, "/resume");
+    await waitForFrame(output, /must remain/);
+    output.stdin.write("\u0018");
+    await waitForFrame(output, /Delete session[?]/);
+    await settleTuiWork();
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Failed to delete session: archive unavailable/);
+
+    assert.ok(await store.loadMetadata("session-fail"));
+    assert.match(output.lastFrame() ?? "", /must remain/);
 
     output.unmount();
     output.cleanup();
@@ -2881,7 +3035,7 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
 
     await sendTuiLine(output, "/resume");
-    await waitForFrame(output, /Resume workflow run/);
+    await waitForFrame(output, /Resume session/);
     assert.match(output.lastFrame() ?? "", /\d{2}-\d{2} \d{2}:\d{2} session waiting_approval Resume this/);
     output.stdin.write("\r");
     await settleTuiWork();
@@ -2920,7 +3074,7 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
 
     await sendTuiLine(output, "/resume");
-    await waitForFrame(output, /Resume workflow run/);
+    await waitForFrame(output, /Resume session/);
     output.stdin.write("\r");
     await settleTuiWork();
 
@@ -2951,7 +3105,7 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
 
     await sendTuiLine(output, "/resume");
-    await waitForFrame(output, /Resume workflow run/);
+    await waitForFrame(output, /Resume session/);
     output.stdin.write("\r");
     await settleTuiWork();
 
@@ -2992,7 +3146,7 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
 
     await sendTuiLine(output, "/resume");
-    await waitForFrame(output, /Resume workflow run/);
+    await waitForFrame(output, /Resume session/);
     output.stdin.write("\r");
     await settleTuiWork();
 
@@ -3027,7 +3181,7 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "/statusline permission");
     await waitForFrame(output, /Statusline updated/);
     await sendTuiLine(output, "/resume");
-    await waitForFrame(output, /Resume workflow run/);
+    await waitForFrame(output, /Resume session/);
     output.stdin.write("\r");
     await settleTuiWork();
 

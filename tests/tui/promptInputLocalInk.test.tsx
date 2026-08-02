@@ -483,7 +483,7 @@ describe("PromptInput with local Ink renderer", () => {
     }
   });
 
-  it("uses Shift+Enter and Ctrl+Enter for newlines while Alt+Enter is a no-op", async () => {
+  it("uses Shift+Enter, Ctrl+Enter, and Option+Enter for newlines", async () => {
     const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
     const events: PromptInputEvent[] = [];
     const instance = renderSync(
@@ -517,7 +517,111 @@ describe("PromptInput with local Ink renderer", () => {
         "\r"
       ]);
 
-      assert.deepEqual(events, [{ type: "submit", text: "a\nb\ncd" }]);
+      assert.deepEqual(events, [{ type: "submit", text: "a\nb\nc\nd" }]);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+  it("treats Apple Terminal Option+Enter as a newline", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const events: PromptInputEvent[] = [];
+    const instance = renderSync(
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onEvent={(event) => events.push(event)}
+      />,
+      {
+        stdin,
+        stdout: new FakeStdout() as unknown as NodeJS.WriteStream,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      await sendKeys(stdin, ["a", "\u001b\r", "b", "\r"]);
+      assert.deepEqual(events, [{ type: "submit", text: "a\nb" }]);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+  it("shows every wrapped input line up to the multiline viewport", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    (stdout as unknown as FakeStdout).columns = 12;
+    const instance = renderSync(
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onEvent={() => undefined}
+      />,
+      {
+        stdin,
+        stdout,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      await sendKeys(stdin, Array.from("abcdefghijklmnop"));
+      await settleTimers();
+      const screen = currentScreenText(stdout);
+      assert.match(screen, /abcdefghij/);
+      assert.match(screen, /klmnop/);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+    }
+  });
+
+  it("limits long multiline input to a cursor-following half-screen viewport", async () => {
+    const stdin = new FakeTtyStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const instance = renderSync(
+      <PromptInput
+        mode="input"
+        workflowId="delivery"
+        queued={[]}
+        workflows={["delivery"]}
+        isLoading={false}
+        onEvent={() => undefined}
+      />,
+      {
+        stdin,
+        stdout,
+        stderr: new FakeStdout() as unknown as NodeJS.WriteStream,
+        patchConsole: false,
+        exitOnCtrlC: false,
+      },
+    );
+
+    try {
+      await settleEffects();
+      for (let line = 1; line <= 10; line += 1) {
+        await sendKeys(stdin, Array.from(`line${line}`));
+        if (line < 10) await sendKeys(stdin, ["\u001b[13;2u"]);
+      }
+      await settleTimers();
+      const screen = currentScreenText(stdout);
+      assert.doesNotMatch(screen, /line3/);
+      assert.match(screen, /line4/);
+      assert.match(screen, /line10/);
     } finally {
       instance.unmount();
       instance.cleanup();

@@ -18,8 +18,10 @@ describe("TUI startup workflow selection", () => {
     assert.equal(runtime.config.workflows.delivery.nodes[0]?.role, "product");
     assert.deepEqual(runtime.workflows, ["delivery"]);
     assert.equal("workflowId" in runtime, false);
-    const settings = JSON.parse(await readFile(join(homeDir, ".einsteins", "settings.json"), "utf8")) as { providers: { default: { effort: string } } };
-    assert.equal(settings.providers.default.effort, "medium");
+    const settings = JSON.parse(await readFile(join(homeDir, ".einsteins", "settings.json"), "utf8")) as { providers: { default: Record<string, unknown> } };
+    assert.deepEqual(Object.keys(settings), ["providers"]);
+    assert.deepEqual(Object.keys(settings.providers.default), ["type", "base_url", "api_key", "default_model"]);
+    assert.equal(runtime.config.providers.default.effort, "medium");
     assert.equal(runtime.promptHistoryStore.path, join(homeDir, ".einsteins", "history.jsonl"));
     assert.deepEqual(runtime.promptHistoryStore.entries, []);
   });
@@ -73,8 +75,9 @@ Review carefully.
     assert.equal(runtime.skillRuntime.getSkill("reviewer"), undefined);
     assert.equal(runtime.diagnostics.skills.find((skill) => skill.name === "reviewer")?.source, "project");
     assert.equal(runtime.diagnostics.skills.find((skill) => skill.name === "reviewer")?.disabled, true);
-    const settings = JSON.parse(await readFile(join(homeDir, ".einsteins", "settings.json"), "utf8")) as { providers: { default: { effort: string } } };
-    assert.equal(settings.providers.default.effort, "medium");
+    const settings = JSON.parse(await readFile(join(homeDir, ".einsteins", "settings.json"), "utf8")) as { providers: { default: Record<string, unknown> } };
+    assert.deepEqual(Object.keys(settings.providers.default), ["type", "base_url", "api_key", "default_model"]);
+    assert.equal(runtime.config.providers.default.effort, "medium");
   });
 
   it("ignores project roles, workflows, and prompt after user initialization", async () => {

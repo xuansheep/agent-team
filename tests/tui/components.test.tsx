@@ -32,6 +32,10 @@ import { describe, it } from "node:test";
 
 import assert from "node:assert/strict";
 
+import { mkdir, mkdtemp } from "node:fs/promises";
+
+import { join, resolve } from "node:path";
+
 
 
 
@@ -283,6 +287,8 @@ import { StatusLine } from "../../src/tui/components/StatusLine.js";
 
 
 import { jumpMainScrollBy, resolveActiveChoiceCancel, resolveCtrlCBehavior, scrollMainDown, scrollMainUp, TuiApp } from "../../src/tui/TuiApp.js";
+
+import { SessionStore } from "../../src/storage/sessionStore.js";
 
 
 
@@ -2143,6 +2149,8 @@ describe("PromptInput component", () => {
 
 
     assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_new", modeBeforeConfirmation: "permission" }), { type: "restore_mode", mode: "permission", key: "confirm_new" });
+
+    assert.deepEqual(resolveActiveChoiceCancel({ mode: "confirm_delete_session", pendingDeleteSessionId: "session-1" }), { type: "restore_mode", mode: "resume_picker", clearPendingDeleteSessionId: true, key: "confirm_delete_session:session-1" });
 
 
 
@@ -7614,7 +7622,7 @@ describe("TuiApp", () => {
 
 
 
-  it("renders the timestamped resume picker in the reusable half-screen layout", async (t) => {
+  it("renders the session-only resume picker in the reusable half-screen layout", async (t) => {
 
     const stdoutRows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
     Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
@@ -7623,6 +7631,11 @@ describe("TuiApp", () => {
       else Reflect.deleteProperty(process.stdout, "rows");
     });
 
+    const entries = Array.from({ length: 12 }, (_, index) => {
+      const ordinal = String(index + 1).padStart(2, "0");
+      return { sessionId: `session-${ordinal}`, runId: `run-${ordinal}`, inputPreview: `request-${ordinal}` };
+    });
+    const fixture = await resumePickerFixture(entries);
     const engine = {
 
       async listRuns() {
@@ -7636,14 +7649,14 @@ describe("TuiApp", () => {
 
     };
 
-    const output = render(<TuiApp cwd="D:\CodeAI\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} sessionStore={fixture.store} />);
 
     await settleInkInput();
     await sendTuiLine(output, "/resume");
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /Resume workflow run/);
-    assert.match(frame, /06-24 07:08 delivery completed request-01/);
+    assert.match(frame, /Resume session/);
+    assert.match(frame, /session completed request-01/);
 
     output.unmount();
     output.cleanup();
@@ -7654,6 +7667,7 @@ describe("TuiApp", () => {
   it("closes the resume picker immediately after selecting a session", async () => {
 
     const resumed: string[] = [];
+    const fixture = await resumePickerFixture([{ sessionId: "session-picked", runId: "run-picked", inputPreview: "historical request" }]);
 
     const engine = {
 
@@ -7675,7 +7689,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} sessionStore={fixture.store} />);
 
     await settleInkInput();
 
@@ -7683,19 +7697,20 @@ describe("TuiApp", () => {
 
     await sendTuiLine(output, "/resume");
 
-    assert.match(output.lastFrame() ?? "", /Resume workflow run/);
+    assert.match(output.lastFrame() ?? "", /Resume session/);
 
 
-
-    output.stdin.write("\r");
 
     await settleInkInput();
+    output.stdin.write("\r");
+
+    await waitForInkCondition(() => resumed.length === 1);
 
 
 
     assert.deepEqual(resumed, ["run-picked"]);
 
-    assert.doesNotMatch(output.lastFrame() ?? "", /Resume workflow run/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Resume session/);
 
     output.unmount();
 
@@ -7752,14 +7767,12 @@ describe("TuiApp", () => {
   it("keeps resume picker navigation out of the prompt history", async () => {
 
     const resumed: string[] = [];
+    const fixture = await resumePickerFixture([
+      { sessionId: "session-alpha", runId: "run-alpha", inputPreview: "alpha" },
+      { sessionId: "session-beta", runId: "run-beta", inputPreview: "beta" }
+    ]);
 
     const engine = {
-
-      async startInteractive() {
-
-        return fakeCompletedSession("run-first", "delivery", "first request");
-
-      },
 
       async listRuns() {
 
@@ -7785,17 +7798,15 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} sessionStore={fixture.store} />);
 
     await settleInkInput();
 
 
 
-    await sendTuiLine(output, "first request");
-
     await sendTuiLine(output, "/resume");
 
-    assert.match(output.lastFrame() ?? "", /> 1\. \d{2}-\d{2} \d{2}:\d{2} delivery completed beta/);
+    assert.match(output.lastFrame() ?? "", /> 1\. \d{2}-\d{2} \d{2}:\d{2} session completed beta/);
 
 
 
@@ -7803,7 +7814,7 @@ describe("TuiApp", () => {
 
     await settleInkInput();
 
-    assert.match(output.lastFrame() ?? "", /> 2\. \d{2}-\d{2} \d{2}:\d{2} delivery completed alpha/);
+    assert.match(output.lastFrame() ?? "", /> 2\. \d{2}-\d{2} \d{2}:\d{2} session completed alpha/);
 
     assert.doesNotMatch(output.lastFrame() ?? "", /> \/resume/);
 
@@ -7811,15 +7822,16 @@ describe("TuiApp", () => {
 
 
 
+    await settleInkInput();
     output.stdin.write("\r");
 
-    await settleInkInput();
+    await waitForInkCondition(() => resumed.length === 1);
 
 
 
     assert.deepEqual(resumed, ["run-alpha"]);
 
-    assert.doesNotMatch(output.lastFrame() ?? "", /Resume workflow run/);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Resume session/);
 
     output.unmount();
 
@@ -9884,6 +9896,18 @@ describe("main scroll helpers", () => {
 
 
 
+async function resumePickerFixture(entries: Array<{ sessionId: string; runId: string; inputPreview: string }>): Promise<{ cwd: string; store: SessionStore }> {
+  const tmpRoot = resolve(".tmp");
+  await mkdir(tmpRoot, { recursive: true });
+  const cwd = await mkdtemp(join(tmpRoot, "agent-team-resume-picker-"));
+  const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+  for (const entry of entries) {
+    await store.saveMetadata(entry.sessionId, { inputPreview: entry.inputPreview });
+    await store.attachRun(entry.sessionId, entry.runId);
+  }
+  return { cwd, store };
+}
+
 function tuiConfig() {
 
 
@@ -11016,6 +11040,14 @@ function settleInkInput(): Promise<void> {
 
 
 
+}
+
+async function waitForInkCondition(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(condition(), "Timed out waiting for Ink interaction");
 }
 
 function settleEscapeInput(): Promise<void> {

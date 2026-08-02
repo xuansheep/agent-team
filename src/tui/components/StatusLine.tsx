@@ -114,7 +114,7 @@ export function formatTokenCount(tokens: number): string {
 }
 
 function effectiveRunState(runState: TuiRunState, mode: TuiMode): TuiRunState {
-  if (mode === "permission" || mode === "question" || mode === "waiting_plan_approval" || mode === "paused" || mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_resume") return "waiting";
+  if (mode === "permission" || mode === "question" || mode === "waiting_plan_approval" || mode === "paused" || mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_delete_session" || mode === "confirm_resume") return "waiting";
   return runState;
 }
 

@@ -1,7 +1,6 @@
 import type { ModelUsageTotals } from "../model/usage.js";
 import type { PlanSessionState } from "../plans/planSession.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
-import type { RunSummary } from "../storage/runStore.js";
 import type { TuiLogMessage } from "./logTypes.js";
 
 export type TuiRunState = "starting" | "ready" | "working" | "waiting" | "thinking";
@@ -18,6 +17,7 @@ export type TuiMode =
   | "waiting_plan_approval"
   | "resume_picker"
   | "confirm_new"
+  | "confirm_delete_session"
   | "confirm_resume"
   | "confirm_interrupt"
   | "paused"
@@ -117,18 +117,15 @@ export type TuiConversationItem = {
   streamEnd?: number;
 };
 
-export type TuiResumeEntry =
-  | (RunSummary & { kind: "run"; id: string })
-  | {
-      kind: "session";
-      id: string;
-      sessionId: string;
-      status?: string;
-      workflowRunId?: string;
-      updatedAt: string;
-      inputPreview: string;
-      planMode?: PlanSessionState["mode"];
-    };
+export type TuiResumeEntry = {
+  id: string;
+  sessionId: string;
+  status?: string;
+  workflowRunId?: string;
+  updatedAt: string;
+  inputPreview: string;
+  planMode?: PlanSessionState["mode"];
+};
 
 export type TuiDefaultExecutionMode = Extract<PermissionMode, "default" | "fullAccess">;
 
@@ -157,6 +154,9 @@ export type TuiState = {
   logMessages: TuiLogMessage[];
   questions: unknown[];
   resumeRuns: TuiResumeEntry[];
+  focusedResumeId?: string;
+  pendingDeleteSessionId?: string;
+  resumePickerNotice?: string;
   pendingResumeRunId?: string;
   modeBeforeConfirmation?: TuiMode;
   error?: string;
