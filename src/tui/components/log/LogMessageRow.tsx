@@ -275,7 +275,11 @@ function DotLogMessage({
 }) {
   return (
     <Box flexDirection="column">
-      {showDivider ? <Text color="ansi256(240)" wrap="truncate-end">{"\u2500".repeat(Math.max(1, columns))}</Text> : null}
+      {showDivider ? (
+        <Box marginBottom={1}>
+          <Text color="ansi256(240)" wrap="truncate-end">{"\u2500".repeat(Math.max(1, columns))}</Text>
+        </Box>
+      ) : null}
       <Box flexDirection="row" flexWrap="nowrap">
         <LogStatusDot tone={tone} blinking={blinking} />
         <Text dimColor={textDim} wrap="wrap">{text}</Text>

@@ -190,6 +190,84 @@ describe("TuiApp session continuation", () => {
     output.cleanup();
   });
 
+  it("automatically resumes queued prompts after Escape and reoffers the remaining prompts", async () => {
+    const resumed: unknown[] = [];
+    const offers: Array<{ id: string; input: unknown }> = [];
+    let interrupts = 0;
+    let sequence = 3;
+    const state = { status: "running" as const, workflow_id: "delivery", current_node_id: "dev", attempts: [], handoff: undefined };
+    const events = new CountingEventStream();
+    events.push({ type: "run_started", workflow_id: "delivery", input: { request: "first request" }, ts: "2026-06-26T00:00:00.000Z", seq: 1 });
+    events.push({ type: "node_started", node_id: "dev", attempt: 1, activation: 1, ts: "2026-06-26T00:00:01.000Z", seq: 2 });
+    const session = {
+      runId: "run-queued-interrupt",
+      state,
+      events,
+      permissions: { resolve: () => undefined, resolveAll: () => undefined, hasPending: () => false },
+      interrupt: async () => {
+        interrupts += 1;
+        for (const offer of offers.slice(0, 2)) {
+          events.push({
+            type: "user_input_deferred",
+            input_id: offer.id,
+            text: (offer.input as { request?: string }).request ?? "",
+            node_id: "dev",
+            attempt: 1,
+            activation: 1,
+            ts: "2026-06-26T00:00:02.000Z",
+            seq: sequence++
+          });
+        }
+      },
+      queueUserInput: async (input: unknown, inputId?: string) => {
+        const id = inputId ?? "missing-id";
+        offers.push({ id, input });
+        if (offers.filter((offer) => offer.id === id).length > 1) {
+          events.push({
+            type: "user_input_injected",
+            input_id: id,
+            text: (input as { request?: string }).request ?? "",
+            node_id: "dev",
+            attempt: 1,
+            activation: 2,
+            ts: "2026-06-26T00:00:04.000Z",
+            seq: sequence++
+          });
+        }
+        return { id, disposition: "active_turn" as const };
+      },
+      resumeWithUserInput: async (input: unknown) => {
+        resumed.push(input);
+        events.push({ type: "user_message", text: "queued one", node_id: "dev", attempt: 1, ts: "2026-06-26T00:00:03.000Z", seq: sequence++ });
+        events.push({ type: "node_started", node_id: "dev", attempt: 1, activation: 2, ts: "2026-06-26T00:00:03.500Z", seq: sequence++ });
+      },
+      continueWithInput: async () => undefined,
+      result: new Promise<never>(() => undefined)
+    };
+    const engine = {
+      async startInteractive() {
+        return session;
+      }
+    };
+
+    const output = render(<TuiApp cwd="D:\CodeAI\agent-team" config={config as never} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />);
+    await sendTuiLine(output, "first request");
+    await sendTuiLine(output, "queued one");
+    await sendTuiLine(output, "queued two");
+
+    output.stdin.write("");
+
+    await waitFor(() => resumed.length === 1 && offers.length === 3);
+
+    assert.equal(interrupts, 1);
+    assert.deepEqual(resumed, [{ answer: "queued one", images: [] }]);
+    assert.deepEqual(offers.map((offer) => (offer.input as { request?: string }).request), ["queued one", "queued two", "queued two"]);
+    assert.doesNotMatch(output.lastFrame() ?? "", /queued [12]:/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("routes an immediate prompt after Escape through interactive resume", async () => {
     const resumed: unknown[] = [];
     const continued: unknown[] = [];
@@ -231,7 +309,7 @@ describe("TuiApp session continuation", () => {
     await settleTuiWork();
 
     assert.equal(interrupts, 1);
-    assert.deepEqual(resumed, [{ answer: "continue after interrupt" }]);
+    assert.deepEqual(resumed, [{ answer: "continue after interrupt", images: [] }]);
     assert.deepEqual(continued, []);
     assert.match(output.lastFrame() ?? "", /continue after interrupt/);
     assert.match(output.lastFrame() ?? "", /节点已恢复执行/);

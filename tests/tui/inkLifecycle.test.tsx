@@ -160,7 +160,7 @@ describe("local Ink lifecycle", () => {
       for (const [text, expectedColor] of cases) {
         const row = lines.findIndex(line => line.includes(text));
         assert.notEqual(row, -1, `missing row for ${text}`);
-        const dotColumn = lines[row]!.indexOf("•");
+        const dotColumn = lines[row]!.indexOf("●");
         assert.notEqual(dotColumn, -1, `missing dot for ${text}`);
         const cell = cellAt(screen, dotColumn, row);
         assert.ok(cell && ink.stylePool.get(cell.styleId).some(style => style.code === expectedColor), `${text} should use ${JSON.stringify(expectedColor)}`);
@@ -172,13 +172,13 @@ describe("local Ink lifecycle", () => {
     }
   });
 
-  it("blinks the running tool dot by toggling its dim style", async () => {
+  it("blinks the running tool dot by toggling its visible character", async () => {
     const previousChalkLevel = chalk.level;
     chalk.level = 3;
     const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
     const instance = renderSync(
       <RunLogPanel detailMode={false} items={[
-        { id: "tool-running", kind: "tool", nodeId: "developer", attempt: 1, toolCallId: "tool-running", tool: "LS", status: "running", text: "blinking lifecycle", summary: "", detailText: "" }
+        { id: "tool-running", kind: "tool", nodeId: "developer", attempt: 1, toolCallId: "tool-running", tool: "ArtifactWrite", status: "running", text: "blinking lifecycle", summary: "", detailText: "" }
       ]} />,
       { stdout, stderr: new FakeStdout() as unknown as NodeJS.WriteStream, stdin: new FakeStdin() as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false }
     );
@@ -187,14 +187,12 @@ describe("local Ink lifecycle", () => {
       await new Promise<void>(resolve => setImmediate(resolve));
       const ink = instances.get(stdout) as unknown as { frontFrame: { screen: Screen }; stylePool: StylePool };
       const initialCell = cellAt(ink.frontFrame.screen, 0, 1);
-      assert.equal(initialCell?.char, "•");
-      const initiallyDimmed = Boolean(initialCell && ink.stylePool.get(initialCell.styleId).some(style => style.code === "\u001b[2m"));
+      assert.equal(initialCell?.char, "●");
       let toggled = false;
       for (let attempt = 0; attempt < 12 && !toggled; attempt += 1) {
         await delay(75);
         const currentCell = cellAt(ink.frontFrame.screen, 0, 1);
-        const currentlyDimmed = Boolean(currentCell && ink.stylePool.get(currentCell.styleId).some(style => style.code === "\u001b[2m"));
-        toggled = currentlyDimmed !== initiallyDimmed;
+        toggled = currentCell?.char !== initialCell?.char;
       }
       assert.equal(toggled, true);
     } finally {

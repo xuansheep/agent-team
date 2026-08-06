@@ -109,6 +109,20 @@ export class TurnEngine {
       });
       await emitModelUsage(input, input.model, response);
       throwIfAborted(input.abortSignal);
+      if (response.tool_calls?.length) {
+        let pendingInputs = input.drainPendingUserInputs?.() ?? [];
+        if (pendingInputs.length) {
+          if (response.content?.trim()) {
+            messages.push({ role: "assistant", content: response.content });
+            await emit(input, { type: "runtime_assistant_message", session_id: input.sessionId, run_id: input.runId, content: response.content });
+          }
+          while (pendingInputs.length) {
+            await appendPendingUserInputs(input, messages, pendingInputs);
+            pendingInputs = input.drainPendingUserInputs?.() ?? [];
+          }
+          return undefined;
+        }
+      }
       if (!response.tool_calls?.length) {
         if (response.content !== undefined) {
           messages.push({ role: "assistant", content: response.content });

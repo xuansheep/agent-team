@@ -65,8 +65,16 @@ export type NodeRuntimeOptions = {
   interaction?: RuntimeInteraction;
   eventSink?: (event: StoredEvent) => void;
   drainPendingUserInputs?: () => PendingTurnInput<ModelMessage>[];
+  onUserInputRequested?: (request: NodeWaitingUserResult) => void | Promise<void>;
   abortSignal?: AbortSignal;
 };
+
+export type NodeWaitingUserResult = {
+  status: "waiting_user";
+  toolCallId: string;
+  questions: NodeResult["questions"];
+};
+
 export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> {
   options.abortSignal?.throwIfAborted();
   const attempt = options.attempt ?? 1;
@@ -431,7 +439,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await performLocalCompaction("pre_turn", preTurnReason, preTurnModel, preTurnDialogue, pendingPreTurnMessages);
   }
 
-  return turnEngine.runLoop<NodeResult>({
+  return await turnEngine.runLoop<NodeResult | NodeWaitingUserResult>({
     runIteration: async () => {
     options.abortSignal?.throwIfAborted();
     if (hasSampledModel) {
@@ -551,6 +559,18 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     options.abortSignal?.throwIfAborted();
     if (!streamed) await appendNonStreamingResponseEvents(options, attempt, response);
     if (response.tool_calls?.length) {
+      let pendingInputs = options.drainPendingUserInputs?.() ?? [];
+      if (pendingInputs.length) {
+        const assistantContent = assistantToolCallContent(response.content);
+        if (assistantContent.trim()) {
+          await appendDialogueMessage({ role: "assistant", content: assistantContent }, responseIncludedInUsage);
+        }
+        while (pendingInputs.length) {
+          await injectPendingUserInputs(pendingInputs);
+          pendingInputs = options.drainPendingUserInputs?.() ?? [];
+        }
+        return undefined;
+      }
       const submittedResult = response.tool_calls.find((call) => call.name === submitNodeResultTool.name);
       if (submittedResult) {
         await appendDialogueMessage({ role: "assistant", content: assistantToolCallContent(response.content), tool_calls: [submittedResult] }, responseIncludedInUsage);
@@ -571,9 +591,11 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         await appendDialogueMessage({ role: "user", content: toolPreambleRepairPrompt(response.content, response.tool_calls), metadata: { userMessageKind: "runtime_context" } });
         return undefined;
       }
-      await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: response.tool_calls }, responseIncludedInUsage);
+      const interactionCall = await firstUserInteractionTool(response.tool_calls, options.tools);
+      const executableToolCalls = interactionCall ? [interactionCall] : response.tool_calls;
+      await appendDialogueMessage({ role: "assistant", content: assistantContent, tool_calls: executableToolCalls }, responseIncludedInUsage);
       let shellFailureInResponse: { tool: string; toolCallId: string; error: string } | undefined;
-      for (const call of response.tool_calls) {
+      for (const call of executableToolCalls) {
         options.abortSignal?.throwIfAborted();
         options.tools.activateSkillsForInput(call.input, options.cwd);
         const specifier = toolSpecifier(call.name, call.input);
@@ -712,6 +734,12 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
             tokenLimit: currentLimits().toolOutputTokenLimit
           });
           await appendDialogueMessage(resultMessage);
+          const userInput = userInputFromToolResult(controlResult);
+          if (userInput) {
+            const waitingResult = { status: "waiting_user" as const, toolCallId: call.id, questions: userInput.questions };
+            await options.onUserInputRequested?.(waitingResult);
+            return waitingResult;
+          }
           const discoveredTools = resultMessage.metadata?.mcpDiscovery?.discoveredTools ?? [];
           if (discoveredTools.length) {
             await appendRuntimeEvent(options, {
@@ -765,7 +793,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       return undefined;
     }
     }
-  });
+  }) as NodeResult;
 }
 
 const submitNodeResultTool: Tool = {
@@ -911,6 +939,20 @@ class RuntimeStreamBatcher {
       text
     }));
   }
+}
+
+async function firstUserInteractionTool(calls: ModelToolCall[], tools: ToolRegistry): Promise<ModelToolCall | undefined> {
+  for (const call of calls) {
+    if (!tools.has(call.name)) continue;
+    if (await tools.get(call.name).requiresUserInteraction?.(call.input)) return call;
+  }
+  return undefined;
+}
+
+function userInputFromToolResult(result: ToolResult | undefined): { questions: NodeResult["questions"] } | undefined {
+  const data = result?.data as { type?: unknown; questions?: unknown } | undefined;
+  if (data?.type !== "user_input_requested" || !Array.isArray(data.questions)) return undefined;
+  return { questions: data.questions as NodeResult["questions"] };
 }
 
 async function appendRuntimeEvent(options: NodeRuntimeOptions, event: HarnessEvent): Promise<StoredEvent> {

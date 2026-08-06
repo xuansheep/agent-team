@@ -3983,7 +3983,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /•\s+Running npm test/);
+    assert.match(frame, /●\s+Running npm test/);
 
 
 
@@ -4129,7 +4129,7 @@ describe("RunLogPanel", () => {
 
     assert.match(compactFrame, /Thinking/);
 
-    assert.match(compactFrame, /• Thinking/);
+    assert.match(compactFrame, /● Thinking/);
 
     assert.doesNotMatch(compactFrame, /正在|生成|处理/);
 
@@ -4181,7 +4181,7 @@ describe("RunLogPanel", () => {
 
     assert.match(detailedFrame, /Thinking/);
 
-    assert.match(detailedFrame, /• Thinking/);
+    assert.match(detailedFrame, /● Thinking/);
 
     assert.doesNotMatch(detailedFrame, /正在|生成|处理/);
 
@@ -4591,7 +4591,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /•\s+Ran npm test/);
+    assert.match(frame, /●\s+Ran npm test/);
 
 
 
@@ -4745,7 +4745,7 @@ describe("RunLogPanel", () => {
 
     assert.match(frame, /我先运行测试/);
 
-    assert.match(frame, /• Ran npm test/);
+    assert.match(frame, /● Ran npm test/);
 
     assert.doesNotMatch(frame, /└\s+Ran npm test/);
 
@@ -6615,7 +6615,7 @@ describe("TuiApp", () => {
 
     assert.match(frame, /我先检查项目结构，再运行测试确认现状。/);
 
-    assert.match(frame, /• Ran npm test/);
+    assert.match(frame, /● Ran npm test/);
 
     assert.doesNotMatch(frame, /status/);
 

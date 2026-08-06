@@ -96,6 +96,62 @@ describe("TurnEngine", () => {
     );
   });
 
+  it("injects pending user input before executing tool calls from the sampled response", async () => {
+    let calls = 0;
+    let executions = 0;
+    let pending = true;
+    const events: RuntimeEvent[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "I will inspect the current state.",
+            tool_calls: [{ id: "call-abandoned", name: "Echo", input: { value: "stale" } }]
+          };
+        }
+        assert.equal(request.messages.at(-1)?.role, "user");
+        assert.equal(request.messages.at(-1)?.content, "updated guidance");
+        assert.equal(request.messages.some((message) => message.tool_calls?.some((call) => call.id === "call-abandoned")), false);
+        return { content: "Updated response" };
+      }
+    };
+    const tools = new ToolRegistry();
+    tools.add({
+      ...echoTool,
+      async execute(input, context) {
+        executions += 1;
+        return echoTool.execute(input, context);
+      }
+    });
+
+    const result = await new TurnEngine().execute({
+      messages: [{ role: "user", content: "initial" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "default", allow: ["Echo"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-tool-boundary-input",
+      drainPendingUserInputs: () => {
+        if (calls !== 1 || !pending) return [];
+        pending = false;
+        return [{ id: "input-before-tool", input: { role: "user", content: "updated guidance" } }];
+      },
+      eventSink: (event) => { events.push(event); }
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(executions, 0);
+    assert.deepEqual(result.messages.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
+    assert.equal(result.messages.some((message) => message.tool_calls?.length), false);
+    assert.deepEqual(
+      events.filter((event) => event.type === "runtime_user_input_injected").map((event) => event.input_id),
+      ["input-before-tool"]
+    );
+  });
+
   it("returns aborted when the active model request is cancelled", async () => {
     const abortController = new AbortController();
     let capturedSignal: AbortSignal | undefined;

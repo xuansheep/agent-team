@@ -367,6 +367,84 @@ describe("WorkflowSession", () => {
 
   });
 
+  it("waits immediately after AskUserQuestion and resumes with the answer", async () => {
+    let calls = 0;
+    const requests: ModelRequest[] = [];
+    const runRoot = `.tmp/session-ask-user-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: "我需要先确认一个选择。",
+            tool_calls: [{
+              id: "ask-1",
+              name: "AskUserQuestion",
+              input: {
+                questions: [{
+                  header: "方案",
+                  question: "选择哪套方案？",
+                  options: [
+                    { label: "默认方案", description: "使用默认配置。" },
+                    { label: "自定义方案", description: "手动指定配置。" }
+                  ]
+                }]
+              }
+            }]
+          };
+        }
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+    const workflowConfig = {
+      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const, permissions: { allow: ["AskUserQuestion"], ask: [], deny: [] } }], edges: [] } }
+    };
+    const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
+    const session = await engine.startInteractive(workflowConfig, "flow", { request: "x" });
+    const iterator = session.events[Symbol.asyncIterator]();
+    let waitingEvent;
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      if (next.value.type === "node_waiting_user") {
+        waitingEvent = next.value;
+        break;
+      }
+    }
+
+    assert.deepEqual(waitingEvent?.questions, [{
+      question: "选择哪套方案？",
+      header: "方案",
+      multiSelect: false,
+      options: [
+        { label: "默认方案", description: "使用默认配置。", value: "默认方案" },
+        { label: "自定义方案", description: "手动指定配置。", value: "自定义方案" }
+      ],
+      id: "方案",
+      text: "选择哪套方案？",
+      required: true,
+      allow_freeform: true
+    }]);
+    const waitingState = await new RunStore(runRoot).loadState(session.runId);
+    assert.equal(waitingState.status, "waiting_user");
+    assert.equal(waitingState.pending_interaction?.type, "node_user");
+    assert.equal(waitingState.attempts.at(-1)?.status, "waiting_user");
+
+    await session.resumeWithUserInput({ answer: "默认方案" });
+    const result = await session.result;
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.match(JSON.stringify(requests[1]?.messages), /默认方案/);
+
+    const events = await new RunStore(runRoot).loadEvents(session.runId);
+    assert.equal(events.filter((event) => event.type === "node_waiting_user").length, 1);
+    assert.equal(events.some((event) => event.type === "user_input_deferred"), false);
+    assert.equal(events.some((event) => event.type === "node_waiting_user" && event.questions.some((question) => (question as { id?: string }).id === CONVERSATION_INTERRUPTED_QUESTION_ID)), false);
+  });
+
   it("replays a completed run without invoking the provider again", async () => {
 
     let calls = 0;

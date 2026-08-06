@@ -22,7 +22,7 @@ import type { ModelContentPart, ModelMessage, ModelProvider } from "../providers
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import type { StoredEvent } from "../harness/events.js";
 import type { RuntimeEvent } from "../runtime/types.js";
-import { ActiveTurnInputChannel } from "../runtime/activeTurnInput.js";
+import { ActiveTurnInputChannel, type ActiveTurnInputDisposition } from "../runtime/activeTurnInput.js";
 import { loadMergedMcpServersWithSourceDetails, type McpConfigSourceOptions } from "../mcp/config.js";
 import { setMcpServerDisabledState } from "../mcp/configMutations.js";
 import type { McpRuntime } from "../mcp/runtime.js";
@@ -67,7 +67,8 @@ export type CommandMenuState =
 
 type McpActionResult = { title: string; detail: string };
 type PreparedPlanTurn = { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean };
-type QueuedPrompt = { id: string; text: string; images: PromptInputImageAttachment[] };
+type QueuedPromptDelivery = ActiveTurnInputDisposition | "offering" | "deferred";
+type QueuedPrompt = { id: string; text: string; images: PromptInputImageAttachment[]; delivery: QueuedPromptDelivery };
 const SKILL_SETTINGS_RELOAD_ERROR_PREFIX = "Failed to reload skill settings: ";
 export function TuiApp({
   cwd,
@@ -147,6 +148,7 @@ export function TuiApp({
     workflowId: initialWorkflowId
   }));
   const [queued, setQueued] = useState<QueuedPrompt[]>([]);
+  const [activeInputEpoch, setActiveInputEpoch] = useState(0);
   const [promptText, setPromptText] = useState("");
   const [statuslineElements, setStatuslineElements] = useState<StatusLineElement[]>(
     () => [...(settings?.statusLine ?? defaultStatusLineElements)]
@@ -201,7 +203,7 @@ export function TuiApp({
   const listeningSessionGenerationRef = useRef(0);
   const pendingSessionRelistenRef = useRef<WorkflowSession>();
   const sessionResultGenerationRef = useRef(0);
-  const queuedContinuationRef = useRef(false);
+  const queuedDispatchRef = useRef<"continue" | "resume">();
   const abandonedRunIdsRef = useRef<Set<string>>(new Set());
   const lastWorkflowPromptRef = useRef("");
   const canceledChoiceKeyRef = useRef<string>();
@@ -402,7 +404,7 @@ export function TuiApp({
   };
   const resetSession = () => {
     sessionResultGenerationRef.current += 1;
-    queuedContinuationRef.current = false;
+    queuedDispatchRef.current = undefined;
     sessionRef.current = undefined;
     currentSessionIdRef.current = randomUUID();
     sessionAuditGenerationRef.current += 1;
@@ -430,8 +432,17 @@ export function TuiApp({
         for await (const event of session.events) {
           if (abandonedRunIdsRef.current.has(session.runId)) continue;
           if (event.type === "user_input_injected") setQueued((current) => current.filter((item) => item.id !== event.input_id));
+          if (event.type === "user_input_deferred") {
+            setQueued((current) => current.map((item) => item.id === event.input_id ? { ...item, delivery: "deferred" } : item));
+          }
+          if (event.type === "node_started") {
+            if (queuedDispatchRef.current === "resume") queuedDispatchRef.current = undefined;
+            setActiveInputEpoch((current) => current + 1);
+          }
           if (event.type === "model_response_recorded") sessionAuditGenerationRef.current += 1;
-          if (event.type === "run_completed") queuedContinuationRef.current = false;
+          if (event.type === "run_completed" || event.type === "run_cancelled" || event.type === "run_failed") {
+            queuedDispatchRef.current = undefined;
+          }
           if (replayRemaining > 0) {
             replayEvents.push(event);
             replayRemaining -= 1;
@@ -570,40 +581,67 @@ export function TuiApp({
     listenSession(session, nextWorkflowId);
     return continuation;
   };
+  const offerQueuedPrompt = (item: QueuedPrompt) => {
+    setQueued((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, delivery: "offering" } : candidate));
+    const session = sessionRef.current;
+    if (!session?.queueUserInput) {
+      setQueued((current) => current.map((candidate) => candidate.id === item.id && candidate.delivery === "offering"
+        ? { ...candidate, delivery: "next_turn" }
+        : candidate));
+      return;
+    }
+    void session.queueUserInput({ request: item.text, images: item.images }, item.id)
+      .then((receipt) => {
+        setQueued((current) => current.map((candidate) => candidate.id === item.id && candidate.delivery === "offering"
+          ? { ...candidate, delivery: receipt.disposition }
+          : candidate));
+      })
+      .catch((error) => {
+        setQueued((current) => current.map((candidate) => candidate.id === item.id
+          ? { ...candidate, delivery: "next_turn" }
+          : candidate));
+        setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error) }));
+      });
+  };
   const queueWorkflowInput = (text: string, images: PromptInputImageAttachment[] = []) => {
     const id = randomUUID();
-    const item = { id, text, images };
+    const item: QueuedPrompt = { id, text, images, delivery: "offering" };
     setQueued((current) => [...current, item]);
-    const session = sessionRef.current;
-    if (!session?.queueUserInput) return;
-    void session.queueUserInput({ request: text, images }, id).catch((error) => {
-      setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error) }));
-    });
+    offerQueuedPrompt(item);
   };
-  const resumeSession = (text: string) => {
+  const resumeSession = (text: string, images: PromptInputImageAttachment[] = []): Promise<void> => {
     const session = sessionRef.current;
-    if (!session) {
-      void startRun(text);
-      return;
-    }
+    if (!session) return startRun(text, images);
     lastWorkflowPromptRef.current = text;
     setState((current) => ({ ...current, mode: "running", questions: [], activityNotice: undefined, error: undefined }));
-    void session.resumeWithUserInput({ answer: text }).catch((error) => failUi(error));
+    return session.resumeWithUserInput({ answer: text, images });
   };
   useEffect(() => {
-    if (state.mode !== "completed") {
-      queuedContinuationRef.current = false;
-      return;
-    }
     const next = queued[0];
-    if (!next || queuedContinuationRef.current) return;
-    queuedContinuationRef.current = true;
+    if (!next || next.delivery === "offering" || next.delivery === "active_turn" || queuedDispatchRef.current) return;
+    const dispatch = state.mode === "completed"
+      ? "continue"
+      : state.mode === "paused" || state.mode === "interrupted" || state.mode === "question"
+        ? "resume"
+        : undefined;
+    if (!dispatch) return;
+    queuedDispatchRef.current = dispatch;
     setQueued((current) => current.slice(1));
-    void continueSession(next.text, next.images).catch((error) => {
-      setQueued((current) => [next, ...current]);
+    const continuation = dispatch === "continue"
+      ? continueSession(next.text, next.images)
+      : resumeSession(next.text, next.images);
+    void continuation.catch((error) => {
+      queuedDispatchRef.current = undefined;
+      setQueued((current) => [{ ...next, delivery: "next_turn" }, ...current]);
       failUi(error);
     });
   }, [queued, state.mode]);
+  useEffect(() => {
+    if (state.mode !== "running" || queuedDispatchRef.current === "continue") return;
+    for (const item of queued) {
+      if (item.delivery === "next_turn" || item.delivery === "deferred") offerQueuedPrompt(item);
+    }
+  }, [activeInputEpoch]);
   const savePlanSession = (plan: PlanSessionState) => {
     void sessionStore.savePlanState(plan.sessionId, plan).catch((error) => failUi(error));
   };
@@ -1086,7 +1124,8 @@ export function TuiApp({
     setQueued((current) => [...current, {
       id: receipt.id,
       text: turn.displayText,
-      images: images.filter((image): image is PromptInputImageAttachment => image.type === "image")
+      images: images.filter((image): image is PromptInputImageAttachment => image.type === "image"),
+      delivery: "active_turn"
     }]);
     return true;
   };
@@ -1707,7 +1746,7 @@ ${message.detailText}` : ""}` }
     if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || isPlanSessionAcceptingInput(planSessionRef.current)) {
       enqueuePlanTurn(content);
     } else if ((state.mode === "paused" || state.mode === "interrupted") && state.runId) {
-      resumeSession(content);
+      void resumeSession(content).catch((error) => failUi(error));
     } else if (state.runId || state.mode === "completed" || state.mode === "failed") {
       void continueSession(content).catch((error) => failUi(error));
     } else {
@@ -1933,7 +1972,7 @@ ${message.detailText}` : ""}` }
     }
     if (planQuestionRef.current || state.mode === "question") {
       if (planQuestionRef.current) void continuePlanQuestion(freeformQuestionAnswer(nextQuestionSlice(planQuestionRef.current.questions, planQuestionRef.current.index), event.text)).catch((error) => failUi(error));
-      else resumeSession(event.text);
+      else void resumeSession(event.text).catch((error) => failUi(error));
       return;
     }
     if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || isPlanSessionAcceptingInput(planSessionRef.current)) {
@@ -1942,7 +1981,7 @@ ${message.detailText}` : ""}` }
     }
     if (state.mode === "permission" || state.mode === "confirm_interrupt" || state.mode === "confirm_new" || state.mode === "confirm_resume" || state.mode === "resume_picker" || state.mode === "select_workflow") return;
     if ((state.mode === "paused" || state.mode === "interrupted") && state.runId) {
-      resumeSession(event.text);
+      void resumeSession(event.text, event.images ?? []).catch((error) => failUi(error));
       return;
     }
     if (state.runId || state.mode === "completed" || state.mode === "failed") {

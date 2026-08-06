@@ -607,6 +607,71 @@ describe("runNode interactive permissions", () => {
     assert.match(contexts[0]?.promptCacheKey ?? "", /^[0-9a-f]{64}$/);
     assert.equal(contexts[0]?.promptCacheKey, contexts[1]?.promptCacheKey);
   });
+  it("injects queued guidance before executing tool calls from the sampled response", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-input-before-tool-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = new ToolRegistry();
+    let executions = 0;
+    tools.add({
+      name: "Echo",
+      description: "fake echo",
+      input_schema: {},
+      async execute() {
+        executions += 1;
+        return { output: "stale" };
+      }
+    });
+    let calls = 0;
+    let pending = true;
+    const requests: ModelMessage[][] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request.messages);
+        if (calls === 1) {
+          return {
+            content: "I will inspect the current state.",
+            tool_calls: [{ id: "tool-abandoned", name: "Echo", input: { value: "stale" } }]
+          };
+        }
+        assert.equal(request.messages.at(-1)?.role, "user");
+        assert.equal(request.messages.at(-1)?.content, "updated guidance");
+        assert.equal(request.messages.some((message) => message.tool_calls?.some((call) => call.id === "tool-abandoned")), false);
+        return { content: JSON.stringify({ direction: "forward", summary: "updated", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["Echo"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      drainPendingUserInputs: () => {
+        if (calls !== 1 || !pending) return [];
+        pending = false;
+        return [{ id: "input-before-tool", input: { role: "user", content: "updated guidance" } }];
+      }
+    });
+
+    const events = await store.loadEvents(run.runId);
+    assert.equal(result.summary, "updated");
+    assert.equal(calls, 2);
+    assert.equal(requests.length, 2);
+    assert.equal(executions, 0);
+    assert.deepEqual(
+      events.filter((event) => event.type === "user_input_injected").map((event) => event.input_id),
+      ["input-before-tool"]
+    );
+  });
+
   it("sends assistant tool calls before tool outputs on the follow-up model request", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-tool-chain-"));
     const store = new RunStore(root);
@@ -973,6 +1038,66 @@ describe("runNode provider failures", () => {
     }), (error: unknown) => error instanceof Error && error.name === "AbortError");
 
     assert.equal(dialogueMessages.some((message) => message.role === "assistant" && message.is_error), false);
+  });
+});
+
+describe("runNode AskUserQuestion", () => {
+  it("returns a waiting result without sampling another model turn", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-ask-user"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const tools = createLocalToolRegistry();
+    let calls = 0;
+    let waitingUserResult: { status: "waiting_user"; toolCallId: string; questions: unknown[] } | undefined;
+    const provider: ModelProvider = {
+      async generate() {
+        calls += 1;
+        return {
+          content: "我需要先确认一个选择。",
+          tool_calls: [{
+            id: "ask-1",
+            name: "AskUserQuestion",
+            input: {
+              questions: [{
+                header: "方案",
+                question: "选择哪套方案？",
+                options: [
+                  { label: "默认方案", description: "使用默认配置。" },
+                  { label: "自定义方案", description: "手动指定配置。" }
+                ]
+              }]
+            }
+          }]
+        };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["AskUserQuestion"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1,
+      onUserInputRequested: (request) => {
+        waitingUserResult = request;
+      }
+    });
+
+    assert.equal(waitingUserResult?.status, "waiting_user");
+    assert.equal(waitingUserResult?.toolCallId, "ask-1");
+    assert.equal((waitingUserResult?.questions[0] as { id?: string } | undefined)?.id, "方案");
+    assert.equal(calls, 1);
+
+    const events = await store.loadEvents(run.runId);
+    assert.equal(events.filter((event) => event.type === "model_response_recorded").length, 1);
+    assert.equal(events.filter((event) => event.type === "tool_completed").length, 1);
   });
 });
 

@@ -978,7 +978,7 @@ describe("TuiApp global Plan Mode", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Thinking \| plan \|/);
-    assert.doesNotMatch(frame, /• Plan Mode is thinking/);
+    assert.doesNotMatch(frame, /● Plan Mode is thinking/);
     assert.equal(starts, 0);
 
     output.unmount();

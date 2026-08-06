@@ -5,7 +5,7 @@ import { HarnessEvent, StoredEvent } from "../harness/events.js";
 import { EventStream } from "../harness/eventStream.js";
 import { mergePermissions } from "../harness/permissions.js";
 import { PermissionController } from "../harness/permissionController.js";
-import { RuntimeInteraction, runNode } from "../harness/runtime.js";
+import { RuntimeInteraction, runNode, type NodeWaitingUserResult } from "../harness/runtime.js";
 import type { ToolPermissionContext } from "../permissions/context.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 import { ModelContentPart, ModelMessage, ModelProvider } from "../providers/types.js";
@@ -824,6 +824,7 @@ export class WorkflowEngine {
                 }
             });
             let result: NodeResult | undefined;
+            let waitingUserResult: NodeWaitingUserResult | undefined;
             let nodeError: unknown;
             options.activeInputChannel?.open();
             try {
@@ -848,6 +849,9 @@ export class WorkflowEngine {
                     interaction: options.interaction,
                     eventSink: options.eventSink,
                     drainPendingUserInputs: () => options.activeInputChannel?.drain() ?? [],
+                    onUserInputRequested: (request) => {
+                        waitingUserResult = request;
+                    },
                     abortSignal: options.abortSignal,
                     dialogueMessages,
                     dialogueCursor,
@@ -908,6 +912,10 @@ export class WorkflowEngine {
                 syncOptions();
                 return this.pauseNodeForUser(options, node.id, attempts, handoff, checkpoint());
             }
+            if (waitingUserResult) {
+                syncOptions();
+                return this.waitForUserQuestions(options, node.id, attempt, activation, attempts, attemptIndex, handoff, waitingUserResult.questions, waitingUserResult, checkpoint());
+            }
             try {
                 result = await this.ensureNodeDeliverable(options, node.id, attempt, result!, activation);
                 const resolution = this.transitionController.resolve({
@@ -919,12 +927,14 @@ export class WorkflowEngine {
                     reworkLimit
                 });
                 const currentCheckpoint = checkpoint();
-                if (resolution.type === "user" || resolution.type === "rework_limit") {
-                    const questions = resolution.type === "user" ? result.questions : reworkLimitQuestions(reworkLimit);
+                if (resolution.type === "user") {
+                    syncOptions();
+                    return this.waitForUserQuestions(options, node.id, attempt, activation, attempts, attemptIndex, handoff, result.questions, result, currentCheckpoint);
+                }
+                if (resolution.type === "rework_limit") {
+                    const questions = reworkLimitQuestions(reworkLimit);
                     setAttemptOutcome(attempts, attemptIndex, activation, "waiting_user", "waiting_user", result);
-                    const pendingInteraction = resolution.type === "user"
-                        ? { type: "node_user" as const, node_id: node.id, questions }
-                        : { type: "rework_limit" as const, node_id: node.id, questions, result };
+                    const pendingInteraction = { type: "rework_limit" as const, node_id: node.id, questions, result };
                     const state: WorkflowState = {
                         status: "waiting_user",
                         ...stateBase(),
@@ -1077,6 +1087,35 @@ export class WorkflowEngine {
             runPermissionMode: resolution.state.run_permission_mode,
             planRequestedPermissionRules: resolution.state.plan_requested_permission_rules
         });
+    }
+
+    private async waitForUserQuestions(
+        options: ContinueOptions,
+        nodeId: string,
+        attempt: number,
+        activation: number,
+        attempts: WorkflowState["attempts"],
+        attemptIndex: number,
+        handoff: unknown,
+        questions: NodeResult["questions"],
+        result: unknown,
+        resumeCheckpoint: WorkflowState["resume_checkpoint"]
+    ): Promise<WorkflowState> {
+        setAttemptOutcome(attempts, attemptIndex, activation, "waiting_user", "waiting_user", result);
+        const state: WorkflowState = {
+            status: "waiting_user",
+            workflow_id: options.workflowId,
+            ...continuationStateFields(options, resumeCheckpoint),
+            current_node_id: nodeId,
+            attempts,
+            handoff,
+            resume_checkpoint: resumeCheckpoint,
+            pending_interaction: { type: "node_user", node_id: nodeId, questions }
+        };
+        options.onState?.(state);
+        await options.store.saveState(options.runId, state);
+        await this.appendEvent(options.store, options.runId, { type: "node_waiting_user", node_id: nodeId, attempt, activation, questions }, options.eventSink);
+        return state;
     }
 
     private async failNodeForUser(options: ContinueOptions, nodeId: string, attempt: number, attempts: WorkflowState["attempts"], handoff: unknown, error: unknown, resumeCheckpoint?: WorkflowState["resume_checkpoint"]): Promise<WorkflowState> {
@@ -1424,13 +1463,14 @@ function resumeFromCheckpoint(state: WorkflowState, input: unknown): {
     if (legacyError && !dialogueMessages.some((message) => message.role === "assistant" && message.is_error === true)) {
         dialogueMessages.push({ role: "assistant", content: legacyError, is_error: true });
     }
+    const userMessage = userInputModelMessage(input);
     const userText = userMessageText(input);
     return {
         nodeId: checkpoint.node_id,
         handoff: checkpoint.handoff,
         attempt: checkpoint.attempt,
         activation: (checkpoint.activation ?? 0) + 1,
-        dialogueMessages: [...dialogueMessages, { role: "user", content: userText, metadata: { userMessageKind: "human" } }],
+        dialogueMessages: [...dialogueMessages, userMessage],
         dialogueCursor: checkpoint.dialogue_cursor ?? dialogueMessages.length,
         userText
     };

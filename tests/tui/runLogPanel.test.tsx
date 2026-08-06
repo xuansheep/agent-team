@@ -74,7 +74,7 @@ describe("RunLogPanel compact tool output", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Plan Mode restored/);
-    assert.match(frame, /• Plan Mode restored/);
+    assert.match(frame, /● Plan Mode restored/);
     assert.doesNotMatch(frame, /hidden detail/);
     output.unmount();
     output.cleanup();
@@ -149,8 +149,8 @@ describe("RunLogPanel compact tool output", () => {
     );
 
     const frame = compact.lastFrame() ?? "";
-    assert.match(frame, /• 我先检查项目结构，再确认关键配置。/);
-    assert.match(frame, /• Explored/);
+    assert.match(frame, /● 我先检查项目结构，再确认关键配置。/);
+    assert.match(frame, /● Explored/);
     assert.match(frame, /└ List \./);
     assert.doesNotMatch(frame, /└\s+Ran List/);
     assert.doesNotMatch(frame, /package\.json/);
@@ -261,8 +261,12 @@ describe("RunLogPanel compact tool output", () => {
     const dividerLines = frame.split("\n").filter((line) => /^─+$/.test(line));
     assert.equal(dividerLines.length, 1);
     assert.equal(dividerLines[0]?.length, 24);
-    assert.ok(frame.indexOf("Ran List .") < frame.indexOf(dividerLines[0] ?? ""));
-    assert.ok(frame.indexOf(dividerLines[0] ?? "") < frame.indexOf("Second assistant message"));
+    const dividerIndex = frame.indexOf(dividerLines[0] ?? "");
+    const secondAssistantIndex = frame.indexOf("● Second assistant message");
+    assert.ok(frame.indexOf("List .") < dividerIndex);
+    assert.match(frame, /List \.\n\n─+/);
+    assert.equal(frame.slice(dividerIndex, secondAssistantIndex), `${dividerLines[0]}\n\n`);
+    assert.ok(dividerIndex < secondAssistantIndex);
     assert.ok(frame.indexOf("Continue") < frame.indexOf("After user message"));
     output.unmount();
     output.cleanup();
@@ -283,8 +287,8 @@ describe("RunLogPanel compact tool output", () => {
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /^\n• Inspecting\.\n\n• Explored\n  └ List \.\n    Read src\/index\.ts\n\n• Ready$/);
-    assert.doesNotMatch(frame, /●|Ran List|Ran Read/);
+    assert.match(frame, /^\n● Inspecting\.\n\n● Explored\n  └ List \.\n    Read src\/index\.ts\n\n● Ready$/);
+    assert.doesNotMatch(frame, /•|Ran List|Ran Read/);
     output.unmount();
     output.cleanup();
   });
@@ -301,7 +305,7 @@ describe("RunLogPanel compact tool output", () => {
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /• Ran List \.\n  └ src\n\n• Ran Read src\/index\.ts\n  └ contents/);
+    assert.match(frame, /● Ran List \.\n  └ src\n\n● Ran Read src\/index\.ts\n  └ contents/);
     assert.doesNotMatch(frame, /Explored/);
     output.unmount();
     output.cleanup();
@@ -329,8 +333,8 @@ describe("RunLogPanel compact tool output", () => {
     assert.match(frame, /Read spec\.md/);
     assert.match(frame, /Run git status/);
     assert.match(frame, /Run Get-ChildItem/);
-    assert.match(frame, /• Ran npm test/);
-    assert.equal((frame.match(/• Explored/g) ?? []).length, 2);
+    assert.match(frame, /● Ran npm test/);
+    assert.equal((frame.match(/● Explored/g) ?? []).length, 2);
     output.unmount();
     output.cleanup();
   });
@@ -347,7 +351,7 @@ describe("RunLogPanel compact tool output", () => {
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /• Running npm run/);
+    assert.match(frame, /● Running npm run/);
     assert.match(frame, /  │ a-very-long-script-n/);
     output.unmount();
     output.cleanup();
