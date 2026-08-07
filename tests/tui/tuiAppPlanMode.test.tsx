@@ -9,9 +9,11 @@ import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { testBusResponse, testDispatcher, withTestBusRouting } from "../helpers/projectConfig.js";
 
 const config = {
   providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+  dispatcher: testDispatcher,
   roles: { product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } } },
   workflows: { delivery: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
 };
@@ -236,7 +238,7 @@ describe("TuiApp global Plan Mode", () => {
         workflows={["delivery"]}
         workflowId="delivery"
         engine={engine as never}
-        providerFactory={() => provider}
+        providerFactory={() => withTestBusRouting(provider, "product")}
         resolveGitBranch={async (requestedCwd) => {
           assert.equal(requestedCwd, cwd);
           await new Promise((resolve) => setTimeout(resolve, 250));
@@ -248,6 +250,7 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Keep the branch visible while working.");
     await waitForFrame(output, /feature\/statusline/);
+    await waitForFrame(output, /Plan Mode is thinking/);
     assert.match(output.lastFrame() ?? "", /Thinking \| plan \|/);
 
     await waitForFrame(output, /Plan updated\./);
@@ -266,7 +269,7 @@ describe("TuiApp global Plan Mode", () => {
         };
       }
     };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Audit this session.");
@@ -305,7 +308,7 @@ describe("TuiApp global Plan Mode", () => {
         return { content: "Recovered after retry." };
       }
     };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Retry this plan request.");
@@ -542,7 +545,7 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write(String.fromCharCode(13));
     await waitForFrame(output, /Permission mode: Full access/);
     await sendTuiLine(output, "Start after permissions change.");
-    await settleTuiWork();
+    await waitForArrayItem(options, 0);
 
     assertStartOption(options[0], { permissionMode: "fullAccess" });
 
@@ -629,7 +632,7 @@ describe("TuiApp global Plan Mode", () => {
     assert.match(output.lastFrame() ?? "", /(?:Ready|Waiting|Thinking|Working) \| full access \|/);
 
     await sendTuiLine(output, "Start after cycling permissions.");
-    await settleTuiWork();
+    await waitForArrayItem(options, 0);
     assertStartOption(options[0], { permissionMode: "fullAccess" });
 
     output.unmount();
@@ -643,9 +646,59 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} settings={{ permissions: { defaultMode: "fullAccess" } }} />);
 
     await sendTuiLine(output, "Start in full access.");
-    await settleTuiWork();
+    await waitForArrayItem(options, 0);
 
     assertStartOption(options[0], { permissionMode: "fullAccess" });
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("automatically starts Plan Runtime when the bus selects planning for an ordinary prompt", async () => {
+    const cwd = await makeProjectTmpCwd("agent-team-tui-bus-plan-handoff-");
+    const busRequests: ModelRequest[] = [];
+    const planRequests: ModelRequest[] = [];
+    let starts = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        if (request.context?.nodeId === "bus") {
+          busRequests.push(request);
+          return {
+            content: JSON.stringify({
+              type: "plan",
+              confidence: 1,
+              node_id: "product",
+              reason: "The request needs planning."
+            })
+          };
+        }
+        planRequests.push(request);
+        return { content: "Automatic planning started." };
+      }
+    };
+    const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
+    const output = render(<TuiApp
+      cwd={cwd}
+      config={config}
+      workflows={["delivery"]}
+      workflowId="delivery"
+      engine={engine as never}
+      providerFactory={() => provider}
+    />);
+
+    await sendTuiLine(output, "Design the animated weather dashboard.");
+
+    const planRequest = await waitForRequest(planRequests, "Design the animated weather dashboard.");
+
+    assert.equal(starts, 0);
+    assert.equal(busRequests.length, 1);
+    assert.equal(planRequests.length, 1);
+    assert.ok(planRequest.messages.some((message) => (
+      message.role === "user"
+      && message.content === "Design the animated weather dashboard."
+    )));
+    await waitForFrame(output, /Automatic planning started\./);
+    assert.match(output.lastFrame() ?? "", /(?:Ready|Waiting|Thinking|Working) \| plan \|/);
 
     output.unmount();
     output.cleanup();
@@ -666,7 +719,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => workflowProvider, cwd, runRoot: join(cwd, ".session") });
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine} providerFactory={() => workflowProvider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine} providerFactory={() => withTestBusRouting(workflowProvider, "product")} />);
 
     await sendTuiLine(output, "Build auth flow with sign-off.");
     await waitForFrame(output, /Enter plan mode\?/);
@@ -701,7 +754,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => workflowProvider, cwd, runRoot: join(cwd, ".session") });
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine} providerFactory={() => workflowProvider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine} providerFactory={() => withTestBusRouting(workflowProvider, "product")} />);
 
     await sendTuiLine(output, "Build auth flow without planning.");
     await waitForFrame(output, /Enter plan mode\?/);
@@ -712,7 +765,7 @@ describe("TuiApp global Plan Mode", () => {
 
     assert.equal(workflowTurns, 2);
     assert.equal(planRequests.length, 0);
-    assert.match(output.lastFrame() ?? "", /(?:Ready|Working) \| default \|/);
+    assert.match(output.lastFrame() ?? "", /(?:Ready|Thinking|Working) \| default \|/);
 
     output.unmount();
     output.cleanup();
@@ -783,7 +836,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Draft the migration while provider is pending\./);
 
     assert.equal(starts, 0);
-    assert.match(output.lastFrame() ?? "", /Plan Mode/);
+    assert.match(output.lastFrame() ?? "", /Enabled plan mode/);
 
     output.unmount();
     output.cleanup();
@@ -808,7 +861,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Draft the migration while provider is pending.");
@@ -854,7 +907,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "First planning message is still running.");
@@ -890,7 +943,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Show one assistant response.");
@@ -922,7 +975,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Start with an earlier plan log.");
@@ -996,7 +1049,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "First plan turn.");
@@ -1031,7 +1084,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Try to run tests while planning.");
@@ -1082,7 +1135,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive() { starts += 1; return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "移除edges节点");
@@ -1548,11 +1601,11 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     output.stdin.write("\r");
-    await waitForFrame(output, /workflow from approved plan/);
+    await waitForFrame(output, /Plan Review \(approved\)/);
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Draft the migration first\./);
-    assert.match(frame, /workflow from approved plan/);
+    assert.doesNotMatch(frame, /workflow from approved plan/);
     assert.match(frame, /Plan Review \(approved\)/);
     const statusLine = frame.split("\n").filter((line) => line.trim()).at(-1) ?? "";
     assert.match(statusLine, /(?:Working|Ready) \| default \| delivery/);
@@ -1755,11 +1808,11 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     output.stdin.write("\r");
-    await settleTuiWork();
-    assert.equal(inputs.length, 1);
+    await waitForArrayItem(inputs, 0);
+    await waitForFrame(output, /Plan Review \(approved\)/);
 
     await sendTuiLine(output, "/plan Revisit the same task.");
-    const reentryRequest = await waitForRequest(requests, "Revisit the same task.");
+    const reentryRequest = await waitForRequestContaining(requests, /Revisit the same task\./);
     const text = requestText(reentryRequest);
 
     assert.match(text, /ATTACHMENT plan_mode_reentry/);
@@ -1790,7 +1843,7 @@ describe("TuiApp global Plan Mode", () => {
       }
     };
     const engine = { async startInteractive(_config: unknown, _workflowId: string, input: unknown) { inputs.push(input); return fakeSession(); } };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Ready empty exit.");
@@ -1822,7 +1875,7 @@ describe("TuiApp global Plan Mode", () => {
         return { content: "Plan draft saved." };
       }
     };
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => provider} />);
+    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={() => withTestBusRouting(provider, "product")} />);
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Ready empty exit.");
@@ -1857,6 +1910,36 @@ describe("TuiApp global Plan Mode", () => {
     assert.ok(answerRequest.messages.some((message) => message.role === "assistant" && message.tool_calls?.some((call) => call.name === "AskUserQuestion")));
     assert.ok(answerRequest.messages.some((message) => message.role === "tool" && /Staged/.test(String(message.content))));
     await waitForFrame(output, /Planning staged rollout/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("keeps AskUserQuestion visible when the bus declines the answer route", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const requests: ModelRequest[] = [];
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const output = render(<TuiApp
+      cwd={cwd}
+      config={config}
+      workflows={["delivery"]}
+      workflowId="delivery"
+      engine={engine as never}
+      providerFactory={routingFailurePlanProviderFactory(requests, 2)}
+    />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Need clarification before planning.");
+    await waitForFrame(output, /Which rollout path\?/);
+
+    output.stdin.write("\r");
+    await settleTuiWork();
+    await waitForFrame(output, /Please clarify routing/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.equal(requests.length, 1);
+    assert.match(frame, /Which rollout path\?/);
+    assert.match(frame, /Phase 1/);
 
     output.unmount();
     output.cleanup();
@@ -2686,6 +2769,47 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
+  it("keeps the plan approval open when the bus declines continue-planning feedback", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
+    const requests: ModelRequest[] = [];
+    const busRequests: ModelRequest[] = [];
+    const engine = { async startInteractive() { return fakeSession(); } };
+    const output = render(<TuiApp
+      cwd={cwd}
+      config={config}
+      workflows={["delivery"]}
+      workflowId="delivery"
+      engine={engine as never}
+      providerFactory={routingFailurePlanProviderFactory(requests, 3, busRequests)}
+    />);
+
+    await sendTuiLine(output, "/plan");
+    await sendTuiLine(output, "Draft the migration first.");
+    await sendTuiLine(output, "Ready for approval.");
+    await waitForFrame(output, /Ready to code\?/);
+    const requestCount = requests.length;
+
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write("\u001b[B");
+    await settleTuiWork();
+    output.stdin.write("Revise the rollout.");
+    await settleTuiWork();
+    output.stdin.write("\r");
+    await settleTuiWork();
+    await waitForArrayItem(busRequests, 2);
+
+    const frame = output.lastFrame() ?? "";
+    assert.equal(busRequests.length, 3);
+    assert.equal(requests.length, requestCount);
+    assert.match(frame, /Ready to code\?/);
+    assert.match(frame, /No, keep planning/);
+    assert.doesNotMatch(frame, /Plan Review \(needs revision\)/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("keeps the plan approval open when No is submitted without feedback", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "agent-team-tui-plan-"));
     let starts = 0;
@@ -3202,6 +3326,7 @@ function workflowState(status: "pending" | "completed") {
 function fakeSession(events: unknown[] = []) {
   const state = { status: "completed" as const, workflow_id: "delivery", attempts: [], handoff: undefined };
   return {
+    sessionId: "session-approved-plan",
     runId: "run-approved-plan",
     state,
     events: (async function* () {
@@ -3211,6 +3336,10 @@ function fakeSession(events: unknown[] = []) {
     interrupt: async () => undefined,
     resumeWithUserInput: async () => undefined,
     continueWithInput: async () => undefined,
+    dispatchToNode: async () => undefined,
+    finalize: async () => undefined,
+    subscribeState: () => () => undefined,
+    waitForBoundary: async () => state,
     result: Promise.resolve(state)
   };
 }
@@ -3224,6 +3353,7 @@ function usagePlanProviderFactory(): ModelProvider {
   return {
     async generate(request) {
       const response = await provider.generate(request);
+      if (request.context?.nodeId === "bus") return response;
       return { ...response, usage: { inputTokens: 32000, outputTokens: 1000, totalTokens: 33000 } };
     }
   };
@@ -3234,10 +3364,36 @@ function recordingPlanProviderFactory(requests: ModelRequest[]): () => ModelProv
 }
 
 
+function routingFailurePlanProviderFactory(requests: ModelRequest[], failBusCall: number, busRequests?: ModelRequest[]): () => ModelProvider {
+  const delegate = planProvider(requests);
+  let busCalls = 0;
+  return () => ({
+    async generate(request) {
+      if (request.context?.nodeId === "bus") {
+        busRequests?.push(request);
+        busCalls += 1;
+        if (busCalls === failBusCall) {
+          return {
+            content: JSON.stringify({
+              type: "clarify",
+              confidence: 0.1,
+              message: "Please clarify routing."
+            })
+          };
+        }
+        const response = testBusResponse(request, "product");
+        if (response) return response;
+      }
+      return delegate.generate(request);
+    }
+  });
+}
+
+
 function hangingPlanProviderFactory(): ModelProvider {
   return {
-    async generate() {
-      return new Promise(() => undefined);
+    async generate(request) {
+      return testBusResponse(request, "product") ?? new Promise(() => undefined);
     }
   };
 }
@@ -3245,6 +3401,8 @@ function hangingPlanProviderFactory(): ModelProvider {
 function planProvider(requests?: ModelRequest[]): ModelProvider {
   return {
     async generate(request: ModelRequest) {
+      const busResponse = testBusResponse(request, "product");
+      if (busResponse) return busResponse;
       requests?.push(request);
       const last = request.messages.at(-1);
       if (last?.role === "tool" && /Which verification steps/.test(String(last.content))) return { content: "Planning multi-question answer." };
@@ -3419,7 +3577,7 @@ async function waitForPromptInjectionMetadata(store: SessionStore, sessionId: st
 }
 
 async function waitForRequest(requests: ModelRequest[], text: string): Promise<ModelRequest> {
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 60; index += 1) {
     const request = requests.find((item) => item.messages.some((message) => message.role === "user" && message.content === text));
     if (request) return request;
     await settleTuiWork();
@@ -3430,18 +3588,18 @@ async function waitForRequest(requests: ModelRequest[], text: string): Promise<M
 }
 
 async function waitForRequestContaining(requests: ModelRequest[], pattern: RegExp): Promise<ModelRequest> {
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 60; index += 1) {
     const request = requests.find((item) => pattern.test(requestText(item)));
     if (request) return request;
     await settleTuiWork();
   }
   const request = requests.find((item) => pattern.test(requestText(item)));
-  assert.ok(request);
+  assert.ok(request, `No request matched ${String(pattern)}. Requests: ${JSON.stringify(requests.map(requestText))}`);
   return request;
 }
 
 async function waitForImageFeedbackRequest(requests: ModelRequest[]): Promise<ModelRequest> {
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 60; index += 1) {
     const request = requests.find((item) => item.messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image")));
     if (request) return request;
     await settleTuiWork();
@@ -3452,7 +3610,7 @@ async function waitForImageFeedbackRequest(requests: ModelRequest[]): Promise<Mo
 }
 
 async function waitForToolAnswerRequest(requests: ModelRequest[], pattern: RegExp): Promise<ModelRequest> {
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 60; index += 1) {
     const request = requests.find((item) => item.messages.some((message) => message.role === "tool" && pattern.test(String(message.content))));
     if (request) return request;
     await settleTuiWork();

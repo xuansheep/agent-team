@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { AgentTeamConfig } from "../../src/config/schema.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { WorkflowEngine, workflowConfigFingerprint } from "../../src/workflow/engine.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 describe("resumable workflow transitions", () => {
   it("resumes product and UI in the same attempts after UI returns a PRD issue", async () => {
@@ -23,7 +24,7 @@ describe("resumable workflow transitions", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/resumable-flow-${Date.now()}` });
     const state = await engine.run(config(), "delivery", { request: "实现新功能" });
 
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(state.rework_count, 1);
     assert.deepEqual(state.suspended_stack, []);
     assert.deepEqual(state.attempts.map((item) => [item.node_id, item.attempt, item.activation]), [
@@ -57,7 +58,7 @@ describe("resumable workflow transitions", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/resumable-submit-result-${Date.now()}` });
     const state = await engine.run(config(), "delivery", { request: "Implement and verify" });
 
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(state.rework_count, 1);
     assert.equal(state.attempts.find((attempt) => attempt.node_id === "developer")?.activation, 2);
     assert.equal(state.attempts.find((attempt) => attempt.node_id === "tester")?.activation, 2);
@@ -92,7 +93,7 @@ describe("resumable workflow transitions", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/retry-current-node-${Date.now()}` });
     const state = await engine.run(retryConfig, "delivery", { request: "完善并验收" });
 
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(state.rework_count, 1);
     assert.deepEqual(state.suspended_stack, []);
     const product = state.attempts.find((item) => item.node_id === "product");
@@ -125,13 +126,13 @@ describe("resumable workflow transitions", () => {
     const runRoot = `.tmp/resumable-user-${Date.now()}`;
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const single = config();
-    single.workflows.delivery.nodes = [{ id: "product", role: "product", provider: "default", permission_mode: "default", mode: "complete" }];
+    single.workflows.delivery.nodes = [{ id: "product", role: "product", provider: "default", permission_mode: "default" }];
     const waiting = await engine.run(single, "delivery", { request: "定义范围" });
 
     assert.equal(waiting.status, "waiting_user");
     assert.equal(waiting.pending_interaction?.type, "node_user");
     const completed = await engine.resume(single, "delivery", await latestRunId(engine), { answer: "包含移动端" });
-    assert.equal(completed.status, "completed");
+    assert.equal(completed.status, "awaiting_bus");
     assert.equal(completed.attempts[0]?.attempt, 1);
     assert.equal(completed.attempts[0]?.activation, 2);
     assert.match(JSON.stringify(requests[1]?.messages), /包含移动端/);
@@ -183,7 +184,7 @@ describe("resumable workflow transitions", () => {
 
     const resumed = await engine.resume(changed, "delivery", runId, { answer: "继续" });
 
-    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.status, "awaiting_bus");
     assert.equal(requests.length, 2);
     assert.match(JSON.stringify(requests[1]?.messages), /current global prompt/);
     assert.match(JSON.stringify(requests[1]?.messages), /current role prompt/);
@@ -252,6 +253,7 @@ function config(): AgentTeamConfig {
         capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true }
       }
     },
+    dispatcher: testDispatcher,
     roles: { product: role("P"), ui: role("U"), developer: role("D"), tester: role("T") },
     workflows: {
       delivery: {
@@ -259,7 +261,7 @@ function config(): AgentTeamConfig {
           { id: "product", role: "product", provider: "default", permission_mode: "default" },
           { id: "ui", role: "ui", provider: "default", permission_mode: "default" },
           { id: "developer", role: "developer", provider: "default", permission_mode: "default" },
-          { id: "tester", role: "tester", provider: "default", permission_mode: "default", mode: "complete" }
+          { id: "tester", role: "tester", provider: "default", permission_mode: "default" }
         ],
         edges: [],
         max_rework_cycles: 10

@@ -52,6 +52,8 @@ export type ArtifactTextChunk = {
   total_bytes: number;
 };
 
+const maxInputImageBytes = 10 * 1024 * 1024;
+
 type ArtifactIndex = { version: 1; artifacts: ArtifactRecord[] };
 type ArtifactMetadata = {
   description?: string;
@@ -86,6 +88,38 @@ export class ArtifactStore {
     return { ...ref, mediaType };
   }
 
+  async writeInputImage(data: string, mediaType: ImageMediaType, logicalName?: string): Promise<ImageArtifactRef> {
+    const encoded = data.replace(/\s/g, "");
+    const bytes = Buffer.from(encoded, "base64");
+    const canonical = bytes.toString("base64").replace(/=+$/, "");
+    if (!bytes.length || canonical !== encoded.replace(/=+$/, "")) {
+      throw new Error("Input image is not valid base64");
+    }
+    if (bytes.length > maxInputImageBytes) {
+      throw new Error(`Input image exceeds ${maxInputImageBytes} bytes`);
+    }
+    const signatureMatches = mediaType === "image/png"
+      ? bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      : mediaType === "image/jpeg"
+        ? bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))
+        : bytes.subarray(0, 4).toString("ascii") === "RIFF"
+          && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+    if (!signatureMatches) {
+      throw new Error(`Input image data does not match declared media type ${mediaType}`);
+    }
+    const name = logicalName ?? (mediaType === "image/jpeg"
+      ? "input-image.jpg"
+      : mediaType === "image/webp"
+        ? "input-image.webp"
+        : "input-image.png");
+    const ref = await this.writeRevision("input", name, bytes, {
+      kind: "image",
+      mediaType,
+      description: "User-provided input image"
+    });
+    return { ...ref, mediaType };
+  }
+
   async has(artifactId: string): Promise<boolean> {
     const record = await this.record(artifactId);
     if (!record) return false;
@@ -99,6 +133,10 @@ export class ArtifactStore {
 
   async record(artifactId: string): Promise<ArtifactRecord | undefined> {
     return (await this.readIndex()).artifacts.find((item) => item.artifact_id === artifactId);
+  }
+
+  async list(): Promise<ArtifactRecord[]> {
+    return (await this.readIndex()).artifacts.map((record) => ({ ...record }));
   }
 
   async read(artifactId: string): Promise<ArtifactContent> {

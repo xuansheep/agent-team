@@ -127,6 +127,12 @@ function parseSettingsJson(raw: string, path: string): unknown {
 }
 
 export const DEFAULT_USER_SETTINGS = JSON.stringify({
+  dispatcher: {
+    provider: "default",
+    model: "gpt-5.5",
+    effort: "medium",
+    confidence_threshold: 0.8
+  },
   providers: {
     default: {
       type: "responses-api",

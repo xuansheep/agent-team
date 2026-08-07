@@ -42,15 +42,28 @@ describe("settings", () => {
     const settings = await loadSettings({ cwd, userSettingsPath, projectSettingsPath });
     const generated = await readFile(userSettingsPath, "utf8");
     const parsed = JSON.parse(generated) as {
+      dispatcher: Record<string, unknown>;
       providers: Record<string, Record<string, unknown>>;
     };
 
-    assert.deepEqual(Object.keys(parsed), ["providers"]);
+    assert.deepEqual(Object.keys(parsed), ["dispatcher", "providers"]);
+    assert.deepEqual(parsed.dispatcher, {
+      provider: "default",
+      model: "gpt-5.5",
+      effort: "medium",
+      confidence_threshold: 0.8
+    });
     assert.deepEqual(Object.keys(parsed.providers), ["default", "anthropic"]);
     assert.deepEqual(Object.keys(parsed.providers.default), ["type", "base_url", "api_key", "default_model"]);
     assert.deepEqual(Object.keys(parsed.providers.anthropic), ["type", "base_url", "api_key", "default_model"]);
     assert.equal(parsed.providers.default?.api_key, "");
     assert.deepEqual(Object.keys(settings.providers ?? {}), ["default", "anthropic"]);
+    assert.deepEqual(settings.dispatcher, {
+      provider: "default",
+      model: "gpt-5.5",
+      effort: "medium",
+      confidence_threshold: 0.8
+    });
     const defaultProvider = settings.providers?.default;
     if (defaultProvider?.type !== "responses-api") assert.fail("Expected default Responses API provider");
     assert.equal(defaultProvider.effort, "medium");
@@ -355,7 +368,7 @@ describe("settings", () => {
     const config = await loadConfig(configPath, { cwd, settings });
     const node = config.workflows.delivery.nodes[0];
 
-    assert.equal(node.mode, "task");
+    assert.equal("mode" in node, false);
     assert.equal(node.permission_mode, "default");
   });
 

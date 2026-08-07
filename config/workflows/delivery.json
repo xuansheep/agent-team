@@ -70,7 +70,6 @@
       "id": "tester",
       "role": "tester",
       "provider": "default",
-      "mode": "complete",
       "permissions": {
         "allow": [
           "Read",

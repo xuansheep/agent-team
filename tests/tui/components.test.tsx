@@ -1,4 +1,5 @@
 import React from "react";
+import { testBusProviderFactory, testDispatcher } from "../helpers/projectConfig.js";
 
 
 
@@ -289,6 +290,13 @@ import { StatusLine } from "../../src/tui/components/StatusLine.js";
 import { jumpMainScrollBy, resolveActiveChoiceCancel, resolveCtrlCBehavior, scrollMainDown, scrollMainUp, TuiApp } from "../../src/tui/TuiApp.js";
 
 import { SessionStore } from "../../src/storage/sessionStore.js";
+
+let tuiCwdSequence = 0;
+
+function testTuiCwd(): string {
+  tuiCwdSequence += 1;
+  return join(process.cwd(), ".tmp", "components-tui", String(tuiCwdSequence));
+}
 
 
 
@@ -6095,7 +6103,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" initialError="Missing agent-team.yaml" />);
+    const output = render(<TuiApp cwd={testTuiCwd()} initialError="Missing agent-team.yaml" />);
 
 
 
@@ -6239,7 +6247,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" workflows={["delivery"]} workflowId="delivery" />);
+    const output = render(<TuiApp cwd={testTuiCwd()} workflows={["delivery"]} workflowId="delivery" />);
 
 
 
@@ -6504,11 +6512,12 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
 
 
     await sendTuiLine(output, "start work");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("product 需要用户补充信息"));
 
 
 
@@ -6560,9 +6569,10 @@ describe("TuiApp", () => {
       }
     });
     const engine = { async startInteractive() { return session; } };
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
     await sendTuiLine(output, "start work");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("Conversation interrupted"));
 
     const frame = output.lastFrame() ?? "";
     assert.equal((frame.match(/Conversation interrupted/g) ?? []).length, 1);
@@ -6570,6 +6580,7 @@ describe("TuiApp", () => {
     assert.ok(frame.indexOf("Conversation interrupted") < frame.indexOf("> Type a request or /help"));
 
     await sendTuiLine(output, "continue");
+    await waitForInkCondition(() => resumed.length === 1);
     assert.deepEqual(resumed, [{ answer: "continue" }]);
     assert.doesNotMatch(output.lastFrame() ?? "", /■ Conversation interrupted/);
 
@@ -6605,11 +6616,12 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\CodeAI\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
 
 
     await sendTuiLine(output, "分析当前项目架构");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("我先检查项目结构"));
 
 
 
@@ -6655,9 +6667,10 @@ describe("TuiApp", () => {
 
     const engine = { async startInteractive() { return session; } };
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
     await sendTuiLine(output, "run tests");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("Ran npm test"));
 
     assert.match(output.lastFrame() ?? "", /Ran npm test/);
     assert.doesNotMatch(output.lastFrame() ?? "", /line-3/);
@@ -6680,7 +6693,7 @@ describe("TuiApp", () => {
 
 
 
-  it("continues the same session from ordinary input after the workflow pauses", async () => {
+  it("routes later ordinary input through the bus without starting a second workflow", async () => {
 
 
 
@@ -6710,26 +6723,13 @@ describe("TuiApp", () => {
 
 
 
-    const session = fakeCompletedSession("run-1", "delivery", "first request", async (input) => {
-
-
-
-
-
-
-
-
-
-      continued.push(input);
-
-
-
-
-
-
-
-
-
+    const session = fakeInteractiveSession({
+      runId: "run-1",
+      workflowId: "delivery",
+      events: [],
+      resumeWithUserInput: async (input) => {
+        continued.push(input);
+      }
     });
 
 
@@ -6800,7 +6800,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
 
 
@@ -6831,6 +6831,7 @@ describe("TuiApp", () => {
 
 
     await sendTuiLine(output, "first request");
+    await waitForInkCondition(() => starts === 1);
 
 
 
@@ -6841,6 +6842,7 @@ describe("TuiApp", () => {
 
 
     await sendTuiLine(output, "second request");
+    await waitForInkCondition(() => continued.length === 1);
 
 
 
@@ -7048,7 +7050,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
 
 
@@ -7097,6 +7099,7 @@ describe("TuiApp", () => {
 
 
     await sendTuiLine(output, "first request");
+    await waitForInkCondition(() => starts === 1);
 
 
 
@@ -7129,6 +7132,7 @@ describe("TuiApp", () => {
 
 
     await sendTuiLine(output, "second request");
+    await waitForInkCondition(() => starts === 2);
 
 
 
@@ -7416,7 +7420,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
 
 
@@ -7586,19 +7590,21 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
     await settleInkInput();
 
 
 
     await sendTuiLine(output, "/resume");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("No sessions found"));
 
     assert.match(output.lastFrame() ?? "", /No sessions found/);
 
 
 
     await sendTuiLine(output, "fresh request");
+    await waitForInkCondition(() => starts === 1);
 
 
 
@@ -7651,7 +7657,7 @@ describe("TuiApp", () => {
 
     };
 
-    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} sessionStore={fixture.store} />);
+    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} sessionStore={fixture.store} />);
 
     await settleInkInput();
     await sendTuiLine(output, "/resume");
@@ -7691,7 +7697,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} sessionStore={fixture.store} />);
+    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} sessionStore={fixture.store} />);
 
     await settleInkInput();
 
@@ -7800,7 +7806,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} sessionStore={fixture.store} />);
+    const output = render(<TuiApp cwd={fixture.cwd} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} sessionStore={fixture.store} />);
 
     await settleInkInput();
 
@@ -8167,7 +8173,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
 
 
@@ -8200,6 +8206,7 @@ describe("TuiApp", () => {
 
 
     await sendTuiLine(output, "needs permission");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("Permission required"));
 
 
 
@@ -8353,9 +8360,10 @@ describe("TuiApp", () => {
 
     const engine = { async startInteractive() { return session; } };
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={tuiConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")} />);
 
     await sendTuiLine(output, "needs permission");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("Permission required"));
 
     output.stdin.write("\u000f");
     await settleInkInput();
@@ -8418,7 +8426,7 @@ describe("TuiApp", () => {
     instances.set(process.stdout, fakeInk as never);
     const output = render(
       <TuiApp
-        cwd="D:\\CodeAI\\agent-team"
+        cwd={testTuiCwd()}
         workflows={["delivery"]}
         workflowId="delivery"
         onExit={() => {
@@ -8507,6 +8515,7 @@ describe("TuiApp", () => {
     let interrupted = 0;
 
     let exited = 0;
+    let started = false;
 
     const session = fakeInteractiveSession({
 
@@ -8526,13 +8535,13 @@ describe("TuiApp", () => {
 
 
 
-    const engine = { async startInteractive() { return session; } };
+    const engine = { async startInteractive() { started = true; return session; } };
 
     const output = render(
 
       <TuiApp
 
-        cwd="D:\\CodeAI\\agent-team"
+        cwd={testTuiCwd()}
 
         config={tuiConfig()}
 
@@ -8540,7 +8549,7 @@ describe("TuiApp", () => {
 
         workflowId="delivery"
 
-        engine={engine as unknown as never}
+        engine={engine as unknown as never} providerFactory={testBusProviderFactory("dev")}
 
         onExit={() => {
 
@@ -8555,6 +8564,7 @@ describe("TuiApp", () => {
 
 
     await sendTuiLine(output, "start work");
+    await waitForInkCondition(() => started);
 
     output.stdin.write("\u0003");
 
@@ -8666,7 +8676,8 @@ describe("TuiApp", () => {
 
 
 
-      roles: {
+    dispatcher: testDispatcher,
+    roles: {
 
 
 
@@ -8890,7 +8901,7 @@ describe("TuiApp", () => {
 
 
 
-    const output = render(<TuiApp cwd="D:\\CodeAI\\agent-team" config={config} workflows={["delivery"]} workflowId="delivery" />);
+    const output = render(<TuiApp cwd={testTuiCwd()} config={config} workflows={["delivery"]} workflowId="delivery" />);
 
 
 
@@ -9990,6 +10001,7 @@ function tuiConfig() {
 
 
 
+    dispatcher: testDispatcher,
     roles: {
 
 
@@ -10268,6 +10280,7 @@ function fakeInteractiveSession(input: {
 
 
 
+    sessionId: input.runId,
     runId: input.runId,
 
 
@@ -10445,21 +10458,17 @@ function fakeInteractiveSession(input: {
 
 
     resumeWithUserInput: async (resumeInput: unknown) => input.resumeWithUserInput?.(resumeInput),
+    continueWithInput: async (resumeInput: unknown) => input.resumeWithUserInput?.(resumeInput),
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-    result: new Promise(() => undefined)
+    dispatchToNode: async (_nodeId: string, dispatchInput: unknown) => input.resumeWithUserInput?.(
+      dispatchInput && typeof dispatchInput === "object" && "user_input" in dispatchInput
+        ? (dispatchInput as { user_input: unknown }).user_input
+        : dispatchInput
+    ),
+    finalize: async () => undefined,
+    subscribeState: () => () => undefined,
+    waitForBoundary: async () => state,
+        result: new Promise(() => undefined)
 
 
 
@@ -10635,6 +10644,7 @@ function fakeCompletedSession(runId: string, workflowId: string, request: string
 
 
 
+    sessionId: runId,
     runId,
 
 
@@ -10764,13 +10774,15 @@ function fakeCompletedSession(runId: string, workflowId: string, request: string
 
     continueWithInput: async (input: unknown) => continueWithInput?.(input),
 
-
-
-
-
-
-
-    result: Promise.resolve(state)
+    dispatchToNode: async (_nodeId: string, dispatchInput: unknown) => continueWithInput?.(
+      dispatchInput && typeof dispatchInput === "object" && "user_input" in dispatchInput
+        ? (dispatchInput as { user_input: unknown }).user_input
+        : dispatchInput
+    ),
+    finalize: async () => undefined,
+    subscribeState: () => () => undefined,
+    waitForBoundary: async () => state,
+        result: Promise.resolve(state)
 
 
 
@@ -11045,7 +11057,7 @@ function settleInkInput(): Promise<void> {
 }
 
 async function waitForInkCondition(condition: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

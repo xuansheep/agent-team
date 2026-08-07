@@ -7,6 +7,7 @@ import { render } from "ink-testing-library";
 import { TuiApp } from "../../src/tui/TuiApp.js";
 import { getPlanFilePath, writePlan } from "../../src/plans/planFiles.js";
 import { SessionStore } from "../../src/storage/sessionStore.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 describe("TuiApp plan review transcript", () => {
   it("renders restored Plan Mode approvals in the active approval dialog", async () => {
@@ -49,6 +50,7 @@ function tuiConfig() {
     providers: {
       default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
     },
+    dispatcher: testDispatcher,
     roles: {
       product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } }
     },

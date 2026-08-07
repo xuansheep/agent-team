@@ -183,16 +183,29 @@ export const roleFrontmatterSchema = z.object({
   description: z.string().trim().min(1)
 }).strict();
 
+export const dispatcherConfigSchema = z.object({
+  provider: z.string().trim().min(1),
+  model: z.string().trim().min(1),
+  effort: z.string().trim().min(1).default("medium"),
+  confidence_threshold: z.number().min(0).max(1).default(0.8)
+}).strict();
+
+export const dispatcherOverrideSchema = z.object({
+  provider: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
+  effort: z.string().trim().min(1).optional(),
+  confidence_threshold: z.number().min(0).max(1).optional()
+}).strict();
+
 export const nodeSchema = z.object({
   id: z.string().min(1),
   role: z.string().min(1),
   provider: z.string().default("default"),
   model: z.string().optional(),
   effort: z.string().trim().min(1).optional(),
-  mode: z.enum(["task", "complete"]).default("task"),
   permission_mode: z.enum(["default", "fullAccess"]).default("default"),
   permissions: permissionSetSchema.optional()
-});
+}).strict();
 
 export const edgeSchema = z.object({
   from: z.string().min(1),
@@ -205,6 +218,7 @@ export const workflowSchema = z.object({
   nodes: z.array(nodeSchema).min(1),
   edges: z.array(edgeSchema).default([]),
   max_rework_cycles: z.number().int().positive().default(DEFAULT_MAX_REWORK_CYCLES),
+  dispatcher: dispatcherOverrideSchema.optional(),
   workflow_permissions: permissionSetSchema.optional()
 });
 
@@ -213,6 +227,7 @@ export const workflowFileSchema = z.object({
   description: z.string().trim().optional(),
   nodes: z.array(nodeSchema).min(1),
   max_rework_cycles: z.number().int().positive().default(DEFAULT_MAX_REWORK_CYCLES),
+  dispatcher: dispatcherOverrideSchema.optional(),
   workflow_permissions: permissionSetSchema.optional()
 }).strict();
 
@@ -249,11 +264,13 @@ export type GlobalPromptMetadata = {
   lines: number;
   sources: GlobalPromptSourceMetadata[];
 };
-export type WorkflowNodeMode = "task" | "complete";
-export type WorkflowNodeConfig = Omit<ParsedWorkflowNodeConfig, "mode"> & { mode?: WorkflowNodeMode };
+export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
+export type DispatcherOverride = z.infer<typeof dispatcherOverrideSchema>;
+export type WorkflowNodeConfig = ParsedWorkflowNodeConfig;
 export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes" | "max_rework_cycles"> & { nodes: WorkflowNodeConfig[]; max_rework_cycles?: number };
 export type AgentTeamConfig = Omit<ParsedProjectConfig, "workflows"> & {
   providers: Record<string, ProviderConfig>;
+  dispatcher: DispatcherConfig;
   workflows: Record<string, WorkflowConfig>;
   global_prompt_metadata?: GlobalPromptMetadata;
 };

@@ -10,6 +10,8 @@ import { enterPlanMode, readPlanOrRecoverFromTranscript } from "../plans/planSes
 import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "../kernel/plan/planToolCallMessages.js";
 import { ExecutionCoordinator } from "../runtime/executionCoordinator.js";
+import { SessionExecutionBus } from "../runtime/sessionExecutionBus.js";
+import type { BusEvent, BusTurnResult, SessionBusCheckpoint } from "../runtime/busTypes.js";
 import { isHumanUserMessage } from "../context/messages.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
@@ -177,6 +179,8 @@ export function TuiApp({
   const [, setMcpStatusRevision] = useState(0);
   const mainScrollRef = useRef<ScrollBoxHandle>(null);
   const sessionRef = useRef<WorkflowSession>();
+  const busRef = useRef<SessionExecutionBus>();
+  const relistenWorkflowRef = useRef<(session: WorkflowSession, workflowId: string) => void>();
   const planSessionRef = useRef<PlanSessionState>();
   const planMessagesRef = useRef<ModelMessage[]>([]);
   const planQuestionRef = useRef<{ toolCallId: string; questions: unknown[]; index: number; answers: Record<string, unknown> }>();
@@ -210,6 +214,9 @@ export function TuiApp({
   const canceledChoiceKeyRef = useRef<string>();
   const defaultPlanModeStartedRef = useRef(false);
   const scrollMainAfterRenderRef = useRef(false);
+  useEffect(() => () => {
+    busRef.current?.dispose();
+  }, []);
   useEffect(() => {
     if (!mcpRuntime) return;
     return mcpRuntime.subscribe(() => setMcpStatusRevision((current) => current + 1));
@@ -344,6 +351,8 @@ export function TuiApp({
   }, [planSavedMessageDurationMs, state.pendingReview?.attempt, state.pendingReview?.nodeId, state.pendingReview?.savedMessage]);
   const selectWorkflow = (workflow: string) => {
     if (!config?.workflows[workflow]) return;
+    busRef.current?.dispose();
+    busRef.current = undefined;
     setPreviewWorkflowId(workflow);
     setSelectedWorkflowId(workflow);
     setState((current) => ({ ...current, workflowId: workflow, mode: "input" }));
@@ -357,13 +366,147 @@ export function TuiApp({
       logMessages: [...current.logMessages, statusLog(`Error: ${message}`)]
     }));
   };
+  const handleBusEvent = (event: BusEvent) => {
+    switch (event.type) {
+      case "bus_routing_started":
+        setWorkStatusDetail(event.phase === "lifecycle" ? "Execution bus is reviewing the workflow boundary" : "Execution bus is routing your message");
+        if (event.phase !== "plan") {
+          setState((current) => ({ ...current, mode: "running", runState: "thinking", error: undefined }));
+        }
+        break;
+      case "bus_assistant_message":
+        setState((current) => ({
+          ...current,
+          conversation: [...current.conversation, { kind: "assistant", text: event.content }],
+          logMessages: [...current.logMessages, { id: randomUUID(), kind: "assistant", text: event.content }],
+          error: undefined
+        }));
+        break;
+      case "bus_clarification_requested":
+        setWorkStatusDetail(undefined);
+        setState((current) => ({
+          ...current,
+          mode: current.pendingReview
+            ? "waiting_plan_approval"
+            : isPlanSessionAcceptingInput(planSessionRef.current)
+              ? "planning"
+              : busRef.current?.workflow
+                ? "paused"
+                : "input",
+          runState: "waiting",
+          error: undefined
+        }));
+        break;
+      case "bus_plan_node_selected":
+        setWorkStatusDetail(`Execution bus selected node ${event.node_id}`);
+        break;
+      case "bus_workflow_started":
+        setWorkStatusDetail(`Execution bus started node ${event.node_id}`);
+        setState((current) => ({
+          ...current,
+          mode: "running",
+          runState: "working",
+          workflowId: event.workflow_id,
+          runId: event.run_id,
+          currentNodeId: event.node_id,
+          error: undefined
+        }));
+        break;
+      case "bus_workflow_reassigned": {
+        setWorkStatusDetail(`Execution bus reassigned execution to ${event.to_node_id}`);
+        setState((current) => ({
+          ...current,
+          mode: "running",
+          runState: "working",
+          workflowId: event.workflow_id,
+          runId: event.run_id,
+          currentNodeId: event.to_node_id,
+          error: undefined
+        }));
+        const workflow = busRef.current?.workflow;
+        if (workflow) relistenWorkflowRef.current?.(workflow, event.workflow_id);
+        break;
+      }
+      case "bus_workflow_awaiting":
+        setWorkStatusDetail("Execution bus is evaluating results");
+        setState((current) => ({
+          ...current,
+          mode: "running",
+          runState: "thinking",
+          runId: event.run_id,
+          currentNodeId: event.node_id ?? current.currentNodeId,
+          error: undefined
+        }));
+        break;
+      case "bus_task_finalized":
+        setWorkStatusDetail(undefined);
+        setState((current) => ({
+          ...current,
+          mode: "completed",
+          runState: "ready",
+          workflowId: event.workflow_id,
+          runId: event.run_id,
+          error: undefined
+        }));
+        break;
+      case "bus_dispatcher_retry_scheduled":
+        setWorkStatusDetail(`Execution bus retry ${event.retry_attempt}/${event.max_retries}: ${event.error}`);
+        break;
+      case "bus_failed":
+        failUi(event.error);
+        break;
+      case "bus_directive_selected":
+        break;
+    }
+    requestMainScrollToBottom();
+  };
+  const getSessionBus = (options: {
+    workflowId?: string;
+    sessionId?: string;
+    messages?: ModelMessage[];
+    checkpoint?: SessionBusCheckpoint;
+  } = {}): SessionExecutionBus => {
+    if (!config || !engine) throw new Error("TUI is missing workflow configuration");
+    const nextWorkflowId = options.workflowId ?? selectedWorkflowId ?? state.workflowId;
+    if (!nextWorkflowId) throw new Error("No workflow is selected");
+    const sessionId = options.sessionId ?? currentSessionIdRef.current;
+    const existing = busRef.current;
+    if (existing?.state.session_id === sessionId && existing.state.workflow_id === nextWorkflowId) {
+      existing.setPermissionMode(workflowPermissionMode(state.inputPermissionMode));
+      return existing;
+    }
+    if (
+      existing
+      && (existing.state.status === "running_workflow"
+        || existing.state.status === "awaiting_bus"
+        || existing.state.status === "waiting_user")
+    ) {
+      throw new Error(`Session ${existing.state.session_id} still owns active workflow ${existing.state.active_run_id ?? ""}`);
+    }
+    existing?.dispose();
+    const bus = executionCore.createSessionBus({
+      config,
+      workflowId: nextWorkflowId,
+      cwd,
+      sessionId,
+      sessionStore,
+      permissionMode: workflowPermissionMode(state.inputPermissionMode),
+      ...(options.messages ? { messages: options.messages } : {}),
+      ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
+      ...(providerFactory ? { providerFactory } : {})
+    });
+    bus.subscribe(handleBusEvent);
+    busRef.current = bus;
+    return bus;
+  };
   const interruptAndExit = () => {
+    const bus = busRef.current;
     const session = sessionRef.current;
-    if (!session) {
+    if (!bus && !session) {
       exitTui();
       return;
     }
-    void session.interrupt().finally(() => exitTui());
+    void (bus?.interrupt() ?? session!.interrupt()).finally(() => exitTui());
   };
   const handleCtrlC = () => {
     const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current || planSessionRef.current), hasSelection || selection.hasSelection());
@@ -406,6 +549,8 @@ export function TuiApp({
   const resetSession = () => {
     sessionResultGenerationRef.current += 1;
     queuedDispatchRef.current = undefined;
+    busRef.current?.dispose();
+    busRef.current = undefined;
     sessionRef.current = undefined;
     currentSessionIdRef.current = randomUUID();
     sessionAuditGenerationRef.current += 1;
@@ -449,7 +594,7 @@ export function TuiApp({
             replayRemaining -= 1;
             if (replayRemaining > 0) continue;
             setState((current) => replayEvents.reduce(
-              (replayed, replayEvent) => reduceStoredEvent(
+              (replayed, replayEvent) => reduceBusWorkflowEvent(
                 { ...replayed, runId: session.runId, workflowId: nextWorkflowId },
                 replayEvent
               ),
@@ -457,7 +602,7 @@ export function TuiApp({
             ));
             continue;
           }
-          setState((current) => reduceStoredEvent({ ...current, runId: session.runId, workflowId: nextWorkflowId }, event));
+          setState((current) => reduceBusWorkflowEvent({ ...current, runId: session.runId, workflowId: nextWorkflowId }, event));
         }
       } finally {
         if (listeningSessionGenerationRef.current !== listenerGeneration) return;
@@ -473,6 +618,7 @@ export function TuiApp({
       }
     })();
   };
+  relistenWorkflowRef.current = listenSession;
   const attachSession = (
     session: WorkflowSession,
     nextWorkflowId: string,
@@ -529,29 +675,80 @@ export function TuiApp({
       });
   };
 
-  const startWorkflowInput = async (input: unknown, options: { permissionMode?: Exclude<PermissionMode, "plan">; clearContext?: boolean; preserveLogs?: boolean; inputPermissionMode?: PermissionMode; sessionId?: string } = {}) => {
-    if (!config || !engine) {
-      failUi("TUI is missing workflow configuration");
-      return;
-    }
-    if (!selectedWorkflowId) {
+  const routeBusInput = async (
+    input: unknown,
+    options: {
+      planMode?: boolean;
+      displayText?: string;
+      logUser?: boolean;
+      preserveLogs?: boolean;
+      inputPermissionMode?: PermissionMode;
+    } = {}
+  ): Promise<BusTurnResult> => {
+    const workflowId = selectedWorkflowId ?? state.workflowId;
+    if (!workflowId) {
       setState((current) => ({ ...current, mode: "select_workflow" }));
-      return;
+      throw new Error("No workflow is selected");
     }
-    try {
-      const session = await executionCore.startInteractive(config, selectedWorkflowId, input, {
-        permissionMode: options.permissionMode ?? workflowPermissionMode(state.inputPermissionMode),
-        ...(options.clearContext === true ? { clearContext: true } : {}),
-        sessionId: options.sessionId ?? currentSessionIdRef.current
-      });
-      attachSession(session, selectedWorkflowId, { preserveLogs: options.preserveLogs === true, inputPermissionMode: options.inputPermissionMode });
-    } catch (error) {
-      failUi(error);
+    const displayText = options.displayText?.trim();
+    if (options.logUser !== false && displayText) {
+      setState((current) => appendUserLogMessage({
+        ...current,
+        mode: options.planMode ? "planning" : "running",
+        runState: "thinking",
+        error: undefined
+      }, displayText));
+      requestMainScrollToBottom();
     }
+    const bus = getSessionBus({ workflowId, sessionId: currentSessionIdRef.current });
+    bus.setPermissionMode(workflowPermissionMode(state.inputPermissionMode));
+    const turn = await bus.handleUserMessage(input, { planMode: options.planMode });
+    const workflow = turn.workflow;
+    if (workflow) {
+      if (sessionRef.current !== workflow) {
+        attachSession(workflow, workflowId, {
+          preserveLogs: options.preserveLogs !== false,
+          inputPermissionMode: options.inputPermissionMode ?? state.inputPermissionMode
+        });
+      } else {
+        listenSession(workflow, workflowId);
+        setState((current) => ({
+          ...current,
+          mode: busResultMode(turn.state.status, true),
+          runState: busResultRunState(turn.state.status),
+          workflowId,
+          runId: workflow.runId,
+          currentNodeId: workflow.state.current_node_id,
+          error: undefined
+        }));
+      }
+    } else {
+      setState((current) => ({
+        ...current,
+        mode: busResultMode(turn.state.status, false),
+        runState: busResultRunState(turn.state.status),
+        workflowId,
+        error: undefined
+      }));
+    }
+    requestMainScrollToBottom();
+    if (!options.planMode && turn.directive.type === "plan") {
+      const planTurn = preparePlanTurn(
+        displayText ?? answerText(input),
+        feedbackImages(input),
+        { logUser: false }
+      );
+      if (planTurn) await runPreparedPlanTurn(planTurn, { routed: true });
+    }
+    return turn;
   };
   const startRun = async (text: string, images: PromptInputImageAttachment[] = []) => {
     lastWorkflowPromptRef.current = text;
-    await startWorkflowInput({ request: text, images }, { sessionId: currentSessionIdRef.current });
+    try {
+      await routeBusInput({ request: text, images }, { displayText: text });
+    } catch (error) {
+      failUi(error);
+    }
   };
 
   const resumeRun = async (runId: string) => {
@@ -561,47 +758,47 @@ export function TuiApp({
     }
     try {
       const session = await executionCore.resumeInteractive(config, runId);
-      currentSessionIdRef.current = session.sessionId ?? currentSessionIdRef.current;
+      const sessionId = session.sessionId ?? currentSessionIdRef.current;
+      const [metadata, busTranscript] = await Promise.all([
+        sessionStore.loadMetadata(sessionId),
+        sessionStore.loadBusTranscript(sessionId)
+      ]);
+      const checkpoint = metadata?.bus?.workflow_id === session.state.workflow_id
+        ? metadata.bus
+        : undefined;
+      currentSessionIdRef.current = sessionId;
       setSelectedWorkflowId(session.state.workflow_id);
+      busRef.current?.dispose();
+      busRef.current = undefined;
+      const bus = getSessionBus({
+        workflowId: session.state.workflow_id,
+        sessionId,
+        messages: busTranscript.map((entry) => entry.message),
+        ...(checkpoint ? { checkpoint } : {})
+      });
+      bus.adoptWorkflow(session, checkpoint?.selected_node_id ?? session.state.current_node_id);
       attachSession(session, session.state.workflow_id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setState((current) => ({ ...current, mode: "input", error: message, resumeRuns: [], pendingResumeRunId: undefined, modeBeforeConfirmation: undefined }));
     }
   };
-  const continueSession = (text: string, images: PromptInputImageAttachment[] = []): Promise<void> => {
-    const session = sessionRef.current;
-    const nextWorkflowId = state.workflowId ?? selectedWorkflowId ?? session?.state.workflow_id;
-    if (!session || !nextWorkflowId) {
-      return startRun(text, images);
-    }
-    sessionResultGenerationRef.current += 1;
+  const continueSession = async (text: string, images: PromptInputImageAttachment[] = []): Promise<void> => {
     lastWorkflowPromptRef.current = text;
-    setState((current) => ({ ...current, mode: "running", error: undefined }));
-    const continuation = session.continueWithInput({ request: text, images });
-    listenSession(session, nextWorkflowId);
-    return continuation;
+    await routeBusInput({ request: text, images }, { displayText: text });
   };
   const offerQueuedPrompt = (item: QueuedPrompt) => {
     setQueued((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, delivery: "offering" } : candidate));
-    const session = sessionRef.current;
-    if (!session?.queueUserInput) {
-      setQueued((current) => current.map((candidate) => candidate.id === item.id && candidate.delivery === "offering"
-        ? { ...candidate, delivery: "next_turn" }
-        : candidate));
-      return;
-    }
-    void session.queueUserInput({ request: item.text, images: item.images }, item.id)
-      .then((receipt) => {
-        setQueued((current) => current.map((candidate) => candidate.id === item.id && candidate.delivery === "offering"
-          ? { ...candidate, delivery: receipt.disposition }
-          : candidate));
+    void routeBusInput(
+      { request: item.text, images: item.images },
+      { displayText: item.text }
+    )
+      .then(() => {
+        setQueued((current) => current.filter((candidate) => candidate.id !== item.id));
       })
       .catch((error) => {
-        setQueued((current) => current.map((candidate) => candidate.id === item.id
-          ? { ...candidate, delivery: "next_turn" }
-          : candidate));
-        setState((current) => ({ ...current, error: error instanceof Error ? error.message : String(error) }));
+        setQueued((current) => current.filter((candidate) => candidate.id !== item.id));
+        failUi(error);
       });
   };
   const queueWorkflowInput = (text: string, images: PromptInputImageAttachment[] = []) => {
@@ -610,12 +807,10 @@ export function TuiApp({
     setQueued((current) => [...current, item]);
     offerQueuedPrompt(item);
   };
-  const resumeSession = (text: string, images: PromptInputImageAttachment[] = []): Promise<void> => {
-    const session = sessionRef.current;
-    if (!session) return startRun(text, images);
+  const resumeSession = async (text: string, images: PromptInputImageAttachment[] = []): Promise<void> => {
     lastWorkflowPromptRef.current = text;
-    setState((current) => ({ ...current, mode: "running", questions: [], activityNotice: undefined, error: undefined }));
-    return session.resumeWithUserInput({ answer: text, images });
+    setState((current) => ({ ...current, questions: [], activityNotice: undefined, error: undefined }));
+    await routeBusInput({ answer: text, images }, { displayText: text });
   };
   useEffect(() => {
     const next = queued[0];
@@ -737,7 +932,8 @@ export function TuiApp({
     inputChannel.open();
     planInputChannelRef.current = inputChannel;
     setPlanWorkCount((current) => current + 1);
-    setState((current) => ({ ...current, runState: "thinking" }));
+    setWorkStatusDetail("Plan Mode is thinking");
+    setState((current) => ({ ...current, inputPermissionMode: "plan", runState: "thinking" }));
     let lastUsage: ModelUsage | undefined;
     const renderedAssistantMessages: string[] = [];
     try {
@@ -907,7 +1103,7 @@ export function TuiApp({
           .catch(() => undefined)
           .then(async () => {
             setQueued((current) => current.filter((item) => item.id !== pending.id));
-            await runPreparedPlanTurn(turn);
+            await runPreparedPlanTurn(turn, { routed: true });
           })
           .catch((error) => failUi(error));
       }
@@ -965,9 +1161,36 @@ export function TuiApp({
     }
     return { plan: currentPlan, userMessage, displayText, ensureUserLog: options.ensureUserLog === true };
   };
-  const runPreparedPlanTurn = async (turn: PreparedPlanTurn) => {
-    const currentPlan = planSessionRef.current?.sessionId === turn.plan.sessionId ? planSessionRef.current : turn.plan;
+  const routePreparedPlanTurn = async (turn: PreparedPlanTurn): Promise<boolean> => {
+    const images = Array.isArray(turn.userMessage.content)
+      ? turn.userMessage.content.filter((part) => part.type === "image")
+      : [];
+    setPlanWorkCount((current) => current + 1);
+    try {
+      const routed = await routeBusInput(
+        { request: turn.displayText, images },
+        { planMode: true, logUser: false }
+      );
+      const selected = routed.directive.type === "plan";
+      if (!selected) {
+        setState((current) => ({
+          ...current,
+          mode: "planning",
+          runState: "ready",
+          error: undefined
+        }));
+      }
+      return selected;
+    } finally {
+      setPlanWorkCount((current) => Math.max(0, current - 1));
+    }
+  };
+  const runPreparedPlanTurn = async (turn: PreparedPlanTurn, options: { routed?: boolean } = {}) => {
+    let currentPlan = planSessionRef.current?.sessionId === turn.plan.sessionId ? planSessionRef.current : turn.plan;
     if (currentPlan?.mode === "waiting_approval") return;
+    if (options.routed !== true && !await routePreparedPlanTurn(turn)) return;
+    currentPlan = planSessionRef.current?.sessionId === turn.plan.sessionId ? planSessionRef.current : turn.plan;
+    if (!currentPlan || currentPlan.mode === "waiting_approval") return;
     setState((current) => ({
       ...current,
       mode: "planning",
@@ -1119,27 +1342,53 @@ export function TuiApp({
     if (!inputChannel?.isOpen()) return false;
     const turn = preparePlanTurn(text, images);
     if (!turn) return true;
-    const receipt = inputChannel.offer(turn.userMessage);
-    if (receipt.disposition !== "active_turn") return false;
-    pendingPlanTurnsRef.current.set(receipt.id, turn);
+    const inputId = randomUUID();
     setQueued((current) => [...current, {
-      id: receipt.id,
+      id: inputId,
       text: turn.displayText,
       images: images.filter((image): image is PromptInputImageAttachment => image.type === "image"),
-      delivery: "active_turn"
+      delivery: "offering"
     }]);
+    void routePreparedPlanTurn(turn)
+      .then((selected) => {
+        if (!selected) {
+          setQueued((current) => current.filter((item) => item.id !== inputId));
+          return;
+        }
+        const channel = planInputChannelRef.current;
+        const receipt = channel?.offer(turn.userMessage, inputId);
+        if (receipt?.disposition === "active_turn") {
+          pendingPlanTurnsRef.current.set(inputId, turn);
+          setQueued((current) => current.map((item) => item.id === inputId ? { ...item, delivery: "active_turn" } : item));
+          return;
+        }
+        setQueued((current) => current.map((item) => item.id === inputId ? { ...item, delivery: "next_turn" } : item));
+        planTurnQueueRef.current = planTurnQueueRef.current
+          .catch(() => undefined)
+          .then(async () => {
+            setQueued((current) => current.filter((item) => item.id !== inputId));
+            await runPreparedPlanTurn(turn, { routed: true });
+          })
+          .catch((error) => failUi(error));
+      })
+      .catch((error) => {
+        setQueued((current) => current.filter((item) => item.id !== inputId));
+        failUi(error);
+      });
     return true;
   };
   const approveEnterPlanModeRequest = (requestId: string) => {
     const session = sessionRef.current;
     if (session) abandonedRunIdsRef.current.add(session.runId);
     try {
-      session?.permissions.resolve(requestId, "deny_once");
+      if (busRef.current) busRef.current.resolvePermission(requestId, "deny_once");
+      else session?.permissions.resolve(requestId, "deny_once");
     } catch (error) {
       failUi(error);
       return;
     }
-    void session?.interrupt().catch((error) => failUi(error));
+    const interruption = busRef.current?.interrupt() ?? session?.interrupt();
+    if (interruption) void interruption.catch((error) => failUi(error));
     sessionRef.current = undefined;
     setQueued([]);
     setState((current) => ({
@@ -1160,7 +1409,7 @@ export function TuiApp({
     let pendingQuestion = planQuestionRef.current;
     if (!currentPlan || !pendingQuestion) {
       setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
-      await sessionRef.current?.resumeWithUserInput(answer);
+      await routeBusInput(answer, { displayText: answerText(answer) });
       return;
     }
     const answerQuestions = questionsFromAnswer(answer);
@@ -1170,6 +1419,19 @@ export function TuiApp({
       pendingQuestion = { ...pendingQuestion, questions: fullQuestions };
     }
     planQuestionRef.current = undefined;
+    const questionProgress = pendingQuestion;
+    const restorePendingQuestion = () => {
+      planQuestionRef.current = questionProgress;
+      setState((current) => ({
+        ...current,
+        mode: "question",
+        runState: "ready",
+        questions: questionProgress.index >= questionProgress.questions.length
+          ? [submitQuestionReview(questionProgress.questions, questionProgress.answers)]
+          : nextQuestionSlice(questionProgress.questions, questionProgress.index, questionProgress.answers),
+        error: undefined
+      }));
+    };
     if (isCancelQuestionAnswer(answer)) {
       const continuationMessages = planQuestionContinuationMessages(pendingQuestion.toolCallId, planQuestionCancelPayload());
       const messages = [...planMessagesRef.current, ...continuationMessages];
@@ -1204,6 +1466,15 @@ export function TuiApp({
       return;
     }
     if (isRespondToClaudeQuestionAnswer(answer) || isFinishPlanInterviewQuestionAnswer(answer)) {
+      const interactionText = answerText(answer);
+      const routed = await routeBusInput(
+        { request: `Plan Mode interaction: ${interactionText}` },
+        { planMode: true, displayText: interactionText, logUser: false }
+      );
+      if (routed.directive.type !== "plan") {
+        restorePendingQuestion();
+        return;
+      }
       const toolPayload = planQuestionInterviewFeedback(pendingQuestion.questions, pendingQuestion.answers, isFinishPlanInterviewQuestionAnswer(answer));
       const continuationMessages = planQuestionContinuationMessages(pendingQuestion.toolCallId, toolPayload);
       const messages = [...planMessagesRef.current, ...continuationMessages];
@@ -1249,6 +1520,14 @@ export function TuiApp({
       return;
     }
     const text = answerText(answer);
+    const routed = await routeBusInput(
+      { request: `Plan question answer: ${text}`, answer },
+      { planMode: true, displayText: text, logUser: false }
+    );
+    if (routed.directive.type !== "plan") {
+      restorePendingQuestion();
+      return;
+    }
     const answers = { ...pendingQuestion.answers, [questionText(pendingQuestion.questions[pendingQuestion.index])]: answer };
     const nextIndex = pendingQuestion.index + 1;
     if (nextIndex < pendingQuestion.questions.length) {
@@ -1419,11 +1698,27 @@ export function TuiApp({
       defaultExecutionMode: state.defaultExecutionMode
     });
     if (decision === "stay") {
+      const feedbackDetail = feedbackText(feedback);
+      const busRequest = feedbackDetail
+        ? `Keep planning and revise the current plan with this feedback: ${feedbackDetail}`
+        : "Keep planning and revise the current plan.";
+      const routed = await routeBusInput(
+        { request: busRequest },
+        { planMode: true, displayText: feedbackDetail ?? "Keep planning", logUser: false }
+      );
+      if (routed.directive.type !== "plan") {
+        setState((current) => ({
+          ...current,
+          mode: "waiting_plan_approval",
+          runState: "ready",
+          error: undefined
+        }));
+        return false;
+      }
       const resolved = (await executionCore.resolvePlanApproval(kernelSession, { decision: "stay", feedback })).session;
       const nextPlan = resolved.planState!;
       const rejectionMessage = planRejectionMessage(document, feedback);
       const review = state.pendingReview;
-      const feedbackDetail = feedbackText(feedback);
       const rejectedDocument = feedbackDetail
         ? `${document.trim() || "Einstein wants to exit plan mode"}
 
@@ -1465,14 +1760,19 @@ ${message.detailText}` : ""}` }
       failUi("TUI is missing workflow configuration");
       return false;
     }
-    const transition = await executionCore.resolvePlanApprovalAndStart({
-      session: kernelSession,
-      config,
+    const bus = getSessionBus({
       workflowId: selectedWorkflowId,
+      sessionId: currentPlan.sessionId
+    });
+    if (bus.workflow) abandonedRunIdsRef.current.delete(bus.workflow.runId);
+    const approval = await bus.approvePlan({
+      session: kernelSession,
       permissionMode: mode === "plan" ? "default" : mode,
       clearContext: options.clearContext === true,
       feedback: feedbackText(feedback)
     });
+    const transition = approval.transition;
+    if (!transition) return false;
     const resolved = transition.resolution;
     const nextPlan = resolved.session.planState!;
     const resolvedMessages = planRuntimeNewMessages(planMessagesRef.current, resolved.session.messages);
@@ -1509,7 +1809,20 @@ ${message.detailText}` : ""}` }
     currentSessionIdRef.current = sessionId;
     sessionAuditGenerationRef.current += 1;
     const transcript = await sessionStore.loadTranscript(sessionId);
-    const planTranscript = transcript.filter((entry) => entry.phase !== "workflow");
+    const busMessages = transcript.filter((entry) => entry.phase === "bus").map((entry) => entry.message);
+    const planTranscript = transcript.filter((entry) => entry.phase === "plan" || entry.phase === undefined);
+    const busWorkflowId = metadata?.bus?.workflow_id ?? selectedWorkflowId ?? state.workflowId;
+    if (busWorkflowId && config?.workflows[busWorkflowId] && engine) {
+      setSelectedWorkflowId(busWorkflowId);
+      busRef.current?.dispose();
+      busRef.current = undefined;
+      getSessionBus({
+        workflowId: busWorkflowId,
+        sessionId,
+        messages: busMessages,
+        ...(metadata?.bus ? { checkpoint: metadata.bus } : {})
+      });
+    }
     let plan = metadata?.plan;
     if (!plan) {
       plan = await recoverMissingPlanSession({
@@ -1525,6 +1838,25 @@ ${message.detailText}` : ""}` }
         await resumeRun(metadata.currentRunId);
         return;
       }
+      if (metadata?.bus && busWorkflowId) {
+        const restoredLogs = planLogMessagesFromTranscript(busMessages);
+        setState((current) => ({
+          ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
+          workflowId: busWorkflowId,
+          mode: busResultMode(metadata.bus!.status, false),
+          runState: busResultRunState(metadata.bus!.status),
+          sessionUsage: metadata.usage ?? emptyModelUsage(),
+          modelRequestCount: metadata.modelRequestCount ?? 0,
+          conversation: restoredLogs.flatMap((message) => (
+            message.kind === "user" || message.kind === "assistant"
+              ? [{ kind: message.kind, text: message.text }]
+              : []
+          )),
+          logMessages: restoredLogs,
+          error: undefined
+        }));
+        return;
+      }
       setState((current) => ({ ...current, mode: "input", error: `Session ${sessionId} has no resumable state` }));
       return;
     }
@@ -1536,7 +1868,7 @@ ${message.detailText}` : ""}` }
     const transcriptLogs = planLogMessagesFromTranscript(planMessagesRef.current);
     const base = (current: TuiState) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
-      workflowId: current.workflowId ?? selectedWorkflowId,
+      workflowId: busWorkflowId ?? current.workflowId ?? selectedWorkflowId,
       sessionUsage: metadata?.usage ?? emptyModelUsage(),
       modelRequestCount: metadata?.modelRequestCount ?? 0,
       planSession: plan,
@@ -1623,7 +1955,7 @@ ${message.detailText}` : ""}` }
       return;
     }
     const metadata = await sessionStore.loadMetadata(id);
-    if (metadata?.plan || metadata?.currentRunId) await restorePlanSession(id);
+    if (metadata?.plan || metadata?.bus || metadata?.currentRunId) await restorePlanSession(id);
     else await resumeRun(id);
   };
 
@@ -1640,7 +1972,7 @@ ${message.detailText}` : ""}` }
             sessionId: metadata.sessionId,
             cwd,
             planFilePath: join(sessionStore.sessionDir(metadata.sessionId), "plans", "plan.md"),
-            messages: transcript.filter((item) => item.phase !== "workflow").map((item) => item.message)
+            messages: transcript.filter((item) => item.phase === "plan" || item.phase === undefined).map((item) => item.message)
           });
           if (plan) savePlanSession(plan);
         }
@@ -1648,13 +1980,13 @@ ${message.detailText}` : ""}` }
         return {
           id: `session:${metadata.sessionId}`,
           sessionId: metadata.sessionId,
-          status: plan?.mode ?? run?.status ?? "session",
+          status: plan?.mode ?? metadata.bus?.status ?? run?.status ?? "session",
           workflowRunId: metadata.currentRunId,
           updatedAt: metadata.lastActivityAt,
           inputPreview: plan ? inputPreview(plan.originalInput) : metadata.inputPreview ?? run?.inputPreview ?? metadata.currentRunId ?? metadata.sessionId,
           planMode: plan?.mode
         };
-      }))).filter((entry) => entry.planMode === "planning" || entry.planMode === "waiting_approval" || entry.workflowRunId);
+      }))).filter((entry) => entry.planMode === "planning" || entry.planMode === "waiting_approval" || entry.workflowRunId || entry.status !== "session");
       const resumeRuns = sessionEntries
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || right.id.localeCompare(left.id))
         .slice(0, 30);
@@ -2067,7 +2399,8 @@ ${message.detailText}` : ""}` }
         return;
       }
       try {
-        sessionRef.current?.permissions.resolve(requestId, decision);
+        if (busRef.current) busRef.current.resolvePermission(requestId, decision);
+        else sessionRef.current?.permissions.resolve(requestId, decision);
       } catch (error) {
         failUi(error);
       }
@@ -2096,7 +2429,7 @@ ${message.detailText}` : ""}` }
       if (planQuestionRef.current) void continuePlanQuestion(answer).catch((error) => failUi(error));
       else {
         setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
-        void sessionRef.current?.resumeWithUserInput(answer).catch((error) => failUi(error));
+        void routeBusInput(answer, { displayText: answerText(answer) }).catch((error) => failUi(error));
       }
     },
     editQuestionText,
@@ -2131,7 +2464,8 @@ ${message.detailText}` : ""}` }
     },
     resolveNew: (decision) => {
       if (decision === "new") {
-        void sessionRef.current?.interrupt().finally(() => resetSession());
+        const interruption = busRef.current?.interrupt() ?? sessionRef.current?.interrupt() ?? Promise.resolve();
+        void interruption.finally(() => resetSession());
       } else {
         setState((current) => ({ ...current, mode: current.modeBeforeConfirmation ?? "running", modeBeforeConfirmation: undefined }));
       }
@@ -2139,7 +2473,8 @@ ${message.detailText}` : ""}` }
     resolvePendingResume: (decision) => {
       const runId = state.pendingResumeRunId;
       if (decision === "resume") {
-        void sessionRef.current?.interrupt().finally(() => {
+        const interruption = busRef.current?.interrupt() ?? sessionRef.current?.interrupt() ?? Promise.resolve();
+        void interruption.finally(() => {
           if (runId) void resumeRun(runId);
           else void openResumePicker();
         });
@@ -2199,7 +2534,8 @@ ${message.detailText}` : ""}` }
     }
     if (action.type === "deny_permission") {
       try {
-        sessionRef.current?.permissions.resolve(action.requestId, "deny_once");
+        if (busRef.current) busRef.current.resolvePermission(action.requestId, "deny_once");
+        else sessionRef.current?.permissions.resolve(action.requestId, "deny_once");
       } catch (error) {
         failUi(error);
       }
@@ -2213,8 +2549,8 @@ ${message.detailText}` : ""}` }
       planAbortControllerRef.current?.abort();
       return true;
     }
-    if (state.mode === "running" && sessionRef.current) {
-      void sessionRef.current.interrupt().catch((error) => failUi(error));
+    if (state.mode === "running" && (busRef.current?.workflow || sessionRef.current)) {
+      void (busRef.current?.interrupt() ?? sessionRef.current!.interrupt()).catch((error) => failUi(error));
       setState((current) => ({ ...current, mode: "interrupted", error: undefined }));
       return true;
     }
@@ -2495,6 +2831,18 @@ ${message.detailText}` : ""}` }
     </Box>
   );
 }
+function reduceBusWorkflowEvent(state: TuiState, event: StoredEvent): TuiState {
+  const reduced = reduceStoredEvent(state, event);
+  if (event.type !== "run_started" && event.type !== "user_message" && event.type !== "user_input_injected") {
+    return reduced;
+  }
+  return {
+    ...reduced,
+    conversation: state.conversation,
+    logMessages: state.logMessages
+  };
+}
+
 function activityStatusContent(input: { isWorking: boolean; workStartedAtMs?: number; lastWorkDurationMs?: number; nowMs: number; detail?: string }): ActivityStatus | undefined {
   if (input.isWorking && input.workStartedAtMs !== undefined) {
     return {
@@ -3127,6 +3475,38 @@ function isActiveSessionMode(mode: TuiState["mode"]): boolean {
 function isConfirmationMode(mode: TuiState["mode"]): boolean {
   return mode === "confirm_interrupt" || mode === "confirm_new" || mode === "confirm_delete_session" || mode === "confirm_resume";
 }
+function busResultMode(status: BusTurnResult["state"]["status"], hasWorkflow: boolean): TuiState["mode"] {
+  switch (status) {
+    case "planning": return "planning";
+    case "waiting_user": return hasWorkflow ? "paused" : "input";
+    case "finalized": return "completed";
+    case "failed": return "failed";
+    case "routing":
+    case "running_workflow":
+    case "awaiting_bus":
+      return "running";
+    case "idle":
+      return "input";
+  }
+}
+
+function busResultRunState(status: BusTurnResult["state"]["status"]): TuiRunState {
+  switch (status) {
+    case "routing":
+    case "awaiting_bus":
+      return "thinking";
+    case "running_workflow":
+      return "working";
+    case "waiting_user":
+      return "waiting";
+    case "idle":
+    case "planning":
+    case "finalized":
+    case "failed":
+      return "ready";
+  }
+}
+
 function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiState["mode"] {
   switch (status) {
     case "waiting_user": return "question";
@@ -3135,6 +3515,7 @@ function workflowResultMode(status: WorkflowSession["state"]["status"]): TuiStat
     case "failed": return "failed";
     case "cancelled": return "interrupted";
     case "running":
+    case "awaiting_bus":
     case "pending":
       return "running";
   }
@@ -3149,6 +3530,7 @@ function workflowResultRunState(status: WorkflowSession["state"]["status"]): Tui
     case "cancelled":
       return "ready";
     case "running":
+    case "awaiting_bus":
     case "pending":
       return "working";
   }

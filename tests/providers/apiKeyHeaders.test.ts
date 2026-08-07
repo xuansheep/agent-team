@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildApiKeyHeaders, providerHttpError } from "../../src/providers/http.js";
 import { configSchema, providerSchema } from "../../src/config/schema.js";
 import { createProvider } from "../../src/providers/registry.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 describe("buildApiKeyHeaders", () => {
   it("uses bearer authorization headers", () => {
@@ -54,6 +55,7 @@ function runtimeConfig(apiKey: string) {
       roles: { dev: { system_prompt: "Build safely." } },
       workflows: { delivery: { nodes: [{ id: "dev", role: "dev", provider: "default" }] } }
     }),
+    dispatcher: testDispatcher,
     providers: {
       default: providerSchema.parse({
         type: "openai-compatible",

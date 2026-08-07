@@ -8,6 +8,7 @@ import { planModeExitHandoffMarker, planModeExitPlanExistsMarker } from "../../s
 import { RunStore } from "../../src/storage/runStore.js";
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../../src/workflow/state.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 class FakeProvider implements ModelProvider {
   async generate() {
@@ -32,6 +33,7 @@ describe("WorkflowEngine", () => {
 
     await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" }, { sessionId });
@@ -50,11 +52,12 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } }, b: { description: "", system_prompt: "B", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b"]);
   });
 
@@ -63,6 +66,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
         b: { description: "", system_prompt: "B", requires: { tool_calling: false, vision: false } },
@@ -71,7 +75,7 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }, { id: "c", role: "c", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b", "c"]);
   });
 
@@ -88,6 +92,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
         test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } },
@@ -96,7 +101,7 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }, { id: "final", role: "final", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["dev", "test", "final"]);
     assert.equal(result.attempts.find((attempt) => attempt.node_id === "dev")?.activation, 2);
     assert.equal(result.attempts.find((attempt) => attempt.node_id === "test")?.activation, 2);
@@ -115,6 +120,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
         test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } }
@@ -137,6 +143,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
         test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } }
@@ -161,6 +168,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
         b: { description: "", system_prompt: "B", requires: { tool_calling: false, vision: false } }
@@ -168,7 +176,7 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["a", "b"]);
     assert.equal(result.attempts.every((attempt) => attempt.activation === 2), true);
     assert.equal(calls, 4);
@@ -189,6 +197,7 @@ describe("WorkflowEngine", () => {
 
     await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" });
@@ -244,6 +253,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", {
@@ -252,7 +262,7 @@ describe("WorkflowEngine", () => {
       plan_requested_permissions: [{ tool: "Bash", prompt: "run tests" }]
     });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.equal(calls, 2);
 
     const runId = await latestRunId(runRoot);
@@ -281,6 +291,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
         b: { description: "", system_prompt: "B", requires: { tool_calling: true, vision: false } }
@@ -294,7 +305,7 @@ describe("WorkflowEngine", () => {
       plan_requested_permissions: [{ tool: "Bash", prompt: "run tests" }]
     });
 
-    assert.equal(failed.status, "completed");
+    assert.equal(failed.status, "awaiting_bus");
     // The runtime treats Bash and PowerShell alike, so an approved prompt must cover both or it
     // is dead on Windows, where the model reaches for PowerShell.
     assert.deepEqual(failed.plan_requested_permission_rules, ["Bash(prompt:run tests)", "PowerShell(prompt:run tests)"]);
@@ -319,11 +330,12 @@ describe("WorkflowEngine", () => {
     const result = await engine.run({
       global_prompt: "Global safety rules.",
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "Role A", requires: { tool_calling: false, vision: false } }, b: { description: "", system_prompt: "Role B", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.equal(systemPrompts.length, 2);
     assert.match(systemPrompts[0] ?? "", /^Global safety rules\.\n\nRole A/);
     assert.match(systemPrompts[1] ?? "", /^Global safety rules\.\n\nRole B/);
@@ -344,6 +356,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FeedbackProvider(), cwd: process.cwd(), runRoot: ".tmp/test-runs" });
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
         test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } },
@@ -352,7 +365,7 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }, { id: "final", role: "final", provider: "default", permission_mode: "default" }], edges: [{ from: "dev", to: "test", condition: "success" }, { from: "test", to: "final", condition: "success" }, { from: "test", to: "dev", condition: "failure" }] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.equal(result.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(result.attempts.find((attempt) => attempt.node_id === "dev")?.activation, 2);
   });
@@ -375,6 +388,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => new WaitingProvider(), cwd: process.cwd(), runRoot });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
     };
@@ -385,7 +399,7 @@ describe("WorkflowEngine", () => {
     const runId = await latestRunId(runRoot);
     const resumed = await engine.resume(config, "flow", runId, { answer: "operators" });
 
-    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.status, "awaiting_bus");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "product").length, 1);
     const resumedMessages = JSON.stringify((requests[1] as { messages?: unknown[] }).messages);
     assert.match(resumedMessages, /need detail/);
@@ -397,11 +411,12 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" }, { permissionMode: "fullAccess" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.equal(result.run_permission_mode, "fullAccess");
   });
 
@@ -416,6 +431,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/clear-context-plan-${Date.now()}` });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default" as const, permission_mode: "default" as const }], edges: [] } }
     };
@@ -457,6 +473,7 @@ describe("WorkflowEngine", () => {
 
     await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "Ready empty exit.", [planModeExitHandoffMarker]: true, [planModeExitPlanExistsMarker]: false });
@@ -491,11 +508,12 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" }, { permissionMode: "fullAccess" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.equal(calls, 2);
   });
 
@@ -522,11 +540,12 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "fullAccess" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     const runId = await latestRunId(runRoot);
     const events = await new RunStore(runRoot).loadEvents(runId);
     const started = events.find((event) => event.type === "managed_process_started");
@@ -557,11 +576,12 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" }, { permissionMode: "fullAccess" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.equal(result.run_permission_mode, "fullAccess");
     assert.equal(calls, 2);
     const firstSystem = requests[0]?.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n") ?? "";
@@ -579,7 +599,7 @@ describe("WorkflowEngine", () => {
     assert.equal(persisted.resume_checkpoint?.dialogue_messages, undefined);
   });
 
-  it("completes only after a complete node returns a summary document", async () => {
+  it("carries a node summary document to the bus boundary without finalizing the task", async () => {
     let calls = 0;
     const provider: ModelProvider = {
       async generate() {
@@ -592,14 +612,15 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
         final_delivery: { description: "", system_prompt: "F", requires: { tool_calling: false, vision: false } }
       },
-      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default", mode: "complete" }], edges: [{ from: "dev", to: "final_delivery", condition: "success" }] } }
+      workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default" }], edges: [{ from: "dev", to: "final_delivery", condition: "success" }] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.deepEqual(result.attempts.map((attempt) => attempt.node_id), ["dev", "final_delivery"]);
     const finalResult = result.attempts.at(-1)?.result as { document?: string; deliverables?: Array<{ artifact_id: string; description: string }> };
     assert.match(String(finalResult.document), /Delivery Summary/);
@@ -609,7 +630,8 @@ describe("WorkflowEngine", () => {
     assert.match(await readFile(artifactPath, "utf8"), /Delivery Summary/);
     assert.equal(finalResult.deliverables?.some((item) => item.artifact_id === "final_delivery/node-output-1-a1.md@r1"), true);
     const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; artifact_id?: string });
-    assert.ok(events.some((event) => event.type === "complete_summary_available"));
+    assert.equal(events.some((event) => event.type === "complete_summary_available"), false);
+    assert.equal(events.some((event) => event.type === "run_awaiting_bus"), true);
     assert.equal(events.some((event) => event.type === "artifact_created" && event.artifact_id === "final_delivery/node-output-1-a1.md@r1"), true);
   });
 
@@ -630,6 +652,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
         test: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } }
@@ -637,7 +660,7 @@ describe("WorkflowEngine", () => {
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }, { id: "test", role: "test", provider: "default", permission_mode: "default" }], edges: [{ from: "dev", to: "test", condition: "success" }, { from: "test", to: "dev", condition: "failure" }] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     const devAttempts = result.attempts.filter((attempt) => attempt.node_id === "dev");
     assert.equal(devAttempts.length, 1);
     assert.equal(devAttempts[0]?.activation, 2);
@@ -662,17 +685,18 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default", permissions: { allow: ["ArtifactWrite"], ask: [], deny: [] } }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     const devResult = result.attempts.at(-1)?.result as { deliverables?: Array<{ artifact_id: string; description: string }> };
     assert.deepEqual(devResult.deliverables, [{ artifact_id: "dev/report.md@r1", description: "User report" }]);
     const runId = await latestRunId(runRoot);
     assert.equal(await readFile(join(await runDirForRun(runRoot, runId), "artifacts", "dev", "r0001-report.md"), "utf8"), "# Report\nDone.");
   });
-  it("marks complete nodes without documents as waiting for user input", async () => {
+  it("keeps nodes without explicit documents at the bus boundary with a fallback deliverable", async () => {
     const provider: ModelProvider = {
       async generate() {
         return { content: JSON.stringify({ direction: "forward", summary: "missing document", handoff: { instruction: "done" } }) };
@@ -683,23 +707,27 @@ describe("WorkflowEngine", () => {
 
     const state = await engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { final_delivery: { description: "", system_prompt: "F", requires: { tool_calling: false, vision: false } } },
-      workflows: { flow: { nodes: [{ id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default", mode: "complete" }], edges: [] } }
+      workflows: { flow: { nodes: [{ id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x" });
 
-    assert.equal(state.status, "paused");
-    assert.equal(state.attempts.at(-1)?.status, "failure");
+    assert.equal(state.status, "awaiting_bus");
+    assert.equal(state.attempts.at(-1)?.status, "completed");
     assert.equal(state.current_node_id, "final_delivery");
     assert.equal(state.resume_checkpoint?.node_id, "final_delivery");
+    const nodeResult = state.attempts.at(-1)?.result as { deliverables?: Array<{ artifact_id: string }> };
+    assert.equal(nodeResult.deliverables?.[0]?.artifact_id, "final_delivery/node-output-1-a1.md@r1");
 
     const runId = await latestRunId(runRoot);
     const persisted = JSON.parse(await readFile(join(await runDirForRun(runRoot, runId), "state.json"), "utf8")) as { status: string; attempts: Array<{ status: string }> };
-    assert.equal(persisted.status, "paused");
-    assert.equal(persisted.attempts.at(-1)?.status, "failure");
+    assert.equal(persisted.status, "awaiting_bus");
+    assert.equal(persisted.attempts.at(-1)?.status, "completed");
 
     const events = (await readFile(join(await runDirForRun(runRoot, runId), "events.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; status?: string });
-    assert.ok(events.some((event) => event.type === "node_completed" && event.status === "failure"));
-    assert.ok(events.some((event) => event.type === "node_waiting_user"));
+    assert.ok(events.some((event) => event.type === "node_completed" && event.status === "completed"));
+    assert.ok(events.some((event) => event.type === "run_awaiting_bus"));
+    assert.equal(events.some((event) => event.type === "node_waiting_user"), false);
   });
 
 
@@ -715,6 +743,7 @@ describe("WorkflowEngine", () => {
 
     const state = await engine.run({
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
     }, "flow", { request: "x" });
@@ -737,6 +766,7 @@ describe("WorkflowEngine", () => {
 
     await assert.rejects(() => engine.run({
       providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" }], edges: [] } }
     }, "flow", { request: "x", images: ["README.md"] }), /requires vision/);
@@ -754,6 +784,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
     };
@@ -764,7 +795,7 @@ describe("WorkflowEngine", () => {
     await import("node:fs/promises").then(({ writeFile }) => writeFile(join(runDir, "state.json"), `${JSON.stringify({ ...run, status: "pending", current_node_id: "dev", resume_checkpoint: { node_id: "dev", handoff: run.handoff } }, null, 2)}\n`, "utf8"));
     const resumed = await engine.resume(config, "flow", runId, {});
 
-    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.status, "awaiting_bus");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(resumed.attempts.find((attempt) => attempt.node_id === "dev")?.activation, 2);
   });
@@ -786,6 +817,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
     };
@@ -802,7 +834,7 @@ describe("WorkflowEngine", () => {
 
     const resumed = await engine.resume(config, "flow", runId, { answer: "adding more context for rework" });
 
-    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.status, "awaiting_bus");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(resumed.current_node_id, "dev");
     assert.equal(resumed.resume_checkpoint?.node_id, "dev");
@@ -832,6 +864,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
       },
@@ -845,7 +878,7 @@ describe("WorkflowEngine", () => {
     const runId = await latestRunId(runRoot);
     const resumed = await engine.resume(config, "flow", runId, { answer: "add unit tests and retry" });
 
-    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.status, "awaiting_bus");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(calls, 2);
 
@@ -904,13 +937,14 @@ describe("WorkflowEngine", () => {
           capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true }
         }
       },
+      dispatcher: testDispatcher,
       roles: { ui: role, developer: role, tester: role },
       workflows: {
         flow: {
           nodes: [
             { id: "ui", role: "ui", provider: "default", permission_mode: "default" as const },
             { id: "developer", role: "developer", provider: "default", permission_mode: "default" as const },
-            { id: "tester", role: "tester", provider: "default", permission_mode: "default" as const, mode: "complete" as const }
+            { id: "tester", role: "tester", provider: "default", permission_mode: "default" as const }
           ],
           edges: []
         }
@@ -951,7 +985,7 @@ describe("WorkflowEngine", () => {
 
     const completed = await engine.resume(config, "flow", runId, { answer: "继续修复" });
 
-    assert.equal(completed.status, "completed");
+    assert.equal(completed.status, "awaiting_bus");
     const resumedDeveloperContext = requests[4]?.messages.find((message) =>
       message.role === "user"
       && typeof message.content === "string"
@@ -984,6 +1018,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
     };
@@ -1016,7 +1051,7 @@ describe("WorkflowEngine", () => {
 
     const resumed = await engine.resume(config, "flow", runId, { answer: "为什么执行失败了" });
 
-    assert.equal(resumed.status, "completed");
+    assert.equal(resumed.status, "awaiting_bus");
     assert.equal(resumed.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
     assert.equal(resumed.current_node_id, "dev");
     assert.equal(resumed.resume_checkpoint?.node_id, "dev");
@@ -1061,6 +1096,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const state = await engine.run({
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: {
         developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } },
         tester: { description: "", system_prompt: "T", requires: { tool_calling: false, vision: false } }
@@ -1068,13 +1104,13 @@ describe("WorkflowEngine", () => {
       workflows: { flow: {
         nodes: [
           { id: "developer", role: "developer", provider: "default", permission_mode: "fullAccess" as const },
-          { id: "tester", role: "tester", provider: "default", permission_mode: "fullAccess" as const, mode: "complete" as const }
+          { id: "tester", role: "tester", provider: "default", permission_mode: "fullAccess" as const }
         ],
         edges: []
       } }
     }, "flow", { request: "build" });
 
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(calls, 3);
     const testerContext = requests[2]?.messages.find((message) => message.role === "user" && !message.metadata?.runtimeAttachment);
     assert.equal(typeof testerContext?.content, "string");
@@ -1100,6 +1136,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const state = await engine.run({
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: {
         workflow_permissions: { allow: [], ask: [], deny: ["Bash(rm *)"] },
@@ -1108,7 +1145,7 @@ describe("WorkflowEngine", () => {
       } }
     }, "flow", { request: "build" });
 
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(calls, 2);
     const runId = await latestRunId(runRoot);
     const events = await new RunStore(runRoot).loadEvents(runId);
@@ -1137,6 +1174,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const state = await engine.run({
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      dispatcher: testDispatcher,
       roles: { developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: {
         nodes: [{ id: "developer", role: "developer", provider: "default", permission_mode: "fullAccess" as const, permissions: { allow: ["Bash"], ask: [], deny: ["Bash(rm *)"] } }],
@@ -1144,7 +1182,7 @@ describe("WorkflowEngine", () => {
       } }
     }, "flow", { request: "build" });
 
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(calls, 2);
     const runId = await latestRunId(runRoot);
     const events = await new RunStore(runRoot).loadEvents(runId);

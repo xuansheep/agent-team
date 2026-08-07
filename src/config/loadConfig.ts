@@ -26,9 +26,13 @@ export async function loadConfig(configDir: string, options: LoadConfigOptions =
   ]);
   const projectConfig = configSchema.parse({ roles, workflows });
   const resolvedSettings = resolveSettings({ cwd, userSettings: options.settings });
+  if (!resolvedSettings.dispatcher) {
+    throw new Error("Missing required dispatcher configuration in ~/.einsteins/settings.json");
+  }
   const config: AgentTeamConfig = {
     ...projectConfig,
-    providers: applyModelSettings(resolvedSettings.providers ?? {}, resolvedSettings.models)
+    providers: applyModelSettings(resolvedSettings.providers ?? {}, resolvedSettings.models),
+    dispatcher: resolvedSettings.dispatcher
   };
   const systemPrompt = (await readFile(promptPath, "utf8")).trim();
   const agentsFiles = await getAgentsMemoryFiles({
@@ -95,6 +99,7 @@ async function loadWorkflows(workflowsDir: string): Promise<AgentTeamConfig["wor
       nodes: workflow.nodes,
       edges: [],
       max_rework_cycles: workflow.max_rework_cycles,
+      ...(workflow.dispatcher ? { dispatcher: workflow.dispatcher } : {}),
       ...(workflow.workflow_permissions ? { workflow_permissions: workflow.workflow_permissions } : {})
     };
   }

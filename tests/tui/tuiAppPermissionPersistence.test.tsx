@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { render } from "ink-testing-library";
 import { TuiApp } from "../../src/tui/TuiApp.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 const config = {
   providers: {
@@ -16,6 +17,7 @@ const config = {
       capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true }
     }
   },
+  dispatcher: testDispatcher,
   roles: {
     product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } }
   },

@@ -10,9 +10,10 @@ import { acquireFileLease } from "./fileLease.js";
 import { projectDirectory, projectPath, ProjectStorageContext, sessionDirectory } from "./projectStorage.js";
 import { AuditStore } from "../audit/auditStore.js";
 import type { AuditEvent } from "../audit/auditEvent.js";
+import type { SessionBusCheckpoint } from "../runtime/busTypes.js";
 import { kernelSessionCheckpoint, restoreKernelSession as restoreKernelSessionFromCheckpoint, type KernelSession, type KernelSessionCheckpoint } from "../kernel/session.js";
 
-export type TranscriptPhase = "plan" | "workflow";
+export type TranscriptPhase = "bus" | "plan" | "workflow";
 
 export type TranscriptEntry = {
   ts: string;
@@ -40,6 +41,7 @@ export type SessionMetadata = {
   runIds: string[];
   inputPreview?: string;
   plan?: PlanSessionState;
+  bus?: SessionBusCheckpoint;
   execution?: KernelSessionCheckpoint;
   usage?: ModelUsageTotals;
   modelRequestCount?: number;
@@ -78,6 +80,38 @@ export class SessionStore {
       ...(runId ? { runId } : {})
     } satisfies TranscriptEntry]);
     await this.touch(sessionId);
+  }
+
+  async appendBusTranscript(sessionId: string, message: ModelMessage, runId?: string): Promise<void> {
+    const transcriptPath = join(this.sessionDir(sessionId), "transcript.jsonl");
+    await appendJsonLines(transcriptPath, [{
+      ts: new Date().toISOString(),
+      message,
+      phase: "bus",
+      ...(runId ? { runId } : {})
+    } satisfies TranscriptEntry]);
+    const preview = message.role === "user"
+      ? (typeof message.content === "string"
+          ? message.content
+          : message.content.find((part) => part.type === "text")?.text)?.trim()
+      : undefined;
+    await this.updateMetadata(sessionId, (metadata) => (
+      preview && !metadata.inputPreview
+        ? { ...metadata, inputPreview: preview.slice(0, 200) }
+        : metadata
+    ));
+  }
+
+  async loadBusTranscript(sessionId: string): Promise<TranscriptEntry[]> {
+    return (await this.loadTranscript(sessionId)).filter((entry) => entry.phase === "bus");
+  }
+
+  async saveBusState(sessionId: string, bus: SessionBusCheckpoint): Promise<SessionMetadata> {
+    return this.saveMetadata(sessionId, { bus });
+  }
+
+  async loadBusState(sessionId: string): Promise<SessionBusCheckpoint | undefined> {
+    return (await this.loadMetadata(sessionId))?.bus;
   }
 
   async appendAudit(sessionId: string, event: AuditEvent): Promise<void> {

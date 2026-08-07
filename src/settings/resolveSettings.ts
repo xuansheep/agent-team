@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve } from "node:path";
-import { providerSchema } from "../config/schema.js";
+import { dispatcherConfigSchema, providerSchema, type DispatcherConfig, type DispatcherOverride } from "../config/schema.js";
 import { AgentTeamSettings, ProjectAgentTeamSettings, ResolvedAgentTeamSettings, projectSettingsSchema, settingsSchema } from "./types.js";
 
 export type ResolveSettingsInput = {
@@ -33,13 +33,15 @@ export function resolvePlansDirectory(cwd: string, plansDirectory: string): stri
 function mergeSettings(userSettings: AgentTeamSettings, projectSettings: ProjectAgentTeamSettings): ResolvedAgentTeamSettings {
   const { mcpServers: _userMcpServers, projects: _projects, ...userRuntimeSettings } = userSettings;
   const { mcpServers: _projectMcpServers, ...projectRuntimeSettings } = projectSettings;
+  const providers = userRuntimeSettings.providers
+    ? Object.fromEntries(Object.entries(userRuntimeSettings.providers).map(([id, provider]) => [id, providerSchema.parse(provider)]))
+    : undefined;
   return {
     ...userRuntimeSettings,
     ...projectRuntimeSettings,
-    providers: userRuntimeSettings.providers
-      ? Object.fromEntries(Object.entries(userRuntimeSettings.providers).map(([id, provider]) => [id, providerSchema.parse(provider)]))
-      : undefined,
+    providers,
     permissions: mergeObject(userRuntimeSettings.permissions, projectRuntimeSettings.permissions),
+    dispatcher: mergeDispatcher(userRuntimeSettings.dispatcher, projectRuntimeSettings.dispatcher, providers),
     models: mergeModels(userRuntimeSettings.models, projectRuntimeSettings.models),
     planMode: mergeObject(userRuntimeSettings.planMode, projectRuntimeSettings.planMode)
   };
@@ -55,6 +57,26 @@ function mergeModels(userModels: AgentTeamSettings["models"], projectModels: Pro
     autoCompactTokenLimits: mergeObject(userModels?.autoCompactTokenLimits, projectModels?.autoCompactTokenLimits),
     compactionHashes: mergeObject(userModels?.compactionHashes, projectModels?.compactionHashes)
   };
+}
+
+function mergeDispatcher(
+  base: DispatcherConfig | undefined,
+  override: DispatcherOverride | undefined,
+  providers: ResolvedAgentTeamSettings["providers"]
+): DispatcherConfig | undefined {
+  const providerId = override?.provider
+    ?? base?.provider
+    ?? (providers?.default ? "default" : Object.keys(providers ?? {})[0]);
+  const provider = providerId ? providers?.[providerId] : undefined;
+  if (!base && !override && !provider) return undefined;
+  const providerChanged = Boolean(override?.provider && override.provider !== base?.provider);
+  return dispatcherConfigSchema.parse({
+    ...(providerId ? { provider: providerId } : {}),
+    ...(provider ? { model: provider.default_model, effort: provider.effort ?? "medium", confidence_threshold: 0.8 } : {}),
+    ...base,
+    ...override,
+    ...(providerChanged && provider && !override?.model ? { model: provider.default_model } : {})
+  });
 }
 
 function mergeObject<T extends Record<string, unknown>>(base: T | undefined, override: T | undefined): T | undefined {

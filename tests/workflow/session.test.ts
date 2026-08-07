@@ -6,6 +6,7 @@ import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../../src/workflow/state.js";
 import { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { RunStore } from "../../src/storage/runStore.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 describe("WorkflowSession", () => {
 
@@ -35,6 +36,9 @@ describe("WorkflowSession", () => {
 
     }
 
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "awaiting_bus");
+    await session.finalize("test summary");
     const result = await session.result;
 
     assert.equal(result.status, "completed");
@@ -79,7 +83,8 @@ describe("WorkflowSession", () => {
     release();
     await interruption;
 
-    await promiseSettlesSoon(session.result);
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "paused");
 
     const store = new RunStore(".tmp/session-interrupt-runs");
     const state = await store.loadState(session.runId);
@@ -149,6 +154,9 @@ describe("WorkflowSession", () => {
     const interruption = session.interrupt();
     const resumption = session.resumeWithUserInput({ answer: "continue now" });
     await Promise.all([interruption, resumption]);
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "awaiting_bus");
+    await session.finalize("test summary");
     const result = await session.result;
     const events = await new RunStore(runRoot).loadEvents(session.runId);
     assert.equal(result.status, "completed");
@@ -188,11 +196,15 @@ describe("WorkflowSession", () => {
     const interruption = session.interrupt();
     release();
     await interruption;
-    await promiseSettlesSoon(session.result);
+    const interruptedBoundary = await session.waitForBoundary();
+    assert.equal(interruptedBoundary.status, "paused");
     const interruptedState = await new RunStore(runRoot).loadState(session.runId);
     assert.equal(interruptedState.status, "paused");
 
     await session.resumeWithUserInput({ answer: "resume from here" });
+    const resumedBoundary = await session.waitForBoundary();
+    assert.equal(resumedBoundary.status, "awaiting_bus");
+    await session.finalize("test summary");
 
     const store = new RunStore(runRoot);
     const events = await store.loadEvents(session.runId);
@@ -254,7 +266,8 @@ describe("WorkflowSession", () => {
 
     await session.interrupt();
 
-    await promiseSettlesSoon(session.result);
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "paused");
 
   });
 
@@ -283,7 +296,8 @@ describe("WorkflowSession", () => {
       if (event.type === "node_waiting_user") break;
     }
 
-    await promiseSettlesSoon(session.result);
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "paused");
     const store = new RunStore(runRoot);
     const state = await store.loadState(session.runId);
     const events = await store.loadEvents(session.runId);
@@ -352,6 +366,9 @@ describe("WorkflowSession", () => {
 
     }
 
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "awaiting_bus");
+    await session.finalize("test summary");
     const result = await session.result;
 
     assert.equal(result.status, "completed");
@@ -399,7 +416,8 @@ describe("WorkflowSession", () => {
     };
     const workflowConfig = {
       providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
-      roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
+    dispatcher: testDispatcher,
+    roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const, permissions: { allow: ["AskUserQuestion"], ask: [], deny: [] } }], edges: [] } }
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
@@ -434,6 +452,9 @@ describe("WorkflowSession", () => {
     assert.equal(waitingState.attempts.at(-1)?.status, "waiting_user");
 
     await session.resumeWithUserInput({ answer: "默认方案" });
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "awaiting_bus");
+    await session.finalize("test summary");
     const result = await session.result;
     assert.equal(result.status, "completed");
     assert.equal(calls, 2);
@@ -467,6 +488,9 @@ describe("WorkflowSession", () => {
 
     const original = await engine.startInteractive(config(), "flow", { request: "x" });
 
+    const boundary = await original.waitForBoundary();
+    assert.equal(boundary.status, "awaiting_bus");
+    await original.finalize("test summary");
     const completed = await original.result;
 
     assert.equal(completed.status, "completed");
@@ -526,6 +550,9 @@ describe("WorkflowSession", () => {
     const teamConfig = config();
     const original = await new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot })
       .startInteractive(teamConfig, "flow", { request: "initial request" });
+    const firstBoundary = await original.waitForBoundary();
+    assert.equal(firstBoundary.status, "awaiting_bus");
+    await original.finalize("initial test summary");
     const firstCompletion = await original.result;
     const firstCursor = firstCompletion.resume_checkpoint?.dialogue_cursor ?? 0;
 
@@ -542,6 +569,8 @@ describe("WorkflowSession", () => {
     const continuation = restored.continueWithInput({ request: "follow-up request" });
     const firstContinuationEvent = await restored.events[Symbol.asyncIterator]().next();
     await continuation;
+    const continuationBoundary = await restored.waitForBoundary();
+    assert.equal(continuationBoundary.status, "awaiting_bus");
 
     const store = new RunStore(runRoot);
     const state = await store.loadState(original.runId);
@@ -551,7 +580,7 @@ describe("WorkflowSession", () => {
     assert.equal(restored.runId, original.runId);
     assert.equal(firstContinuationEvent.done, false);
     assert.equal(firstContinuationEvent.value?.type, "user_message");
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(state.current_node_id, "dev");
     assert.equal(devAttempt?.attempt, 1);
     assert.equal(devAttempt?.activation, 2);
@@ -559,7 +588,7 @@ describe("WorkflowSession", () => {
     assert.match(JSON.stringify(requests.at(-1)?.messages), /follow-up request/);
     assert.equal(events.filter((event) => event.type === "run_started").length, 1);
     assert.equal(events.filter((event) => event.type === "run_continued").length, 0);
-    assert.equal(events.filter((event) => event.type === "run_completed").length, 2);
+    assert.equal(events.filter((event) => event.type === "run_completed").length, 1);
     assert.deepEqual(events.filter((event) => event.type === "user_message").map((event) => event.text), ["follow-up request"]);
     assert.equal(events.some((event) => event.type === "node_completed" && event.status === "failure"), false);
   });
@@ -590,6 +619,9 @@ describe("WorkflowSession", () => {
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const session = await engine.startInteractive(twoNodeConfig(), "flow", { request: "initial request" });
+    const initialBoundary = await session.waitForBoundary();
+    assert.equal(initialBoundary.status, "awaiting_bus");
+    await session.finalize("initial test summary");
     await session.result;
     for await (const _event of session.events) {
       // Drain the first completed segment before subscribing to the next one.
@@ -597,12 +629,14 @@ describe("WorkflowSession", () => {
     const continuation = session.continueWithInput({ request: "follow-up request" });
     const firstContinuationEvent = await session.events[Symbol.asyncIterator]().next();
     await continuation;
+    const continuationBoundary = await session.waitForBoundary();
+    assert.equal(continuationBoundary.status, "awaiting_bus");
 
     const store = new RunStore(runRoot);
     const state = await store.loadState(session.runId);
     const events = await store.loadEvents(session.runId);
 
-    assert.equal(state.status, "completed");
+    assert.equal(state.status, "awaiting_bus");
     assert.equal(firstContinuationEvent.done, false);
     assert.equal(firstContinuationEvent.value?.type, "user_message");
     assert.equal(state.rework_count, 1);
@@ -613,7 +647,7 @@ describe("WorkflowSession", () => {
       ["dev", 1, 3]
     ]);
     assert.equal(events.filter((event) => event.type === "run_started").length, 1);
-    assert.equal(events.filter((event) => event.type === "run_completed").length, 2);
+    assert.equal(events.filter((event) => event.type === "run_completed").length, 1);
   });
 
   it("restores a stale running session as waiting for user input without invoking the provider", async () => {
@@ -647,7 +681,8 @@ describe("WorkflowSession", () => {
       runRoot
     }).resumeInteractive(teamConfig, run.runId);
 
-    await promiseSettlesSoon(resumed.result);
+    const boundary = await resumed.waitForBoundary();
+    assert.equal(boundary.status, "paused");
     const events = await store.loadEvents(run.runId);
     const state = await store.loadState(run.runId);
 
@@ -682,13 +717,17 @@ describe("WorkflowSession", () => {
       if (event.type === "node_waiting_user") break;
     }
 
-    await promiseSettlesSoon(session.result);
+    const waitingBoundary = await session.waitForBoundary();
+    assert.equal(waitingBoundary.status, "paused");
     const store = new RunStore(runRoot);
-    let state = await store.loadState(session.runId);
+    const state = await store.loadState(session.runId);
     assert.equal(state.status, "paused");
     assert.equal(state.attempts.at(-1)?.status, "failure");
 
     await session.resumeWithUserInput({ answer: "adding required context for rework" });
+    const resumedBoundary = await session.waitForBoundary();
+    assert.equal(resumedBoundary.status, "awaiting_bus");
+    await session.finalize("test summary");
 
     const result = await session.result;
     assert.equal(result.status, "completed");
@@ -723,7 +762,8 @@ describe("WorkflowSession", () => {
     const interruption = session.interrupt();
     release();
     await interruption;
-    await promiseSettlesSoon(session.result);
+    const interruptedBoundary = await session.waitForBoundary();
+    assert.equal(interruptedBoundary.status, "paused");
 
     const resumed = await new WorkflowEngine({
       providerFactory: () => ({
@@ -742,7 +782,8 @@ describe("WorkflowSession", () => {
       if (event.type === "node_waiting_user") break;
     }
 
-    await promiseSettlesSoon(resumed.result);
+    const resumedBoundary = await resumed.waitForBoundary();
+    assert.equal(resumedBoundary.status, "paused");
     const state = await new RunStore(runRoot).loadState(session.runId);
     assert.equal(state.status, "paused");
     assert.equal(state.attempts.filter((attempt) => attempt.node_id === "dev").length, 1);
@@ -785,6 +826,9 @@ describe("WorkflowSession", () => {
     assert.deepEqual(receipt, { id: "input-running-1", disposition: "active_turn" });
     releaseFirst();
 
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "awaiting_bus");
+    await session.finalize("test summary");
     const result = await session.result;
     const events = await new RunStore(runRoot).loadEvents(session.runId);
     assert.equal(result.status, "completed");
@@ -796,6 +840,88 @@ describe("WorkflowSession", () => {
     );
   });
 
+  it("persists node reassignment before execution and preserves inline images", async () => {
+    let calls = 0;
+    let secondRequestStarted = false;
+    let releaseSecondRequest!: () => void;
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        requests.push(request);
+        if (calls === 2) {
+          secondRequestStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseSecondRequest = resolve;
+          });
+        }
+        return {
+          content: JSON.stringify({
+            direction: "forward",
+            summary: `call ${calls}`,
+            handoff: { instruction: "done" }
+          })
+        };
+      }
+    };
+    const runRoot = `.tmp/session-bus-dispatch-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const workflowConfig = {
+      providers: {
+        default: {
+          type: "openai-compatible" as const,
+          base_url: "https://api.example.test/v1",
+          api_key: "test-key",
+          default_model: "gpt-test",
+          capabilities: { tool_calling: false, vision: true, streaming: false, json_schema_output: true }
+        }
+      },
+      dispatcher: testDispatcher,
+      roles: {
+        dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
+      },
+      workflows: {
+        flow: {
+          nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }],
+          edges: []
+        }
+      }
+    };
+    const session = await new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot })
+      .startInteractive(workflowConfig, "flow", { request: "initial" });
+
+    const initialBoundary = await session.waitForBoundary();
+    assert.equal(initialBoundary.status, "awaiting_bus");
+
+    await session.dispatchToNode("dev", {
+      request: "inspect the attached image",
+      images: [{ type: "image", media_type: "image/png", data: "iVBORw0KGgo=" }]
+    }, {
+      reason: "Bus requested image verification",
+      countsAsRework: true,
+      permissionMode: "fullAccess"
+    });
+    await waitUntil(() => secondRequestStarted);
+
+    assert.equal(session.state.status, "running");
+    assert.equal(session.state.current_node_id, "dev");
+    assert.equal(session.state.rework_count, 1);
+    assert.equal(session.state.run_permission_mode, "fullAccess");
+    releaseSecondRequest();
+
+    const boundary = await session.waitForBoundary();
+    assert.equal(boundary.status, "awaiting_bus");
+    const imagePart = requests[1]?.messages
+      .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+      .find((part) => part.type === "image");
+    assert.deepEqual(imagePart, {
+      type: "image",
+      media_type: "image/png",
+      data: "iVBORw0KGgo="
+    });
+    await session.finalize("test summary");
+    assert.equal((await session.result).status, "completed");
+  });
+
 });
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
@@ -805,13 +931,6 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
 }
-async function promiseSettlesSoon<T>(promise: Promise<T>): Promise<T | undefined> {
-  return Promise.race([
-    promise,
-    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 500))
-  ]);
-}
-
 async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
 
   const result = await Promise.race([
@@ -831,6 +950,7 @@ async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
 function twoNodeConfig() {
   return {
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    dispatcher: testDispatcher,
     roles: {
       product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
@@ -844,6 +964,7 @@ function config() {
 
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
 
+    dispatcher: testDispatcher,
     roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
 
     workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }

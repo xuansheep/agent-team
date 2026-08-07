@@ -51,13 +51,12 @@ export async function buildNodeMessages(
     onArtifactRead?: (chunk: ArtifactTextChunk) => void | Promise<void>;
   } = {}
 ): Promise<ModelMessage[]> {
-  const protocolPrompt = `${systemPrompt}\n\n${nodeResultOutputInstructions}\n\n${nodeModeInstructions(node)}`;
+  const protocolPrompt = `${systemPrompt}\n\n${nodeResultOutputInstructions}\n\n${nodeTaskInstructions}`;
   const materialized = input.runDir
     ? await materializeReferencedArtifacts(handoff, input.runDir, input.supportsVision ?? false, input.onArtifactRead)
     : { referencedArtifacts: [], imageParts: [] };
   const userContent = JSON.stringify({
     node_id: node.id,
-    node_mode: node.mode ?? "task",
     navigation: input.navigation,
     handoff: stripInternalPlanModeHandoffMarkers(handoff),
     referenced_artifacts: materialized.referencedArtifacts
@@ -159,23 +158,13 @@ function artifactIdsFromHandoff(handoff: unknown): string[] {
   return [...new Set(ids)];
 }
 
-function nodeModeInstructions(node: WorkflowNodeConfig): string {
-  if (node.mode === "complete") {
-    return [
-      "This node is the workflow completion checkpoint.",
-      "Summarize what the workflow did, key outcomes, verification, and any residual risks for the user.",
-      "Put the complete Markdown summary in document.",
-      "The runtime will store the summary as this node's final deliverable artifact if no deliverable file exists."
-    ].join("\n");
-  }
-  return [
-    "This node is a normal task node.",
-    "Treat the top-level handoff and latest user_input as the authoritative current requirements. They override conflicting previous_handoff content or older referenced artifacts.",
-    "Treat referenced_artifacts as evidence for upstream deliverables, ordered with current handoff references first. Use ArtifactRead for truncated text content; image and binary artifacts may be represented by metadata only.",
-    "Use ArtifactWrite for user-facing deliverable files that should be returned to the user.",
-    "If this task has no user-facing deliverable file, make summary clear and leave document empty; the runtime will create a Markdown explanation artifact."
-  ].join("\n");
-}
+const nodeTaskInstructions = [
+  "This is a workflow task node. The workflow bus owns task completion and all final user-facing summaries.",
+  "Treat the top-level handoff and latest user_input as the authoritative current requirements. They override conflicting previous_handoff content or older referenced artifacts.",
+  "Treat referenced_artifacts as evidence for upstream deliverables, ordered with current handoff references first. Use ArtifactRead for truncated text content; image and binary artifacts may be represented by metadata only.",
+  "Use ArtifactWrite for user-facing deliverable files that should be returned to the user.",
+  "If this task has no user-facing deliverable file, make summary clear and leave document empty; the runtime will create a Markdown explanation artifact."
+].join("\n");
 
 function runtimeAttachmentsFromHandoff(handoff: unknown): RuntimeAttachment[] {
   if (!handoff || typeof handoff !== "object") return [];

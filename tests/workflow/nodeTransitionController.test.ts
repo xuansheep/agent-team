@@ -9,7 +9,7 @@ const workflow: WorkflowConfig = {
     { id: "product", role: "product", provider: "default", permission_mode: "default" },
     { id: "ui", role: "ui", provider: "default", permission_mode: "default" },
     { id: "developer", role: "developer", provider: "default", permission_mode: "default" },
-    { id: "tester", role: "tester", provider: "default", permission_mode: "default", mode: "complete" }
+    { id: "tester", role: "tester", provider: "default", permission_mode: "default" }
   ],
   edges: [],
   max_rework_cycles: 10

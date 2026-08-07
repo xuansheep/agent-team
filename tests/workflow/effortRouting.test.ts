@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { configSchema, providerSchema } from "../../src/config/schema.js";
 import type { ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 describe("workflow effort routing", () => {
   it("passes a workflow node effort override into the model request", async () => {
@@ -19,6 +20,7 @@ describe("workflow effort routing", () => {
     });
     const config = {
       ...base,
+      dispatcher: testDispatcher,
       providers: {
         default: providerSchema.parse({
           type: "openai-compatible",
@@ -37,7 +39,7 @@ describe("workflow effort routing", () => {
 
     const result = await engine.run(config, "delivery", { request: "implement" });
 
-    assert.equal(result.status, "completed");
+    assert.equal(result.status, "awaiting_bus");
     assert.equal(requests[0]?.effort, "node-custom");
   });
 });

@@ -201,8 +201,6 @@ export const nodeResultOutputInstructions = [
 
   "If repository inspection is needed, call tools instead of asking the user for permission to inspect.",
 
-  "When the node is a plan or complete node, put the full user-facing Markdown document in document.",
-
   "For plan nodes, document is the review document itself; do not put only a short summary in document and move the plan to ArtifactWrite.",
 
   "For task nodes that do not need a user-facing document, set document to an empty string."

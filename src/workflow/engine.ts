@@ -24,9 +24,10 @@ import type { McpRuntime } from "../mcp/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
 import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT, WorkflowState } from "./state.js";
-import { WorkflowSession } from "./session.js";
+import { WorkflowSession, type WorkflowDispatchOptions } from "./session.js";
 import { firstNodeId } from "./transitions.js";
 import { NodeTransitionController } from "./nodeTransitionController.js";
+import { buildWorkflowRunDossier, type WorkflowRunDossier } from "./dossier.js";
 export type WorkflowEngineOptions = {
     providerFactory: (providerId: string) => ModelProvider;
     cwd: string;
@@ -53,6 +54,7 @@ type ContinueOptions = {
     activeInputChannel?: ActiveTurnInputChannel<ModelMessage>;
     abortSignal?: AbortSignal;
     isInterrupted?: () => boolean;
+    controlSignal?: () => WorkflowControlSignal | undefined;
     onState?: (state: WorkflowState) => void;
     resume?: {
         nodeId: string;
@@ -67,10 +69,12 @@ type ContinueOptions = {
     configFingerprint?: string;
 };
 export type WorkflowRunPermissionMode = Exclude<PermissionMode, "plan">;
+type WorkflowControlSignal = "interrupt" | "dispatch" | "finalize";
 export type WorkflowRunOptions = {
     permissionMode?: WorkflowRunPermissionMode;
     clearContext?: boolean;
     sessionId?: string;
+    startNodeId?: string;
 };
 export class WorkflowEngine {
     private readonly transitionController = new NodeTransitionController();
@@ -79,6 +83,9 @@ export class WorkflowEngine {
         if (options.projectStorage && options.runRoot) {
             throw new Error("WorkflowEngine options projectStorage and runRoot are mutually exclusive");
         }
+    }
+    createProvider(providerId: string): ModelProvider {
+        return this.options.providerFactory(providerId);
     }
     private async runStore(): Promise<RunStore> {
         if (this.options.projectStorage) return new RunStore(this.options.projectStorage);
@@ -91,6 +98,7 @@ export class WorkflowEngine {
         const workflow = config.workflows[workflowId];
         if (!workflow)
             throw new Error(`Unknown workflow ${workflowId}`);
+        const startNodeId = resolveStartNodeId(workflow, options.startNodeId);
         const store = await this.runStore();
         const run = await store.createRun(workflowId, publicWorkflowInput(input), { sessionId: options.sessionId, configFingerprint: workflowConfigFingerprint(config, workflowId), permissionMode: options.permissionMode });
         const initialHandoff = await this.prepareInitialHandoff(input, run.runDir, options);
@@ -101,7 +109,7 @@ export class WorkflowEngine {
             workflow,
             store,
             runId: run.runId,
-            startNodeId: firstNodeId(workflow),
+            startNodeId,
             initialHandoff,
             attempts: [],
             runPermissionMode: options.permissionMode,
@@ -176,6 +184,10 @@ export class WorkflowEngine {
         const store = await this.runStore();
         return store.listRuns(options);
     }
+    async dossier(runId: string): Promise<WorkflowRunDossier> {
+        const store = await this.runStore();
+        return buildWorkflowRunDossier(store, runId);
+    }
     async resumeInteractive(config: AgentTeamConfig, runId: string): Promise<WorkflowSession> {
         const store = await this.runStore();
         const state = await store.loadState(runId);
@@ -191,10 +203,28 @@ export class WorkflowEngine {
         const permissions = new PermissionController();
         const activeInputChannel = new ActiveTurnInputChannel<ModelMessage>();
         let interrupted = false;
+        let controlRequest: WorkflowControlSignal | undefined;
+        let lifecycleQueue: Promise<void> = Promise.resolve();
         let resultSettled = false;
         let activeRun: Promise<WorkflowState> | undefined;
         let activeAbortController: AbortController | undefined;
         let latestState: WorkflowState = state;
+        const stateListeners = new Set<(state: WorkflowState) => void>();
+        const publishState = (nextState: WorkflowState) => {
+            latestState = nextState;
+            for (const listener of stateListeners) listener(nextState);
+        };
+        const subscribeState = (listener: (state: WorkflowState) => void) => {
+            stateListeners.add(listener);
+            return () => stateListeners.delete(listener);
+        };
+        const waitForBoundary = async () => {
+            const boundary = await waitForWorkflowBoundary(() => latestState, subscribeState);
+            const pendingRun = activeRun;
+            if (pendingRun)
+                await pendingRun;
+            return boundary;
+        };
         let resolveResult!: (state: WorkflowState) => void;
         let rejectResult!: (error: unknown) => void;
         const result = new Promise<WorkflowState>((resolve, reject) => {
@@ -202,7 +232,7 @@ export class WorkflowEngine {
             rejectResult = reject;
         });
         const finish = (nextState: WorkflowState) => {
-            latestState = nextState;
+            publishState(nextState);
             if (!resultSettled) {
                 resultSettled = true;
                 resolveResult(nextState);
@@ -212,7 +242,7 @@ export class WorkflowEngine {
         const fail = async (error: unknown) => {
             const formatted = formatRunError(error);
             const failedState: WorkflowState = { ...latestState, status: "paused" };
-            latestState = failedState;
+            publishState(failedState);
             await store.saveState(runId, failedState);
             await this.appendEvent(store, runId, { type: "run_failed", error: formatted.message, ...(formatted.detail ? { detail: formatted.detail } : {}) }, (event) => stream.push(event));
             if (!resultSettled) {
@@ -222,7 +252,7 @@ export class WorkflowEngine {
             stream.end();
         };
         const finishWhenTerminal = (nextState: WorkflowState) => {
-            latestState = nextState;
+            publishState(nextState);
             if (nextState.status === "completed" || nextState.status === "cancelled" || nextState.status === "failed")
                 finish(nextState);
         };
@@ -259,9 +289,8 @@ export class WorkflowEngine {
                 activeInputChannel,
                 abortSignal: abortController.signal,
                 isInterrupted: () => interrupted,
-                onState: (next) => {
-                    latestState = next;
-                }
+                controlSignal: () => controlRequest,
+                onState: publishState
             });
             try {
                 const nextState = await activeRun;
@@ -278,10 +307,11 @@ export class WorkflowEngine {
             if ((resultSettled && !activeRun) || interrupted)
                 return;
             interrupted = true;
+            controlRequest = "interrupt";
             permissions.resolveAll("deny_once");
             activeAbortController?.abort();
             if (activeRun) {
-                latestState = await activeRun;
+                publishState(await activeRun);
                 return;
             }
             const waitingState = await this.pauseStateForUser({
@@ -291,7 +321,7 @@ export class WorkflowEngine {
                 latestState,
                 eventSink: (event) => stream.push(event)
             });
-            latestState = waitingState;
+            publishState(waitingState);
         };
         if (state.status === "running") {
             queueMicrotask(() => {
@@ -300,7 +330,7 @@ export class WorkflowEngine {
                 });
             });
         }
-        else if (state.status === "completed") {
+        else if (state.status === "completed" || state.status === "cancelled" || state.status === "failed") {
             queueMicrotask(() => finish(state));
         }
         const withRunLease = async (task: () => Promise<void>): Promise<void> => {
@@ -312,10 +342,86 @@ export class WorkflowEngine {
                 await lease.release();
             }
         };
-        return {
+        const enqueueLifecycle = (task: () => Promise<void>): Promise<void> => {
+            const queued = lifecycleQueue.catch(() => undefined).then(task);
+            lifecycleQueue = queued.catch(() => undefined);
+            return queued;
+        };
+        const dispatchToNode = (nodeId: string, input: unknown, dispatchOptions: WorkflowDispatchOptions = {}) => enqueueLifecycle(() => withRunLease(async () => {
+            if (resultSettled) throw new Error(`Run ${runId} is already finalized`);
+            resolveStartNodeId(workflow, nodeId);
+            const fromNodeId = latestState.current_node_id;
+            if (activeRun) {
+                controlRequest = "dispatch";
+                interrupted = false;
+                permissions.resolveAll("deny_once");
+                activeAbortController?.abort();
+                await activeRun;
+            }
+            controlRequest = undefined;
+            interrupted = false;
+            const preparedInput = await this.prepareInitialHandoff(input, store.runDir(runId));
+            const handoff = busDispatchHandoff(latestState.handoff, preparedInput, fromNodeId, nodeId, dispatchOptions.reason);
+            const dispatchState = workflowDispatchState(latestState, workflow, nodeId, handoff, dispatchOptions);
+            publishState(dispatchState);
+            await store.saveState(runId, dispatchState);
+            stream.reopen();
+            await this.appendEvent(store, runId, {
+                type: "bus_node_dispatched",
+                ...(fromNodeId ? { from_node_id: fromNodeId } : {}),
+                to_node_id: nodeId,
+                ...(dispatchOptions.reason ? { reason: dispatchOptions.reason } : {})
+            }, (event) => stream.push(event));
+            void runSegment({ startNodeId: nodeId, initialHandoff: handoff, attempts: latestState.attempts }).catch((error) => {
+                void fail(error);
+            });
+        }));
+        const finalize = (summary: string) => enqueueLifecycle(() => withRunLease(async () => {
+            const document = summary.trim();
+            if (!document) throw new Error("Task summary must not be empty");
+            if (resultSettled) {
+                if (latestState.status === "completed") return;
+                throw new Error(`Run ${runId} is already settled`);
+            }
+            if (activeRun) {
+                controlRequest = "finalize";
+                interrupted = false;
+                permissions.resolveAll("deny_once");
+                activeAbortController?.abort();
+                await activeRun;
+            }
+            controlRequest = undefined;
+            interrupted = false;
+            const artifact = await new ArtifactStore(store.runDir(runId)).writeText("bus", "final-summary.md", `${document}\n`, {
+                description: "Workflow bus final summary",
+                attempt: 1,
+                activation: 1
+            });
+            await this.appendEvent(store, runId, { type: "artifact_created", node_id: "bus", artifact_id: artifact.artifactId, path: artifact.path }, (event) => stream.push(event));
+            await this.appendEvent(store, runId, { type: "complete_summary_available", node_id: "bus", attempt: 1, activation: 1, document }, (event) => stream.push(event));
+            const finalState: WorkflowState = {
+                ...latestState,
+                status: "completed",
+                pending_interaction: undefined,
+                final_summary: document
+            };
+            publishState(finalState);
+            await store.saveState(runId, finalState);
+            await this.appendEvent(store, runId, {
+                type: "run_completed",
+                result: {
+                    status: finalState.status,
+                    workflow_id: finalState.workflow_id,
+                    summary: document,
+                    artifact_id: artifact.artifactId
+                }
+            }, (event) => stream.push(event));
+            finish(finalState);
+        }));
+        const session: WorkflowSession = {
             sessionId: (await store.metadata(runId)).sessionId,
             runId,
-            state: latestState,
+            get state() { return latestState; },
             events: stream,
             replayEventCount: replayEvents.length,
             permissions,
@@ -328,10 +434,11 @@ export class WorkflowEngine {
                 if (!latestState.current_node_id)
                     throw new Error(`Run ${runId} has no current node`);
                 interrupted = false;
+                controlRequest = undefined;
                 stream.reopen();
                 const guarded = resolveReworkLimitInput(latestState, workflow, input);
                 if (guarded) {
-                    latestState = guarded.state;
+                    publishState(guarded.state);
                     await store.saveState(runId, guarded.state);
                     if (guarded.type === "cancel") {
                         await this.appendEvent(store, runId, { type: "run_cancelled", reason: "用户在返工上限处终止工作流" }, (event) => stream.push(event));
@@ -380,6 +487,7 @@ export class WorkflowEngine {
                         throw new Error(`Run ${runId} is not paused`);
                     }
                     interrupted = false;
+                    controlRequest = undefined;
                     if (latestState.resume_checkpoint) {
                         const checkpointResume = resumeFromCheckpoint(latestState, input);
                         if (checkpointResume) {
@@ -420,8 +528,13 @@ export class WorkflowEngine {
                     finishWhenTerminal(nextState);
                 });
             },
+            dispatchToNode,
+            finalize,
+            subscribeState,
+            waitForBoundary,
             result
         };
+        return session;
     }
     async startInteractive(config: AgentTeamConfig, workflowId: string, input: unknown, options: WorkflowRunOptions = {}): Promise<WorkflowSession> {
         assertWorkflowRunPermissionMode(options.permissionMode);
@@ -438,9 +551,11 @@ export class WorkflowEngine {
         }
         const permissions = new PermissionController();
         const activeInputChannel = new ActiveTurnInputChannel<ModelMessage>();
-        const startNodeId = firstNodeId(workflow);
+        const startNodeId = resolveStartNodeId(workflow, options.startNodeId);
         const runPermissionMode = options.permissionMode;
         let interrupted = false;
+        let controlRequest: WorkflowControlSignal | undefined;
+        let lifecycleQueue: Promise<void> = Promise.resolve();
         let resultSettled = false;
         let activeRun: Promise<WorkflowState> | undefined;
         let activeAbortController: AbortController | undefined;
@@ -459,6 +574,22 @@ export class WorkflowEngine {
             rework_count: 0,
             rework_limit: workflow.max_rework_cycles ?? DEFAULT_MAX_REWORK_CYCLES
         };
+        const stateListeners = new Set<(state: WorkflowState) => void>();
+        const publishState = (nextState: WorkflowState) => {
+            latestState = nextState;
+            for (const listener of stateListeners) listener(nextState);
+        };
+        const subscribeState = (listener: (state: WorkflowState) => void) => {
+            stateListeners.add(listener);
+            return () => stateListeners.delete(listener);
+        };
+        const waitForBoundary = async () => {
+            const boundary = await waitForWorkflowBoundary(() => latestState, subscribeState);
+            const pendingRun = activeRun;
+            if (pendingRun)
+                await pendingRun;
+            return boundary;
+        };
         let resolveResult!: (state: WorkflowState) => void;
         let rejectResult!: (error: unknown) => void;
         const result = new Promise<WorkflowState>((resolve, reject) => {
@@ -466,7 +597,7 @@ export class WorkflowEngine {
             rejectResult = reject;
         });
         const finish = (state: WorkflowState) => {
-            latestState = state;
+            publishState(state);
             if (!resultSettled) {
                 resultSettled = true;
                 resolveResult(state);
@@ -476,7 +607,7 @@ export class WorkflowEngine {
         const fail = async (error: unknown) => {
             const formatted = formatRunError(error);
             const failedState: WorkflowState = { ...latestState, status: "paused" };
-            latestState = failedState;
+            publishState(failedState);
             await store.saveState(run.runId, failedState);
             await this.appendEvent(store, run.runId, { type: "run_failed", error: formatted.message, ...(formatted.detail ? { detail: formatted.detail } : {}) }, (event) => stream.push(event));
             if (!resultSettled) {
@@ -486,7 +617,7 @@ export class WorkflowEngine {
             stream.end();
         };
         const finishWhenTerminal = (state: WorkflowState) => {
-            latestState = state;
+            publishState(state);
             if (state.status === "completed" || state.status === "cancelled" || state.status === "failed")
                 finish(state);
         };
@@ -514,7 +645,7 @@ export class WorkflowEngine {
                 reworkCount: latestState.rework_count,
                 reworkLimit: latestState.rework_limit,
                 resume: segment.resume,
-                runPermissionMode,
+                runPermissionMode: latestState.run_permission_mode,
                 planRequestedPermissionRules: latestState.plan_requested_permission_rules,
                 eventSink: (event) => stream.push(event),
                 interaction: {
@@ -523,9 +654,8 @@ export class WorkflowEngine {
                 activeInputChannel,
                 abortSignal: abortController.signal,
                 isInterrupted: () => interrupted,
-                onState: (state) => {
-                    latestState = state;
-                }
+                controlSignal: () => controlRequest,
+                onState: publishState
             });
             try {
                 const state = await activeRun;
@@ -550,20 +680,97 @@ export class WorkflowEngine {
                 await lease.release();
             }
         };
-        return {
+        const enqueueLifecycle = (task: () => Promise<void>): Promise<void> => {
+            const queued = lifecycleQueue.catch(() => undefined).then(task);
+            lifecycleQueue = queued.catch(() => undefined);
+            return queued;
+        };
+        const dispatchToNode = (nodeId: string, input: unknown, dispatchOptions: WorkflowDispatchOptions = {}) => enqueueLifecycle(() => withRunLease(async () => {
+            if (resultSettled) throw new Error(`Run ${run.runId} is already finalized`);
+            resolveStartNodeId(workflow, nodeId);
+            const fromNodeId = latestState.current_node_id;
+            if (activeRun) {
+                controlRequest = "dispatch";
+                interrupted = false;
+                permissions.resolveAll("deny_once");
+                activeAbortController?.abort();
+                await activeRun;
+            }
+            controlRequest = undefined;
+            interrupted = false;
+            const preparedInput = await this.prepareInitialHandoff(input, store.runDir(run.runId));
+            const handoff = busDispatchHandoff(latestState.handoff, preparedInput, fromNodeId, nodeId, dispatchOptions.reason);
+            const dispatchState = workflowDispatchState(latestState, workflow, nodeId, handoff, dispatchOptions);
+            publishState(dispatchState);
+            await store.saveState(run.runId, dispatchState);
+            stream.reopen();
+            await this.appendEvent(store, run.runId, {
+                type: "bus_node_dispatched",
+                ...(fromNodeId ? { from_node_id: fromNodeId } : {}),
+                to_node_id: nodeId,
+                ...(dispatchOptions.reason ? { reason: dispatchOptions.reason } : {})
+            }, (event) => stream.push(event));
+            void runSegment({ startNodeId: nodeId, initialHandoff: handoff, attempts: latestState.attempts }).catch((error) => {
+                void fail(error);
+            });
+        }));
+        const finalize = (summary: string) => enqueueLifecycle(() => withRunLease(async () => {
+            const document = summary.trim();
+            if (!document) throw new Error("Task summary must not be empty");
+            if (resultSettled) {
+                if (latestState.status === "completed") return;
+                throw new Error(`Run ${run.runId} is already settled`);
+            }
+            if (activeRun) {
+                controlRequest = "finalize";
+                interrupted = false;
+                permissions.resolveAll("deny_once");
+                activeAbortController?.abort();
+                await activeRun;
+            }
+            controlRequest = undefined;
+            interrupted = false;
+            const artifact = await new ArtifactStore(store.runDir(run.runId)).writeText("bus", "final-summary.md", `${document}\n`, {
+                description: "Workflow bus final summary",
+                attempt: 1,
+                activation: 1
+            });
+            await this.appendEvent(store, run.runId, { type: "artifact_created", node_id: "bus", artifact_id: artifact.artifactId, path: artifact.path }, (event) => stream.push(event));
+            await this.appendEvent(store, run.runId, { type: "complete_summary_available", node_id: "bus", attempt: 1, activation: 1, document }, (event) => stream.push(event));
+            const finalState: WorkflowState = {
+                ...latestState,
+                status: "completed",
+                pending_interaction: undefined,
+                final_summary: document
+            };
+            publishState(finalState);
+            await store.saveState(run.runId, finalState);
+            await this.appendEvent(store, run.runId, {
+                type: "run_completed",
+                result: {
+                    status: finalState.status,
+                    workflow_id: finalState.workflow_id,
+                    summary: document,
+                    artifact_id: artifact.artifactId
+                }
+            }, (event) => stream.push(event));
+            finish(finalState);
+        }));
+        const session: WorkflowSession = {
             sessionId: run.sessionId,
             runId: run.runId,
-            state: latestState,
+            get state() { return latestState; },
             events: stream,
             permissions,
             interrupt: async () => {
                 if ((resultSettled && !activeRun) || interrupted)
                     return;
                 interrupted = true;
+                controlRequest = "interrupt";
                 permissions.resolveAll("deny_once");
                 activeAbortController?.abort();
                 if (activeRun) {
-                    latestState = await activeRun;
+                    publishState(await activeRun);
                     return;
                 }
                 const state = await this.pauseStateForUser({
@@ -573,7 +780,7 @@ export class WorkflowEngine {
                     latestState,
                     eventSink: (event) => stream.push(event)
                 });
-                latestState = state;
+                publishState(state);
             },
             resumeWithUserInput: (input) => withRunLease(async () => {
                 if (activeRun)
@@ -583,10 +790,11 @@ export class WorkflowEngine {
                 if (!latestState.current_node_id)
                     throw new Error(`Run ${run.runId} has no current node`);
                 interrupted = false;
+                controlRequest = undefined;
                 stream.reopen();
                 const guarded = resolveReworkLimitInput(latestState, workflow, input);
                 if (guarded) {
-                    latestState = guarded.state;
+                    publishState(guarded.state);
                     await store.saveState(run.runId, guarded.state);
                     if (guarded.type === "cancel") {
                         await this.appendEvent(store, run.runId, { type: "run_cancelled", reason: "用户在返工上限处终止工作流" }, (event) => stream.push(event));
@@ -635,6 +843,7 @@ export class WorkflowEngine {
                         throw new Error(`Run ${run.runId} is not paused`);
                     }
                     interrupted = false;
+                    controlRequest = undefined;
                     if (latestState.resume_checkpoint) {
                         const checkpointResume = resumeFromCheckpoint(latestState, input);
                         if (checkpointResume) {
@@ -675,8 +884,13 @@ export class WorkflowEngine {
                     finishWhenTerminal(state);
                 });
             },
+            dispatchToNode,
+            finalize,
+            subscribeState,
+            waitForBoundary,
             result
         };
+        return session;
     }
     private async persistCheckpointResume(
         store: RunStore,
@@ -761,7 +975,11 @@ export class WorkflowEngine {
         });
         while (currentId) {
             syncOptions();
-            if (options.isInterrupted?.()) {
+            const pendingControl = options.controlSignal?.();
+            if (pendingControl === "dispatch" || pendingControl === "finalize") {
+                return this.awaitBusControl(options, currentId, attempts, handoff, undefined, pendingControl);
+            }
+            if (pendingControl === "interrupt" || options.isInterrupted?.()) {
                 return this.pauseNodeForUser(options, currentId, attempts, handoff);
             }
             const node = options.workflow.nodes.find((item) => item.id === currentId);
@@ -887,7 +1105,7 @@ export class WorkflowEngine {
                 }
             }
             let cleanupError: unknown;
-            const cleanupReason = options.isInterrupted?.() || options.abortSignal?.aborted
+            const cleanupReason = options.controlSignal?.() || options.isInterrupted?.() || options.abortSignal?.aborted
                 ? "interrupted"
                 : nodeError
                     ? "node_error"
@@ -900,7 +1118,11 @@ export class WorkflowEngine {
             }
             if (nodeError || cleanupError) {
                 syncOptions();
-                if (options.isInterrupted?.() || options.abortSignal?.aborted) {
+                const control = options.controlSignal?.();
+                if (control === "dispatch" || control === "finalize") {
+                    return this.awaitBusControl(options, node.id, attempts, handoff, checkpoint(), control);
+                }
+                if (control === "interrupt" || options.isInterrupted?.() || options.abortSignal?.aborted) {
                     return this.pauseNodeForUser(options, node.id, attempts, handoff, checkpoint());
                 }
                 const error = nodeError && cleanupError
@@ -908,7 +1130,12 @@ export class WorkflowEngine {
                     : nodeError ?? cleanupError;
                 return this.failNodeForUser(options, node.id, attempt, attempts, handoff, error, checkpoint());
             }
-            if (options.isInterrupted?.()) {
+            const completedControl = options.controlSignal?.();
+            if (completedControl === "dispatch" || completedControl === "finalize") {
+                syncOptions();
+                return this.awaitBusControl(options, node.id, attempts, handoff, checkpoint(), completedControl);
+            }
+            if (completedControl === "interrupt" || options.isInterrupted?.()) {
                 syncOptions();
                 return this.pauseNodeForUser(options, node.id, attempts, handoff, checkpoint());
             }
@@ -950,22 +1177,20 @@ export class WorkflowEngine {
                     return state;
                 }
                 if (resolution.type === "complete") {
-                    const document = node.mode === "complete" ? requireDocument(node, result) : result.document.trim();
                     setAttemptOutcome(attempts, attemptIndex, activation, "completed", "forwarded", result);
-                    if (document) await this.appendEvent(options.store, options.runId, { type: "complete_summary_available", node_id: node.id, attempt, activation, document }, options.eventSink);
                     await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: node.id, attempt, activation, status: "completed", result }, options.eventSink);
-                    const finalState: WorkflowState = {
-                        status: "completed",
+                    const awaitingState: WorkflowState = {
+                        status: "awaiting_bus",
                         ...stateBase(),
                         current_node_id: node.id,
                         attempts,
                         handoff,
                         resume_checkpoint: currentCheckpoint
                     };
-                    options.onState?.(finalState);
-                    await options.store.saveState(options.runId, finalState);
-                    await this.appendEvent(options.store, options.runId, { type: "run_completed", result: { status: finalState.status, workflow_id: finalState.workflow_id } }, options.eventSink);
-                    return finalState;
+                    options.onState?.(awaitingState);
+                    await options.store.saveState(options.runId, awaitingState);
+                    await this.appendEvent(options.store, options.runId, { type: "run_awaiting_bus", node_id: node.id, reason: "workflow_boundary" }, options.eventSink);
+                    return awaitingState;
                 }
                 suspendedStack = resolution.suspended_stack;
                 reworkCount = resolution.rework_count;
@@ -1027,13 +1252,17 @@ export class WorkflowEngine {
             }
             catch (error) {
                 syncOptions();
-                if (options.isInterrupted?.() || options.abortSignal?.aborted) {
+                const control = options.controlSignal?.();
+                if (control === "dispatch" || control === "finalize") {
+                    return this.awaitBusControl(options, node.id, attempts, handoff, checkpoint(), control);
+                }
+                if (control === "interrupt" || options.isInterrupted?.() || options.abortSignal?.aborted) {
                     return this.pauseNodeForUser(options, node.id, attempts, handoff, checkpoint());
                 }
                 return this.failNodeForUser(options, node.id, attempt, attempts, handoff, error, checkpoint());
             }
         }
-        return { status: "completed", ...stateBase(), attempts, handoff };
+        return { status: "awaiting_bus", ...stateBase(), attempts, handoff };
         }
         finally {
             await lease.release();
@@ -1143,6 +1372,41 @@ export class WorkflowEngine {
         await options.store.saveState(options.runId, state);
         return state;
     }
+    private async awaitBusControl(
+        options: ContinueOptions,
+        nodeId: string,
+        attempts: WorkflowState["attempts"],
+        handoff: unknown,
+        resumeCheckpoint: WorkflowState["resume_checkpoint"] | undefined,
+        control: Extract<WorkflowControlSignal, "dispatch" | "finalize">
+    ): Promise<WorkflowState> {
+        const updatedAttempts = markLatestActiveAttemptSuspended(attempts, nodeId);
+        const attempt = latestAttemptForNode(updatedAttempts, nodeId);
+        const activation = latestActivationForNode(updatedAttempts, nodeId);
+        const checkpoint = resumeCheckpoint ?? { node_id: nodeId, handoff, attempt, activation, dialogue_cursor: 0, dialogue_messages: [] };
+        const state: WorkflowState = {
+            status: "awaiting_bus",
+            workflow_id: options.workflowId,
+            ...continuationStateFields(options, checkpoint),
+            ...(options.runPermissionMode ? { run_permission_mode: options.runPermissionMode } : {}),
+            ...(options.planRequestedPermissionRules?.length ? { plan_requested_permission_rules: options.planRequestedPermissionRules } : {}),
+            current_node_id: nodeId,
+            attempts: updatedAttempts,
+            handoff,
+            resume_checkpoint: checkpoint,
+            pending_interaction: undefined
+        };
+        options.onState?.(state);
+        await this.appendEvent(options.store, options.runId, { type: "node_interrupted", node_id: nodeId, attempt }, options.eventSink);
+        await options.store.saveState(options.runId, state);
+        await this.appendEvent(options.store, options.runId, {
+            type: "run_awaiting_bus",
+            node_id: nodeId,
+            reason: control === "dispatch" ? "reassigned" : "finalizing"
+        }, options.eventSink);
+        return state;
+    }
+
     private async pauseNodeForUser(options: ContinueOptions, nodeId: string, attempts: WorkflowState["attempts"], handoff: unknown, resumeCheckpoint?: WorkflowState["resume_checkpoint"]): Promise<WorkflowState> {
         const updatedAttempts = markLatestActiveAttemptWaiting(attempts, nodeId);
         const questions = conversationInterruptedQuestions();
@@ -1221,7 +1485,7 @@ export class WorkflowEngine {
     private async prepareInitialHandoff(input: unknown, runDir: string, options: WorkflowRunOptions = {}): Promise<unknown> {
         if (!input || typeof input !== "object")
             return input;
-        let handoff = options.clearContext === true ? clearContextPlanHandoff(input) : input;
+        const handoff = options.clearContext === true ? clearContextPlanHandoff(input) : input;
         const images = (handoff as {
             images?: unknown;
         }).images;
@@ -1230,9 +1494,24 @@ export class WorkflowEngine {
         const artifacts = new ArtifactStore(runDir);
         const refs = [];
         for (const image of images) {
-            if (typeof image !== "string")
+            if (typeof image === "string") {
+                const ref = await artifacts.copyInputImage(image);
+                refs.push({ artifact_id: ref.artifactId, path: ref.path, media_type: ref.mediaType });
                 continue;
-            const ref = await artifacts.copyInputImage(image);
+            }
+            if (!image || typeof image !== "object") {
+                throw new Error("Unsupported workflow image input");
+            }
+            const item = image as Record<string, unknown>;
+            if (
+                item.type !== "image"
+                || (item.media_type !== "image/png" && item.media_type !== "image/jpeg" && item.media_type !== "image/webp")
+                || typeof item.data !== "string"
+            ) {
+                throw new Error("Unsupported workflow image input");
+            }
+            const mediaType = item.media_type;
+            const ref = await artifacts.writeInputImage(item.data, mediaType);
             refs.push({ artifact_id: ref.artifactId, path: ref.path, media_type: ref.mediaType });
         }
         return { ...handoff as Record<string, unknown>, images: refs };
@@ -1271,6 +1550,85 @@ function nodeDeliverableMarkdown(nodeId: string, attempt: number, activation: nu
         lines.push("", "## 交接", "", result.handoff.instruction);
     return `${lines.join("\n")}\n`;
 }
+function resolveStartNodeId(workflow: WorkflowConfig, requested: string | undefined): string {
+    const nodeId = requested ?? firstNodeId(workflow);
+    if (!workflow.nodes.some((node) => node.id === nodeId)) throw new Error(`Unknown workflow start node ${nodeId}`);
+    return nodeId;
+}
+
+function busDispatchHandoff(
+    previousHandoff: unknown,
+    input: unknown,
+    fromNodeId: string | undefined,
+    toNodeId: string,
+    reason: string | undefined
+): unknown {
+    const publicInput = publicWorkflowInput(input);
+    const payload = publicInput && typeof publicInput === "object" && !Array.isArray(publicInput)
+        ? publicInput as Record<string, unknown>
+        : { request: publicInput };
+    return {
+        ...payload,
+        bus_dispatch: {
+            ...(fromNodeId ? { from_node_id: fromNodeId } : {}),
+            to_node_id: toNodeId,
+            ...(reason ? { reason } : {})
+        },
+        previous_handoff: previousHandoff
+    };
+}
+
+function workflowDispatchState(
+    state: WorkflowState,
+    workflow: WorkflowConfig,
+    nodeId: string,
+    handoff: unknown,
+    options: WorkflowDispatchOptions
+): WorkflowState {
+    const reworkCount = state.rework_count ?? 0;
+    const reworkLimit = state.rework_limit ?? workflow.max_rework_cycles ?? DEFAULT_MAX_REWORK_CYCLES;
+    if (options.countsAsRework && reworkCount >= reworkLimit) {
+        throw new Error(`Workflow rework limit reached: ${reworkLimit}`);
+    }
+    const permissionMode = options.permissionMode ?? state.run_permission_mode;
+    const planRequestedPermissionRules = [...new Set(planRequestedPermissionRulesFromHandoff(handoff))];
+    return {
+        ...state,
+        status: "running",
+        current_node_id: nodeId,
+        handoff,
+        resume_checkpoint: undefined,
+        pending_interaction: undefined,
+        rework_count: options.countsAsRework ? reworkCount + 1 : reworkCount,
+        ...(permissionMode ? { run_permission_mode: permissionMode } : {}),
+        plan_requested_permission_rules: planRequestedPermissionRules.length ? planRequestedPermissionRules : undefined
+    };
+}
+
+function waitForWorkflowBoundary(
+    currentState: () => WorkflowState,
+    subscribe: (listener: (state: WorkflowState) => void) => () => void
+): Promise<WorkflowState> {
+    const current = currentState();
+    if (isWorkflowBoundary(current)) return Promise.resolve(current);
+    return new Promise((resolve) => {
+        const unsubscribe = subscribe((state) => {
+            if (!isWorkflowBoundary(state)) return;
+            unsubscribe();
+            resolve(state);
+        });
+    });
+}
+
+function isWorkflowBoundary(state: WorkflowState): boolean {
+    return state.status === "awaiting_bus"
+        || state.status === "waiting_user"
+        || state.status === "paused"
+        || state.status === "completed"
+        || state.status === "cancelled"
+        || state.status === "failed";
+}
+
 function effectiveSystemPrompt(globalPrompt: string | undefined, rolePrompt: string): string {
     const global = globalPrompt?.trim();
     return global ? `${global}\n\n${rolePrompt}` : rolePrompt;
@@ -1362,6 +1720,23 @@ ${formatted.detail}` : formatted.message;
 function conversationInterruptedQuestions(): NodeResult["questions"] {
     return [{ id: CONVERSATION_INTERRUPTED_QUESTION_ID, text: CONVERSATION_INTERRUPTED_TEXT, required: true }];
 }
+function markLatestActiveAttemptSuspended(attempts: WorkflowState["attempts"], nodeId: string): WorkflowState["attempts"] {
+    const next = attempts.map((attempt) => ({ ...attempt, activations: [...attempt.activations ?? []] }));
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+        const attempt = next[index]!;
+        if (attempt.node_id !== nodeId || (attempt.status !== "running" && attempt.status !== "waiting_user")) continue;
+        next[index] = {
+            ...attempt,
+            status: "suspended",
+            activations: (attempt.activations ?? []).map((activation) => activation.activation === attempt.activation
+                ? { ...activation, status: "interrupted" }
+                : activation)
+        };
+        break;
+    }
+    return next;
+}
+
 function markLatestActiveAttemptWaiting(attempts: WorkflowState["attempts"], nodeId: string): WorkflowState["attempts"] {
     const next = [...attempts];
     for (let index = next.length - 1; index >= 0; index -= 1) {
@@ -1380,12 +1755,6 @@ function markLatestActiveAttemptWaiting(attempts: WorkflowState["attempts"], nod
         }
     }
     return next;
-}
-function requireDocument(node: WorkflowNodeConfig, result: NodeResult): string {
-    const document = result.document?.trim();
-    if (!document)
-        throw new Error(`${node.mode} node ${node.id} must return document`);
-    return document;
 }
 async function recoverCheckpointResumeHandoff(
     store: RunStore,

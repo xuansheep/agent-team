@@ -26,6 +26,22 @@ describe("SessionStore", () => {
     assert.equal(transcript[0]?.message.content, "hello");
   });
 
+  it("serializes concurrent bus and plan transcript appends", async () => {
+    const root = await workspace();
+    const store = new SessionStore(root);
+
+    await Promise.all(Array.from({ length: 12 }, (_, index) => (
+      index % 2 === 0
+        ? store.appendBusTranscript("session-concurrent", { role: "user", content: `bus-${index}` })
+        : store.appendTranscript("session-concurrent", { role: "assistant", content: `plan-${index}` })
+    )));
+
+    const transcript = await store.loadTranscript("session-concurrent");
+    assert.equal(transcript.length, 12);
+    assert.equal(transcript.filter((entry) => entry.phase === "bus").length, 6);
+    assert.equal(transcript.filter((entry) => entry.phase === "plan").length, 6);
+  });
+
   it("labels plan entries and deduplicates workflow transcript entries", async () => {
     const root = await workspace();
     const store = new SessionStore(root);

@@ -1,5 +1,75 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { DispatcherConfig } from "../../src/config/schema.js";
+import type { ModelProvider, ModelRequest, ModelResponse } from "../../src/providers/types.js";
+
+export const testDispatcher = {
+  provider: "default",
+  model: "gpt-test",
+  effort: "medium",
+  confidence_threshold: 0.8
+} satisfies DispatcherConfig;
+
+export function testBusResponse(request: ModelRequest, nodeId: string): ModelResponse | undefined {
+  if (request.context?.nodeId !== "bus") return undefined;
+  const systemPrompt = request.messages
+    .filter((message) => message.role === "system")
+    .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))
+    .join("\n");
+  if (systemPrompt.includes("The workflow is at a bus boundary")) {
+    return {
+      content: JSON.stringify({
+        type: "finalize",
+        confidence: 1,
+        summary: {
+          summary: "Test workflow completed.",
+          outcomes: [],
+          verification: [],
+          residual_risks: [],
+          artifacts: []
+        }
+      })
+    };
+  }
+  if (systemPrompt.includes("The user is in Plan Mode")) {
+    return {
+      content: JSON.stringify({
+        type: "plan",
+        confidence: 1,
+        node_id: nodeId,
+        reason: "test routing"
+      })
+    };
+  }
+  return {
+    content: JSON.stringify({
+      type: "dispatch",
+      confidence: 1,
+      node_id: nodeId,
+      instruction: "Execute the test request.",
+      reason: "test routing"
+    })
+  };
+}
+
+export function withTestBusRouting(provider: ModelProvider, nodeId: string): ModelProvider {
+  return {
+    async generate(request) {
+      return testBusResponse(request, nodeId) ?? provider.generate(request);
+    }
+  };
+}
+
+export function testBusProviderFactory(nodeId: string): (providerId: string) => ModelProvider {
+  const provider: ModelProvider = {
+    async generate(request) {
+      const response = testBusResponse(request, nodeId);
+      if (!response) throw new Error(`Unexpected non-bus model request for provider ${request.model}`);
+      return response;
+    }
+  };
+  return () => provider;
+}
 
 export type TestRole = {
   description?: string;

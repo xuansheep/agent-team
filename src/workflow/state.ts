@@ -4,7 +4,7 @@ import type { PermissionMode } from "../permissions/PermissionMode.js";
 export const CONVERSATION_INTERRUPTED_QUESTION_ID = "conversation_interrupted";
 export const CONVERSATION_INTERRUPTED_TEXT = "■ Conversation interrupted. Describe how to proceed, or enter retry instructions.";
 
-export type RunStatus = "running" | "waiting_user" | "paused" | "completed" | "failed" | "cancelled" | "pending";
+export type RunStatus = "running" | "waiting_user" | "paused" | "awaiting_bus" | "completed" | "failed" | "cancelled" | "pending";
 
 export type NodeActivationState = {
   activation: number;
@@ -55,4 +55,5 @@ export type WorkflowState = {
   rework_count?: number;
   rework_limit?: number;
   pending_interaction?: PendingInteraction;
+  final_summary?: string;
 };

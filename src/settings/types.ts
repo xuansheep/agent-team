@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
-import { providerSettingsSchema, type ResolvedProviderConfig } from "../config/schema.js";
+import { dispatcherConfigSchema, dispatcherOverrideSchema, providerSettingsSchema, type DispatcherConfig, type ResolvedProviderConfig } from "../config/schema.js";
 import { mcpServersSettingsSchema } from "../mcp/schema.js";
 
 export const settingsPermissionModeSchema = z.enum(["default", "fullAccess", "plan"]);
@@ -77,11 +77,13 @@ export const mcpProjectStateSchema = z.object({
 
 export const projectSettingsSchema = z.object({
   ...settingsShape,
+  dispatcher: dispatcherOverrideSchema.optional(),
   mcpServers: mcpServersSettingsSchema.optional()
 }).strict();
 
 export const settingsSchema = z.object({
   ...settingsShape,
+  dispatcher: dispatcherConfigSchema.optional(),
   statusLine: statusLineSchema.optional(),
   providers: z.record(providerSettingsSchema).optional(),
   mcpServers: mcpServersSettingsSchema.optional(),
@@ -93,8 +95,9 @@ export type ProjectAgentTeamSettings = z.infer<typeof projectSettingsSchema>;
 
 export type McpProjectState = z.infer<typeof mcpProjectStateSchema>;
 
-export type ResolvedAgentTeamSettings = Omit<AgentTeamSettings, "permissions" | "providers" | "mcpServers" | "projects"> & {
+export type ResolvedAgentTeamSettings = Omit<AgentTeamSettings, "permissions" | "providers" | "dispatcher" | "mcpServers" | "projects"> & {
   providers?: Record<string, ResolvedProviderConfig>;
+  dispatcher?: DispatcherConfig;
   permissions?: {
     defaultMode?: PermissionMode;
   };

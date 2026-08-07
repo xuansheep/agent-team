@@ -74,8 +74,14 @@ workflows:
     assert.equal(config.providers.default.stream_max_retries, 10);
     assert.equal(config.providers.default.request_timeout_ms, 600_000);
     assert.equal(config.providers.default.stream_idle_timeout_ms, 90_000);
+    assert.deepEqual(config.dispatcher, {
+      provider: "default",
+      model: "gpt-test",
+      effort: "medium",
+      confidence_threshold: 0.8
+    });
     assert.equal(config.workflows.delivery.nodes[0].id, "product");
-    assert.equal(config.workflows.delivery.nodes[0].mode, "task");
+    assert.equal("mode" in config.workflows.delivery.nodes[0], false);
     assert.deepEqual(config.roles.product.requires, { tool_calling: true, vision: true });
   });
 
@@ -95,7 +101,6 @@ workflows:
       - id: final_delivery
         role: final_delivery
         provider: default
-        mode: complete
 `);
 
     const config = await loadTestConfig(file);
@@ -238,34 +243,9 @@ workflows:
     assert.equal(config.providers.default.api_key_mode, "bearer");
   });
 
-  it("loads complete node mode and rejects plan node mode", async () => {
-    const file = await tempFile("agent-team.yaml", `
-roles:
-  product:
-    system_prompt: Product plan.
-  final_delivery:
-    system_prompt: Complete summary.
-workflows:
-  delivery:
-    nodes:
-      - id: product
-        role: product
-        provider: default
-      - id: final_delivery
-        role: final_delivery
-        provider: default
-        mode: complete
-    edges:
-      - from: product
-        to: final_delivery
-        condition: success
-`);
-
-    const config = await loadTestConfig(file);
-
-    assert.equal(config.workflows.delivery.nodes[1]?.mode, "complete");
-
-    const planFile = await tempFile("agent-team.yaml", `
+  it("rejects removed workflow node mode", async () => {
+    for (const mode of ["complete", "plan"]) {
+      const file = await tempFile("agent-team.yaml", `
 roles:
   product:
     system_prompt: Product plan.
@@ -275,11 +255,12 @@ workflows:
       - id: product
         role: product
         provider: default
-        mode: plan
+        mode: ${mode}
     edges: []
 `);
 
-    await assert.rejects(() => loadTestConfig(planFile), /Invalid enum value/);
+      await assert.rejects(() => loadTestConfig(file), /Unrecognized key/);
+    }
   });
 
   it("loads the bundled four-node resumable delivery workflow", async () => {
@@ -291,7 +272,7 @@ workflows:
     assert.equal(workflow.description, "default workflow, contains product, ui, developer, tester nodes");
     assert.deepEqual(workflow.nodes.map((node) => node.id), ["product", "ui", "developer", "tester"]);
     assert.equal(workflow.nodes.every((node) => node.provider === "default"), true);
-    assert.equal(workflow.nodes.find((node) => node.id === "tester")?.mode, "complete");
+    assert.equal("mode" in workflow.nodes.find((node) => node.id === "tester")!, false);
     for (const nodeId of ["developer", "tester"]) {
       const allow = workflow.nodes.find((node) => node.id === nodeId)?.permissions?.allow ?? [];
       assert.equal(allow.includes("ProcessStart"), true);

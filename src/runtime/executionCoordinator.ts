@@ -9,6 +9,9 @@ import type { SessionStore } from "../storage/sessionStore.js";
 import { WorkflowEngine, type WorkflowRunOptions } from "../workflow/engine.js";
 import type { WorkflowSession } from "../workflow/session.js";
 import type { WorkflowState } from "../workflow/state.js";
+import type { WorkflowRunDossier } from "../workflow/dossier.js";
+import type { ModelProvider } from "../providers/types.js";
+import { SessionExecutionBus, type SessionExecutionBusOptions } from "./sessionExecutionBus.js";
 
 export type SessionTurnInput = Omit<
   RuntimeTurnInput,
@@ -39,6 +42,7 @@ export type ExecutionStartResult =
 export type ExecutionCoordinatorOptions = {
   turnEngine?: TurnEngine;
   sessionStore?: SessionStore;
+  providerFactory?: (providerId: string) => ModelProvider;
 };
 
 export type PlanWorkflowTransitionInput = {
@@ -48,6 +52,7 @@ export type PlanWorkflowTransitionInput = {
   permissionMode?: PlanApprovalResolveMetadata["permissionMode"];
   clearContext?: boolean;
   feedback?: unknown;
+  startNodeId?: string;
 };
 
 export type PlanWorkflowTransitionResult = {
@@ -55,10 +60,17 @@ export type PlanWorkflowTransitionResult = {
   workflow: WorkflowSession;
 };
 
+export type ExistingPlanWorkflowTransitionInput = Omit<PlanWorkflowTransitionInput, "startNodeId"> & {
+  workflow: WorkflowSession;
+  startNodeId: string;
+  reason?: string;
+};
+
 export class ExecutionCoordinator {
   private readonly turnEngine: TurnEngine;
   private readonly planMode = new PlanModeController();
   private readonly sessionStore?: SessionStore;
+  private readonly providerFactory?: (providerId: string) => ModelProvider;
 
   constructor(
     private readonly workflowEngine?: WorkflowEngine,
@@ -66,6 +78,7 @@ export class ExecutionCoordinator {
   ) {
     this.turnEngine = options.turnEngine ?? new TurnEngine();
     this.sessionStore = options.sessionStore;
+    this.providerFactory = options.providerFactory;
   }
 
   async start(input: ExecutionStartInput): Promise<ExecutionStartResult> {
@@ -127,6 +140,41 @@ export class ExecutionCoordinator {
     return resolved;
   }
 
+  async resolvePlanApprovalAndDispatch(input: ExistingPlanWorkflowTransitionInput): Promise<PlanWorkflowTransitionResult> {
+    if (input.workflow.state.workflow_id !== input.workflowId) {
+      throw new Error(`Workflow ${input.workflow.runId} does not belong to ${input.workflowId}`);
+    }
+    if (input.workflow.sessionId && input.workflow.sessionId !== input.session.id) {
+      throw new Error(`Workflow ${input.workflow.runId} does not belong to session ${input.session.id}`);
+    }
+    const resolved = await this.planMode.resolvePlanApproval(input.session, {
+      decision: "continue",
+      permissionMode: input.permissionMode,
+      clearContext: input.clearContext,
+      feedback: input.feedback
+    });
+    const execution = resolved.execution;
+    if (!execution) throw new Error(`Session ${input.session.id} did not produce an execution handoff`);
+    const handoff = execution.handoff as { legacyHandoff?: unknown };
+    const workflowInput = execution.clearContext ? execution.initialInput : handoff.legacyHandoff;
+    if (workflowInput === undefined) throw new Error(`Session ${input.session.id} produced an empty workflow handoff`);
+
+    try {
+      await input.workflow.dispatchToNode(input.startNodeId, workflowInput, {
+        reason: input.reason ?? "Approved Plan Mode handoff",
+        permissionMode: execution.permissionMode
+      });
+    } catch (error) {
+      await this.persistSession(input.session);
+      throw error;
+    }
+
+    return {
+      resolution: await this.bindPlanWorkflow(resolved, input.workflow),
+      workflow: input.workflow
+    };
+  }
+
   async resolvePlanApprovalAndStart(input: PlanWorkflowTransitionInput): Promise<PlanWorkflowTransitionResult> {
     const resolved = await this.planMode.resolvePlanApproval(input.session, {
       decision: "continue",
@@ -152,7 +200,8 @@ export class ExecutionCoordinator {
         {
           permissionMode: execution.permissionMode,
           clearContext: execution.clearContext,
-          sessionId: resolved.session.id
+          sessionId: resolved.session.id,
+          startNodeId: input.startNodeId
         }
       );
     } catch (error) {
@@ -160,29 +209,10 @@ export class ExecutionCoordinator {
       throw error;
     }
 
-    const boundSession: KernelSession = {
-      ...resolved.session,
-      status: "running_workflow",
-      workflowBinding: {
-        runId: workflow.runId,
-        status: "running",
-        ...(handoff.approvalId ? { approvalId: handoff.approvalId } : {}),
-        ...(handoff.planHash ? { planHash: handoff.planHash } : {})
-      }
+    return {
+      resolution: await this.bindPlanWorkflow(resolved, workflow),
+      workflow
     };
-    const resolution = { ...resolved, session: boundSession };
-    if (this.sessionStore) await this.sessionStore.attachRun(boundSession.id, workflow.runId);
-    await this.persistSession(boundSession);
-    const sessionStore = this.sessionStore;
-    if (sessionStore) {
-      workflow.result = workflow.result.then(async (state) => {
-        if (state.status === "completed") {
-          await sessionStore.syncWorkflowRunStatus(boundSession.id, workflow.runId, "completed");
-        }
-        return state;
-      });
-    }
-    return { resolution, workflow };
   }
 
   run(
@@ -218,6 +248,27 @@ export class ExecutionCoordinator {
 
   listRuns(options: { limit?: number } = {}): Promise<RunSummary[]> {
     return this.requireWorkflowEngine().listRuns(options);
+  }
+
+  dossier(runId: string): Promise<WorkflowRunDossier> {
+    return this.requireWorkflowEngine().dossier(runId);
+  }
+
+  createProvider(providerId: string): ModelProvider {
+    return this.providerFactory?.(providerId) ?? this.requireWorkflowEngine().createProvider(providerId);
+  }
+
+  createSessionBus(options: Omit<SessionExecutionBusOptions, "coordinator" | "providerFactory"> & {
+    providerFactory?: (providerId: string) => ModelProvider;
+  }): SessionExecutionBus {
+    const { providerFactory, sessionStore, turnEngine, ...busOptions } = options;
+    return new SessionExecutionBus({
+      ...busOptions,
+      coordinator: this,
+      providerFactory: providerFactory ?? ((providerId) => this.createProvider(providerId)),
+      sessionStore: sessionStore ?? this.sessionStore,
+      turnEngine: turnEngine ?? this.turnEngine
+    });
   }
 
   private async projectTurnOutcome(session: KernelSession, outcome: RuntimeTurnResult): Promise<KernelSession> {
@@ -265,6 +316,37 @@ export class ExecutionCoordinator {
       status: base.toolPermissionContext.mode === "plan" ? "planning" : "idle_input",
       pendingInteraction: null
     };
+  }
+
+  private async bindPlanWorkflow(
+    resolved: PlanApprovalResolutionResult,
+    workflow: WorkflowSession
+  ): Promise<PlanApprovalResolutionResult> {
+    const execution = resolved.execution;
+    if (!execution) throw new Error(`Session ${resolved.session.id} did not produce an execution handoff`);
+    const handoff = execution.handoff as { approvalId?: string; planHash?: string };
+    const boundSession: KernelSession = {
+      ...resolved.session,
+      status: "running_workflow",
+      workflowBinding: {
+        runId: workflow.runId,
+        status: "running",
+        ...(handoff.approvalId ? { approvalId: handoff.approvalId } : {}),
+        ...(handoff.planHash ? { planHash: handoff.planHash } : {})
+      }
+    };
+    if (this.sessionStore) await this.sessionStore.attachRun(boundSession.id, workflow.runId);
+    await this.persistSession(boundSession);
+    const sessionStore = this.sessionStore;
+    if (sessionStore) {
+      workflow.result = workflow.result.then(async (state) => {
+        if (state.status === "completed") {
+          await sessionStore.syncWorkflowRunStatus(boundSession.id, workflow.runId, "completed");
+        }
+        return state;
+      });
+    }
+    return { ...resolved, session: boundSession };
   }
 
   private async persistSession(session: KernelSession): Promise<void> {

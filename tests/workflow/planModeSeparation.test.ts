@@ -2,20 +2,26 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { configSchema } from "../../src/config/schema.js";
 import { WorkflowEngine } from "../../src/workflow/engine.js";
+import { testDispatcher } from "../helpers/projectConfig.js";
 
 describe("Plan Mode V2 workflow separation", () => {
   it("rejects workflow node plan mode", () => {
-    assert.throws(() => configSchema.parse(configWithNodePlanMode()), /Invalid enum value/);
+    const input = configWithNodePlanMode();
+    assert.throws(() => configSchema.parse({ roles: input.roles, workflows: input.workflows }), /Unrecognized key/);
   });
 
   it("rejects workflow node plan permission mode", () => {
-    assert.throws(() => configSchema.parse(configWithNodePlanPermissionMode()), /Invalid enum value/);
+    const input = configWithNodePlanPermissionMode();
+    assert.throws(() => configSchema.parse({ roles: input.roles, workflows: input.workflows }), /Invalid enum value/);
   });
 
   it("rejects removed workflow node permission modes", () => {
     for (const permission_mode of ["acceptEdits", "auto", "dontAsk", "bypassPermissions"] as const) {
       assert.throws(
-        () => configSchema.parse(configWithNodePermissionMode(permission_mode)),
+        () => {
+          const input = configWithNodePermissionMode(permission_mode);
+          return configSchema.parse({ roles: input.roles, workflows: input.workflows });
+        },
         /Invalid enum value/
       );
     }
@@ -27,8 +33,8 @@ describe("Plan Mode V2 workflow separation", () => {
       providerFactory: () => ({ async generate() { return { content: "{}" }; } })
     });
     const input = configWithNodeTaskMode();
-    const { providers, ...projectConfig } = input;
-    const config = { ...configSchema.parse(projectConfig), providers };
+    const { providers, dispatcher, ...projectConfig } = input;
+    const config = { ...configSchema.parse(projectConfig), providers, dispatcher };
 
     await assert.rejects(
       () => engine.run(config, "flow", { request: "build" }, { permissionMode: "plan" as never }),
@@ -44,6 +50,7 @@ describe("Plan Mode V2 workflow separation", () => {
 function configWithNodePlanMode() {
   return {
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    dispatcher: testDispatcher,
     roles: {
       product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
@@ -59,6 +66,7 @@ function configWithNodePlanPermissionMode() {
 function configWithNodePermissionMode(permission_mode: string) {
   return {
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    dispatcher: testDispatcher,
     roles: {
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
     },
@@ -69,6 +77,7 @@ function configWithNodePermissionMode(permission_mode: string) {
 function configWithNodeTaskMode() {
   return {
     providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    dispatcher: testDispatcher,
     roles: {
       dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
     },

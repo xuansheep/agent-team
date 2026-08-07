@@ -34,8 +34,28 @@ export async function acquireFileLease(path: string, purpose: string, options: {
       await writeFile(path, `${JSON.stringify(record())}\n`, { encoding: "utf8", flag: "wx" });
       break;
     } catch (error) {
-      if (!isErrno(error, "EEXIST")) throw error;
-      const existing = await readLease(path);
+      const windowsLeaseConflict = process.platform === "win32" && isErrno(error, "EPERM");
+      if (!isErrno(error, "EEXIST") && !windowsLeaseConflict) throw error;
+
+      let existing: { record?: LeaseRecord; modifiedAt: number } | undefined;
+      try {
+        existing = await readLease(path);
+      } catch (readError) {
+        if (windowsLeaseConflict && options.wait && Date.now() < deadline && isErrno(readError, "EPERM")) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          continue;
+        }
+        throw readError;
+      }
+
+      if (!existing && windowsLeaseConflict) {
+        if (options.wait && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          continue;
+        }
+        throw error;
+      }
+
       if (!existing || (existing.record ? leaseIsActive(existing.record, existing.modifiedAt) : Date.now() - existing.modifiedAt < staleLeaseMs)) {
         if (options.wait && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 10));

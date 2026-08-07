@@ -2,18 +2,21 @@ import React from "react";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough, Readable } from "node:stream";
+import { join } from "node:path";
 import { render } from "ink-testing-library";
 import type { AgentTeamConfig } from "../../src/config/schema.js";
 import { TuiApp } from "../../src/tui/TuiApp.js";
 import { renderSync } from "../../src/tui/ink.js";
 import instances from "../../src/ink/instances.js";
 import { charInCellAt, type Screen } from "../../src/ink/screen.js";
+import { SessionStore } from "../../src/storage/sessionStore.js";
+import { testBusProviderFactory, testDispatcher } from "../helpers/projectConfig.js";
 
 describe("TUI workflow selection guide", () => {
   it("previews workflows in list order and enters the conversation after confirmation", async () => {
     const output = render(
       <TuiApp
-        cwd="D:\\CodeAI\\agent-team"
+        cwd={process.cwd()}
         config={workflowConfig()}
         workflows={["alpha", "delivery"]}
       />
@@ -48,7 +51,7 @@ describe("TUI workflow selection guide", () => {
   it("keeps the create workflow placeholder disabled and preserves the last valid preview", async () => {
     const output = render(
       <TuiApp
-        cwd="D:\\CodeAI\\agent-team"
+        cwd={process.cwd()}
         config={workflowConfig()}
         workflows={["alpha", "delivery"]}
       />
@@ -78,7 +81,7 @@ describe("TUI workflow selection guide", () => {
     await withTerminalSize(24, 80, async () => {
       const output = render(
         <TuiApp
-          cwd="D:\\CodeAI\\agent-team"
+          cwd={process.cwd()}
           config={workflowConfig()}
           workflows={["alpha", "delivery"]}
           workflowId="delivery"
@@ -109,7 +112,7 @@ describe("TUI workflow selection guide", () => {
 
   it("bottom-aligns the complete statusline when it wraps in a narrow terminal", async () => {
     await withTerminalSize(24, 30, async () => {
-      const cwd = "D:/work/a-very-long-project-directory";
+      const cwd = join(process.cwd(), "a-very-long-project-directory");
       const tree = (
         <TuiApp
           cwd={cwd}
@@ -143,7 +146,7 @@ describe("TUI workflow selection guide", () => {
       const stdin = new LocalFakeStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
       const stdout = new LocalFakeStdout() as unknown as NodeJS.WriteStream;
       const output = renderSync(
-        <TuiApp cwd="D:/work" config={workflowConfig()} workflows={["delivery"]} workflowId="delivery" />,
+        <TuiApp cwd={process.cwd()} config={workflowConfig()} workflows={["delivery"]} workflowId="delivery" />,
         { stdin, stdout, stderr: new LocalFakeStdout() as unknown as NodeJS.WriteStream, patchConsole: false, exitOnCtrlC: false }
       );
 
@@ -177,33 +180,49 @@ describe("TUI workflow selection guide", () => {
       const runId = "550e8400-e29b-41d4-a716-446655440000";
       const pausedState = { status: "paused", workflow_id: "delivery", current_node_id: "delivery-node", attempts: [], questions: [] } as const;
       let finish!: () => void;
+      let started = false;
       const result = new Promise<typeof pausedState>((resolve) => { finish = () => resolve(pausedState); });
       const session = {
         runId,
-        sessionId: "session-local-layout",
         state: { ...pausedState, status: "running" },
         events: { async *[Symbol.asyncIterator]() { await result; } },
         result,
-        permissions: { resolve() {} },
+        permissions: { resolve() {}, resolveAll() {}, hasPending() { return false; } },
         interrupt: async () => { finish(); },
         resumeWithUserInput: async () => {},
-        continueWithInput: async () => {}
+        continueWithInput: async () => {},
+        dispatchToNode: async () => {},
+        finalize: async () => {},
+        subscribeState: () => () => {},
+        waitForBoundary: async () => pausedState
       };
-      const engine = { async startInteractive() { return session as never; } };
+      const engine = { async startInteractive() { started = true; return session as never; } };
+      const sessionStore = new SessionStore(join(process.cwd(), ".tmp", "workflow-selection", String(process.pid)));
       const stdin = new LocalFakeStdin() as unknown as NodeJS.ReadStream & { send(input: string): void };
       const stdout = new LocalFakeStdout() as unknown as NodeJS.WriteStream;
       const output = renderSync(
-        <TuiApp cwd="D:/work/code-ai/agent-team" config={workflowConfig()} workflows={["delivery"]} workflowId="delivery" engine={engine as never} />,
+        <TuiApp
+          cwd={process.cwd()}
+          config={workflowConfig()}
+          workflows={["delivery"]}
+          workflowId="delivery"
+          engine={engine as never}
+          providerFactory={testBusProviderFactory("delivery-node")}
+          sessionStore={sessionStore}
+        />,
         { stdin, stdout, stderr: new LocalFakeStdout() as unknown as NodeJS.WriteStream, patchConsole: false, exitOnCtrlC: false }
       );
 
       try {
         await settle();
         await sendLocalKeys(stdin, ["g", "o", "\r"]);
-        await settle();
+        for (let attempt = 0; attempt < 50 && !started; attempt += 1) await settle();
+        assert.equal(started, true);
         finish();
-        await settle();
-        await settle();
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          await settle();
+          if (localScreenLines(stdout).some((line) => line.startsWith("Waiting |"))) break;
+        }
 
         const lines = localScreenLines(stdout);
         const promptIndex = lines.findIndex((line) => line.startsWith("> "));
@@ -236,6 +255,7 @@ function workflowConfig(): AgentTeamConfig {
         }
       }
     },
+    dispatcher: testDispatcher,
     roles: {
       dev: {
         description: "",
