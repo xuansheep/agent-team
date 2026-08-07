@@ -41,6 +41,7 @@ import { TuiDefaultExecutionMode, TuiRunState, TuiState } from "./state.js";
 import type { TuiLogMessage } from "./logTypes.js";
 import { Header } from "./components/Header.js";
 import { InteractionArea, InteractionChoice } from "./components/InteractionArea.js";
+import type { ActivityStatus } from "./components/InteractionArea.js";
 import { buildMcpListChoice, buildMcpServerChoice, buildMcpToolDetailChoice, buildMcpToolsChoice, buildSkillsDetailChoice, buildSkillsListChoice, buildStatuslineChoice, type McpMenuAction } from "./commandMenus/index.js";
 import type { SelectImageAttachment } from "./components/CustomSelect/index.js";
 import { PromptInputEvent, PromptInputImageAttachment, PromptInputMode } from "./components/PromptInput/types.js";
@@ -2019,8 +2020,12 @@ ${message.detailText}` : ""}` }
     : undefined;
   const logMessages = state.logMessages;
   const retryDetail = state.activeModelRetry ? modelRetryStatusDetail(state.activeModelRetry.retryAt, state.activeModelRetry.retryAttempt, state.activeModelRetry.maxRetries, clockMs) : undefined;
-  const rawActivityStatus = activityStatusText({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: retryDetail ?? workStatusDetail });
-  const activityStatus = state.activityNotice?.text ?? (hasPlanQuestion || state.pendingReview ? undefined : rawActivityStatus);
+  const rawActivityStatus = activityStatusContent({ isWorking, workStartedAtMs, lastWorkDurationMs, nowMs: clockMs, detail: retryDetail ?? workStatusDetail });
+  const activityStatus: ActivityStatus | undefined = state.activityNotice
+    ? { kind: "warning", text: state.activityNotice.text }
+    : hasPlanQuestion || state.pendingReview
+      ? undefined
+      : rawActivityStatus;
   const currentDiagnosticsForMenu = collectDiagnostics?.() ?? diagnostics ?? { mcp: [], skills: [] };
   const commandMenuChoice = commandMenu ? buildCommandMenuChoice({
     state: commandMenu,
@@ -2386,7 +2391,7 @@ ${message.detailText}` : ""}` }
   if (initialError) {
     return (
       <Box flexDirection="column" height={terminalRows}>
-        <Header cwd={cwd} />
+        <Header />
         <Text color="red">{initialError}</Text>
         <Text>Create config/prompt.md, config/roles, and config/workflows</Text>
       </Box>
@@ -2425,7 +2430,7 @@ ${message.detailText}` : ""}` }
   }, [cwd, gitBranchEnabled, resolveGitBranch]);
   return (
     <Box flexDirection="column" height={terminalRows}>
-      <Header cwd={cwd} workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
+      <Header workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
       <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
       {halfScreenChoice ? null : (
         <Box flexDirection="row" height={layout.mainHeight} flexShrink={1} minHeight={1} opaque>
@@ -2468,7 +2473,6 @@ ${message.detailText}` : ""}` }
         promptText={promptText}
         inputDisabled={transcriptMode}
         activityStatus={activityStatus}
-        activityStatusTone={state.activityNotice?.tone}
         resolvePromptImagePaste={state.pendingReview || state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") ? resolvePlanPromptImagePaste : undefined}
         onPromptEvent={handlePromptEvent}
         onPromptTextChange={handlePromptTextChange}
@@ -2491,12 +2495,17 @@ ${message.detailText}` : ""}` }
     </Box>
   );
 }
-function activityStatusText(input: { isWorking: boolean; workStartedAtMs?: number; lastWorkDurationMs?: number; nowMs: number; detail?: string }): string | undefined {
+function activityStatusContent(input: { isWorking: boolean; workStartedAtMs?: number; lastWorkDurationMs?: number; nowMs: number; detail?: string }): ActivityStatus | undefined {
   if (input.isWorking && input.workStartedAtMs !== undefined) {
-    const detail = input.detail ? ` (${input.detail})` : "";
-    return `Working... ${formatWorkDuration(input.nowMs - input.workStartedAtMs)}${detail}`;
+    return {
+      kind: "running",
+      elapsed: formatWorkDuration(input.nowMs - input.workStartedAtMs),
+      detail: input.detail
+    };
   }
-  if (!input.isWorking && input.lastWorkDurationMs !== undefined) return `Worked for ${formatWorkDuration(input.lastWorkDurationMs)}`;
+  if (!input.isWorking && input.lastWorkDurationMs !== undefined) {
+    return { kind: "completed", elapsed: formatWorkDuration(input.lastWorkDurationMs) };
+  }
   return undefined;
 }
 function formatWorkDuration(durationMs: number): string {
@@ -3997,7 +4006,7 @@ function statusLineLayoutRows(input: Parameters<typeof statusLineText>[0], colum
 }
 
 function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string }; activityStatusVisible?: boolean; statusLineRows?: number }): { mainHeight: number; planReviewHeight: number } {
-  const headerRows = 3;
+  const headerRows = 1;
   const flowRows = 4;
   const statusLineExtraRows = Math.max(0, (input.statusLineRows ?? 1) - 1);
   const promptRows = (input.choice ? 0 : input.activityStatusVisible ? 8 : 6) + statusLineExtraRows;

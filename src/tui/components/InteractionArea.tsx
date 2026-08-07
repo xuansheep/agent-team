@@ -1,4 +1,8 @@
+import chalk from "chalk";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { stringWidth } from "../../ink/stringWidth.js";
+import wrapText from "../../ink/wrap-text.js";
+import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.js";
 import { Box, Text, useInput, useStdin, useStdout } from "../ink.js";
 import { OptionWithDescription, Select, SelectImageAttachment, SelectMulti } from "./CustomSelect/index.js";
 import type { PermissionMode } from "../../permissions/PermissionMode.js";
@@ -50,6 +54,11 @@ export type QuestionNavigation = {
   hideSubmitTab?: boolean;
 };
 
+export type ActivityStatus =
+  | { kind: "running"; elapsed: string; detail?: string }
+  | { kind: "completed"; elapsed: string }
+  | { kind: "warning"; text: string };
+
 export function InteractionArea({
   choice,
   mode,
@@ -65,7 +74,6 @@ export function InteractionArea({
   promptText = "",
   inputDisabled = false,
   activityStatus,
-  activityStatusTone = "default",
   onPromptEvent,
   onPromptTextChange,
   resolvePromptImagePaste
@@ -83,8 +91,7 @@ export function InteractionArea({
   hasSelection?: boolean;
   promptText?: string;
   inputDisabled?: boolean;
-  activityStatus?: string;
-  activityStatusTone?: "default" | "warning";
+  activityStatus?: ActivityStatus;
   onPromptEvent: (event: PromptInputEvent) => void;
   onPromptTextChange?: (text: string) => void;
   resolvePromptImagePaste?: (value: string) => Promise<{ text: string; images: PromptInputImageAttachment[] }>;
@@ -373,7 +380,7 @@ export function InteractionArea({
       {mode === "question" && !choice && questions.length ? <UserQuestionPrompt questions={questions} /> : null}
       {activityStatus && !choice ? (
         <Box marginBottom={1} flexShrink={0}>
-          <ActivityStatusLine text={activityStatus} tone={activityStatusTone} />
+          <ActivityStatusLine status={activityStatus} />
         </Box>
       ) : null}
       {hasChoice ? null : (
@@ -400,25 +407,105 @@ export function InteractionArea({
   );
 }
 
-function ActivityStatusLine({ text, tone }: { text: string; tone: "default" | "warning" }) {
+const STATUS_ANIMATION_INTERVAL_MS = 32;
+const STATUS_DOT_BLINK_INTERVAL_MS = 600;
+const STATUS_SHIMMER_PERIOD_MS = 2_000;
+const STATUS_SHIMMER_PADDING = 10;
+const STATUS_SHIMMER_HALF_WIDTH = 5;
+const STATUS_DIVIDER_MIN_WIDTH = 3;
+
+export function ActivityStatusLine({ status }: { status: ActivityStatus }) {
   const { stdout } = useStdout();
   const columns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
-  if (tone === "warning") {
-    const divider = ` ${"-".repeat(Math.max(1, columns - text.length - 1))}`;
+  const running = status.kind === "running";
+  const [animationRef, animationTime] = useAnimationFrame(running ? STATUS_ANIMATION_INTERVAL_MS : null);
+  const animationStartRef = useRef(animationTime);
+  const previousKindRef = useRef(status.kind);
+  if (previousKindRef.current !== status.kind) {
+    previousKindRef.current = status.kind;
+    animationStartRef.current = animationTime;
+  }
+  const elapsedAnimationMs = Math.max(0, animationTime - animationStartRef.current);
+
+  if (status.kind === "warning") {
+    const maxTextWidth = Math.max(1, columns - STATUS_DIVIDER_MIN_WIDTH - 1);
+    const text = wrapText(status.text, maxTextWidth, "truncate-end");
     return (
-      <Box flexDirection="row" flexShrink={0}>
-        <Text color="yellow">{text}</Text>
-        <Text dimColor>{divider}</Text>
+      <Box ref={animationRef} width={Math.max(1, columns)} flexShrink={0} overflow="hidden">
+        <Text wrap="truncate-end">
+          <Text color="yellow">{text}</Text>
+          <Text dimColor>{activityStatusDivider(text, columns)}</Text>
+        </Text>
       </Box>
     );
   }
-  const prefix = `- ${text} `;
-  const line = `${prefix}${"-".repeat(Math.max(1, columns - prefix.length))}`;
+
+  if (status.kind === "completed") {
+    const text = `• Worked for ${status.elapsed}`;
+    return (
+      <Box ref={animationRef} width={Math.max(1, columns)} flexShrink={0} overflow="hidden">
+        <Text wrap="truncate-end">
+          <Text dimColor>• </Text>
+          <Text>{`Worked for ${status.elapsed}`}</Text>
+          <Text dimColor>{activityStatusDivider(text, columns)}</Text>
+        </Text>
+      </Box>
+    );
+  }
+
+  const baseText = `• Working (${status.elapsed} • esc to interrupt)`;
+  const detailSeparator = " · ";
+  const detailWidth = Math.max(
+    0,
+    columns - stringWidth(baseText) - stringWidth(detailSeparator) - STATUS_DIVIDER_MIN_WIDTH - 1
+  );
+  const detail = status.detail && detailWidth > 0
+    ? `${detailSeparator}${wrapText(status.detail, detailWidth, "truncate-end")}`
+    : "";
+  const text = `${baseText}${detail}`;
+  const trueColor = chalk.level >= 3;
+  const dotOn = Math.floor(elapsedAnimationMs / STATUS_DOT_BLINK_INTERVAL_MS) % 2 === 0;
+
   return (
-    <Box flexDirection="row" flexShrink={0}>
-      <Text dimColor>{line}</Text>
+    <Box ref={animationRef} width={Math.max(1, columns)} flexShrink={0} overflow="hidden">
+      <Text wrap="truncate-end">
+        {trueColor
+          ? shimmerCharacters("•", elapsedAnimationMs, true, "dot")
+          : dotOn
+            ? <Text>•</Text>
+            : <Text dimColor>◦</Text>}
+        {" "}
+        {shimmerCharacters("Working", elapsedAnimationMs, trueColor, "label")}
+        <Text dimColor>{` (${status.elapsed} • esc to interrupt)${detail}`}</Text>
+        <Text dimColor>{activityStatusDivider(text, columns)}</Text>
+      </Text>
     </Box>
   );
+}
+
+function activityStatusDivider(text: string, columns: number): string {
+  const remaining = columns - stringWidth(text);
+  return remaining > 1 ? ` ${"─".repeat(remaining - 1)}` : "";
+}
+
+function shimmerCharacters(text: string, animationTimeMs: number, trueColor: boolean, keyPrefix: string) {
+  const characters = Array.from(text);
+  const period = characters.length + STATUS_SHIMMER_PADDING * 2;
+  const position = (animationTimeMs % STATUS_SHIMMER_PERIOD_MS) / STATUS_SHIMMER_PERIOD_MS * period;
+  return characters.map((character, index) => {
+    const distance = Math.abs(index + STATUS_SHIMMER_PADDING - position);
+    const intensity = distance <= STATUS_SHIMMER_HALF_WIDTH
+      ? 0.5 * (1 + Math.cos(Math.PI * distance / STATUS_SHIMMER_HALF_WIDTH))
+      : 0;
+    const key = `${keyPrefix}:${index}`;
+    if (trueColor) {
+      const channel = Math.round(128 + (255 - 128) * intensity * 0.9);
+      return <Text key={key} bold color={`rgb(${channel},${channel},${channel})`}>{character}</Text>;
+    }
+    if (intensity < 0.2) return <Text key={key} dimColor>{character}</Text>;
+    if (intensity < 0.6) return <Text key={key}>{character}</Text>;
+    return <Text key={key} bold>{character}</Text>;
+  });
 }
 
 function QuestionNavigationBar({ navigation }: { navigation: QuestionNavigation }) {

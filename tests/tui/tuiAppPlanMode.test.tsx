@@ -513,11 +513,11 @@ describe("TuiApp global Plan Mode", () => {
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine as never} providerFactory={planProviderFactory} />);
 
     await sendTuiLine(output, "Start a long task.");
-    await waitForFrame(output, /- Working[.][.][.] [0-9]+s -+/);
+    await waitForFrame(output, /[•◦] Working \([0-9]+s • esc to interrupt\) ─+/);
     assert.match(output.lastFrame() ?? "", /> Type a request or \/help/);
 
     resolveResult?.(workflowState("completed"));
-    await waitForFrame(output, /- Worked for [0-9]+s -+/);
+    await waitForFrame(output, /• Worked for [0-9]+s ─+/);
 
     output.unmount();
     output.cleanup();
@@ -974,11 +974,11 @@ describe("TuiApp global Plan Mode", () => {
 
     await sendTuiLine(output, "/plan");
     await sendTuiLine(output, "Keep thinking in status.");
-    await waitForFrame(output, /- Working[.][.][.] [0-9]+s \(Plan Mode is thinking\) -+/);
+    await waitForFrame(output, /[•◦] Working \([0-9]+s • esc to interrupt\) · Plan Mode is thinking ─+/);
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Thinking \| plan \|/);
-    assert.doesNotMatch(frame, /● Plan Mode is thinking/);
+    assert.doesNotMatch(frame, /• Plan Mode is thinking/);
     assert.equal(starts, 0);
 
     output.unmount();
@@ -1005,7 +1005,7 @@ describe("TuiApp global Plan Mode", () => {
     await sendTuiLine(output, "Second plan turn.");
     await waitForFrame(output, /Second plan turn\./);
     await waitForFrame(output, /Plan response 2\./);
-    await waitForFrame(output, /- Worked for [0-9]+s -+/);
+    await waitForFrame(output, /• Worked for [0-9]+s ─+/);
 
     assert.equal(starts, 0);
     assert.equal(calls, 2);

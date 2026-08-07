@@ -3983,7 +3983,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /●\s+Running npm test/);
+    assert.match(frame, /•\s+Running npm test/);
 
 
 
@@ -4129,7 +4129,7 @@ describe("RunLogPanel", () => {
 
     assert.match(compactFrame, /Thinking/);
 
-    assert.match(compactFrame, /● Thinking/);
+    assert.match(compactFrame, /• Thinking/);
 
     assert.doesNotMatch(compactFrame, /正在|生成|处理/);
 
@@ -4181,7 +4181,7 @@ describe("RunLogPanel", () => {
 
     assert.match(detailedFrame, /Thinking/);
 
-    assert.match(detailedFrame, /● Thinking/);
+    assert.match(detailedFrame, /• Thinking/);
 
     assert.doesNotMatch(detailedFrame, /正在|生成|处理/);
 
@@ -4591,7 +4591,7 @@ describe("RunLogPanel", () => {
 
 
 
-    assert.match(frame, /●\s+Ran npm test/);
+    assert.match(frame, /•\s+Ran npm test/);
 
 
 
@@ -4745,7 +4745,7 @@ describe("RunLogPanel", () => {
 
     assert.match(frame, /我先运行测试/);
 
-    assert.match(frame, /● Ran npm test/);
+    assert.match(frame, /• Ran npm test/);
 
     assert.doesNotMatch(frame, /└\s+Ran npm test/);
 
@@ -5406,17 +5406,17 @@ describe("InteractionArea", () => {
         queued={[]}
         workflows={["delivery"]}
         isLoading={false}
-        activityStatus="Working... 12s"
+        activityStatus={{ kind: "running", elapsed: "12s" }}
         onPromptEvent={() => undefined}
       />
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /- Working[.][.][.] 12s -+/);
+    assert.match(frame, /• Working \(12s • esc to interrupt\) ─+/);
     assert.match(frame, /> Type a request or \/help/);
-    assert.ok(frame.indexOf("- Working... 12s") < frame.indexOf("> Type a request or /help"));
+    assert.ok(frame.indexOf("Working (12s • esc to interrupt)") < frame.indexOf("> Type a request or /help"));
     const lines = frame.split("\n");
-    const statusIndex = lines.findIndex((line) => line.includes("- Working... 12s"));
+    const statusIndex = lines.findIndex((line) => line.includes("Working (12s • esc to interrupt)"));
     const promptIndex = lines.findIndex((line) => line.includes("> Type a request or /help"));
     assert.equal(lines[statusIndex + 1]?.trim(), "");
     assert.equal(promptIndex, statusIndex + 2);
@@ -5434,16 +5434,15 @@ describe("InteractionArea", () => {
         workflows={["delivery"]}
         questions={[]}
         isLoading={false}
-        activityStatus={CONVERSATION_INTERRUPTED_TEXT}
-        activityStatusTone="warning"
+        activityStatus={{ kind: "warning", text: CONVERSATION_INTERRUPTED_TEXT }}
         onPromptEvent={() => undefined}
       />
     );
 
     const frame = output.lastFrame() ?? "";
-    assert.match(frame, /■ Conversation interrupted[.] Describe how to proceed, or enter retry instructions[.] -+/);
-    assert.equal(frame.split(CONVERSATION_INTERRUPTED_TEXT).length - 1, 1);
-    assert.ok(frame.indexOf(CONVERSATION_INTERRUPTED_TEXT) < frame.indexOf("> Type a request or /help"));
+    assert.match(frame, /■ Conversation interrupted[.] Describe how to proceed.*─+/);
+    assert.equal((frame.match(/Conversation interrupted/g) ?? []).length, 1);
+    assert.ok(frame.indexOf("Conversation interrupted") < frame.indexOf("> Type a request or /help"));
 
     output.unmount();
     output.cleanup();
@@ -5457,7 +5456,7 @@ describe("InteractionArea", () => {
         queued={[]}
         workflows={["delivery"]}
         isLoading={false}
-        activityStatus="Working... 12s"
+        activityStatus={{ kind: "running", elapsed: "12s" }}
         onPromptEvent={() => undefined}
         choice={{
           title: "Ready to code?",
@@ -5473,7 +5472,7 @@ describe("InteractionArea", () => {
 
     const frame = output.lastFrame() ?? "";
     assert.match(frame, /Ready to code\?/);
-    assert.doesNotMatch(frame, /- Working[.][.][.] 12s -+/);
+    assert.doesNotMatch(frame, /Working \(12s • esc to interrupt\)/);
 
     output.unmount();
     output.cleanup();
@@ -6288,7 +6287,10 @@ describe("TuiApp", () => {
 
 
 
-    assert.match(frame, /agent-team/);
+    const headerLine = frame.split("\n")[0] ?? "";
+    assert.match(headerLine, /workflow delivery/);
+    assert.doesNotMatch(headerLine, /agent-team/);
+    assert.doesNotMatch(headerLine, /D:\\CodeAI\\agent-team/);
 
 
 
@@ -6563,9 +6565,9 @@ describe("TuiApp", () => {
     await sendTuiLine(output, "start work");
 
     const frame = output.lastFrame() ?? "";
-    assert.equal(frame.split(CONVERSATION_INTERRUPTED_TEXT).length - 1, 1);
+    assert.equal((frame.match(/Conversation interrupted/g) ?? []).length, 1);
     assert.doesNotMatch(frame, /product 需要用户补充信息/);
-    assert.ok(frame.indexOf(CONVERSATION_INTERRUPTED_TEXT) < frame.indexOf("> Type a request or /help"));
+    assert.ok(frame.indexOf("Conversation interrupted") < frame.indexOf("> Type a request or /help"));
 
     await sendTuiLine(output, "continue");
     assert.deepEqual(resumed, [{ answer: "continue" }]);
@@ -6615,7 +6617,7 @@ describe("TuiApp", () => {
 
     assert.match(frame, /我先检查项目结构，再运行测试确认现状。/);
 
-    assert.match(frame, /● Ran npm test/);
+    assert.match(frame, /• Ran npm test/);
 
     assert.doesNotMatch(frame, /status/);
 

@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import Ink from "../../src/ink/ink.js";
 import { Text, renderSync } from "../../src/tui/ink.js";
 import { RunLogPanel } from "../../src/tui/components/RunLogPanel.js";
+import { ActivityStatusLine } from "../../src/tui/components/InteractionArea.js";
 import instances from "../../src/ink/instances.js";
 import { cellAt, type Screen, type StylePool } from "../../src/ink/screen.js";
 
@@ -160,10 +161,11 @@ describe("local Ink lifecycle", () => {
       for (const [text, expectedColor] of cases) {
         const row = lines.findIndex(line => line.includes(text));
         assert.notEqual(row, -1, `missing row for ${text}`);
-        const dotColumn = lines[row]!.indexOf("●");
+        const dotColumn = lines[row]!.indexOf("•");
         assert.notEqual(dotColumn, -1, `missing dot for ${text}`);
         const cell = cellAt(screen, dotColumn, row);
         assert.ok(cell && ink.stylePool.get(cell.styleId).some(style => style.code === expectedColor), `${text} should use ${JSON.stringify(expectedColor)}`);
+        assert.ok(cell && ink.stylePool.get(cell.styleId).some(style => style.code === "\u001b[1m"), "dot should be bold");
       }
     } finally {
       instance.unmount();
@@ -187,7 +189,7 @@ describe("local Ink lifecycle", () => {
       await new Promise<void>(resolve => setImmediate(resolve));
       const ink = instances.get(stdout) as unknown as { frontFrame: { screen: Screen }; stylePool: StylePool };
       const initialCell = cellAt(ink.frontFrame.screen, 0, 1);
-      assert.equal(initialCell?.char, "●");
+      assert.equal(initialCell?.char, "•");
       let toggled = false;
       for (let attempt = 0; attempt < 12 && !toggled; attempt += 1) {
         await delay(75);
@@ -195,6 +197,80 @@ describe("local Ink lifecycle", () => {
         toggled = currentCell?.char !== initialCell?.char;
       }
       assert.equal(toggled, true);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+      chalk.level = previousChalkLevel;
+    }
+  });
+
+  it("animates the activity status shimmer in truecolor terminals", async () => {
+    const previousChalkLevel = chalk.level;
+    chalk.level = 3;
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const instance = renderSync(
+      <ActivityStatusLine status={{ kind: "running", elapsed: "12s" }} />,
+      { stdout, stderr: new FakeStdout() as unknown as NodeJS.WriteStream, stdin: new FakeStdin() as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false }
+    );
+
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const ink = instances.get(stdout) as unknown as { frontFrame: { screen: Screen }; stylePool: StylePool };
+      const locateWorkingCell = () => {
+        const screen = ink.frontFrame.screen;
+        for (let row = 0; row < screen.height; row += 1) {
+          const line = Array.from({ length: screen.width }, (_, column) => cellAt(screen, column, row)?.char ?? " ").join("");
+          const column = line.indexOf("Working");
+          if (column >= 0) return cellAt(screen, column, row);
+        }
+        return undefined;
+      };
+      const initialStyleId = locateWorkingCell()?.styleId;
+      assert.notEqual(initialStyleId, undefined);
+      let changed = false;
+      for (let attempt = 0; attempt < 20 && !changed; attempt += 1) {
+        await delay(75);
+        changed = locateWorkingCell()?.styleId !== initialStyleId;
+      }
+      assert.equal(changed, true);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
+      chalk.level = previousChalkLevel;
+    }
+  });
+
+  it("falls back to a blinking activity dot without truecolor", async () => {
+    const previousChalkLevel = chalk.level;
+    chalk.level = 1;
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const instance = renderSync(
+      <ActivityStatusLine status={{ kind: "running", elapsed: "12s" }} />,
+      { stdout, stderr: new FakeStdout() as unknown as NodeJS.WriteStream, stdin: new FakeStdin() as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false }
+    );
+
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const ink = instances.get(stdout) as unknown as { frontFrame: { screen: Screen } };
+      const locateDot = () => {
+        const screen = ink.frontFrame.screen;
+        for (let row = 0; row < screen.height; row += 1) {
+          const line = Array.from({ length: screen.width }, (_, column) => cellAt(screen, column, row)?.char ?? " ").join("");
+          if (!line.includes("Working")) continue;
+          const columns = [line.indexOf("•"), line.indexOf("◦")].filter((column) => column >= 0);
+          const column = columns.length ? Math.min(...columns) : -1;
+          return column >= 0 ? cellAt(screen, column, row)?.char : undefined;
+        }
+        return undefined;
+      };
+      const initialDot = locateDot();
+      assert.ok(initialDot === "•" || initialDot === "◦");
+      let changed = false;
+      for (let attempt = 0; attempt < 20 && !changed; attempt += 1) {
+        await delay(75);
+        changed = locateDot() !== initialDot;
+      }
+      assert.equal(changed, true);
     } finally {
       instance.unmount();
       instance.cleanup();
