@@ -2,6 +2,7 @@ import type { BorderStyle } from "../../ink/render-border.js";
 import { contextUsedPercent } from "../../model/contextUsage.js";
 import { getModelContextLimits } from "../../model/modelRegistry.js";
 import { useAnimationFrame } from "../../ink/hooks/use-animation-frame.js";
+import { stringWidth } from "../../ink/stringWidth.js";
 import { Box, Text } from "../ink.js";
 import { TuiNodeState, TuiWorkflowNodeState } from "../state.js";
 import { formatTokenCount } from "./StatusLine.js";
@@ -22,11 +23,15 @@ const NODE_BORDER = {
 export function WorkflowFlowChart({
   nodes,
   workflowNodes,
+  busNodeId,
+  columns,
   currentNodeId,
   suspendedStack = []
 }: {
   nodes: TuiNodeState[];
   workflowNodes?: TuiWorkflowNodeState[];
+  busNodeId?: string;
+  columns?: number;
   currentNodeId?: string;
   suspendedStack?: string[];
 }) {
@@ -44,30 +49,98 @@ export function WorkflowFlowChart({
         state: node
       };
     });
+  const displayRows = rows.map((row) => {
+    const active = row.id === currentNodeId;
+    const running = row.state?.status === "running";
+    const color = nodeColor(row.state, active);
+    const contextTokens = Math.max(0, row.state?.contextTokens ?? 0);
+    const limits = getModelContextLimits(row.model ?? "");
+    const contextWindow = row.state?.contextWindow ?? row.contextWindow ?? limits.effectiveContextWindow;
+    const contextPercent = contextUsedPercent(contextTokens, contextWindow);
+    const contextText = `context: ${formatTokenCount(contextTokens).toLowerCase()}/${formatTokenCount(contextWindow).toLowerCase()} (${contextPercent}%)`;
+    const modelText = row.model ? `model: ${row.model}${row.effort ? " " + row.effort : ""}` : undefined;
+    const statusText = statusLabel(row.state);
+    const contentWidth = Math.max(
+      stringWidth(row.id),
+      stringWidth(contextText),
+      stringWidth(statusText),
+      modelText ? stringWidth(modelText) : 0
+    );
+    return {
+      ...row,
+      active,
+      running,
+      color,
+      contextText,
+      modelText,
+      statusText,
+      cardWidth: Math.max(18, contentWidth + 4)
+    };
+  });
+  const busNodeIndex = busNodeId ? displayRows.findIndex((row) => row.id === busNodeId) : -1;
+  const showBus = busNodeIndex >= 0;
+  const availableColumns = columns && columns > 0 ? columns : Number.POSITIVE_INFINITY;
+  let layoutRow = 0;
+  let layoutRowWidth = 0;
+  const cellLayouts = displayRows.map((row, index) => {
+    const connectorWidth = index < displayRows.length - 1 ? stringWidth(" -> ") : 0;
+    const cellWidth = row.cardWidth + connectorWidth;
+    if (layoutRowWidth > 0 && layoutRowWidth + cellWidth > availableColumns) {
+      layoutRow += 1;
+      layoutRowWidth = 0;
+    }
+    const cell = { cellWidth, row: layoutRow };
+    layoutRowWidth += cellWidth;
+    return cell;
+  });
+  const busLayoutRow = busNodeIndex >= 0 ? cellLayouts[busNodeIndex]?.row ?? -1 : -1;
+  const nodeCells = displayRows.map((row, index) => {
+    const cellLayout = cellLayouts[index]!;
+    const connectorText = index < displayRows.length - 1 ? " -> " : "";
+    const cellWidth = cellLayout.cellWidth;
+    const branchColumn = Math.floor(row.cardWidth / 2);
+    const busLineVisible = showBus && cellLayout.row <= busLayoutRow;
+    let busSegment = " ".repeat(cellWidth);
+    if (busLineVisible && index < busNodeIndex) {
+      busSegment = index === 0
+        ? `bus ${"─".repeat(Math.max(0, cellWidth - 4))}`
+        : "─".repeat(cellWidth);
+    } else if (busLineVisible && index === busNodeIndex) {
+      const line = index === 0
+        ? `bus ${"─".repeat(Math.max(0, branchColumn - 4))}`
+        : "─".repeat(branchColumn);
+      busSegment = `${line}┐${" ".repeat(Math.max(0, cellWidth - branchColumn - 1))}`;
+    }
+    const card = (
+      <Box borderStyle={row.running ? runningBorder : "single"} borderColor={row.color} width={showBus ? row.cardWidth : undefined} minWidth={showBus ? undefined : 18} paddingX={1} flexDirection="column">
+        <Text color={row.color} bold={row.active} dimColor={!row.state}>{row.id}</Text>
+        {row.modelText ? <Text color={row.color} dimColor={!row.state}>{row.modelText}</Text> : null}
+        <Text color={row.color} dimColor={!row.state}>{row.contextText}</Text>
+        <Text color={row.color} dimColor={!row.state}>{row.statusText}</Text>
+      </Box>
+    );
+    if (!showBus) {
+      return (
+        <Box key={row.id} alignItems="center">
+          {card}
+          {connectorText ? <Text dimColor>{connectorText}</Text> : null}
+        </Box>
+      );
+    }
+    return (
+      <Box key={row.id} flexDirection="column" width={cellWidth} flexShrink={0}>
+        {busLineVisible ? <Text dimColor>{busSegment}</Text> : null}
+        <Box alignItems="center">
+          {card}
+          {connectorText ? <Text dimColor>{connectorText}</Text> : null}
+        </Box>
+      </Box>
+    );
+  });
 
   return (
-    <Box ref={animationRef} flexWrap="wrap" flexShrink={0}>
-      {rows.map((row, index) => {
-        const active = row.id === currentNodeId;
-        const running = row.state?.status === "running";
-        const color = nodeColor(row.state, active);
-        const contextTokens = Math.max(0, row.state?.contextTokens ?? 0);
-        const limits = getModelContextLimits(row.model ?? "");
-        const contextWindow = row.state?.contextWindow ?? row.contextWindow ?? limits.effectiveContextWindow;
-        const contextPercent = contextUsedPercent(contextTokens, contextWindow);
-        const contextText = `context: ${formatTokenCount(contextTokens).toLowerCase()}/${formatTokenCount(contextWindow).toLowerCase()} (${contextPercent}%)`;
-        return (
-          <Box key={row.id} alignItems="center">
-            <Box borderStyle={running ? runningBorder : "single"} borderColor={color} paddingX={1} minWidth={18} flexDirection="column">
-              <Text color={color} bold={active} dimColor={!row.state}>{row.id}</Text>
-              {row.model ? <Text color={color} dimColor={!row.state}>model: {row.model}{row.effort ? " " + row.effort : ""}</Text> : null}
-              <Text color={color} dimColor={!row.state}>{contextText}</Text>
-              <Text color={color} dimColor={!row.state}>{statusLabel(row.state)}</Text>
-            </Box>
-            {index < rows.length - 1 ? <Text dimColor> -&gt; </Text> : null}
-          </Box>
-        );
-      })}
+    <Box ref={animationRef} flexDirection={showBus ? "column" : "row"} flexWrap={showBus ? "nowrap" : "wrap"} flexShrink={0}>
+      {showBus ? <Box flexWrap="wrap" flexShrink={0}>{nodeCells}</Box> : nodeCells}
       {suspendedStack.length ? <Box width="100%"><Text color="yellow">挂起链：{suspendedStack.join(" → ")}</Text></Box> : null}
     </Box>
   );

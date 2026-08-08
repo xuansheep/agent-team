@@ -139,6 +139,7 @@ export type TuiState = {
   modelRequestCount: number;
   workflowId?: string;
   runId?: string;
+  busNodeId?: string;
   currentNodeId?: string;
   suspendedStack: string[];
   nodes: TuiNodeState[];

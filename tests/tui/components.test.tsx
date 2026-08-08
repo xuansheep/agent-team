@@ -6231,6 +6231,64 @@ describe("TuiApp", () => {
 
 
 
+  it("keeps the main log scroll native and the fixed regions visible", async () => {
+    const session = fakeInteractiveSession({
+      runId: "run-native-log-scroll",
+      workflowId: "delivery",
+      events: [
+        { type: "node_started", node_id: "product", attempt: 1, ts: "2026-06-24T00:00:00.000Z", seq: 1 },
+        {
+          type: "model_stream_delta",
+          node_id: "product",
+          attempt: 1,
+          text: Array.from({ length: 30 }, (_, index) => `native-log-${index}`).join("\n"),
+          ts: "2026-06-24T00:00:01.000Z",
+          seq: 2
+        },
+        { type: "tool_invoked", node_id: "product", attempt: 1, tool_call_id: "tool-1", tool: "Bash", input: { command: "printf logs" }, ts: "2026-06-24T00:00:02.000Z", seq: 3 },
+        {
+          type: "tool_completed",
+          node_id: "product",
+          attempt: 1,
+          tool_call_id: "tool-1",
+          tool: "Bash",
+          result: { output: "logs", exit_code: 0 },
+          ts: "2026-06-24T00:00:03.000Z",
+          seq: 4
+        }
+      ]
+    });
+    const engine = { async startInteractive() { return session; } };
+    const output = render(
+      <TuiApp
+        cwd={testTuiCwd()}
+        config={tuiConfig()}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={engine as unknown as never}
+        providerFactory={testBusProviderFactory("dev")}
+      />
+    );
+
+    await sendTuiLine(output, "run logs");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("█"));
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /█/);
+    assert.match(frame, /workflow delivery/);
+    assert.match(frame, /> Type a request or \/help/);
+
+    output.stdin.write("\u001b[5~");
+    await settleInkInput();
+
+    const scrolledFrame = output.lastFrame() ?? "";
+    assert.match(scrolledFrame, /workflow delivery/);
+    assert.match(scrolledFrame, /> Type a request or \/help/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("keeps the prompt as the bottom interaction area in the running layout", () => {
 
 

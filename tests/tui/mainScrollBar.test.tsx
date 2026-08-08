@@ -6,7 +6,7 @@ import type { ScrollBoxHandle } from '../../src/tui/ink.js'
 import {
   calculateMainScrollBarGeometry,
   MainScrollBar,
-  scrollMainToTrackRow,
+  scrollMainToThumbStart,
 } from '../../src/tui/components/MainScrollBar.js'
 
 describe('main log scroll bar geometry', () => {
@@ -65,17 +65,17 @@ describe('main log scroll bar geometry', () => {
   })
 })
 
-describe('main log scroll bar clicks', () => {
-  it('maps track rows to scroll positions', () => {
+describe('main log scroll bar dragging', () => {
+  it('maps thumb positions to scroll positions', () => {
     const calls: Array<['scrollTo', number] | ['scrollToBottom']> = []
     const scroll = {
       scrollTo: (position: number) => calls.push(['scrollTo', position]),
       scrollToBottom: () => calls.push(['scrollToBottom']),
     }
 
-    assert.equal(scrollMainToTrackRow(scroll, 0, 5, 80), false)
-    assert.equal(scrollMainToTrackRow(scroll, 2, 5, 80), false)
-    assert.equal(scrollMainToTrackRow(scroll, 4, 5, 80), true)
+    assert.equal(scrollMainToThumbStart(scroll, 0, 10, 2, 80), false)
+    assert.equal(scrollMainToThumbStart(scroll, 4, 10, 2, 80), false)
+    assert.equal(scrollMainToThumbStart(scroll, 8, 10, 2, 80), true)
     assert.deepEqual(calls, [
       ['scrollTo', 0],
       ['scrollTo', 40],
@@ -84,15 +84,32 @@ describe('main log scroll bar clicks', () => {
     ])
   })
 
-  it('uses the only track row as a jump to bottom', () => {
+  it('clamps dragging above and below the track', () => {
+    const calls: Array<['scrollTo', number] | ['scrollToBottom']> = []
+    const scroll = {
+      scrollTo: (position: number) => calls.push(['scrollTo', position]),
+      scrollToBottom: () => calls.push(['scrollToBottom']),
+    }
+
+    assert.equal(scrollMainToThumbStart(scroll, -20, 6, 2, 100), false)
+    assert.equal(scrollMainToThumbStart(scroll, 20, 6, 2, 100), true)
+    assert.deepEqual(calls, [
+      ['scrollTo', 0],
+      ['scrollTo', 100],
+      ['scrollToBottom'],
+    ])
+  })
+
+  it('does nothing when the thumb cannot move', () => {
     const calls: string[] = []
     const scroll = {
       scrollTo: (position: number) => calls.push(`scrollTo:${position}`),
       scrollToBottom: () => calls.push('scrollToBottom'),
     }
 
-    assert.equal(scrollMainToTrackRow(scroll, 0, 1, 12), true)
-    assert.deepEqual(calls, ['scrollTo:12', 'scrollToBottom'])
+    assert.equal(scrollMainToThumbStart(scroll, 0, 4, 4, 12), false)
+    assert.equal(scrollMainToThumbStart(scroll, 0, 4, 1, 0), false)
+    assert.deepEqual(calls, [])
   })
 })
 

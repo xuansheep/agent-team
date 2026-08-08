@@ -2,6 +2,7 @@ import React, {
   type RefObject,
   useCallback,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
 } from 'react'
@@ -72,25 +73,24 @@ export function calculateMainScrollBarGeometry(
   return { visible: true, thumbStart, thumbSize, maxScroll }
 }
 
-export function scrollMainToTrackRow(
+export function scrollMainToThumbStart(
   scroll: Pick<ScrollBoxHandle, 'scrollTo' | 'scrollToBottom'>,
-  row: number,
+  thumbStart: number,
   trackHeight: number,
+  thumbSize: number,
   maxScroll: number,
 ): boolean {
   const normalizedHeight = Math.max(0, Math.floor(trackHeight))
+  const normalizedThumbSize = Math.max(0, Math.floor(thumbSize))
   const normalizedMax = Math.max(0, Math.floor(maxScroll))
-  if (normalizedHeight === 0 || normalizedMax === 0) return false
+  const maxThumbStart = Math.max(0, normalizedHeight - normalizedThumbSize)
+  if (maxThumbStart === 0 || normalizedMax === 0) return false
 
-  const lastRow = normalizedHeight - 1
-  const target =
-    lastRow === 0
-      ? normalizedMax
-      : Math.round(
-          (Math.min(lastRow, Math.max(0, Math.floor(row))) / lastRow) *
-            normalizedMax,
-        )
-
+  const targetStart = Math.min(
+    maxThumbStart,
+    Math.max(0, Math.floor(thumbStart)),
+  )
+  const target = Math.round((targetStart / maxThumbStart) * normalizedMax)
   scroll.scrollTo(target)
   if (target < normalizedMax) return false
 
@@ -107,6 +107,7 @@ export function MainScrollBar({
 }: MainScrollBarProps): React.ReactNode {
   const trackHeight = Math.max(0, Math.floor(height))
   const [layoutMetrics, setLayoutMetrics] = useState<LayoutMetrics>()
+  const dragRef = useRef<{ grabOffset: number }>()
 
   useEffect(() => {
     // Local Ink paints updated Yoga viewport bounds on its throttled frame.
@@ -177,25 +178,50 @@ export function MainScrollBar({
     .map(Number)
   const visible = visibleFlag === 1
 
+  useEffect(() => {
+    if (!visible) dragRef.current = undefined
+  }, [visible])
+
   return (
     <Box
       flexDirection="column"
       flexShrink={0}
       height={trackHeight}
       width={1}
-      onClick={
+      onMouseDown={
         visible
           ? event => {
               event.stopImmediatePropagation()
+              const row = Math.floor(event.localRow)
+              if (row < thumbStart || row >= thumbStart + thumbSize) return
+              dragRef.current = { grabOffset: row - thumbStart }
+              event.capturePointer()
+            }
+          : undefined
+      }
+      onMouseMove={
+        visible
+          ? event => {
+              const drag = dragRef.current
               const scroll = scrollRef.current
-              if (scroll) {
-                scrollMainToTrackRow(
-                  scroll,
-                  event.localRow,
-                  trackHeight,
-                  maxScroll,
-                )
-              }
+              if (!drag || !scroll) return
+              event.stopImmediatePropagation()
+              scrollMainToThumbStart(
+                scroll,
+                event.localRow - drag.grabOffset,
+                trackHeight,
+                thumbSize,
+                maxScroll,
+              )
+            }
+          : undefined
+      }
+      onMouseUp={
+        visible
+          ? event => {
+              if (!dragRef.current) return
+              dragRef.current = undefined
+              event.stopImmediatePropagation()
             }
           : undefined
       }
@@ -207,7 +233,7 @@ export function MainScrollBar({
             return (
               <Text
                 key={row}
-                color={thumb ? 'cyan' : undefined}
+                color={thumb ? 'ansi:blackBright' : undefined}
                 dimColor={!thumb}
               >
                 {thumb ? THUMB_CHARACTER : TRACK_CHARACTER}

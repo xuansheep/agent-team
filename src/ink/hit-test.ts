@@ -1,6 +1,7 @@
 import type { DOMElement } from './dom.js'
 import { ClickEvent } from './events/click-event.js'
 import type { EventHandlerProps } from './events/event-handlers.js'
+import { MouseEvent, type MouseEventAction } from './events/mouse-event.js'
 import { nodeCache } from './node-cache.js'
 
 /**
@@ -86,6 +87,68 @@ export function dispatchClick(
     target = target.parentNode
   }
   return handled
+}
+
+export type MouseDispatchInput = {
+  col: number
+  row: number
+  button: number
+  action: MouseEventAction
+}
+
+export type MouseDispatchResult = {
+  handled: boolean
+  captureTarget?: DOMElement
+}
+
+/** Dispatch pointer events and capture the Box that handled a press. */
+export function dispatchMouseEvent(
+  root: DOMElement,
+  input: MouseDispatchInput,
+  capturedTarget?: DOMElement,
+): MouseDispatchResult {
+  const target = capturedTarget?.parentNode
+    ? capturedTarget
+    : hitTest(root, input.col, input.row)
+  if (!target) return { handled: false }
+
+  const handlerName = input.action === 'press'
+    ? 'onMouseDown'
+    : input.action === 'release' || input.action === 'cancel'
+      ? 'onMouseUp'
+      : 'onMouseMove'
+  const event = new MouseEvent(input)
+  let handled = false
+  let captureTarget: DOMElement | undefined
+  let current: DOMElement | undefined = target
+  while (current) {
+    const handler = current._eventHandlers?.[handlerName] as
+      | ((event: MouseEvent) => void)
+      | undefined
+    if (handler) {
+      handled = true
+      const rect = nodeCache.get(current)
+      if (rect) {
+        event.localCol = input.col - rect.x
+        event.localRow = input.row - rect.y
+      }
+      handler(event)
+      if (
+        input.action === 'press' &&
+        !captureTarget &&
+        event._isPointerCaptureRequested()
+      ) {
+        captureTarget = current
+      }
+      if (event.didStopImmediatePropagation()) break
+    }
+    current = current.parentNode
+  }
+
+  if (input.action === 'release' || input.action === 'cancel') {
+    return { handled, captureTarget: undefined }
+  }
+  return { handled, captureTarget: captureTarget ?? capturedTarget }
 }
 
 /**

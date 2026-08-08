@@ -23,16 +23,17 @@ import type {
 } from './components/CursorDeclarationContext.js'
 import { FRAME_INTERVAL_MS } from './constants.js'
 import * as dom from './dom.js'
+import type { DOMElement } from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
-import { dispatchClick, dispatchHover } from './hit-test.js'
+import { dispatchClick, dispatchHover, dispatchMouseEvent as dispatchMouseEventAt } from './hit-test.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
 import { nodeCache } from './node-cache.js'
 import { optimize } from './optimizer.js'
 import Output from './output.js'
-import type { ParsedKey } from './parse-keypress.js'
+import type { ParsedKey, ParsedMouse } from './parse-keypress.js'
 import reconciler, {
   dispatcher,
   getLastCommitMs,
@@ -1499,6 +1500,49 @@ export default class Ink {
     return dispatchClick(this.rootNode, col, row, blank)
   }
 
+  private mouseCaptureTarget: DOMElement | undefined
+
+  dispatchMouseEvent(mouse: ParsedMouse): boolean {
+    if (!this.altScreenActive) return false
+    const baseButton = mouse.button & 0x03
+    const motion = (mouse.button & 0x20) !== 0
+    const action = mouse.action === 'release'
+      ? 'release'
+      : motion && baseButton === 3
+        ? 'cancel'
+        : motion
+          ? 'move'
+          : 'press'
+    const hadCapture = Boolean(this.mouseCaptureTarget)
+    const result = dispatchMouseEventAt(
+      this.rootNode,
+      {
+        col: mouse.col - 1,
+        row: mouse.row - 1,
+        button: mouse.button,
+        action,
+      },
+      this.mouseCaptureTarget,
+    )
+    this.mouseCaptureTarget = result.captureTarget
+    return result.handled || hadCapture || Boolean(this.mouseCaptureTarget)
+  }
+
+  cancelMouseEvent(): void {
+    if (!this.mouseCaptureTarget) return
+    dispatchMouseEventAt(
+      this.rootNode,
+      {
+        col: 0,
+        row: 0,
+        button: 0,
+        action: 'cancel',
+      },
+      this.mouseCaptureTarget,
+    )
+    this.mouseCaptureTarget = undefined
+  }
+
   dispatchHover(col: number, row: number): void {
     if (!this.altScreenActive) return
     dispatchHover(this.rootNode, col, row, this.hoveredNodes)
@@ -1714,6 +1758,8 @@ export default class Ink {
         onOpenHyperlink={this.openHyperlink}
         onMultiClick={this.handleMultiClick}
         onSelectionDrag={this.handleSelectionDrag}
+        onMouseEvent={this.dispatchMouseEvent}
+        onMouseCancel={this.cancelMouseEvent}
         onStdinResume={this.reassertTerminalModes}
         onCursorDeclaration={this.setCursorDeclaration}
         dispatchKeyboardEvent={this.dispatchKeyboardEvent}

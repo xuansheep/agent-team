@@ -39,7 +39,7 @@ function nextSuspendedStack(stack: string[], event: Extract<StoredEvent, { type:
   if (event.reason === "forward" && next.at(-1) === event.to) next.pop();
   return next;
 }
-export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
+export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; busNodeId?: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
   const reset: TuiState = {
     ...initialTuiState({ cwd: state.cwd, inputPermissionMode: input.inputPermissionMode ?? state.inputPermissionMode }),
     defaultExecutionMode: state.defaultExecutionMode,
@@ -47,6 +47,7 @@ export function resetTuiRunState(state: TuiState, input: { workflowId: string; r
     modelRequestCount: state.modelRequestCount,
     workflowId: input.workflowId,
     runId: input.runId,
+    busNodeId: input.busNodeId,
     mode: "running",
     runState: "working"
   };

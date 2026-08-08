@@ -4,6 +4,7 @@ import type { DOMElement } from '../dom.js'
 import type { ClickEvent } from '../events/click-event.js'
 import type { FocusEvent } from '../events/focus-event.js'
 import type { KeyboardEvent } from '../events/keyboard-event.js'
+import type { MouseEvent } from '../events/mouse-event.js'
 import type { Color, Styles } from '../styles.js'
 import * as warn from '../warn.js'
 
@@ -30,6 +31,10 @@ export type Props = Except<Styles, 'textWrap' | 'borderColor'> & {
    * ancestors; call `event.stopImmediatePropagation()` to stop bubbling.
    */
   onClick?: (event: ClickEvent) => void
+  /** Fired for pointer press, motion and release events inside this Box. */
+  onMouseDown?: (event: MouseEvent) => void
+  onMouseMove?: (event: MouseEvent) => void
+  onMouseUp?: (event: MouseEvent) => void
   onFocus?: (event: FocusEvent) => void
   onFocusCapture?: (event: FocusEvent) => void
   onBlur?: (event: FocusEvent) => void
@@ -59,6 +64,9 @@ const Box = React.forwardRef<DOMElement, PropsWithChildren<Props>>(function Box(
   tabIndex,
   autoFocus,
   onClick,
+  onMouseDown,
+  onMouseMove,
+  onMouseUp,
   onFocus,
   onFocusCapture,
   onBlur,
@@ -94,6 +102,9 @@ const Box = React.forwardRef<DOMElement, PropsWithChildren<Props>>(function Box(
       tabIndex={tabIndex}
       autoFocus={autoFocus}
       onClick={onClick}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
       onFocus={onFocus}
       onFocusCapture={onFocusCapture}
       onBlur={onBlur}

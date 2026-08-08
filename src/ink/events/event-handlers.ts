@@ -1,6 +1,7 @@
 import type { ClickEvent } from './click-event.js'
 import type { FocusEvent } from './focus-event.js'
 import type { KeyboardEvent } from './keyboard-event.js'
+import type { MouseEvent } from './mouse-event.js'
 import type { PasteEvent } from './paste-event.js'
 import type { ResizeEvent } from './resize-event.js'
 
@@ -10,6 +11,7 @@ type PasteEventHandler = (event: PasteEvent) => void
 type ResizeEventHandler = (event: ResizeEvent) => void
 type ClickEventHandler = (event: ClickEvent) => void
 type HoverEventHandler = () => void
+type MouseEventHandler = (event: MouseEvent) => void
 
 /**
  * Props for event handlers on Box and other host components.
@@ -33,6 +35,9 @@ export type EventHandlerProps = {
   onResize?: ResizeEventHandler
 
   onClick?: ClickEventHandler
+  onMouseDown?: MouseEventHandler
+  onMouseMove?: MouseEventHandler
+  onMouseUp?: MouseEventHandler
   onMouseEnter?: HoverEventHandler
   onMouseLeave?: HoverEventHandler
 }
@@ -51,6 +56,9 @@ export const HANDLER_FOR_EVENT: Record<
   paste: { bubble: 'onPaste', capture: 'onPasteCapture' },
   resize: { bubble: 'onResize' },
   click: { bubble: 'onClick' },
+  mousedown: { bubble: 'onMouseDown' },
+  mousemove: { bubble: 'onMouseMove' },
+  mouseup: { bubble: 'onMouseUp' },
 }
 
 /**
@@ -68,6 +76,9 @@ export const EVENT_HANDLER_PROPS = new Set<string>([
   'onPasteCapture',
   'onResize',
   'onClick',
+  'onMouseDown',
+  'onMouseMove',
+  'onMouseUp',
   'onMouseEnter',
   'onMouseLeave',
 ])

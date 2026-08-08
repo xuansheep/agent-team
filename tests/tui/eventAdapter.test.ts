@@ -950,6 +950,31 @@ describe("TUI event adapter", () => {
 
   });
 
+  it("keeps the bus decision stable across workflow transitions and restores it on run reset", () => {
+    const state = {
+      ...initialTuiState({ cwd: "D:\\CodeAI\\agent-team" }),
+      busNodeId: "product"
+    };
+    const transitioned = reduceStoredEvent(state, {
+      type: "transition",
+      from: "product",
+      to: "dev",
+      reason: "success",
+      ts: "2026-08-08T00:00:00.000Z",
+      seq: 1
+    });
+
+    assert.equal(transitioned.currentNodeId, "dev");
+    assert.equal(transitioned.busNodeId, "product");
+
+    const reset = resetTuiRunState(transitioned, {
+      workflowId: "delivery",
+      runId: "next-run",
+      busNodeId: "test"
+    });
+    assert.equal(reset.busNodeId, "test");
+  });
+
   it("preserves logs when resetting into a workflow from Plan Mode", () => {
     const state = {
       ...initialTuiState({ cwd: "D:\\CodeAI\\agent-team" }),

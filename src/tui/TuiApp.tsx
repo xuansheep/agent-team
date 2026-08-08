@@ -355,7 +355,7 @@ export function TuiApp({
     busRef.current = undefined;
     setPreviewWorkflowId(workflow);
     setSelectedWorkflowId(workflow);
-    setState((current) => ({ ...current, workflowId: workflow, mode: "input" }));
+    setState((current) => ({ ...current, workflowId: workflow, busNodeId: undefined, mode: "input" }));
   };
   const failUi = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -399,6 +399,7 @@ export function TuiApp({
         break;
       case "bus_plan_node_selected":
         setWorkStatusDetail(`Execution bus selected node ${event.node_id}`);
+        setState((current) => ({ ...current, busNodeId: event.node_id }));
         break;
       case "bus_workflow_started":
         setWorkStatusDetail(`Execution bus started node ${event.node_id}`);
@@ -408,6 +409,7 @@ export function TuiApp({
           runState: "working",
           workflowId: event.workflow_id,
           runId: event.run_id,
+          busNodeId: event.node_id,
           currentNodeId: event.node_id,
           error: undefined
         }));
@@ -420,6 +422,7 @@ export function TuiApp({
           runState: "working",
           workflowId: event.workflow_id,
           runId: event.run_id,
+          busNodeId: event.to_node_id,
           currentNodeId: event.to_node_id,
           error: undefined
         }));
@@ -626,6 +629,7 @@ export function TuiApp({
       preserveLogs?: boolean;
       inputPermissionMode?: PermissionMode;
       approvedPlanReview?: { nodeId: string; attempt: number };
+      busNodeId?: string;
     } = {}
   ) => {
     const resultGeneration = ++sessionResultGenerationRef.current;
@@ -653,6 +657,7 @@ export function TuiApp({
       return resetTuiRunState(withApprovedPlan, {
         workflowId: nextWorkflowId,
         runId: session.runId,
+        busNodeId: options.busNodeId,
         preserveLogs: options.preserveLogs === true,
         inputPermissionMode: options.inputPermissionMode
       });
@@ -708,7 +713,8 @@ export function TuiApp({
       if (sessionRef.current !== workflow) {
         attachSession(workflow, workflowId, {
           preserveLogs: options.preserveLogs !== false,
-          inputPermissionMode: options.inputPermissionMode ?? state.inputPermissionMode
+          inputPermissionMode: options.inputPermissionMode ?? state.inputPermissionMode,
+          busNodeId: turn.state.selected_node_id ?? workflow.state.current_node_id
         });
       } else {
         listenSession(workflow, workflowId);
@@ -718,6 +724,7 @@ export function TuiApp({
           runState: busResultRunState(turn.state.status),
           workflowId,
           runId: workflow.runId,
+          busNodeId: turn.state.selected_node_id ?? current.busNodeId,
           currentNodeId: workflow.state.current_node_id,
           error: undefined
         }));
@@ -728,6 +735,7 @@ export function TuiApp({
         mode: busResultMode(turn.state.status, false),
         runState: busResultRunState(turn.state.status),
         workflowId,
+        busNodeId: turn.state.selected_node_id ?? current.busNodeId,
         error: undefined
       }));
     }
@@ -777,7 +785,9 @@ export function TuiApp({
         ...(checkpoint ? { checkpoint } : {})
       });
       bus.adoptWorkflow(session, checkpoint?.selected_node_id ?? session.state.current_node_id);
-      attachSession(session, session.state.workflow_id);
+      attachSession(session, session.state.workflow_id, {
+        busNodeId: checkpoint?.selected_node_id ?? checkpoint?.current_node_id ?? session.state.current_node_id
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setState((current) => ({ ...current, mode: "input", error: message, resumeRuns: [], pendingResumeRunId: undefined, modeBeforeConfirmation: undefined }));
@@ -1786,7 +1796,8 @@ ${message.detailText}` : ""}` }
       inputPermissionMode: resolved.execution?.permissionMode,
       approvedPlanReview: state.pendingReview
         ? { nodeId: state.pendingReview.nodeId, attempt: state.pendingReview.attempt }
-        : undefined
+        : undefined,
+      busNodeId: bus.state.selected_node_id ?? transition.workflow.state.current_node_id
     });
     return true;
   };
@@ -1796,6 +1807,7 @@ ${message.detailText}` : ""}` }
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: current.workflowId,
       runId: current.runId,
+      busNodeId: current.busNodeId,
       mode: current.mode === "planning" || current.mode === "waiting_plan_approval" ? current.mode : "input",
       planSession: current.planSession,
       sessionUsage: current.sessionUsage,
@@ -1843,6 +1855,7 @@ ${message.detailText}` : ""}` }
         setState((current) => ({
           ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
           workflowId: busWorkflowId,
+          busNodeId: metadata.bus!.selected_node_id ?? metadata.bus!.current_node_id,
           mode: busResultMode(metadata.bus!.status, false),
           runState: busResultRunState(metadata.bus!.status),
           sessionUsage: metadata.usage ?? emptyModelUsage(),
@@ -1869,6 +1882,7 @@ ${message.detailText}` : ""}` }
     const base = (current: TuiState) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: busWorkflowId ?? current.workflowId ?? selectedWorkflowId,
+      busNodeId: metadata?.bus?.selected_node_id ?? metadata?.bus?.current_node_id,
       sessionUsage: metadata?.usage ?? emptyModelUsage(),
       modelRequestCount: metadata?.modelRequestCount ?? 0,
       planSession: plan,
@@ -2344,6 +2358,7 @@ ${message.detailText}` : ""}` }
     })
     : undefined;
   const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
+  const busIndicatorVisible = Boolean(state.busNodeId && workflowNodes?.some((node) => node.id === state.busNodeId));
   const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : hasPlanQuestion ? "question" : state.mode;
   const planApprovalActive = interactionMode === "waiting_plan_approval" && Boolean(state.pendingReview);
   const planApprovalOverlayVisible = planApprovalActive && !planApprovalCollapsed;
@@ -2602,6 +2617,7 @@ ${message.detailText}` : ""}` }
     terminalRows,
     choice: halfScreenChoice ? undefined : activeChoice,
     activityStatusVisible: Boolean(activityStatus && !activeChoice),
+    flowRows: busIndicatorVisible ? 5 : 4,
     statusLineRows
   });
   const planApprovalDocumentMaxLines = state.pendingReview
@@ -2767,7 +2783,7 @@ ${message.detailText}` : ""}` }
   return (
     <Box flexDirection="column" height={terminalRows}>
       <Header workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
-      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
+      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} busNodeId={state.busNodeId} columns={terminalColumns} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
       {halfScreenChoice ? null : (
         <Box flexDirection="row" height={layout.mainHeight} flexShrink={1} minHeight={1} opaque>
           <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
@@ -2786,11 +2802,11 @@ ${message.detailText}` : ""}` }
           )}
           </ScrollBox>
           <MainScrollBar
-          scrollRef={mainScrollRef}
-          height={layout.mainHeight}
-          contentRevision={logMessages}
-          layoutRevision={transcriptMode + ":" + state.mode}
-          enabled={!planApprovalOverlayVisible}
+            scrollRef={mainScrollRef}
+            height={layout.mainHeight}
+            contentRevision={logMessages}
+            layoutRevision={transcriptMode + ":" + state.mode}
+            enabled={!planApprovalOverlayVisible}
           />
         </Box>
       )}
@@ -4387,9 +4403,9 @@ function statusLineLayoutRows(input: Parameters<typeof statusLineText>[0], colum
   return statusLineRowCount(text, columns);
 }
 
-function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string }; activityStatusVisible?: boolean; statusLineRows?: number }): { mainHeight: number; planReviewHeight: number } {
+function layoutMetrics(input: { terminalRows: number; choice?: InteractionChoice; planReview?: { document: string }; activityStatusVisible?: boolean; flowRows?: number; statusLineRows?: number }): { mainHeight: number; planReviewHeight: number } {
   const headerRows = 1;
-  const flowRows = 4;
+  const flowRows = input.flowRows ?? 4;
   const statusLineExtraRows = Math.max(0, (input.statusLineRows ?? 1) - 1);
   const promptRows = (input.choice ? 0 : input.activityStatusVisible ? 8 : 6) + statusLineExtraRows;
   const choiceRows = input.choice ? estimateChoiceRows(input.choice) : 0;

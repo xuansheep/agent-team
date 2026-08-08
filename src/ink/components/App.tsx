@@ -108,6 +108,10 @@ type Props = {
   // exact cell; word/line mode snaps to word/line boundaries. Needs
   // screen-buffer access (word boundaries) so lives on Ink, not here.
   readonly onSelectionDrag: (col: number, row: number) => void
+  // Dispatch pointer events to Box handlers. A handled press captures the
+  // target until release so narrow controls such as scrollbars remain draggable.
+  readonly onMouseEvent: (mouse: ParsedMouse) => boolean
+  readonly onMouseCancel: () => void
   // Called when stdin data arrives after a >STDIN_RESUME_GAP_MS gap.
   // Ink re-asserts terminal modes: extended key reporting, and (when in
   // fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
@@ -586,6 +590,7 @@ function processKeysInBatch(
     }
     if (sequence === FOCUS_OUT) {
       app.handleTerminalFocus(false)
+      app.props.onMouseCancel()
       // Defensive: if we lost the release event (mouse released outside
       // terminal window — some emulators drop it rather than capturing the
       // pointer), focus-out is the next observable signal that the drag is
@@ -626,6 +631,8 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   // Allow disabling click handling while keeping wheel scroll (which goes
   // through the keybinding system as 'wheelup'/'wheeldown', not here).
   if (isMouseClicksDisabled()) return
+
+  if (app.props.onMouseEvent(m)) return
 
   const sel = app.props.selection
   // Terminal coords are 1-indexed; screen buffer is 0-indexed
