@@ -136,11 +136,14 @@ const useInput = (inputHandler: Handler, options: Options = {}) => {
           )
           parserRef.current = flushedState
           flushTimerRef.current = null
-          for (const item of flushedItems) {
+          for (const [index, item] of flushedItems.entries()) {
+            if (propagation.stoppedIndexes.has(index)) continue
             if (item.kind !== 'key') continue
             const event = new InkInputEvent(item)
             handleData(event)
-            if (event.didStopImmediatePropagation()) break
+            if (event.didStopImmediatePropagation()) {
+              propagation.stoppedIndexes.add(index)
+            }
           }
         }, 25)
       }

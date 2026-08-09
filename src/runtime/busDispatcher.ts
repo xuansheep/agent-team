@@ -25,6 +25,7 @@ export type DispatcherRequest = {
   dossier?: WorkflowRunDossier;
   providerFactory: (providerId: string) => ModelProvider;
   turnEngine?: TurnEngine;
+  signal?: AbortSignal;
   sessionStore?: SessionStore;
   eventSink?: (event: BusEvent) => void | Promise<void>;
 };
@@ -122,6 +123,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
   });
 
   try {
+    input.signal?.throwIfAborted();
     const { response } = await engine.requestModel({
       provider: input.providerFactory(dispatcher.provider),
       request: {
@@ -141,9 +143,11 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
           turnId: `${input.sessionId}:bus:${Date.now()}`,
           promptCacheKey: `${input.sessionId}:bus`
         },
+        signal: input.signal,
         onRetry: (retry) => emitRetry(input, retry)
       }
     });
+    input.signal?.throwIfAborted();
     await input.sessionStore?.recordModelResponse(input.sessionId, response.usage);
     const parsed = parseDispatcherResponse(response.tool_calls ?? [], response.content);
     if (!parsed) return invalidSelection("Dispatcher response did not contain one valid directive");
@@ -161,6 +165,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
     }
     return { directive: parsed };
   } catch (error) {
+    if (input.signal?.aborted) throw error;
     return failedSelection(error);
   }
 }

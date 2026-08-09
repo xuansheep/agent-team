@@ -235,8 +235,8 @@ export function InteractionArea({
       }
       return;
     }
-    if (choice && _key.escape) {
-      choice.onCancel?.();
+    if (choice?.onCancel && _key.escape) {
+      choice.onCancel();
       event.stopImmediatePropagation();
       return;
     }

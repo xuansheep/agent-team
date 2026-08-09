@@ -66,6 +66,7 @@ export class SessionExecutionBus {
   private workflowUnsubscribe?: () => void;
   private operationQueue: Promise<unknown> = Promise.resolve();
   private persistenceQueue: Promise<unknown> = Promise.resolve();
+  private activeRoutingAbortController?: AbortController;
   private processedBoundaryKey?: string;
   private permissionMode?: Exclude<PermissionMode, "plan">;
   private readonly listeners = new Set<(event: BusEvent) => void | Promise<void>>();
@@ -264,37 +265,45 @@ export class SessionExecutionBus {
   }
 
   interrupt(): Promise<void> {
+    this.activeRoutingAbortController?.abort(new Error("Session execution bus interrupted"));
     return this.enqueue(async () => {
       await this.activeWorkflow?.interrupt();
-      if (this.activeWorkflow) {
-        this.updateState({
-          status: "waiting_user",
-          current_node_id: this.activeWorkflow.state.current_node_id
-        });
-      }
+      this.updateState({
+        status: "waiting_user",
+        current_node_id: this.activeWorkflow?.state.current_node_id
+      });
     });
   }
 
   dispose(): void {
+    this.activeRoutingAbortController?.abort(new Error("Session execution bus disposed"));
+    this.activeRoutingAbortController = undefined;
     this.workflowUnsubscribe?.();
     this.workflowUnsubscribe = undefined;
     this.listeners.clear();
   }
 
-  private requestDirective(phase: DispatcherPhase, dossier?: WorkflowRunDossier): Promise<DispatcherSelection> {
-    return requestDispatchDirective({
-      config: this.options.config,
-      workflowId: this.options.workflowId,
-      sessionId: this.options.sessionId,
-      runId: this.activeWorkflow?.runId,
-      phase,
-      messages: this.taskState.messages,
-      dossier,
-      providerFactory: this.options.providerFactory,
-      turnEngine: this.options.turnEngine,
-      sessionStore: this.options.sessionStore,
-      eventSink: (event) => this.emit(event)
-    });
+  private async requestDirective(phase: DispatcherPhase, dossier?: WorkflowRunDossier): Promise<DispatcherSelection> {
+    const controller = new AbortController();
+    this.activeRoutingAbortController = controller;
+    try {
+      return await requestDispatchDirective({
+        config: this.options.config,
+        workflowId: this.options.workflowId,
+        sessionId: this.options.sessionId,
+        runId: this.activeWorkflow?.runId,
+        phase,
+        messages: this.taskState.messages,
+        dossier,
+        providerFactory: this.options.providerFactory,
+        turnEngine: this.options.turnEngine,
+        signal: controller.signal,
+        sessionStore: this.options.sessionStore,
+        eventSink: (event) => this.emit(event)
+      });
+    } finally {
+      if (this.activeRoutingAbortController === controller) this.activeRoutingAbortController = undefined;
+    }
   }
 
   private async applySelection(selection: DispatcherSelection, context: ApplyContext): Promise<BusTurnResult> {

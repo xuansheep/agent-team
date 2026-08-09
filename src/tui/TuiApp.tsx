@@ -127,7 +127,7 @@ export function TuiApp({
   onExit?: () => void;
 }) {
   const { exit } = useApp();
-  const { stdin } = useStdin();
+  const { stdin, internal_querier: inputQuerier } = useStdin();
   const { stdout } = useStdout();
   const selection = useSelection();
   const hasSelection = useHasSelection();
@@ -135,7 +135,6 @@ export function TuiApp({
     () => engine instanceof ExecutionCoordinator ? engine : new ExecutionCoordinator(engine),
     [engine]
   );
-  const selectionEscapeConsumedRef = useRef(false);
   const copiedSelectionChars = useCopyOnSelect(selection, settings?.copyOnSelect ?? true);
   ensureRefableStdin(stdin);
   const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
@@ -186,6 +185,8 @@ export function TuiApp({
   const planQuestionRef = useRef<{ toolCallId: string; questions: unknown[]; index: number; answers: Record<string, unknown> }>();
   const planTurnQueueRef = useRef<Promise<void>>(Promise.resolve());
   const planAbortControllerRef = useRef<AbortController>();
+  const interruptExitStartedRef = useRef(false);
+  const fallbackEscapeConsumedRef = useRef(false);
   const planInputChannelRef = useRef<ActiveTurnInputChannel<ModelMessage>>();
   const pendingPlanTurnsRef = useRef(new Map<string, PreparedPlanTurn>());
   const planTurnGenerationRef = useRef(0);
@@ -503,16 +504,24 @@ export function TuiApp({
     return bus;
   };
   const interruptAndExit = () => {
+    if (interruptExitStartedRef.current) return;
+    interruptExitStartedRef.current = true;
     const bus = busRef.current;
     const session = sessionRef.current;
-    if (!bus && !session) {
-      exitTui();
-      return;
-    }
-    void (bus?.interrupt() ?? session!.interrupt()).finally(() => exitTui());
+    planAbortControllerRef.current?.abort(new Error("TUI interrupt confirmed"));
+    void Promise.resolve(bus?.interrupt() ?? session?.interrupt())
+      .catch((error) => failUi(error))
+      .finally(() => exitTui());
   };
   const handleCtrlC = () => {
-    const behavior = resolveCtrlCBehavior(state.mode, Boolean(sessionRef.current || planSessionRef.current), hasSelection || selection.hasSelection());
+    const hasActiveWork = Boolean(
+      busRef.current
+      || sessionRef.current
+      || planSessionRef.current
+      || planAbortControllerRef.current
+      || planWorkCount > 0
+    );
+    const behavior = resolveCtrlCBehavior(state.mode, hasActiveWork, hasSelection || selection.hasSelection());
     if (behavior === "copy_selection") {
       selection.copySelection();
       return;
@@ -522,22 +531,13 @@ export function TuiApp({
       return;
     }
     if (behavior === "confirm_interrupt") {
-      setState((current) => ({ ...current, mode: "confirm_interrupt", modeBeforeConfirmation: current.mode }));
+      setState((current) => current.mode === "confirm_interrupt"
+        ? current
+        : { ...current, mode: "confirm_interrupt", modeBeforeConfirmation: current.mode });
       return;
     }
     interruptAndExit();
   };
-  useEffect(() => {
-    const handleData = (value: unknown) => {
-      const text = typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
-      if (!text.includes("")) return;
-      handleCtrlC();
-    };
-    stdin.on?.("data", handleData);
-    return () => {
-      stdin.off?.("data", handleData);
-    };
-  }, [stdin, state.mode, hasSelection, selection]);
   const refreshSessionAudit = async (sessionId: string) => {
     const generation = sessionAuditGenerationRef.current + 1;
     sessionAuditGenerationRef.current = generation;
@@ -2564,7 +2564,7 @@ ${message.detailText}` : ""}` }
       planAbortControllerRef.current?.abort();
       return true;
     }
-    if (state.mode === "running" && (busRef.current?.workflow || sessionRef.current)) {
+    if (state.mode === "running" && (busRef.current || sessionRef.current)) {
       void (busRef.current?.interrupt() ?? sessionRef.current!.interrupt()).catch((error) => failUi(error));
       setState((current) => ({ ...current, mode: "interrupted", error: undefined }));
       return true;
@@ -2584,21 +2584,35 @@ ${message.detailText}` : ""}` }
     canceledChoiceKeyRef.current = undefined;
   }, [choiceKey, nextChoiceKey]);
   useEffect(() => {
-    const handleEscapeData = (value: unknown) => {
+    // The upstream Ink compatibility renderer has no local querier, so its
+    // public context cannot expose exitOnCtrlC and splits a bare Escape across
+    // hook-local parsers. Production local Ink always uses the useInput path.
+    if (inputQuerier !== null) return;
+    const handleFallbackInput = (value: unknown) => {
       const text = typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : "";
-      if (text !== "" || transcriptMode) return;
+      if (text.includes("\u0003")) handleCtrlC();
+      if (text !== "\u001b" || transcriptMode || activeChoice?.onCancel) return;
       if (selection.hasSelection()) {
         selection.clearSelection();
-        selectionEscapeConsumedRef.current = true;
+        fallbackEscapeConsumedRef.current = true;
         return;
       }
-      if (!cancelCurrentInteraction()) interruptActiveWork();
+      if (cancelCurrentInteraction() || interruptActiveWork()) fallbackEscapeConsumedRef.current = true;
     };
-    stdin.on?.("data", handleEscapeData);
+    stdin.on?.("data", handleFallbackInput);
     return () => {
-      stdin.off?.("data", handleEscapeData);
+      stdin.off?.("data", handleFallbackInput);
     };
-  }, [stdin, cancelCurrentInteraction, transcriptMode, selection]);
+  }, [
+    stdin,
+    inputQuerier,
+    state.mode,
+    hasSelection,
+    selection,
+    transcriptMode,
+    activeChoice?.onCancel,
+    cancelCurrentInteraction
+  ]);
   const halfScreenChoice = activeChoice?.placement === "half-screen";
   const statusLineRows = statusLineLayoutRows({
     cwd,
@@ -2636,12 +2650,11 @@ ${message.detailText}` : ""}` }
     if (planApprovalOverlayVisible) mainScrollRef.current?.scrollTo(0);
   }, [planApprovalOverlayVisible, state.pendingReview?.document, state.pendingReview?.planFilePath]);
   useInput((input, key, event) => {
-    if (key.escape && selectionEscapeConsumedRef.current) {
-      selectionEscapeConsumedRef.current = false;
+    if (key.escape && fallbackEscapeConsumedRef.current) {
+      fallbackEscapeConsumedRef.current = false;
       event.stopImmediatePropagation();
       return;
     }
-
     const isCommandCopy = key.super && event.keypress.name === "c";
     const isCtrlShiftCopy = key.ctrl && key.shift && event.keypress.name === "c";
     if (isCommandCopy || isCtrlShiftCopy) {

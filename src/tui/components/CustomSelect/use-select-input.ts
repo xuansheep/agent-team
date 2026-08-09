@@ -36,8 +36,8 @@ export function useSelectInput<T>({
     if (isDisabled) return;
     const focusedOption = options.find((option) => option.value === state.focusedValue);
 
-    if (key.escape) {
-      state.onCancel?.();
+    if (key.escape && state.onCancel) {
+      state.onCancel();
       event.stopImmediatePropagation();
       return;
     }

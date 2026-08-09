@@ -260,6 +260,42 @@ describe("SessionExecutionBus", () => {
     assert.equal(clarification?.reason, "dispatcher_failure");
   });
 
+  it("aborts an active dispatcher request before interrupting the workflow", async () => {
+    let request: ModelRequest | undefined;
+    let workflowStarts = 0;
+    const provider: ModelProvider = {
+      generate: (nextRequest) => new Promise((_resolve, reject) => {
+        request = nextRequest;
+        const abort = () => reject(nextRequest.signal?.reason ?? new Error("dispatcher request aborted"));
+        if (nextRequest.signal?.aborted) abort();
+        else nextRequest.signal?.addEventListener("abort", abort, { once: true });
+      })
+    };
+    const events: BusEvent[] = [];
+    const bus = createBus({
+      coordinator: fakeCoordinator({
+        startInteractive: async () => {
+          workflowStarts += 1;
+          return createWorkflow().session;
+        }
+      }),
+      providerFactory: () => provider,
+      events
+    });
+
+    const turn = bus.handleUserMessage("route this request");
+    await waitFor(() => Boolean(request));
+    const rejectedTurn = assert.rejects(turn, /Session execution bus interrupted/);
+
+    await bus.interrupt();
+    await rejectedTurn;
+
+    assert.equal(request?.signal?.aborted, true);
+    assert.equal(workflowStarts, 0);
+    assert.equal(bus.state.status, "waiting_user");
+    assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
+  });
+
   it("reassigns safely, proxies permissions and interruption, and rejects a second active workflow", async () => {
     const workflow = createWorkflow({ currentNodeId: "product" });
     let starts = 0;
