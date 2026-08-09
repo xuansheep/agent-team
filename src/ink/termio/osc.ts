@@ -237,6 +237,7 @@ export const OSC = {
   SET_FG_COLOR: 10,
   SET_BG_COLOR: 11,
   SET_CURSOR_COLOR: 12,
+  POINTER_SHAPE: 22,
   CLIPBOARD: 52,
   KITTY: 99, // Kitty notification protocol
   RESET_COLOR: 104,
@@ -247,6 +248,11 @@ export const OSC = {
   GHOSTTY: 777, // Ghostty notification protocol
   TAB_STATUS: 21337, // Tab status extension
 } as const
+
+/** Set the terminal pointer shape, or restore its default when omitted. */
+export function pointerShapeSequence(shape?: 'pointer'): string {
+  return wrapForMultiplexer(osc(OSC.POINTER_SHAPE, shape ?? ''))
+}
 
 /**
  * Parse an OSC sequence into an action

@@ -1509,7 +1509,9 @@ export default class Ink {
     const action = mouse.action === 'release'
       ? 'release'
       : motion && baseButton === 3
-        ? 'cancel'
+        ? this.mouseCaptureTarget
+          ? 'cancel'
+          : 'move'
         : motion
           ? 'move'
           : 'press'

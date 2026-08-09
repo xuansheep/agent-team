@@ -632,7 +632,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   // through the keybinding system as 'wheelup'/'wheeldown', not here).
   if (isMouseClicksDisabled()) return
 
-  if (app.props.onMouseEvent(m)) return
+  const mouseEventHandled = app.props.onMouseEvent(m)
 
   const sel = app.props.selection
   // Terminal coords are 1-indexed; screen buffer is 0-indexed
@@ -661,6 +661,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       app.props.onHoverAt(col, row)
       return
     }
+    if (mouseEventHandled) return
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
@@ -716,6 +717,8 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     app.props.onSelectionChange()
     return
   }
+
+  if (mouseEventHandled) return
 
   // Release: end the drag even for non-zero button codes. Some terminals
   // encode release with the motion bit or button=3 "no button" (carried

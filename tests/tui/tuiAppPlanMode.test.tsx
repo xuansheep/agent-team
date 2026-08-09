@@ -3253,6 +3253,8 @@ describe("TuiApp global Plan Mode", () => {
       prePlanMode: "default",
       originalInput: { request: "Resume this planning session" }
     });
+    await store.appendBusTranscript("session-planning-transcript", { role: "assistant", content: "Earlier bus response." });
+    await store.appendBusTranscript("session-planning-transcript", { role: "user", content: "Previously sent in Plan Mode.", metadata: { userMessageKind: "human" } });
     await store.appendTranscript("session-planning-transcript", { role: "user", content: "Previously sent in Plan Mode." });
     await store.appendTranscript("session-planning-transcript", { role: "user", content: "Internal compact summary must stay hidden.", metadata: { compactSummary: true } });
     await store.appendTranscript("session-planning-transcript", { role: "assistant", content: "Previously acknowledged." });
@@ -3276,6 +3278,8 @@ describe("TuiApp global Plan Mode", () => {
 
     await waitForFrame(output, /Previously sent in Plan Mode\./);
     assert.match(output.lastFrame() ?? "", /Previously acknowledged\./);
+    assert.match(output.lastFrame() ?? "", /Earlier bus response\./);
+    assert.equal(((output.lastFrame() ?? "").match(/Previously sent in Plan Mode\./g) ?? []).length, 1);
     assert.doesNotMatch(output.lastFrame() ?? "", /Internal compact summary must stay hidden\./);
     assert.doesNotMatch(output.lastFrame() ?? "", /Workflow-only transcript entry\./);
     assert.equal(starts, 0);

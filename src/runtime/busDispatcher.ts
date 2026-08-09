@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   dispatcherConfigSchema,
@@ -33,6 +34,9 @@ export type DispatcherRequest = {
 export type DispatcherSelection = {
   directive: DispatchDirective;
   clarificationReason?: DispatcherClarificationReason;
+  routingId: string;
+  phase: DispatcherPhase;
+  thinking?: string;
 };
 
 const confidenceSchema = z.number().min(0).max(1);
@@ -100,18 +104,19 @@ const finalizeToolInputSchema = z.object({
 }).strict();
 
 export async function requestDispatchDirective(input: DispatcherRequest): Promise<DispatcherSelection> {
+  const routingId = randomUUID();
   const workflow = input.config.workflows[input.workflowId];
   if (!workflow) {
-    return invalidSelection(`Unknown workflow ${input.workflowId}`);
+    return invalidSelection(`Unknown workflow ${input.workflowId}`, input.phase, routingId);
   }
   let dispatcher: DispatcherConfig;
   try {
     dispatcher = dispatcherConfigSchema.parse({ ...input.config.dispatcher, ...workflow.dispatcher });
   } catch (error) {
-    return failedSelection(error);
+    return failedSelection(error, input.phase, routingId);
   }
   const providerConfig = input.config.providers[dispatcher.provider];
-  if (!providerConfig) return failedSelection(new Error(`Unknown dispatcher provider ${dispatcher.provider}`));
+  if (!providerConfig) return failedSelection(new Error(`Unknown dispatcher provider ${dispatcher.provider}`), input.phase, routingId);
 
   const tools = providerConfig.capabilities.tool_calling ? dispatcherTools() : [];
   const engine = input.turnEngine ?? new TurnEngine();
@@ -119,12 +124,14 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
     type: "bus_routing_started",
     session_id: input.sessionId,
     workflow_id: input.workflowId,
+    routing_id: routingId,
     phase: input.phase
   });
 
   try {
     input.signal?.throwIfAborted();
-    const { response } = await engine.requestModel({
+    let streamEvents = Promise.resolve();
+    const { streamed, response } = await engine.requestModel({
       provider: input.providerFactory(dispatcher.provider),
       request: {
         model: dispatcher.model,
@@ -144,13 +151,45 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
           promptCacheKey: `${input.sessionId}:bus`
         },
         signal: input.signal,
-        onRetry: (retry) => emitRetry(input, retry)
+        onRetry: async (retry) => {
+          await streamEvents;
+          await emitRetry(input, retry, routingId);
+        }
+      },
+      onStreamEvent: (event) => {
+        if (event.type !== "thinking_delta" || !event.text) return;
+        streamEvents = streamEvents.then(async () => {
+          await input.eventSink?.({
+            type: "bus_model_thinking_delta",
+            session_id: input.sessionId,
+            workflow_id: input.workflowId,
+            routing_id: routingId,
+            text: event.text
+          });
+        });
       }
     });
+    await streamEvents;
+    if (!streamed && response.thinking) {
+      await input.eventSink?.({
+        type: "bus_model_thinking_delta",
+        session_id: input.sessionId,
+        workflow_id: input.workflowId,
+        routing_id: routingId,
+        text: response.thinking
+      });
+    }
     input.signal?.throwIfAborted();
     await input.sessionStore?.recordModelResponse(input.sessionId, response.usage);
     const parsed = parseDispatcherResponse(response.tool_calls ?? [], response.content);
-    if (!parsed) return invalidSelection("Dispatcher response did not contain one valid directive");
+    if (!parsed) {
+      return invalidSelection(
+        "Dispatcher response did not contain one valid directive",
+        input.phase,
+        routingId,
+        response.thinking
+      );
+    }
     if (parsed.confidence < dispatcher.confidence_threshold) {
       return {
         directive: {
@@ -160,13 +199,21 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
             ? parsed.message
             : "我暂时无法可靠判断应如何路由这条消息。请补充期望结果，或明确希望从哪个工作流节点开始。"
         },
-        clarificationReason: "low_confidence"
+        clarificationReason: "low_confidence",
+        routingId,
+        phase: input.phase,
+        ...(response.thinking ? { thinking: response.thinking } : {})
       };
     }
-    return { directive: parsed };
+    return {
+      directive: parsed,
+      routingId,
+      phase: input.phase,
+      ...(response.thinking ? { thinking: response.thinking } : {})
+    };
   } catch (error) {
     if (input.signal?.aborted) throw error;
-    return failedSelection(error);
+    return failedSelection(error, input.phase, routingId);
   }
 }
 
@@ -295,37 +342,53 @@ function directiveTool(name: string, description: string, input_schema: Record<s
   };
 }
 
-function invalidSelection(_detail: string): DispatcherSelection {
+function invalidSelection(
+  _detail: string,
+  phase: DispatcherPhase,
+  routingId: string,
+  thinking?: string
+): DispatcherSelection {
   return {
     directive: {
       type: "clarify",
       confidence: 0,
       message: "调度模型没有返回可验证的路由决策。请明确希望直接答复、进入计划模式，或指定执行节点。"
     },
-    clarificationReason: "invalid_directive"
+    clarificationReason: "invalid_directive",
+    routingId,
+    phase,
+    ...(thinking ? { thinking } : {})
   };
 }
 
-function failedSelection(_error: unknown): DispatcherSelection {
+function failedSelection(
+  _error: unknown,
+  phase: DispatcherPhase,
+  routingId: string
+): DispatcherSelection {
   return {
     directive: {
       type: "clarify",
       confidence: 0,
       message: "调度模型暂时无法可靠处理这条消息。请补充期望结果或指定工作流节点后重试。"
     },
-    clarificationReason: "dispatcher_failure"
+    clarificationReason: "dispatcher_failure",
+    routingId,
+    phase
   };
 }
 
-async function emitRetry(input: DispatcherRequest, retry: ModelRetryEvent): Promise<void> {
+async function emitRetry(input: DispatcherRequest, retry: ModelRetryEvent, routingId: string): Promise<void> {
   await input.eventSink?.({
     type: "bus_dispatcher_retry_scheduled",
     session_id: input.sessionId,
     workflow_id: input.workflowId,
+    routing_id: routingId,
     retry_attempt: retry.retryAttempt,
     max_retries: retry.maxRetries,
     retry_in_ms: retry.retryInMs,
-    error: retry.message
+    error: retry.message,
+    discarded_thinking_chars: retry.discardedThinkingChars
   });
 }
 

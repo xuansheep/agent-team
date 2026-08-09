@@ -1,11 +1,42 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import App, { handleMouseEvent } from '../../src/ink/components/App.js'
 import { appendChildNode, createNode } from '../../src/ink/dom.js'
 import type { MouseEvent } from '../../src/ink/events/mouse-event.js'
 import { dispatchMouseEvent } from '../../src/ink/hit-test.js'
 import { nodeCache } from '../../src/ink/node-cache.js'
+import { createSelectionState } from '../../src/ink/selection.js'
 
 describe('mouse event dispatch', () => {
+  it('still dispatches hover when a no-button move is handled by a control', () => {
+    const calls: string[] = []
+    const app = {
+      props: {
+        onMouseEvent: () => {
+          calls.push('mousemove')
+          return true
+        },
+        selection: createSelectionState(),
+        onSelectionChange: () => calls.push('selection'),
+        onHoverAt: (col: number, row: number) =>
+          calls.push(`hover:${col}:${row}`),
+      },
+      lastHoverCol: -1,
+      lastHoverRow: -1,
+    } as unknown as App
+
+    handleMouseEvent(app, {
+      kind: 'mouse',
+      action: 'press',
+      button: 35,
+      col: 4,
+      row: 7,
+      sequence: '',
+    })
+
+    assert.deepEqual(calls, ['mousemove', 'hover:3:6'])
+  })
+
   it('keeps delivering motion outside the target until release', () => {
     const root = createNode('ink-root')
     const scrollbar = createNode('ink-box')

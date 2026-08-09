@@ -74,6 +74,106 @@ describe("SessionExecutionBus", () => {
     assert.equal(events.some((event) => event.type === "bus_workflow_started" && event.node_id === "dev"), true);
   });
 
+  it("emits and persists bus thinking with the selected directive", async () => {
+    const root = join(process.cwd(), ".tmp", "session-execution-bus-thinking", randomUUID());
+    const store = new SessionStore(root);
+    const workflow = createWorkflow({ currentNodeId: "dev", sessionId: "session-thinking" });
+    const coordinator = fakeCoordinator({
+      startInteractive: async () => workflow.session
+    });
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          thinking: "Checked node responsibilities.",
+          content: JSON.stringify({
+            type: "dispatch",
+            confidence: 0.96,
+            node_id: "dev",
+            instruction: "Implement the change.",
+            reason: "The request is implementation work"
+          })
+        };
+      }
+    };
+    const events: BusEvent[] = [];
+    const bus = createBus({
+      coordinator,
+      providerFactory: () => provider,
+      events,
+      sessionStore: store,
+      sessionId: "session-thinking"
+    });
+
+    await bus.handleUserMessage("implement it");
+
+    const started = events.find((event) => event.type === "bus_routing_started");
+    const thinking = events.find((event) => event.type === "bus_model_thinking_delta");
+    const selected = events.find((event) => event.type === "bus_directive_selected");
+    assert.ok(started && thinking && selected);
+    assert.equal(thinking.routing_id, started.routing_id);
+    assert.equal(selected.routing_id, started.routing_id);
+    assert.equal(thinking.text, "Checked node responsibilities.");
+    assert.equal(selected.thinking, "Checked node responsibilities.");
+    assert.equal(selected.directive.type, "dispatch");
+
+    const persisted = await store.loadBusRoutingEvents("session-thinking");
+    assert.equal(persisted.length, 1);
+    assert.equal(persisted[0]?.event.routing_id, started.routing_id);
+    assert.equal(persisted[0]?.event.thinking, "Checked node responsibilities.");
+  });
+
+  it("correlates streamed bus thinking and retry rollback with one routing turn", async () => {
+    const provider: ModelProvider = {
+      async generate() {
+        throw new Error("stream should be used");
+      },
+      async stream(request, onEvent) {
+        onEvent({ type: "thinking_delta", text: "discarded" });
+        await request.onRetry?.({
+          phase: "stream",
+          retryAttempt: 1,
+          maxRetries: 2,
+          retryInMs: 0,
+          scheduledAt: "2026-08-10T00:00:00.000Z",
+          retryAt: "2026-08-10T00:00:00.000Z",
+          errorKind: "network",
+          message: "stream interrupted",
+          discardedContentChars: 0,
+          discardedThinkingChars: 9
+        });
+        onEvent({ type: "thinking_delta", text: "kept" });
+        return {
+          thinking: "kept",
+          content: JSON.stringify({
+            type: "plan",
+            confidence: 1,
+            node_id: "dev",
+            reason: "Implementation planning"
+          })
+        };
+      }
+    };
+    const events: BusEvent[] = [];
+    const bus = createBus({
+      coordinator: fakeCoordinator(),
+      providerFactory: () => provider,
+      events
+    });
+
+    await bus.handleUserMessage("plan it", { planMode: true });
+
+    const started = events.find((event) => event.type === "bus_routing_started");
+    const retry = events.find((event) => event.type === "bus_dispatcher_retry_scheduled");
+    const selected = events.find((event) => event.type === "bus_directive_selected");
+    const deltas = events.filter((event) => event.type === "bus_model_thinking_delta");
+    assert.ok(started && retry && selected);
+    assert.deepEqual(deltas.map((event) => event.text), ["discarded", "kept"]);
+    assert.equal(retry.routing_id, started.routing_id);
+    assert.equal(retry.discarded_thinking_chars, 9);
+    assert.equal(selected.routing_id, started.routing_id);
+    assert.equal(selected.thinking, "kept");
+  });
+
   it("restores the latest Plan node selection and uses it after approval", async () => {
     const root = join(process.cwd(), ".tmp", "session-execution-bus", randomUUID());
     const store = new SessionStore(root);

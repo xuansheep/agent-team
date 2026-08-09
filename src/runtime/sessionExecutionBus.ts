@@ -309,9 +309,16 @@ export class SessionExecutionBus {
   private async applySelection(selection: DispatcherSelection, context: ApplyContext): Promise<BusTurnResult> {
     let directive = selection.directive;
     if (context.phase === "lifecycle" && (directive.type === "answer" || directive.type === "plan")) {
+      const clarification: DispatchDirective = {
+        type: "clarify",
+        confidence: directive.confidence,
+        message: "工作流已到达母线边界。请明确是结束任务，还是指定需要返工的节点。"
+      };
+      await this.emitDirectiveSelected(selection, clarification);
       return this.clarify(
-        "工作流已到达母线边界。请明确是结束任务，还是指定需要返工的节点。",
-        "invalid_directive"
+        clarification.message,
+        "invalid_directive",
+        clarification
       );
     }
     if (context.phase === "plan" && directive.type === "dispatch") {
@@ -323,31 +330,47 @@ export class SessionExecutionBus {
       };
     }
     if (context.phase === "plan" && directive.type === "finalize") {
+      const clarification: DispatchDirective = {
+        type: "clarify",
+        confidence: directive.confidence,
+        message: "计划尚未批准，不能结束任务。请继续完善计划或批准后执行。"
+      };
+      await this.emitDirectiveSelected(selection, clarification);
       return this.clarify(
-        "计划尚未批准，不能结束任务。请继续完善计划或批准后执行。",
-        "invalid_directive"
+        clarification.message,
+        "invalid_directive",
+        clarification
       );
     }
     if (context.phase === "user" && directive.type === "finalize") {
+      const clarification: DispatchDirective = {
+        type: "clarify",
+        confidence: directive.confidence,
+        message: "工作流尚未到达可结束的母线边界，不能提前生成最终总结。请继续执行或先中断当前节点。"
+      };
+      await this.emitDirectiveSelected(selection, clarification);
       return this.clarify(
-        "工作流尚未到达可结束的母线边界，不能提前生成最终总结。请继续执行或先中断当前节点。",
-        "invalid_directive"
+        clarification.message,
+        "invalid_directive",
+        clarification
       );
     }
     if ((directive.type === "plan" || directive.type === "dispatch") && !this.hasNode(directive.node_id)) {
+      const clarification: DispatchDirective = {
+        type: "clarify",
+        confidence: directive.confidence,
+        message: `调度模型选择了不存在的节点 ${directive.node_id}。请明确一个有效节点。`
+      };
+      await this.emitDirectiveSelected(selection, clarification);
       return this.clarify(
-        `调度模型选择了不存在的节点 ${directive.node_id}。请明确一个有效节点。`,
-        "invalid_directive"
+        clarification.message,
+        "invalid_directive",
+        clarification
       );
     }
 
     this.updateState({ last_directive: directive });
-    await this.emit({
-      type: "bus_directive_selected",
-      session_id: this.options.sessionId,
-      workflow_id: this.options.workflowId,
-      directive
-    });
+    await this.emitDirectiveSelected(selection, directive);
 
     if (directive.type === "answer") {
       await this.appendAssistant(directive.message);
@@ -602,6 +625,21 @@ export class SessionExecutionBus {
     });
   }
 
+  private async emitDirectiveSelected(
+    selection: DispatcherSelection,
+    directive: DispatchDirective
+  ): Promise<void> {
+    await this.emit({
+      type: "bus_directive_selected",
+      session_id: this.options.sessionId,
+      workflow_id: this.options.workflowId,
+      routing_id: selection.routingId,
+      phase: selection.phase,
+      directive,
+      ...(selection.thinking ? { thinking: selection.thinking } : {})
+    });
+  }
+
   private updateState(update: Partial<BusTaskState>): void {
     this.taskState = {
       ...this.taskState,
@@ -641,6 +679,9 @@ export class SessionExecutionBus {
   }
 
   private async emit(event: BusEvent): Promise<void> {
+    if (event.type === "bus_directive_selected") {
+      await this.options.sessionStore?.appendBusRoutingEvent(this.options.sessionId, event);
+    }
     await this.options.eventSink?.(event);
     for (const listener of this.listeners) await listener(event);
   }

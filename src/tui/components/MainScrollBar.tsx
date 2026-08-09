@@ -1,11 +1,14 @@
 import React, {
   type RefObject,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
   useSyncExternalStore,
 } from 'react'
+import { pointerShapeSequence } from '../../ink/termio/osc.js'
+import { TerminalWriteContext } from '../../ink/useTerminalNotification.js'
 import type { ScrollBoxHandle } from '../ink.js'
 import { Box, Text } from '../ink.js'
 
@@ -41,6 +44,14 @@ type LayoutMetrics = {
 const TRACK_CHARACTER = '\u2502'
 const THUMB_CHARACTER = '\u2588'
 const NOOP_UNSUBSCRIBE = () => {}
+
+function isThumbRow(
+  row: number,
+  thumbStart: number,
+  thumbSize: number,
+): boolean {
+  return row >= thumbStart && row < thumbStart + thumbSize
+}
 
 export function calculateMainScrollBarGeometry(
   input: MainScrollBarGeometryInput,
@@ -108,6 +119,18 @@ export function MainScrollBar({
   const trackHeight = Math.max(0, Math.floor(height))
   const [layoutMetrics, setLayoutMetrics] = useState<LayoutMetrics>()
   const dragRef = useRef<{ grabOffset: number }>()
+  const hoveredRowRef = useRef<number>()
+  const pointerActiveRef = useRef(false)
+  const writeRaw = useContext(TerminalWriteContext)
+
+  const setPointerActive = useCallback(
+    (active: boolean) => {
+      if (pointerActiveRef.current === active) return
+      pointerActiveRef.current = active
+      writeRaw?.(pointerShapeSequence(active ? 'pointer' : undefined))
+    },
+    [writeRaw],
+  )
 
   useEffect(() => {
     // Local Ink paints updated Yoga viewport bounds on its throttled frame.
@@ -179,8 +202,27 @@ export function MainScrollBar({
   const visible = visibleFlag === 1
 
   useEffect(() => {
-    if (!visible) dragRef.current = undefined
-  }, [visible])
+    if (!visible) {
+      dragRef.current = undefined
+      hoveredRowRef.current = undefined
+      setPointerActive(false)
+      return
+    }
+
+    const hoveredRow = hoveredRowRef.current
+    setPointerActive(
+      Boolean(dragRef.current) ||
+        (hoveredRow !== undefined &&
+          isThumbRow(hoveredRow, thumbStart, thumbSize)),
+    )
+  }, [setPointerActive, thumbSize, thumbStart, visible])
+
+  useEffect(
+    () => () => {
+      setPointerActive(false)
+    },
+    [setPointerActive],
+  )
 
   return (
     <Box
@@ -193,7 +235,10 @@ export function MainScrollBar({
           ? event => {
               event.stopImmediatePropagation()
               const row = Math.floor(event.localRow)
-              if (row < thumbStart || row >= thumbStart + thumbSize) return
+              hoveredRowRef.current = row
+              const overThumb = isThumbRow(row, thumbStart, thumbSize)
+              setPointerActive(overThumb)
+              if (!overThumb) return
               dragRef.current = { grabOffset: row - thumbStart }
               event.capturePointer()
             }
@@ -202,7 +247,12 @@ export function MainScrollBar({
       onMouseMove={
         visible
           ? event => {
+              const row = Math.floor(event.localRow)
+              hoveredRowRef.current = row
               const drag = dragRef.current
+              setPointerActive(
+                Boolean(drag) || isThumbRow(row, thumbStart, thumbSize),
+              )
               const scroll = scrollRef.current
               if (!drag || !scroll) return
               event.stopImmediatePropagation()
@@ -219,17 +269,28 @@ export function MainScrollBar({
       onMouseUp={
         visible
           ? event => {
-              if (!dragRef.current) return
+              const wasDragging = Boolean(dragRef.current)
               dragRef.current = undefined
-              event.stopImmediatePropagation()
+              if (event.action === 'cancel') {
+                hoveredRowRef.current = undefined
+                setPointerActive(false)
+              } else {
+                const row = Math.floor(event.localRow)
+                hoveredRowRef.current = row
+                setPointerActive(isThumbRow(row, thumbStart, thumbSize))
+              }
+              if (wasDragging) event.stopImmediatePropagation()
             }
           : undefined
       }
+      onMouseLeave={() => {
+        hoveredRowRef.current = undefined
+        if (!dragRef.current) setPointerActive(false)
+      }}
     >
       {visible
         ? Array.from({ length: trackHeight }, (_, row) => {
-            const thumb =
-              row >= thumbStart && row < thumbStart + thumbSize
+            const thumb = isThumbRow(row, thumbStart, thumbSize)
             return (
               <Text
                 key={row}

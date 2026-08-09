@@ -9876,6 +9876,81 @@ describe("main scroll helpers", () => {
 
 
 
+describe("TuiApp bus transcript resume", () => {
+  it("restores visible bus messages together with workflow logs", async (context) => {
+    const stdoutRows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+    Object.defineProperty(process.stdout, "rows", { value: 80, configurable: true });
+    context.after(() => {
+      if (stdoutRows) Object.defineProperty(process.stdout, "rows", stdoutRows);
+      else Reflect.deleteProperty(process.stdout, "rows");
+    });
+    const tmpRoot = resolve(".tmp");
+    await mkdir(tmpRoot, { recursive: true });
+    const cwd = await mkdtemp(join(tmpRoot, "agent-team-bus-resume-"));
+    const store = new SessionStore(join(cwd, ".einsteins", "projects", "tui"));
+    await store.appendBusTranscript("run-bus-history", {
+      role: "user",
+      content: "historical bus request",
+      metadata: { userMessageKind: "human" }
+    });
+    await store.appendBusRoutingEvent("run-bus-history", {
+      type: "bus_directive_selected",
+      session_id: "run-bus-history",
+      workflow_id: "delivery",
+      routing_id: "historical-routing",
+      phase: "user",
+      thinking: "historical bus reasoning",
+      directive: {
+        type: "dispatch",
+        confidence: 0.95,
+        node_id: "dev",
+        instruction: "Restore and continue the workflow.",
+        reason: "historical routing reason"
+      }
+    });
+    await store.appendBusTranscript("run-bus-history", { role: "assistant", content: "historical bus response" });
+    const engine = {
+      async resumeInteractive() {
+        return {
+          ...fakeCompletedSession("run-bus-history", "delivery", "historical bus request"),
+          replayEventCount: 2
+        };
+      },
+      async startInteractive() {
+        throw new Error("/resume should not start a new workflow");
+      }
+    };
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={tuiConfig()}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={engine as unknown as never}
+        providerFactory={testBusProviderFactory("dev")}
+        sessionStore={store}
+      />
+    );
+
+    await settleInkInput();
+    await sendTuiLine(output, "/resume run-bus-history");
+    await waitForInkCondition(() => (output.lastFrame() ?? "").includes("historical bus response"));
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /historical bus request/);
+    assert.match(frame, /historical bus reasoning/);
+    assert.match(frame, /Bus 选择节点 dev/);
+    assert.match(frame, /historical bus response/);
+    assert.match(frame, /运行完成/);
+    assert.equal((frame.match(/historical bus request/g) ?? []).length, 1, frame);
+    assert.equal((frame.match(/historical bus reasoning/g) ?? []).length, 1, frame);
+    assert.equal((frame.match(/Bus 选择节点 dev/g) ?? []).length, 1, frame);
+
+    output.unmount();
+    output.cleanup();
+  });
+});
+
 async function resumePickerFixture(entries: Array<{ sessionId: string; runId: string; inputPreview: string }>): Promise<{ cwd: string; store: SessionStore }> {
   const tmpRoot = resolve(".tmp");
   await mkdir(tmpRoot, { recursive: true });

@@ -11,7 +11,7 @@ import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSes
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "../kernel/plan/planToolCallMessages.js";
 import { ExecutionCoordinator } from "../runtime/executionCoordinator.js";
 import { SessionExecutionBus } from "../runtime/sessionExecutionBus.js";
-import type { BusEvent, BusTurnResult, SessionBusCheckpoint } from "../runtime/busTypes.js";
+import type { BusEvent, BusTurnResult, DispatchDirective, SessionBusCheckpoint } from "../runtime/busTypes.js";
 import { isHumanUserMessage } from "../context/messages.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
@@ -32,7 +32,7 @@ import { loadDisabledSkillNames, setSkillDisabledState, watchDisabledSkillNames,
 import type { SkillRuntime } from "../skills/runtime.js";
 import type { ResolvedAgentTeamSettings } from "../settings/types.js";
 import type { PromptHistoryStore } from "../storage/promptHistoryStore.js";
-import { SessionStore } from "../storage/sessionStore.js";
+import { SessionStore, type BusRoutingEntry, type TranscriptEntry } from "../storage/sessionStore.js";
 import { askUserQuestionModelResult } from "../tools/local/askUserQuestion.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
 import { WorkflowEngine } from "../workflow/engine.js";
@@ -375,6 +375,9 @@ export function TuiApp({
           setState((current) => ({ ...current, mode: "running", runState: "thinking", error: undefined }));
         }
         break;
+      case "bus_model_thinking_delta":
+        setState((current) => reduceBusLogEvent(current, event));
+        break;
       case "bus_assistant_message":
         setState((current) => ({
           ...current,
@@ -455,11 +458,13 @@ export function TuiApp({
         break;
       case "bus_dispatcher_retry_scheduled":
         setWorkStatusDetail(`Execution bus retry ${event.retry_attempt}/${event.max_retries}: ${event.error}`);
+        setState((current) => reduceBusLogEvent(current, event));
         break;
       case "bus_failed":
         failUi(event.error);
         break;
       case "bus_directive_selected":
+        setState((current) => reduceBusLogEvent(current, event));
         break;
     }
     requestMainScrollToBottom();
@@ -567,7 +572,12 @@ export function TuiApp({
       mode: selectedWorkflowId ? "input" : "select_workflow"
     }));
   };
-  const listenSession = (session: WorkflowSession, nextWorkflowId: string) => {
+  const listenSession = (
+    session: WorkflowSession,
+    nextWorkflowId: string,
+    historicalBusTranscript: TranscriptEntry[] = [],
+    historicalBusRouting: BusRoutingEntry[] = []
+  ) => {
     if (listeningSessionRef.current === session) {
       pendingSessionRelistenRef.current = session;
       return;
@@ -577,6 +587,16 @@ export function TuiApp({
     void (async () => {
       const replayEvents: StoredEvent[] = [];
       let replayRemaining = session.replayEventCount ?? 0;
+      if (replayRemaining === 0 && (historicalBusTranscript.length > 0 || historicalBusRouting.length > 0)) {
+        setState((current) => replayHistoricalSession(
+          current,
+          session.runId,
+          nextWorkflowId,
+          [],
+          historicalBusTranscript,
+          historicalBusRouting
+        ));
+      }
       try {
         for await (const event of session.events) {
           if (abandonedRunIdsRef.current.has(session.runId)) continue;
@@ -596,12 +616,13 @@ export function TuiApp({
             replayEvents.push(event);
             replayRemaining -= 1;
             if (replayRemaining > 0) continue;
-            setState((current) => replayEvents.reduce(
-              (replayed, replayEvent) => reduceBusWorkflowEvent(
-                { ...replayed, runId: session.runId, workflowId: nextWorkflowId },
-                replayEvent
-              ),
-              current
+            setState((current) => replayHistoricalSession(
+              current,
+              session.runId,
+              nextWorkflowId,
+              replayEvents,
+              historicalBusTranscript,
+              historicalBusRouting
             ));
             continue;
           }
@@ -630,6 +651,8 @@ export function TuiApp({
       inputPermissionMode?: PermissionMode;
       approvedPlanReview?: { nodeId: string; attempt: number };
       busNodeId?: string;
+      historicalBusTranscript?: TranscriptEntry[];
+      historicalBusRouting?: BusRoutingEntry[];
     } = {}
   ) => {
     const resultGeneration = ++sessionResultGenerationRef.current;
@@ -662,7 +685,7 @@ export function TuiApp({
         inputPermissionMode: options.inputPermissionMode
       });
     });
-    listenSession(session, nextWorkflowId);
+    listenSession(session, nextWorkflowId, options.historicalBusTranscript, options.historicalBusRouting);
     void session.result
       .then((result) => {
         if (abandonedRunIdsRef.current.has(session.runId) || sessionResultGenerationRef.current !== resultGeneration) return;
@@ -767,9 +790,10 @@ export function TuiApp({
     try {
       const session = await executionCore.resumeInteractive(config, runId);
       const sessionId = session.sessionId ?? currentSessionIdRef.current;
-      const [metadata, busTranscript] = await Promise.all([
+      const [metadata, busTranscript, busRouting] = await Promise.all([
         sessionStore.loadMetadata(sessionId),
-        sessionStore.loadBusTranscript(sessionId)
+        sessionStore.loadBusTranscript(sessionId),
+        sessionStore.loadBusRoutingEvents(sessionId)
       ]);
       const checkpoint = metadata?.bus?.workflow_id === session.state.workflow_id
         ? metadata.bus
@@ -786,7 +810,9 @@ export function TuiApp({
       });
       bus.adoptWorkflow(session, checkpoint?.selected_node_id ?? session.state.current_node_id);
       attachSession(session, session.state.workflow_id, {
-        busNodeId: checkpoint?.selected_node_id ?? checkpoint?.current_node_id ?? session.state.current_node_id
+        busNodeId: checkpoint?.selected_node_id ?? checkpoint?.current_node_id ?? session.state.current_node_id,
+        historicalBusTranscript: busTranscript,
+        historicalBusRouting: busRouting
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1820,8 +1846,12 @@ ${message.detailText}` : ""}` }
     const metadata = await sessionStore.loadMetadata(sessionId);
     currentSessionIdRef.current = sessionId;
     sessionAuditGenerationRef.current += 1;
-    const transcript = await sessionStore.loadTranscript(sessionId);
-    const busMessages = transcript.filter((entry) => entry.phase === "bus").map((entry) => entry.message);
+    const [transcript, busRouting] = await Promise.all([
+      sessionStore.loadTranscript(sessionId),
+      sessionStore.loadBusRoutingEvents(sessionId)
+    ]);
+    const busTranscript = transcript.filter((entry) => entry.phase === "bus");
+    const busMessages = busTranscript.map((entry) => entry.message);
     const planTranscript = transcript.filter((entry) => entry.phase === "plan" || entry.phase === undefined);
     const busWorkflowId = metadata?.bus?.workflow_id ?? selectedWorkflowId ?? state.workflowId;
     if (busWorkflowId && config?.workflows[busWorkflowId] && engine) {
@@ -1851,7 +1881,7 @@ ${message.detailText}` : ""}` }
         return;
       }
       if (metadata?.bus && busWorkflowId) {
-        const restoredLogs = planLogMessagesFromTranscript(busMessages);
+        const restoredLogs = logMessagesFromTranscriptEntries(busTranscript, busRouting);
         setState((current) => ({
           ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
           workflowId: busWorkflowId,
@@ -1860,11 +1890,7 @@ ${message.detailText}` : ""}` }
           runState: busResultRunState(metadata.bus!.status),
           sessionUsage: metadata.usage ?? emptyModelUsage(),
           modelRequestCount: metadata.modelRequestCount ?? 0,
-          conversation: restoredLogs.flatMap((message) => (
-            message.kind === "user" || message.kind === "assistant"
-              ? [{ kind: message.kind, text: message.text }]
-              : []
-          )),
+          conversation: conversationFromLogs(restoredLogs),
           logMessages: restoredLogs,
           error: undefined
         }));
@@ -1878,7 +1904,19 @@ ${message.detailText}` : ""}` }
     planMessagesRef.current = metadata?.execution?.messages?.length
       ? metadata.execution.messages
       : planTranscript.map((entry) => entry.message);
-    const transcriptLogs = planLogMessagesFromTranscript(planMessagesRef.current);
+    const visibleTranscript = transcript.filter((entry) => (
+      entry.phase === "bus" || entry.phase === "plan" || entry.phase === undefined
+    ));
+    const transcriptLogs = planTranscript.length > 0
+      ? logMessagesFromTranscriptEntries(visibleTranscript, busRouting)
+      : logMessagesFromTranscriptEntries([
+          ...busTranscript,
+          ...planMessagesRef.current.map((message) => ({
+            ts: "",
+            phase: "plan" as const,
+            message
+          }))
+        ], busRouting);
     const base = (current: TuiState) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: busWorkflowId ?? current.workflowId ?? selectedWorkflowId,
@@ -1886,6 +1924,7 @@ ${message.detailText}` : ""}` }
       sessionUsage: metadata?.usage ?? emptyModelUsage(),
       modelRequestCount: metadata?.modelRequestCount ?? 0,
       planSession: plan,
+      conversation: conversationFromLogs(transcriptLogs),
       error: undefined
     });
     const restoredInteraction = metadata?.execution?.pendingInteraction;
@@ -2872,6 +2911,182 @@ function reduceBusWorkflowEvent(state: TuiState, event: StoredEvent): TuiState {
   };
 }
 
+type BusLogEvent = Extract<BusEvent, {
+  type: "bus_model_thinking_delta" | "bus_directive_selected" | "bus_dispatcher_retry_scheduled";
+}>;
+
+function reduceBusLogEvent(state: TuiState, event: BusLogEvent): TuiState {
+  const reasoningId = `bus-reasoning:${event.routing_id}`;
+  const reasoningIndex = state.logMessages.findIndex((message) => message.id === reasoningId);
+
+  if (event.type === "bus_model_thinking_delta") {
+    if (!event.text) return state;
+    if (reasoningIndex >= 0) {
+      const logMessages = [...state.logMessages];
+      const current = logMessages[reasoningIndex]!;
+      logMessages[reasoningIndex] = {
+        ...current,
+        detailText: `${current.detailText ?? ""}${event.text}`,
+        detailVisible: true
+      };
+      return { ...state, logMessages };
+    }
+    return {
+      ...state,
+      logMessages: [
+        ...state.logMessages,
+        {
+          id: reasoningId,
+          kind: "status",
+          nodeId: "bus",
+          attempt: 1,
+          text: "Reasoning",
+          detailText: event.text,
+          detailVisible: true
+        }
+      ]
+    };
+  }
+
+  if (event.type === "bus_dispatcher_retry_scheduled") {
+    if (reasoningIndex < 0 || event.discarded_thinking_chars <= 0) return state;
+    const logMessages = [...state.logMessages];
+    const current = logMessages[reasoningIndex]!;
+    const detailText = (current.detailText ?? "").slice(
+      0,
+      Math.max(0, (current.detailText ?? "").length - event.discarded_thinking_chars)
+    );
+    if (detailText) logMessages[reasoningIndex] = { ...current, detailText };
+    else logMessages.splice(reasoningIndex, 1);
+    return { ...state, logMessages };
+  }
+
+  let logMessages = [...state.logMessages];
+  const thinking = event.thinking ?? "";
+  if (reasoningIndex >= 0) {
+    if (thinking) {
+      logMessages[reasoningIndex] = {
+        ...logMessages[reasoningIndex]!,
+        detailText: thinking,
+        detailVisible: true
+      };
+    } else {
+      logMessages.splice(reasoningIndex, 1);
+    }
+  } else if (thinking) {
+    logMessages.push({
+      id: reasoningId,
+      kind: "status",
+      nodeId: "bus",
+      attempt: 1,
+      text: "Reasoning",
+      detailText: thinking,
+      detailVisible: true
+    });
+  }
+
+  const assistantText = busDirectiveAssistantText(event.directive);
+  if (!assistantText) return { ...state, logMessages };
+  const decisionId = `bus-decision:${event.routing_id}`;
+  const decisionIndex = logMessages.findIndex((message) => message.id === decisionId);
+  const assistantLog: TuiLogMessage = {
+    id: decisionId,
+    kind: "assistant",
+    nodeId: "bus",
+    attempt: 1,
+    text: assistantText
+  };
+  if (decisionIndex >= 0) {
+    logMessages[decisionIndex] = assistantLog;
+    return { ...state, logMessages };
+  }
+  return {
+    ...state,
+    conversation: [
+      ...state.conversation,
+      { kind: "assistant", nodeId: "bus", attempt: 1, text: assistantText }
+    ],
+    logMessages: [...logMessages, assistantLog]
+  };
+}
+
+function busDirectiveAssistantText(directive: DispatchDirective): string | undefined {
+  if (directive.type === "plan") {
+    return [
+      `Bus 选择节点 ${directive.node_id}`,
+      `原因：${directive.reason}`,
+      `置信度：${Math.round(directive.confidence * 100)}%`
+    ].join("\n");
+  }
+  if (directive.type === "dispatch") {
+    return [
+      `Bus 选择节点 ${directive.node_id}`,
+      `原因：${directive.reason}`,
+      `置信度：${Math.round(directive.confidence * 100)}%`,
+      `执行指令：${directive.instruction}`
+    ].join("\n");
+  }
+  return undefined;
+}
+
+function replayHistoricalSession(
+  state: TuiState,
+  runId: string,
+  workflowId: string,
+  workflowEvents: StoredEvent[],
+  busTranscript: TranscriptEntry[],
+  busRouting: BusRoutingEntry[]
+): TuiState {
+  const timeline = [
+    ...workflowEvents.map((event, index) => ({
+      kind: "workflow" as const,
+      ts: event.ts,
+      tieOrder: 2,
+      index,
+      event
+    })),
+    ...busTranscript.map((entry, index) => ({
+      kind: "bus" as const,
+      ts: entry.ts,
+      tieOrder: entry.message.role === "user" ? 0 : 3,
+      index,
+      entry
+    })),
+    ...busRouting.map((entry, index) => ({
+      kind: "bus-routing" as const,
+      ts: entry.ts,
+      tieOrder: 1,
+      index,
+      entry
+    }))
+  ].sort((left, right) => (
+    historicalTimestamp(left.ts) - historicalTimestamp(right.ts)
+    || left.tieOrder - right.tieOrder
+    || left.index - right.index
+  ));
+
+  return timeline.reduce((current, item) => {
+    if (item.kind === "workflow") {
+      return reduceBusWorkflowEvent({ ...current, runId, workflowId }, item.event);
+    }
+    if (item.kind === "bus-routing") {
+      return reduceBusLogEvent(current, item.entry.event);
+    }
+    const logs = planLogMessagesFromTranscript([item.entry.message]);
+    if (logs.length === 0) return current;
+    return {
+      ...current,
+      conversation: [...current.conversation, ...conversationFromLogs(logs)],
+      logMessages: [...current.logMessages, ...logs]
+    };
+  }, state);
+}
+
+function historicalTimestamp(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+}
+
 function activityStatusContent(input: { isWorking: boolean; workStartedAtMs?: number; lastWorkDurationMs?: number; nowMs: number; detail?: string }): ActivityStatus | undefined {
   if (input.isWorking && input.workStartedAtMs !== undefined) {
     return {
@@ -3169,6 +3384,81 @@ function planLogMessagesFromTranscript(messages: ModelMessage[]): TuiLogMessage[
     }
   }
   return logs;
+}
+function logMessagesFromTranscriptEntries(
+  entries: TranscriptEntry[],
+  busRouting: BusRoutingEntry[] = []
+): TuiLogMessage[] {
+  if (busRouting.length === 0) {
+    const logs: TuiLogMessage[] = [];
+    let previous: { phase: TranscriptEntry["phase"]; message: TuiLogMessage } | undefined;
+    for (const entry of entries) {
+      for (const message of planLogMessagesFromTranscript([entry.message])) {
+        const duplicatedHandoffInput = message.kind === "user"
+          && previous?.message.kind === "user"
+          && previous.message.text === message.text
+          && previous.phase !== entry.phase;
+        if (!duplicatedHandoffInput) {
+          logs.push(message);
+          previous = { phase: entry.phase, message };
+        }
+      }
+    }
+    return logs;
+  }
+
+  let replay = initialTuiState({ cwd: "" });
+  let previous: { phase: TranscriptEntry["phase"]; message: TuiLogMessage } | undefined;
+  const timeline = [
+    ...entries.map((entry, index) => ({
+      kind: "transcript" as const,
+      ts: entry.ts,
+      tieOrder: entry.message.role === "user" ? 0 : 2,
+      index,
+      entry
+    })),
+    ...busRouting.map((entry, index) => ({
+      kind: "bus-routing" as const,
+      ts: entry.ts,
+      tieOrder: 1,
+      index,
+      entry
+    }))
+  ].sort((left, right) => (
+    historicalTimestamp(left.ts) - historicalTimestamp(right.ts)
+    || left.tieOrder - right.tieOrder
+    || left.index - right.index
+  ));
+
+  for (const item of timeline) {
+    if (item.kind === "bus-routing") {
+      replay = reduceBusLogEvent(replay, item.entry.event);
+      continue;
+    }
+    const entry = item.entry;
+    for (const message of planLogMessagesFromTranscript([entry.message])) {
+      const duplicatedHandoffInput = message.kind === "user"
+        && previous?.message.kind === "user"
+        && previous.message.text === message.text
+        && previous.phase !== entry.phase;
+      if (!duplicatedHandoffInput) {
+        replay = {
+          ...replay,
+          conversation: [...replay.conversation, ...conversationFromLogs([message])],
+          logMessages: [...replay.logMessages, message]
+        };
+        previous = { phase: entry.phase, message };
+      }
+    }
+  }
+  return replay.logMessages;
+}
+function conversationFromLogs(logs: TuiLogMessage[]): TuiState["conversation"] {
+  return logs.flatMap((message) => (
+    message.kind === "user" || message.kind === "assistant"
+      ? [{ kind: message.kind, text: message.text }]
+      : []
+  ));
 }
 function resumeEntryLabel(entry: TuiState["resumeRuns"][number]): string {
   const updatedAt = new Date(entry.updatedAt);

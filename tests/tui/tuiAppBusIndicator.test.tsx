@@ -35,6 +35,113 @@ const config = {
 };
 
 describe("TuiApp bus indicator", () => {
+  it("keeps direct bus answers as one existing assistant message", async () => {
+    const cwd = join(process.cwd(), ".tmp", "tui-bus-direct-answer", randomUUID());
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={{ async startInteractive() { throw new Error("workflow should not start"); } } as never}
+        providerFactory={() => ({
+          async generate() {
+            return {
+              thinking: "This can be answered without a workflow.",
+              content: JSON.stringify({
+                type: "answer",
+                confidence: 0.99,
+                message: "Direct bus answer."
+              })
+            };
+          }
+        })}
+        sessionStore={new SessionStore(join(cwd, "sessions"))}
+      />
+    );
+
+    output.stdin.write("answer directly");
+    await settle();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Direct bus answer\./);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /This can be answered without a workflow\./);
+    assert.equal((frame.match(/Direct bus answer\./g) ?? []).length, 1, frame);
+    assert.doesNotMatch(frame, /Bus 选择节点/);
+
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("renders bus thinking and node selection as the existing model conversation logs", async () => {
+    const cwd = join(process.cwd(), ".tmp", "tui-bus-conversation", randomUUID());
+    const finalState = {
+      status: "paused" as const,
+      workflow_id: "delivery",
+      current_node_id: "dev",
+      attempts: [],
+      questions: []
+    };
+    let finish!: () => void;
+    const result = new Promise<typeof finalState>((resolve) => { finish = () => resolve(finalState); });
+    const session = {
+      runId: randomUUID(),
+      state: { ...finalState, status: "running" as const },
+      events: { async *[Symbol.asyncIterator]() { await result; } },
+      result,
+      permissions: { resolve() {}, resolveAll() {}, hasPending() { return false; } },
+      interrupt: async () => { finish(); },
+      resumeWithUserInput: async () => {},
+      continueWithInput: async () => {},
+      dispatchToNode: async () => {},
+      finalize: async () => {},
+      subscribeState: () => () => {},
+      waitForBoundary: async () => finalState
+    };
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={{ async startInteractive() { return session; } } as never}
+        providerFactory={() => ({
+          async generate() {
+            return {
+              thinking: "Checked node responsibilities.",
+              content: JSON.stringify({
+                type: "dispatch",
+                confidence: 0.96,
+                node_id: "dev",
+                instruction: "Implement the requested change.",
+                reason: "The task requires implementation"
+              })
+            };
+          }
+        })}
+        sessionStore={new SessionStore(join(cwd, "sessions"))}
+      />
+    );
+
+    output.stdin.write("implement now");
+    await settle();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Bus 选择节点 dev/);
+
+    const frame = output.lastFrame() ?? "";
+    assert.match(frame, /Reasoning/);
+    assert.match(frame, /Checked node responsibilities\./);
+    assert.match(frame, /原因：The task requires implementation/);
+    assert.match(frame, /置信度：96%/);
+    assert.ok(frame.indexOf("implement now") < frame.indexOf("Reasoning"));
+    assert.ok(frame.indexOf("Reasoning") < frame.indexOf("Bus 选择节点 dev"));
+
+    finish();
+    output.unmount();
+    output.cleanup();
+  });
+
   it("keeps pointing at the latest bus decision after an internal workflow transition", async () => {
     const cwd = join(process.cwd(), ".tmp", "tui-bus-indicator", randomUUID());
     const finalState = {

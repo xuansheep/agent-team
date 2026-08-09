@@ -1,8 +1,12 @@
-import { type RefObject } from 'react';
+import { type RefObject } from 'react'
 import assert from 'node:assert/strict'
+import { PassThrough } from 'node:stream'
 import { describe, it } from 'node:test'
-import { render } from 'ink-testing-library'
-import type { ScrollBoxHandle } from '../../src/tui/ink.js'
+import { render as renderForFrame } from 'ink-testing-library'
+import instances from '../../src/ink/instances.js'
+import type Ink from '../../src/ink/ink.js'
+import { pointerShapeSequence } from '../../src/ink/termio/osc.js'
+import { renderSync, type ScrollBoxHandle } from '../../src/tui/ink.js'
 import {
   calculateMainScrollBarGeometry,
   MainScrollBar,
@@ -138,7 +142,7 @@ describe('MainScrollBar rendering', () => {
       setClampBounds: () => {},
     }
     const scrollRef = { current: handle } as RefObject<ScrollBoxHandle>
-    const output = render(
+    const output = renderForFrame(
       <MainScrollBar
         scrollRef={scrollRef}
         height={4}
@@ -183,7 +187,7 @@ describe('MainScrollBar rendering', () => {
       setClampBounds: () => {},
     }
     const scrollRef = { current: handle } as RefObject<ScrollBoxHandle>
-    const output = render(
+    const output = renderForFrame(
       <MainScrollBar
         scrollRef={scrollRef}
         height={4}
@@ -195,6 +199,102 @@ describe('MainScrollBar rendering', () => {
     assert.deepEqual(visibleRows(output.lastFrame()), [])
     output.unmount()
   })
+
+  it('uses a hand pointer only over the thumb and restores it safely', async () => {
+    const stdout = new CapturingStdout()
+    const stdin = new FakeStdin()
+    const handle: ScrollBoxHandle = {
+      scrollTo: () => {},
+      scrollBy: () => {},
+      scrollToElement: () => {},
+      scrollToBottom: () => {},
+      getScrollTop: () => 0,
+      getPendingDelta: () => 0,
+      getScrollHeight: () => 16,
+      getFreshScrollHeight: () => 16,
+      getViewportHeight: () => 4,
+      getViewportTop: () => 0,
+      isSticky: () => false,
+      subscribe: () => () => {},
+      setClampBounds: () => {},
+    }
+    const scrollRef = { current: handle } as RefObject<ScrollBoxHandle>
+    const renderScrollBar = (enabled = true) => (
+      <MainScrollBar
+        scrollRef={scrollRef}
+        height={4}
+        contentRevision={0}
+        enabled={enabled}
+      />
+    )
+    const output = renderSync(renderScrollBar(), {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stderr: new CapturingStdout() as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    })
+
+    try {
+      const ink = instances.get(
+        stdout as unknown as NodeJS.WriteStream,
+      ) as Ink
+      ink.setAltScreenActive(true, true)
+      await settleLocalInk()
+      stdout.output = ''
+      const movePointer = (col: number, row: number) => {
+        ink.dispatchMouseEvent({
+          kind: 'mouse',
+          action: 'press',
+          button: 35,
+          col,
+          row,
+          sequence: '',
+        })
+        ink.dispatchHover(col - 1, row - 1)
+      }
+
+      movePointer(1, 1)
+      await settleLocalInk()
+      assert.equal(
+        countSequence(stdout.output, pointerShapeSequence('pointer')),
+        1,
+      )
+
+      movePointer(1, 1)
+      await settleLocalInk()
+      assert.equal(
+        countSequence(stdout.output, pointerShapeSequence('pointer')),
+        1,
+      )
+
+      movePointer(1, 2)
+      await settleLocalInk()
+      assert.equal(countSequence(stdout.output, pointerShapeSequence()), 1)
+
+      movePointer(1, 1)
+      await settleLocalInk()
+      movePointer(2, 1)
+      await settleLocalInk()
+      assert.equal(countSequence(stdout.output, pointerShapeSequence()), 2)
+
+      movePointer(1, 1)
+      await settleLocalInk()
+      output.rerender(renderScrollBar(false))
+      await settleLocalInk()
+      assert.equal(countSequence(stdout.output, pointerShapeSequence()), 3)
+
+      output.rerender(renderScrollBar())
+      await settleLocalInk()
+      movePointer(1, 1)
+      await settleLocalInk()
+      output.unmount()
+      assert.equal(countSequence(stdout.output, pointerShapeSequence()), 4)
+    } finally {
+      output.unmount()
+      output.cleanup()
+    }
+  })
 })
 
 function visibleRows(frame: string | undefined): string[] {
@@ -203,4 +303,30 @@ function visibleRows(frame: string | undefined): string[] {
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
+}
+
+class CapturingStdout extends PassThrough {
+  isTTY = false
+  columns = 80
+  rows = 24
+  output = ''
+
+  constructor() {
+    super()
+    this.on('data', chunk => {
+      this.output += chunk.toString()
+    })
+  }
+}
+
+class FakeStdin extends PassThrough {
+  isTTY = false
+}
+
+function countSequence(output: string, sequence: string): number {
+  return output.split(sequence).length - 1
+}
+
+async function settleLocalInk(): Promise<void> {
+  await new Promise<void>(resolve => setImmediate(resolve))
 }

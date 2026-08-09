@@ -10,7 +10,7 @@ import { acquireFileLease } from "./fileLease.js";
 import { projectDirectory, projectPath, ProjectStorageContext, sessionDirectory } from "./projectStorage.js";
 import { AuditStore } from "../audit/auditStore.js";
 import type { AuditEvent } from "../audit/auditEvent.js";
-import type { SessionBusCheckpoint } from "../runtime/busTypes.js";
+import type { BusDirectiveSelectedEvent, SessionBusCheckpoint } from "../runtime/busTypes.js";
 import { kernelSessionCheckpoint, restoreKernelSession as restoreKernelSessionFromCheckpoint, type KernelSession, type KernelSessionCheckpoint } from "../kernel/session.js";
 
 export type TranscriptPhase = "bus" | "plan" | "workflow";
@@ -28,6 +28,11 @@ export type WorkflowTranscriptEntryInput = {
   message: ModelMessage;
   runId: string;
   entryId: string;
+};
+
+export type BusRoutingEntry = {
+  ts: string;
+  event: BusDirectiveSelectedEvent;
 };
 
 export type SessionMetadata = {
@@ -104,6 +109,34 @@ export class SessionStore {
 
   async loadBusTranscript(sessionId: string): Promise<TranscriptEntry[]> {
     return (await this.loadTranscript(sessionId)).filter((entry) => entry.phase === "bus");
+  }
+
+  async appendBusRoutingEvent(sessionId: string, event: BusDirectiveSelectedEvent): Promise<void> {
+    await appendJsonLines(join(this.sessionDir(sessionId), "bus-routing.jsonl"), [{
+      ts: new Date().toISOString(),
+      event
+    } satisfies BusRoutingEntry]);
+    await this.touch(sessionId);
+  }
+
+  async loadBusRoutingEvents(sessionId: string): Promise<BusRoutingEntry[]> {
+    try {
+      const text = await readFile(join(this.sessionDir(sessionId), "bus-routing.jsonl"), "utf8");
+      if (!text.trim()) return [];
+      const entries: BusRoutingEntry[] = [];
+      for (const line of text.trim().split("\n")) {
+        if (!line) continue;
+        try {
+          entries.push(JSON.parse(line) as BusRoutingEntry);
+        } catch {
+          continue;
+        }
+      }
+      return entries;
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return [];
+      throw error;
+    }
   }
 
   async saveBusState(sessionId: string, bus: SessionBusCheckpoint): Promise<SessionMetadata> {
@@ -330,7 +363,7 @@ export class SessionStore {
   }
 }
 
-async function appendJsonLines(path: string, values: TranscriptEntry[], deduplicate = false): Promise<boolean> {
+async function appendJsonLines<T extends object>(path: string, values: T[], deduplicate = false): Promise<boolean> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const lease = await acquireFileLease(`${path}.lease`, `Transcript ${path}`, { wait: true });
   try {
@@ -344,13 +377,16 @@ async function appendJsonLines(path: string, values: TranscriptEntry[], deduplic
       index = {
         size: currentSize,
         entryIds: new Set(existing.trim()
-          ? existing.trim().split("\n").map((line) => (JSON.parse(line) as TranscriptEntry).entryId).filter((entryId): entryId is string => Boolean(entryId))
+          ? existing.trim().split("\n").map((line) => (JSON.parse(line) as { entryId?: string }).entryId).filter((entryId): entryId is string => Boolean(entryId))
           : [])
       };
       transcriptIndexes.set(path, index);
     }
     const pending = deduplicate
-      ? values.filter((entry) => !entry.entryId || !index!.entryIds.has(entry.entryId))
+      ? values.filter((entry) => {
+          const entryId = (entry as { entryId?: string }).entryId;
+          return !entryId || !index!.entryIds.has(entryId);
+        })
       : values;
     if (!pending.length) return false;
     const content = pending.map((value) => `${JSON.stringify(value)}\n`).join("");
@@ -362,7 +398,10 @@ async function appendJsonLines(path: string, values: TranscriptEntry[], deduplic
       await handle.close();
     }
     index.size += Buffer.byteLength(content, "utf8");
-    for (const entry of pending) if (entry.entryId) index.entryIds.add(entry.entryId);
+    for (const entry of pending) {
+      const entryId = (entry as { entryId?: string }).entryId;
+      if (entryId) index.entryIds.add(entryId);
+    }
     return true;
   } finally {
     await lease.release();
