@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { render } from "ink-testing-library";
 import { TuiApp } from "../../src/tui/TuiApp.js";
 import { EventStream } from "../../src/harness/eventStream.js";
+import type { ModelProvider } from "../../src/providers/types.js";
 import type { WorkflowState } from "../../src/workflow/state.js";
 import { testBusProviderFactory, testDispatcher } from "../helpers/projectConfig.js";
 
@@ -32,7 +33,40 @@ const config = {
 let cwdSequence = 0;
 
 describe("TuiApp session continuation", () => {
-  it("routes later ordinary input through the bus and receives asynchronous workflow events", async (t) => {
+  it("does not enter Plan Mode when an ordinary bus response requests planning", async (t) => {
+    let starts = 0;
+    const engine = {
+      async startInteractive() {
+        starts += 1;
+        return createRunningSession().session;
+      }
+    };
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          content: JSON.stringify({
+            type: "plan",
+            confidence: 1,
+            node_id: "dev",
+            reason: "Plan unexpectedly"
+          })
+        };
+      }
+    };
+    const output = renderTui(engine, () => provider);
+    t.after(() => {
+      output.unmount();
+      output.cleanup();
+    });
+
+    await sendTuiLine(output, "ordinary request");
+    await waitFor(() => (output.lastFrame() ?? "").includes("调度模型没有返回可验证的路由决策"));
+
+    assert.equal(starts, 0);
+    assert.doesNotMatch(output.lastFrame() ?? "", /\| plan \|/);
+  });
+
+  it("routes later ordinary input through the bus and receives asynchronous workflow state events", async (t) => {
     const queuedInputs: unknown[] = [];
     const initialInputs: unknown[] = [];
     const fixture = createRunningSession({
@@ -40,7 +74,8 @@ describe("TuiApp session continuation", () => {
         queuedInputs.push(input);
         const request = requestFromBusInput(input);
         fixture.push({ type: "user_input_injected", input_id: "input-1", text: request, node_id: "dev", attempt: 1, activation: 1 });
-        fixture.push({ type: "model_stream_delta", node_id: "dev", attempt: 1, activation: 1, text: "我继续处理第二轮。" });
+        fixture.push({ type: "node_started", node_id: "dev", attempt: 1, activation: 2 });
+        fixture.push({ type: "model_stream_delta", node_id: "dev", attempt: 1, activation: 2, text: "我继续处理第二轮。" });
         return { id: "input-1", disposition: "active_turn" as const };
       }
     });
@@ -62,7 +97,10 @@ describe("TuiApp session continuation", () => {
     await sendTuiLine(output, "first request");
     await waitFor(() => starts === 1);
     await sendTuiLine(output, "second request");
-    await waitFor(() => queuedInputs.length === 1 && (output.lastFrame() ?? "").includes("我继续处理第二轮。"));
+    await waitFor(
+      () => queuedInputs.length === 1 && (output.lastFrame() ?? "").includes("running #1.2"),
+      () => `queued=${JSON.stringify(queuedInputs)} subscriptions=${fixture.subscriptions()} frame=${output.lastFrame() ?? ""}`
+    );
 
     assert.equal(starts, 1);
     assert.deepEqual(userInputFromBus(initialInputs[0]), { request: "first request", images: [] });
@@ -129,7 +167,10 @@ describe("TuiApp session continuation", () => {
     await sendTuiLine(output, "first request");
     await waitFor(() => starts === 1);
     await sendTuiLine(output, "keep this request");
-    await waitFor(() => (output.lastFrame() ?? "").includes("节点分发失败：continuation failed"));
+    await waitFor(
+      () => dispatches === 1 && (output.lastFrame() ?? "").includes("Waiting |"),
+      () => `dispatches=${dispatches} subscriptions=${fixture.subscriptions()} frame=${output.lastFrame() ?? ""}`
+    );
 
     assert.equal(starts, 1);
     assert.equal(dispatches, 1);
@@ -179,8 +220,8 @@ describe("TuiApp session continuation", () => {
       () => `interrupts=${interrupts} resumed=${JSON.stringify(resumedInputs)} frame=${output.lastFrame() ?? ""}`
     );
     await waitFor(
-      () => (output.lastFrame() ?? "").includes("节点已恢复执行。"),
-      () => `resumed=${JSON.stringify(resumedInputs)} frame=${output.lastFrame() ?? ""}`
+      () => (output.lastFrame() ?? "").includes("running #1.2"),
+      () => `resumed=${JSON.stringify(resumedInputs)} subscriptions=${fixture.subscriptions()} frame=${output.lastFrame() ?? ""}`
     );
 
     assert.equal(starts, 1);
@@ -256,7 +297,10 @@ function createRunningSession(hooks: RunningSessionHooks = {}) {
   return { session, legacyContinues, push, setState, subscriptions: () => events.subscriptions, close: () => events.end() };
 }
 
-function renderTui(engine: unknown) {
+function renderTui(
+  engine: unknown,
+  providerFactory: (providerId: string) => ModelProvider = testBusProviderFactory("dev")
+) {
   const cwd = join(process.cwd(), ".tmp", "continue-session", String(++cwdSequence));
   return render(
     <TuiApp
@@ -265,7 +309,7 @@ function renderTui(engine: unknown) {
       workflows={["delivery"]}
       workflowId="delivery"
       engine={engine as never}
-      providerFactory={testBusProviderFactory("dev")}
+      providerFactory={providerFactory}
     />
   );
 }

@@ -7,7 +7,8 @@ import { Box, Text } from "../ink.js";
 import { TuiNodeState, TuiWorkflowNodeState } from "../state.js";
 import { formatTokenCount } from "./StatusLine.js";
 
-const RUNNING_TOP_RIGHT_FRAMES = ["◝", "◜", "◟", "◞"] as const;
+const RUNNING_TOP_RIGHT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const RUNNING_TOP_RIGHT_INTERVAL_MS = 80;
 
 const NODE_BORDER = {
   top: "─",
@@ -35,8 +36,8 @@ export function WorkflowFlowChart({
   currentNodeId?: string;
   suspendedStack?: string[];
 }) {
-  const [animationRef, animationTime] = useAnimationFrame(nodes.some((node) => node.status === "running") ? 120 : null);
-  const runningBorder: BorderStyle = { ...NODE_BORDER, topRight: RUNNING_TOP_RIGHT_FRAMES[Math.floor(animationTime / 120) % RUNNING_TOP_RIGHT_FRAMES.length] };
+  const [animationRef, animationTime] = useAnimationFrame(nodes.some((node) => node.status === "running") ? RUNNING_TOP_RIGHT_INTERVAL_MS : null);
+  const runningBorder: BorderStyle = { ...NODE_BORDER, topRight: RUNNING_TOP_RIGHT_FRAMES[Math.floor(animationTime / RUNNING_TOP_RIGHT_INTERVAL_MS) % RUNNING_TOP_RIGHT_FRAMES.length] };
   const rows = workflowNodes?.length
     ? workflowNodes.map((node) => ({ id: node.id, model: node.model, effort: node.effort, contextWindow: node.contextWindow, state: latestNodeState(nodes, node.id) }))
     : nodes.map((node) => {

@@ -627,6 +627,7 @@ export function TuiApp({
             continue;
           }
           setState((current) => reduceBusWorkflowEvent({ ...current, runId: session.runId, workflowId: nextWorkflowId }, event));
+          requestMainScrollToBottom();
         }
       } finally {
         if (listeningSessionGenerationRef.current !== listenerGeneration) return;
@@ -763,14 +764,6 @@ export function TuiApp({
       }));
     }
     requestMainScrollToBottom();
-    if (!options.planMode && turn.directive.type === "plan") {
-      const planTurn = preparePlanTurn(
-        displayText ?? answerText(input),
-        feedbackImages(input),
-        { logUser: false }
-      );
-      if (planTurn) await runPreparedPlanTurn(planTurn, { routed: true });
-    }
     return turn;
   };
   const startRun = async (text: string, images: PromptInputImageAttachment[] = []) => {

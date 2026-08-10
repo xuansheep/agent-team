@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveWorkspacePath, isPathInsideOrSame } from "../../src/security/pathBoundary.js";
+import {
+  resolveWorkspacePath,
+  isPathInsideOrSame,
+  normalizeWorkspaceInputPath
+} from "../../src/security/pathBoundary.js";
 import { createLocalToolRegistry } from "../../src/tools/registry.js";
 
 async function workspace(): Promise<string> {
@@ -26,6 +30,17 @@ describe("path boundary", () => {
     assert.throws(() => resolveWorkspacePath(cwd, "../outside.txt"), /escapes workspace/);
     assert.throws(() => resolveWorkspacePath(cwd, outside), /escapes workspace/);
     assert.equal(isPathInsideOrSame(cwd, outside), false);
+  });
+
+  it("normalizes MSYS drive paths on Windows", () => {
+    assert.equal(
+      normalizeWorkspaceInputPath("/d/work/code-ai/agent-team", "win32"),
+      "D:\\work\\code-ai\\agent-team"
+    );
+    assert.equal(
+      normalizeWorkspaceInputPath("/d/work/code-ai/agent-team", "linux"),
+      "/d/work/code-ai/agent-team"
+    );
   });
 
   it("blocks local file writes that target outside the workspace", async () => {

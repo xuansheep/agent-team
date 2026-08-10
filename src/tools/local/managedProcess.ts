@@ -130,7 +130,7 @@ export class ManagedProcessManager {
     await this.stopRecord(record, reason);
     return {
       output: `Stopped managed process ${processId}`,
-      exit_code: record.exitCode ?? 0,
+      exit_code: 0,
       data: processData(record)
     };
   }

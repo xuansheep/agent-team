@@ -74,6 +74,145 @@ describe("SessionExecutionBus", () => {
     assert.equal(events.some((event) => event.type === "bus_workflow_started" && event.node_id === "dev"), true);
   });
 
+  it("exposes only phase-appropriate routing tools", async () => {
+    const requests: ModelRequest[] = [];
+    const workflow = createWorkflow({ currentNodeId: "dev" });
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          return {
+            tool_calls: [{
+              id: "dispatch-1",
+              name: "DispatchWorkflowNode",
+              input: {
+                node_id: "dev",
+                instruction: "Implement the change.",
+                reason: "Implementation work",
+                confidence: 1
+              }
+            }]
+          };
+        }
+        return {
+          tool_calls: [{
+            id: "select-1",
+            name: "SelectWorkflowNode",
+            input: {
+              node_id: "product",
+              reason: "Plan requirements first",
+              confidence: 1
+            }
+          }]
+        };
+      }
+    };
+    const toolCallingConfig: AgentTeamConfig = {
+      ...config,
+      providers: {
+        default: {
+          ...config.providers.default,
+          capabilities: {
+            ...config.providers.default.capabilities,
+            tool_calling: true,
+            json_schema_output: false
+          }
+        }
+      }
+    };
+    const bus = createBus({
+      config: toolCallingConfig,
+      coordinator: fakeCoordinator({ startInteractive: async () => workflow.session }),
+      providerFactory: () => provider
+    });
+
+    await bus.handleUserMessage("implement it");
+    await bus.handleUserMessage("plan the follow-up", { planMode: true });
+
+    assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["DispatchWorkflowNode"]);
+    assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["SelectWorkflowNode"]);
+  });
+
+  it("includes restored conversation and workflow state in dispatcher context", async () => {
+    const historicalMessages: ModelMessage[] = [
+      { role: "user", content: "initial request" },
+      { role: "assistant", content: "Need implementation." }
+    ];
+    const workflow = createWorkflow({ currentNodeId: "dev", sessionId: "session-context" });
+    workflow.setState({ status: "paused" });
+    const provider = responseProvider({
+      type: "answer",
+      confidence: 1,
+      message: "Context restored."
+    });
+    const checkpoint: SessionBusCheckpoint = {
+      session_id: "session-context",
+      workflow_id: "delivery",
+      status: "waiting_user",
+      revision: 4,
+      active_run_id: workflow.session.runId,
+      current_node_id: "dev",
+      selected_node_id: "dev",
+      rework_cycles: 1,
+      last_directive: {
+        type: "dispatch",
+        confidence: 1,
+        node_id: "dev",
+        instruction: "Implement",
+        reason: "Previous routing"
+      }
+    };
+    const bus = createBus({
+      coordinator: fakeCoordinator(),
+      providerFactory: provider.factory,
+      sessionId: "session-context",
+      checkpoint,
+      messages: historicalMessages
+    });
+    bus.adoptWorkflow(workflow.session, "dev");
+
+    await bus.handleUserMessage("continue with the same task");
+
+    const requestText = JSON.stringify(provider.requests[0]?.messages);
+    assert.match(requestText, /initial request/);
+    assert.match(requestText, /continue with the same task/);
+    assert.match(requestText, /session_execution_context/);
+    assert.match(requestText, /session-context/);
+    assert.match(requestText, /paused/);
+    assert.match(requestText, /Previous routing/);
+  });
+
+  it("continues a completed workflow in the existing run", async () => {
+    const workflow = createWorkflow({ currentNodeId: "dev", sessionId: "session-continuation" });
+    workflow.setState({ status: "completed", final_summary: "first cycle" });
+    let starts = 0;
+    const provider = responseProvider({
+      type: "dispatch",
+      confidence: 1,
+      node_id: "dev",
+      instruction: "Apply the follow-up.",
+      reason: "Follow-up implementation"
+    });
+    const bus = createBus({
+      coordinator: fakeCoordinator({
+        startInteractive: async () => {
+          starts += 1;
+          return workflow.session;
+        }
+      }),
+      providerFactory: provider.factory,
+      sessionId: "session-continuation"
+    });
+    bus.adoptWorkflow(workflow.session, "dev");
+
+    const turn = await bus.handleUserMessage("add the follow-up");
+
+    assert.equal(starts, 0);
+    assert.equal(turn.workflow?.runId, workflow.session.runId);
+    assert.equal(workflow.dispatches.length, 1);
+    assert.equal(workflow.dispatches[0]?.nodeId, "dev");
+  });
+
   it("emits and persists bus thinking with the selected directive", async () => {
     const root = join(process.cwd(), ".tmp", "session-execution-bus-thinking", randomUUID());
     const store = new SessionStore(root);
@@ -435,12 +574,34 @@ describe("SessionExecutionBus", () => {
     assert.equal(bus.state.status, "waiting_user");
   });
 
-  it("uses the full dossier when routing lifecycle rework", async () => {
+  it("keeps the full dossier for routing but passes bounded context to the node", async () => {
     const workflow = createWorkflow({
       currentNodeId: "product",
       attempts: [{ node_id: "dev", attempt: 1, activation: 1, status: "completed" }]
     });
     const runDossier = dossier(workflow.session.runId, "product", workflow.state.attempts);
+    runDossier.node_results.push({
+      seq: 7,
+      ts: "2026-08-10T00:00:00.000Z",
+      node_id: "product",
+      attempt: 1,
+      activation: 1,
+      status: "completed",
+      result: {
+        direction: "forward",
+        summary: "Inspection complete",
+        document: "Full inspection document retained for bus routing only.",
+        deliverables: [{ artifact_id: "artifact-inspection", description: "Inspection evidence" }],
+        feedback: { defects: ["defect-1"], change_requests: [] },
+        questions: [],
+        handoff: {
+          instruction: "Repair the inspection findings",
+          must_follow: ["Preserve compatibility"],
+          known_risks: ["Regression risk"],
+          open_questions: []
+        }
+      }
+    });
     const coordinator = fakeCoordinator({
       startInteractive: async () => workflow.session,
       dossier: async () => runDossier
@@ -457,10 +618,71 @@ describe("SessionExecutionBus", () => {
 
     assert.equal(workflow.dispatches[0]?.nodeId, "dev");
     assert.deepEqual(workflow.dispatches[0]?.options, { reason: "Dossier shows rework", countsAsRework: true });
-    assert.deepEqual((workflow.dispatches[0]?.input as { prior_dossier?: unknown }).prior_dossier, runDossier);
+    const nodeInput = workflow.dispatches[0]?.input as {
+      prior_dossier?: unknown;
+      prior_results?: unknown[];
+      references?: unknown[];
+    };
+    assert.equal("prior_dossier" in nodeInput, false);
+    assert.deepEqual(nodeInput.prior_results, [{
+      node_id: "product",
+      attempt: 1,
+      activation: 1,
+      status: "completed",
+      summary: "Inspection complete",
+      deliverables: [{ artifact_id: "artifact-inspection", description: "Inspection evidence" }],
+      feedback: { defects: ["defect-1"], change_requests: [] },
+      handoff: {
+        instruction: "Repair the inspection findings",
+        must_follow: ["Preserve compatibility"],
+        known_risks: ["Regression risk"],
+        open_questions: []
+      }
+    }]);
+    assert.deepEqual(nodeInput.references, [{
+      node_id: "product",
+      summary: "Inspection complete",
+      artifact_ids: ["artifact-inspection"]
+    }]);
     assert.equal(bus.state.current_node_id, "dev");
     assert.equal(bus.state.status, "running_workflow");
-    assert.equal(provider.requests[1]?.messages.some((message) => typeof message.content === "string" && message.content.includes("workflow_run_dossier")), true);
+    const dispatcherContext = JSON.stringify(provider.requests[1]?.messages);
+    assert.match(dispatcherContext, /workflow_run_dossier/);
+    assert.match(dispatcherContext, /Full inspection document retained for bus routing only/);
+  });
+
+  it("keeps repeated lifecycle dispatch payloads flat and stable", async () => {
+    const workflow = createWorkflow({ currentNodeId: "product" });
+    const runDossier = dossier(workflow.session.runId, "product");
+    const directive = {
+      type: "dispatch" as const,
+      confidence: 1,
+      node_id: "dev",
+      instruction: "Continue implementation",
+      reason: "Lifecycle continuation"
+    };
+    const provider = responseProvider(directive, directive, directive, directive, directive);
+    const bus = createBus({
+      coordinator: fakeCoordinator({
+        startInteractive: async () => workflow.session,
+        dossier: async () => runDossier
+      }),
+      providerFactory: provider.factory
+    });
+
+    await bus.handleUserMessage("start");
+    for (let activation = 1; activation <= 4; activation += 1) {
+      workflow.setState({
+        status: "awaiting_bus",
+        current_node_id: "product",
+        attempts: [{ node_id: "product", attempt: 1, activation, status: "completed" }]
+      });
+      await waitFor(() => workflow.dispatches.length === activation);
+    }
+
+    const serialized = workflow.dispatches.map((dispatch) => JSON.stringify(dispatch.input));
+    assert.equal(serialized.every((input) => !input.includes("prior_dossier")), true);
+    assert.equal(new Set(serialized.map((input) => input.length)).size, 1);
   });
 
   it("does not count the first lifecycle entry into an unvisited node as rework", async () => {
@@ -585,6 +807,7 @@ function fakeCoordinator(hooks: CoordinatorHooks = {}): ExecutionCoordinator {
 }
 
 type CreateBusOptions = {
+  config?: AgentTeamConfig;
   coordinator: ExecutionCoordinator;
   providerFactory: (providerId: string) => ModelProvider;
   events?: BusEvent[];
@@ -597,7 +820,7 @@ type CreateBusOptions = {
 
 function createBus(options: CreateBusOptions): SessionExecutionBus {
   const bus = new SessionExecutionBus({
-    config,
+    config: options.config ?? config,
     workflowId: "delivery",
     coordinator: options.coordinator,
     providerFactory: options.providerFactory,

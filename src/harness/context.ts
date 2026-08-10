@@ -9,6 +9,7 @@ import { nodeResultOutputInstructions } from "../team/nodeResult.js";
 import { Tool } from "../tools/types.js";
 import { PermissionMode } from "../permissions/PermissionMode.js";
 import type { NodeNavigation } from "../workflow/nodeTransitionController.js";
+import { compactHandoffForModel } from "../team/handoff.js";
 
 export type ImageHandoffItem = {
   artifact_id: string;
@@ -52,20 +53,21 @@ export async function buildNodeMessages(
   } = {}
 ): Promise<ModelMessage[]> {
   const protocolPrompt = `${systemPrompt}\n\n${nodeResultOutputInstructions}\n\n${nodeTaskInstructions}`;
+  const modelHandoff = compactHandoffForModel(handoff);
   const materialized = input.runDir
-    ? await materializeReferencedArtifacts(handoff, input.runDir, input.supportsVision ?? false, input.onArtifactRead)
+    ? await materializeReferencedArtifacts(modelHandoff, input.runDir, input.supportsVision ?? false, input.onArtifactRead)
     : { referencedArtifacts: [], imageParts: [] };
   const userContent = JSON.stringify({
     node_id: node.id,
     navigation: input.navigation,
-    handoff: stripInternalPlanModeHandoffMarkers(handoff),
+    handoff: stripInternalPlanModeHandoffMarkers(modelHandoff),
     referenced_artifacts: materialized.referencedArtifacts
   }, null, 2);
-  const attachments = runtimeAttachmentsFromHandoff(handoff);
+  const attachments = runtimeAttachmentsFromHandoff(modelHandoff);
   const toolPrompts = input.tools ? buildToolPromptsAttachment({ tools: input.tools }) : undefined;
   if (toolPrompts) attachments.unshift(toolPrompts);
 
-  const directImages = collectImages(handoff);
+  const directImages = collectImages(modelHandoff);
   if (!directImages.length && !materialized.imageParts.length) {
     return buildRuntimeMessages({ system: protocolPrompt, user: userContent, userMessageKind: "runtime_context", attachments });
   }
@@ -79,7 +81,7 @@ export async function buildNodeMessages(
 }
 
 export function handoffHasImages(handoff: unknown): boolean {
-  return collectImages(handoff).length > 0;
+  return collectImages(compactHandoffForModel(handoff)).length > 0;
 }
 
 async function materializeReferencedArtifacts(

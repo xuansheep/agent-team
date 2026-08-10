@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import Ink from "../../src/ink/ink.js";
 import { Text, renderSync } from "../../src/tui/ink.js";
 import { RunLogPanel } from "../../src/tui/components/RunLogPanel.js";
+import { WorkflowFlowChart } from "../../src/tui/components/WorkflowFlowChart.js";
 import { ActivityStatusLine } from "../../src/tui/components/InteractionArea.js";
 import instances from "../../src/ink/instances.js";
 import { cellAt, type Screen, type StylePool } from "../../src/ink/screen.js";
@@ -201,6 +202,41 @@ describe("local Ink lifecycle", () => {
       instance.unmount();
       instance.cleanup();
       chalk.level = previousChalkLevel;
+    }
+  });
+
+  it("rotates the running workflow node top-right dot frame", async () => {
+    const stdout = new FakeStdout() as unknown as NodeJS.WriteStream;
+    const instance = renderSync(
+      <WorkflowFlowChart nodes={[{ nodeId: "dev", attempt: 1, status: "running" }]} />,
+      { stdout, stderr: new FakeStdout() as unknown as NodeJS.WriteStream, stdin: new FakeStdin() as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false }
+    );
+
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const ink = instances.get(stdout) as unknown as { frontFrame: { screen: Screen } };
+      const spinnerFrames = new Set(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+      const currentFrame = () => {
+        const screen = ink.frontFrame.screen;
+        for (let row = 0; row < screen.height; row += 1) {
+          for (let column = 0; column < screen.width; column += 1) {
+            const char = cellAt(screen, column, row)?.char;
+            if (char && spinnerFrames.has(char)) return char;
+          }
+        }
+        return undefined;
+      };
+      const initialFrame = currentFrame();
+      assert.ok(initialFrame && spinnerFrames.has(initialFrame));
+      let rotated = false;
+      for (let attempt = 0; attempt < 20 && !rotated; attempt += 1) {
+        await delay(50);
+        rotated = currentFrame() !== initialFrame;
+      }
+      assert.equal(rotated, true);
+    } finally {
+      instance.unmount();
+      instance.cleanup();
     }
   });
 

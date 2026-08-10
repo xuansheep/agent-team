@@ -2673,7 +2673,7 @@ describe("Workflow node status component", () => {
 
 
 
-    assert.match(frame, /◝/);
+    assert.match(frame, /⠋/);
 
 
 
@@ -2689,7 +2689,7 @@ describe("Workflow node status component", () => {
 
 
 
-    assert.doesNotMatch(frame, /[◜◞◟]/);
+    assert.doesNotMatch(frame, /[◝◜◟◞]/);
 
 
 

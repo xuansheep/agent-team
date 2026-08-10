@@ -74,6 +74,22 @@ describe("SessionStore", () => {
     assert.deepEqual(entries.map((entry) => entry.currentRunId).sort(), ["run-1", "run-2"]);
   });
 
+  it("rejects binding a second run to the same session", async () => {
+    const root = await workspace();
+    const store = new SessionStore(root);
+    await store.saveMetadata("session-single-run", { inputPreview: "single run" });
+    await store.attachRun("session-single-run", "run-1");
+
+    await assert.rejects(
+      () => store.attachRun("session-single-run", "run-2"),
+      /already bound to run run-1/
+    );
+
+    const metadata = await store.loadMetadata("session-single-run");
+    assert.equal(metadata?.currentRunId, "run-1");
+    assert.deepEqual(metadata?.runIds, ["run-1"]);
+  });
+
   it("archives an entire session outside the resumable session list", async () => {
     const root = await workspace();
     const sessions = new SessionStore(root);
@@ -236,12 +252,23 @@ describe("RunStore session hierarchy", () => {
     assert.equal(messaged?.execution?.workflowBinding?.planHash, "plan-hash-1");
   });
 
-  it("does not let an old Run completion overwrite the current bound Run status", async () => {
+  it("does not let an old legacy Run completion overwrite the current bound Run status", async () => {
     const root = await workspace();
     const runs = new RunStore(root);
     const sessions = new SessionStore(root);
     const oldRun = await runs.createRun("delivery", { request: "old" }, { sessionId: "session-current-run" });
-    const currentRun = await runs.createRun("delivery", { request: "current" }, { sessionId: "session-current-run" });
+    const currentRun = { runId: "legacy-current-run" };
+    const existing = await sessions.loadMetadata("session-current-run");
+    assert.ok(existing);
+    await writeFile(
+      join(sessions.sessionDir("session-current-run"), "session.json"),
+      JSON.stringify({
+        ...existing,
+        currentRunId: currentRun.runId,
+        runIds: [oldRun.runId, currentRun.runId]
+      }),
+      "utf8"
+    );
     const base = createKernelSession({
       id: "session-current-run",
       cwd: root,

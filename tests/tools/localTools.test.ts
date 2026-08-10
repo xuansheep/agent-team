@@ -252,6 +252,7 @@ describe("local tools", () => {
       assert.equal((status.data as { state: string }).state, "running");
 
       const stopped = await tools.get("ProcessStop").execute({ process_id: data.process_id }, { cwd, runDir });
+      assert.equal(stopped.exit_code, 0);
       assert.equal((stopped.data as { state: string }).state, "exited");
       await waitForProcessExit(data.pid, 3000);
       assert.equal(isProcessRunning(data.pid), false);

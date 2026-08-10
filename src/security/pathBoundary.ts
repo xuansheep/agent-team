@@ -2,11 +2,21 @@ import { isAbsolute, relative, resolve } from "node:path";
 
 export function resolveWorkspacePath(cwd: string, inputPath: string): string {
   const root = resolve(cwd);
-  const target = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
+  const normalizedInput = normalizeWorkspaceInputPath(inputPath);
+  const target = isAbsolute(normalizedInput) ? resolve(normalizedInput) : resolve(root, normalizedInput);
   if (!isPathInsideOrSame(root, target)) {
     throw new Error(`Path escapes workspace: ${inputPath}`);
   }
   return target;
+}
+
+export function normalizeWorkspaceInputPath(inputPath: string, platform = process.platform): string {
+  if (platform !== "win32") return inputPath;
+  const msysDrivePath = /^\/([A-Za-z])(?:\/(.*))?$/.exec(inputPath.replace(/\\/g, "/"));
+  if (!msysDrivePath) return inputPath;
+  const drive = msysDrivePath[1]!.toUpperCase();
+  const tail = msysDrivePath[2] ?? "";
+  return `${drive}:\\${tail.replace(/\//g, "\\")}`;
 }
 
 export function isPathInsideOrSame(rootPath: string, targetPath: string): boolean {

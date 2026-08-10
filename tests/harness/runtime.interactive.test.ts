@@ -823,6 +823,47 @@ describe("runNode interactive permissions", () => {
     const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /我先列出目录确认项目结构。/);
   });
+  it("repairs a thinking-only empty response once without interrupting the node", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-repair-empty-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const requests: ModelMessage[][] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request.messages);
+        if (requests.length === 1) {
+          return { thinking: "I know what to do.", stopReason: "stop" };
+        }
+        return {
+          content: JSON.stringify({
+            direction: "forward",
+            summary: "continued after repair",
+            handoff: { instruction: "next" }
+          })
+        };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "tester", role: "tester", provider: "default", permission_mode: "default" },
+      systemPrompt: "Tester",
+      model: "gpt-test",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "verify" },
+      attempt: 1,
+      activation: 2
+    });
+
+    assert.equal(result.summary, "continued after repair");
+    assert.equal(requests.length, 2);
+    assert.match(JSON.stringify(requests[1]), /thinking-only or empty response/);
+  });
+
   it("asks the model to repair an invalid final NodeResult once without increasing node attempt", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-repair-result-"));
     const store = new RunStore(root);

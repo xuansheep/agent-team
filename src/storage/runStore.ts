@@ -111,6 +111,7 @@ export class RunStore {
     const runId = options.runId ?? generatedRunId;
     const sessionId = options.sessionId ?? runId;
     const runDir = runDirectory(this.storage, sessionId, runId);
+    await this.sessionStore.assertRunAttachable(sessionId, runId);
     this.rememberRun(runId, sessionId, runDir);
 
     await mkdir(join(runDir, "artifacts"), { recursive: true, mode: 0o700 });

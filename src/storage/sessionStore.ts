@@ -229,12 +229,27 @@ export class SessionStore {
     return { sessionId, archivePath };
   }
 
+  async assertRunAttachable(sessionId: string, runId: string): Promise<void> {
+    const metadata = await this.loadMetadata(sessionId);
+    const boundRunId = metadata?.currentRunId ?? metadata?.runIds[0];
+    if (boundRunId && boundRunId !== runId) {
+      throw new Error(`Session ${sessionId} is already bound to run ${boundRunId}`);
+    }
+  }
+
   async attachRun(sessionId: string, runId: string): Promise<SessionMetadata> {
-    return this.updateMetadata(sessionId, (metadata) => ({
-      ...metadata,
-      currentRunId: runId,
-      runIds: metadata.runIds.includes(runId) ? metadata.runIds : [...metadata.runIds, runId]
-    }));
+    await this.assertRunAttachable(sessionId, runId);
+    return this.updateMetadata(sessionId, (metadata) => {
+      const boundRunId = metadata.currentRunId ?? metadata.runIds[0];
+      if (boundRunId && boundRunId !== runId) {
+        throw new Error(`Session ${sessionId} is already bound to run ${boundRunId}`);
+      }
+      return {
+        ...metadata,
+        currentRunId: runId,
+        runIds: metadata.runIds.includes(runId) ? metadata.runIds : [...metadata.runIds, runId]
+      };
+    });
   }
 
   async savePlanState(sessionId: string, plan: PlanSessionState): Promise<SessionMetadata> {

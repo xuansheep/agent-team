@@ -579,7 +579,7 @@ describe("WorkflowSession", () => {
 
     assert.equal(restored.runId, original.runId);
     assert.equal(firstContinuationEvent.done, false);
-    assert.equal(firstContinuationEvent.value?.type, "user_message");
+    assert.equal(firstContinuationEvent.value?.type, "run_continued");
     assert.equal(state.status, "awaiting_bus");
     assert.equal(state.current_node_id, "dev");
     assert.equal(devAttempt?.attempt, 1);
@@ -587,10 +587,21 @@ describe("WorkflowSession", () => {
     assert.ok((state.resume_checkpoint?.dialogue_cursor ?? 0) > firstCursor);
     assert.match(JSON.stringify(requests.at(-1)?.messages), /follow-up request/);
     assert.equal(events.filter((event) => event.type === "run_started").length, 1);
-    assert.equal(events.filter((event) => event.type === "run_continued").length, 0);
+    assert.equal(events.filter((event) => event.type === "run_continued").length, 1);
     assert.equal(events.filter((event) => event.type === "run_completed").length, 1);
     assert.deepEqual(events.filter((event) => event.type === "user_message").map((event) => event.text), ["follow-up request"]);
     assert.equal(events.some((event) => event.type === "node_completed" && event.status === "failure"), false);
+
+    const secondResult = restored.result;
+    await restored.finalize("follow-up test summary");
+    const secondCompletion = await secondResult;
+    const completedEvents = await store.loadEvents(original.runId);
+
+    assert.equal(secondCompletion.status, "completed");
+    assert.equal(secondCompletion.final_summary, "follow-up test summary");
+    assert.equal(completedEvents.filter((event) => event.type === "run_started").length, 1);
+    assert.equal(completedEvents.filter((event) => event.type === "run_continued").length, 1);
+    assert.equal(completedEvents.filter((event) => event.type === "run_completed").length, 2);
   });
 
   it("lets a reactivated completed node route backward and return in the same run", async () => {
@@ -638,7 +649,7 @@ describe("WorkflowSession", () => {
 
     assert.equal(state.status, "awaiting_bus");
     assert.equal(firstContinuationEvent.done, false);
-    assert.equal(firstContinuationEvent.value?.type, "user_message");
+    assert.equal(firstContinuationEvent.value?.type, "run_continued");
     assert.equal(state.rework_count, 1);
     assert.deepEqual(state.suspended_stack, []);
     assert.deepEqual(requests.map((request) => request.context?.nodeId), ["product", "dev", "dev", "product", "dev"]);
@@ -647,6 +658,7 @@ describe("WorkflowSession", () => {
       ["dev", 1, 3]
     ]);
     assert.equal(events.filter((event) => event.type === "run_started").length, 1);
+    assert.equal(events.filter((event) => event.type === "run_continued").length, 1);
     assert.equal(events.filter((event) => event.type === "run_completed").length, 1);
   });
 

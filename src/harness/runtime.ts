@@ -4,6 +4,7 @@ import { ModelMessage, ModelProvider, ModelResponse, ModelRetryEvent, ModelToolC
 import { getModelContextLimits, type ModelRegistry } from "../model/modelRegistry.js";
 import {
   buildCompactedDialogue,
+  COMPACT_USER_MESSAGE_MAX_TOKENS,
   compactSummaryMessage,
   compactSummaryPrompt,
   dropOldestCompactionItem,
@@ -154,6 +155,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     ? previousContext.context_tokens
     : estimateModelMessagesTokens(messages);
   let prefixInputTokens = previousContext?.prefix_input_tokens ?? dialogueWindow.prefixInputTokens;
+  let samplingInputOverheadTokens = 0;
   const scopedContextTokens = () => {
     const limits = currentLimits();
     return limits.autoCompactTokenLimitScope === "body_after_prefix"
@@ -195,6 +197,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
 
   const turnEngine = new TurnEngine();
   let resultRepairAttempts = 0;
+  let emptyResponseRepairAttempts = 0;
   let toolPreambleRepairAttempts = 0;
   const toolFailureCounts = new Map<string, { category: string; count: number }>();
   let hasSampledModel = false;
@@ -267,6 +270,14 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   ): Promise<void> => {
     const limits = getModelContextLimits(compactionModel, options.modelRegistry, options.maxOutputTokens);
     const contextBefore = contextTokens;
+    const scopedCompactionLimit = limits.autoCompactTokenLimitScope === "body_after_prefix"
+      ? limits.autoCompactLimit + (prefixInputTokens ?? 0)
+      : limits.autoCompactLimit;
+    const safeContextLimit = Math.max(
+      1,
+      Math.min(limits.effectiveContextWindow, scopedCompactionLimit) - limits.maxOutputTokens
+    );
+    const immutableContextTokens = estimateModelMessagesTokens(requestHistory([])) + samplingInputOverheadTokens;
     await appendRuntimeEvent(options, {
       type: "node_context_compaction_started",
       node_id: options.node.id,
@@ -284,6 +295,11 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     });
 
     try {
+      if (immutableContextTokens >= safeContextLimit) {
+        throw new Error(
+          `Context compaction cannot create safe headroom: immutable context ${immutableContextTokens} tokens, safe limit ${safeContextLimit} tokens`
+        );
+      }
       const originalDialogue = [...dialogueToSummarize];
       let truncatedMessageCount = 0;
       let summaryResponse: ModelResponse | undefined;
@@ -344,10 +360,27 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       if (!summary) throw new Error("Context compaction returned an empty summary");
 
       const summaryMessage = mergePreCompactDiscoveredTools(compactSummaryMessage(summary), messages);
+      const retainedUserBudget = Math.min(
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+        Math.max(
+          0,
+          safeContextLimit
+            - immutableContextTokens
+            - estimateModelMessageTokens(summaryMessage)
+            - estimateModelMessagesTokens(pendingMessages)
+            - 1
+        )
+      );
       const replacementHistory = [
-        ...buildCompactedDialogue(originalDialogue, summaryMessage),
+        ...buildCompactedDialogue(originalDialogue, summaryMessage, retainedUserBudget),
         ...pendingMessages
       ];
+      const compactedContextTokens = immutableContextTokens + estimateModelMessagesTokens(replacementHistory);
+      if (compactedContextTokens >= safeContextLimit) {
+        throw new Error(
+          `Context compaction did not create safe headroom: compacted context ${compactedContextTokens} tokens, safe limit ${safeContextLimit} tokens`
+        );
+      }
       const compactedState = await options.store.compactWorkflowDialogue(options.runId, options.node.id, attempt, {
         replacementHistory,
         phase,
@@ -359,7 +392,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       });
       await replaceDialogue(compactedState.messages, compactedState.cursor);
       dialogueWindow = compactedState.window;
-      contextTokens = estimateModelMessagesTokens(messages);
+      contextTokens = compactedContextTokens;
       prefixInputTokens = undefined;
       await appendRuntimeEvent(options, {
         type: "node_context_compacted",
@@ -542,6 +575,12 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await appendModelUsageEvent(options, attempt, options.model, response);
     const responseContextTokens = contextTokensFromUsage(response.usage);
     const responseIncludedInUsage = responseContextTokens !== undefined;
+    if (response.usage?.inputTokens !== undefined) {
+      samplingInputOverheadTokens = Math.max(
+        0,
+        response.usage.inputTokens - estimateModelMessagesTokens(request.messages)
+      );
+    }
     lastSampledModel = request.model;
     hasSampledModel = true;
     if (
@@ -773,7 +812,18 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       }
       return undefined;
     }
-    if (!response.content) throw new Error(`Node ${options.node.id} returned no content and no tool calls`);
+    if (!response.content?.trim()) {
+      if (emptyResponseRepairAttempts >= 1) {
+        throw new Error(`Node ${options.node.id} returned no content and no tool calls after repair attempt`);
+      }
+      emptyResponseRepairAttempts += 1;
+      await appendDialogueMessage({
+        role: "user",
+        content: emptyResponseRepairPrompt(),
+        metadata: { userMessageKind: "runtime_context" }
+      });
+      return undefined;
+    }
     try {
       const result = mergeArtifactDeliverables(parseNodeResult(response.content), artifactDeliverables);
       await appendDialogueMessage({ role: "assistant", content: response.content }, responseIncludedInUsage);
@@ -858,6 +908,14 @@ function artifactReadFromToolResult(tool: string, result: ToolResult): { artifac
   const data = result.data as Record<string, unknown>;
   if (typeof data.artifact_id !== "string" || typeof data.offset !== "number" || typeof data.content !== "string" || typeof data.total_bytes !== "number" || typeof data.truncated !== "boolean") return undefined;
   return { artifact_id: data.artifact_id, offset: data.offset, bytes_read: Buffer.byteLength(data.content, "utf8"), total_bytes: data.total_bytes, truncated: data.truncated };
+}
+
+function emptyResponseRepairPrompt(): string {
+  return [
+    "The previous response contained no user-visible content and no tool calls.",
+    "Continue the current task now. Return either the required tool call or exactly one valid NodeResult.",
+    "Do not return a thinking-only or empty response."
+  ].join("\n");
 }
 
 function nodeResultRepairPrompt(error: unknown): string {

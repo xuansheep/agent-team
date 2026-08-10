@@ -10,7 +10,13 @@ import type { ModelMessage, ModelProvider, ModelRetryEvent } from "../providers/
 import type { SessionStore } from "../storage/sessionStore.js";
 import type { Tool } from "../tools/types.js";
 import type { WorkflowRunDossier } from "../workflow/dossier.js";
-import type { BusEvent, DispatchDirective, TaskSummary } from "./busTypes.js";
+import type { WorkflowState } from "../workflow/state.js";
+import type {
+  BusEvent,
+  DispatchDirective,
+  SessionBusCheckpoint,
+  TaskSummary
+} from "./busTypes.js";
 import { TurnEngine } from "./turnEngine.js";
 
 export type DispatcherPhase = "user" | "plan" | "lifecycle";
@@ -29,6 +35,20 @@ export type DispatcherRequest = {
   signal?: AbortSignal;
   sessionStore?: SessionStore;
   eventSink?: (event: BusEvent) => void | Promise<void>;
+  runtimeContext?: DispatcherRuntimeContext;
+};
+
+export type DispatcherRuntimeContext = {
+  bus: SessionBusCheckpoint;
+  workflow?: {
+    run_id: string;
+    status: WorkflowState["status"];
+    current_node_id?: string;
+    rework_count: number;
+    pending_interaction?: WorkflowState["pending_interaction"];
+    latest_attempt?: WorkflowState["attempts"][number];
+    final_summary?: string;
+  };
 };
 
 export type DispatcherSelection = {
@@ -118,7 +138,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
   const providerConfig = input.config.providers[dispatcher.provider];
   if (!providerConfig) return failedSelection(new Error(`Unknown dispatcher provider ${dispatcher.provider}`), input.phase, routingId);
 
-  const tools = providerConfig.capabilities.tool_calling ? dispatcherTools() : [];
+  const tools = providerConfig.capabilities.tool_calling ? dispatcherTools(input.phase) : [];
   const engine = input.turnEngine ?? new TurnEngine();
   await input.eventSink?.({
     type: "bus_routing_started",
@@ -139,7 +159,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
         messages: dispatcherMessages(input, workflow),
         tools,
         ...(!tools.length && providerConfig.capabilities.json_schema_output
-          ? { response_schema: dispatcherDirectiveJsonSchema }
+          ? { response_schema: dispatcherDirectiveJsonSchema(input.phase) }
           : {}),
         context: {
           runId: input.runId ?? input.sessionId,
@@ -182,7 +202,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
     input.signal?.throwIfAborted();
     await input.sessionStore?.recordModelResponse(input.sessionId, response.usage);
     const parsed = parseDispatcherResponse(response.tool_calls ?? [], response.content);
-    if (!parsed) {
+    if (!parsed || !directiveAllowedForPhase(parsed, input.phase)) {
       return invalidSelection(
         "Dispatcher response did not contain one valid directive",
         input.phase,
@@ -228,20 +248,27 @@ function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig):
     ? "The user is in Plan Mode. Select the best workflow node for eventual execution with SelectWorkflowNode. Never dispatch or finalize before plan approval."
     : input.phase === "lifecycle"
       ? "The workflow is at a bus boundary. Read the full dossier. Either dispatch one concrete node for rework with DispatchWorkflowNode, or finish with FinalizeTask. Do not answer outside those tools."
-      : "Route the user message. You may answer directly, ask for clarification, select a node for Plan Mode, or dispatch a workflow node.";
+      : "Route the user message in normal execution mode. Answer directly, ask for clarification, or dispatch one workflow node with DispatchWorkflowNode. Never enter Plan Mode or finalize the task.";
   const busPrompt = [
     "You are the session execution bus. The user communicates only with you.",
     "You own workflow routing, lifecycle decisions, process-safe node reassignment, and the final task summary.",
     "Never silently fall back to the first node. Every directive must include confidence from 0 to 1.",
-    "Use SelectWorkflowNode to enter or continue Plan Mode while dynamically updating the planned start node.",
+    "SelectWorkflowNode is available only when the user explicitly enabled Plan Mode.",
     "Use DispatchWorkflowNode to start or reassign execution at an explicit node.",
-    "Use FinalizeTask only after the dossier supports a complete final answer.",
+    "Use FinalizeTask only at a lifecycle boundary after the dossier supports a complete final answer.",
     "For a direct answer or clarification, return exactly one JSON object matching the DispatchDirective schema.",
     phaseRules,
     `Workflow: ${input.workflowId}`,
     `Nodes: ${JSON.stringify(nodeCatalog)}`
   ].join("\n");
   const system = [input.config.global_prompt?.trim(), busPrompt].filter(Boolean).join("\n\n");
+  const runtimeContextMessage: ModelMessage[] = input.runtimeContext
+    ? [{
+        role: "user",
+        metadata: { userMessageKind: "runtime_context", durableRuntimeContext: true },
+        content: JSON.stringify({ type: "session_execution_context", context: input.runtimeContext })
+      }]
+    : [];
   const dossierMessage: ModelMessage[] = input.dossier
     ? [{
         role: "user",
@@ -249,7 +276,7 @@ function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig):
         content: JSON.stringify({ type: "workflow_run_dossier", dossier: input.dossier })
       }]
     : [];
-  return [{ role: "system", content: system }, ...input.messages, ...dossierMessage];
+  return [{ role: "system", content: system }, ...runtimeContextMessage, ...input.messages, ...dossierMessage];
 }
 
 function parseDispatcherResponse(toolCalls: Array<{ id: string; name: string; input: unknown }>, content: string | undefined): DispatchDirective | undefined {
@@ -280,9 +307,8 @@ function parseDispatcherResponse(toolCalls: Array<{ id: string; name: string; in
   }
 }
 
-function dispatcherTools(): Tool[] {
-  return [
-    directiveTool(
+function dispatcherTools(phase: DispatcherPhase): Tool[] {
+  const selectNode = directiveTool(
       "SelectWorkflowNode",
       "Select the workflow node that should execute after Plan Mode is approved.",
       {
@@ -295,8 +321,8 @@ function dispatcherTools(): Tool[] {
         },
         required: ["node_id", "reason", "confidence"]
       }
-    ),
-    directiveTool(
+    );
+  const dispatchNode = directiveTool(
       "DispatchWorkflowNode",
       "Start or reassign workflow execution at an explicit node.",
       {
@@ -310,8 +336,8 @@ function dispatcherTools(): Tool[] {
         },
         required: ["node_id", "instruction", "reason", "confidence"]
       }
-    ),
-    directiveTool(
+    );
+  const finalizeTask = directiveTool(
       "FinalizeTask",
       "Finalize the task from the complete workflow dossier.",
       {
@@ -327,8 +353,16 @@ function dispatcherTools(): Tool[] {
         },
         required: ["summary", "outcomes", "verification", "residual_risks", "artifacts", "confidence"]
       }
-    )
-  ];
+    );
+  if (phase === "plan") return [selectNode];
+  if (phase === "lifecycle") return [dispatchNode, finalizeTask];
+  return [dispatchNode];
+}
+
+function directiveAllowedForPhase(directive: DispatchDirective, phase: DispatcherPhase): boolean {
+  if (phase === "plan") return directive.type === "plan" || directive.type === "clarify";
+  if (phase === "lifecycle") return directive.type === "dispatch" || directive.type === "finalize" || directive.type === "clarify";
+  return directive.type === "answer" || directive.type === "clarify" || directive.type === "dispatch";
 }
 
 function directiveTool(name: string, description: string, input_schema: Record<string, unknown>): Tool {
@@ -392,11 +426,17 @@ async function emitRetry(input: DispatcherRequest, retry: ModelRetryEvent, routi
   });
 }
 
-const dispatcherDirectiveJsonSchema = {
+function dispatcherDirectiveJsonSchema(phase: DispatcherPhase) {
+  const directiveTypes = phase === "plan"
+    ? ["plan", "clarify"]
+    : phase === "lifecycle"
+      ? ["dispatch", "finalize", "clarify"]
+      : ["answer", "clarify", "dispatch"];
+  return {
   type: "object",
   additionalProperties: false,
   properties: {
-    type: { type: "string", enum: ["answer", "clarify", "plan", "dispatch", "finalize"] },
+    type: { type: "string", enum: directiveTypes },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     message: { type: "string" },
     node_id: { type: "string" },
@@ -417,6 +457,7 @@ const dispatcherDirectiveJsonSchema = {
   },
   required: ["type", "confidence"]
 } as const;
+}
 
 export function renderTaskSummary(summary: TaskSummary): string {
   const sections = [summary.summary.trim()];

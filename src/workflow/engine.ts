@@ -16,7 +16,7 @@ import { formatRunError } from "../runtime/errorFormatting.js";
 import { ArtifactStore } from "../storage/artifacts.js";
 import { RunStore, RunSummary } from "../storage/runStore.js";
 import { prepareProjectStorage, type ProjectStorageContext } from "../storage/projectStorage.js";
-import { buildHandoff, buildResumeHandoff, sameCanonicalHandoff } from "../team/handoff.js";
+import { buildHandoff, buildResumeHandoff, compactHandoffForModel, compactHandoffLayer, sameCanonicalHandoff } from "../team/handoff.js";
 import type { PlanRequestedPermission } from "../plans/planSession.js";
 import { stripInternalPlanModeHandoffMarkers } from "../plans/planSession.js";
 import { NodeResult, nodeResultSchema } from "../team/nodeResult.js";
@@ -227,10 +227,15 @@ export class WorkflowEngine {
         };
         let resolveResult!: (state: WorkflowState) => void;
         let rejectResult!: (error: unknown) => void;
-        const result = new Promise<WorkflowState>((resolve, reject) => {
-            resolveResult = resolve;
-            rejectResult = reject;
-        });
+        let result!: Promise<WorkflowState>;
+        const resetResult = () => {
+            resultSettled = false;
+            result = new Promise<WorkflowState>((resolve, reject) => {
+                resolveResult = resolve;
+                rejectResult = reject;
+            });
+        };
+        resetResult();
         const finish = (nextState: WorkflowState) => {
             publishState(nextState);
             if (!resultSettled) {
@@ -348,7 +353,26 @@ export class WorkflowEngine {
             return queued;
         };
         const dispatchToNode = (nodeId: string, input: unknown, dispatchOptions: WorkflowDispatchOptions = {}) => enqueueLifecycle(() => withRunLease(async () => {
-            if (resultSettled) throw new Error(`Run ${runId} is already finalized`);
+            const continuingTerminal = latestState.status === "completed"
+                || latestState.status === "cancelled"
+                || latestState.status === "failed";
+            if (resultSettled) resetResult();
+            if (continuingTerminal) {
+                stream.reopen();
+                const continuedState: WorkflowState = {
+                    ...latestState,
+                    status: "pending",
+                    pending_interaction: undefined,
+                    final_summary: undefined
+                };
+                publishState(continuedState);
+                await store.saveState(runId, continuedState);
+                await this.appendEvent(store, runId, {
+                    type: "run_continued",
+                    workflow_id: workflowId,
+                    input: publicWorkflowInput(input)
+                }, (event) => stream.push(event));
+            }
             resolveStartNodeId(workflow, nodeId);
             const fromNodeId = latestState.current_node_id;
             if (activeRun) {
@@ -431,6 +455,7 @@ export class WorkflowEngine {
                     await activeRun;
                 if (latestState.status !== "waiting_user" && latestState.status !== "paused")
                     throw new Error(`Run ${runId} is not waiting for user input`);
+                if (resultSettled) resetResult();
                 if (!latestState.current_node_id)
                     throw new Error(`Run ${runId} has no current node`);
                 interrupted = false;
@@ -486,6 +511,25 @@ export class WorkflowEngine {
                     if (latestState.status === "running" || latestState.status === "waiting_user" || latestState.status === "paused") {
                         throw new Error(`Run ${runId} is not paused`);
                     }
+                    const continuingTerminal = latestState.status === "completed"
+                        || latestState.status === "cancelled"
+                        || latestState.status === "failed";
+                    if (resultSettled) resetResult();
+                    if (continuingTerminal) {
+                        const continuedState: WorkflowState = {
+                            ...latestState,
+                            status: "pending",
+                            pending_interaction: undefined,
+                            final_summary: undefined
+                        };
+                        publishState(continuedState);
+                        await store.saveState(runId, continuedState);
+                        await this.appendEvent(store, runId, {
+                            type: "run_continued",
+                            workflow_id: workflowId,
+                            input: publicWorkflowInput(input)
+                        }, (event) => stream.push(event));
+                    }
                     interrupted = false;
                     controlRequest = undefined;
                     if (latestState.resume_checkpoint) {
@@ -519,7 +563,6 @@ export class WorkflowEngine {
                         return;
                     }
                     const initialHandoff = await this.prepareInitialHandoff(input, store.runDir(runId));
-                    await this.appendEvent(store, runId, { type: "run_continued", workflow_id: workflowId, input: publicWorkflowInput(input) }, (event) => stream.push(event));
                     const nextState = await runSegment({
                         startNodeId: firstNodeId(workflow),
                         initialHandoff,
@@ -532,7 +575,8 @@ export class WorkflowEngine {
             finalize,
             subscribeState,
             waitForBoundary,
-            result
+            get result() { return result; },
+            set result(value: Promise<WorkflowState>) { result = value; }
         };
         return session;
     }
@@ -592,10 +636,15 @@ export class WorkflowEngine {
         };
         let resolveResult!: (state: WorkflowState) => void;
         let rejectResult!: (error: unknown) => void;
-        const result = new Promise<WorkflowState>((resolve, reject) => {
-            resolveResult = resolve;
-            rejectResult = reject;
-        });
+        let result!: Promise<WorkflowState>;
+        const resetResult = () => {
+            resultSettled = false;
+            result = new Promise<WorkflowState>((resolve, reject) => {
+                resolveResult = resolve;
+                rejectResult = reject;
+            });
+        };
+        resetResult();
         const finish = (state: WorkflowState) => {
             publishState(state);
             if (!resultSettled) {
@@ -686,7 +735,26 @@ export class WorkflowEngine {
             return queued;
         };
         const dispatchToNode = (nodeId: string, input: unknown, dispatchOptions: WorkflowDispatchOptions = {}) => enqueueLifecycle(() => withRunLease(async () => {
-            if (resultSettled) throw new Error(`Run ${run.runId} is already finalized`);
+            const continuingTerminal = latestState.status === "completed"
+                || latestState.status === "cancelled"
+                || latestState.status === "failed";
+            if (resultSettled) resetResult();
+            if (continuingTerminal) {
+                stream.reopen();
+                const continuedState: WorkflowState = {
+                    ...latestState,
+                    status: "pending",
+                    pending_interaction: undefined,
+                    final_summary: undefined
+                };
+                publishState(continuedState);
+                await store.saveState(run.runId, continuedState);
+                await this.appendEvent(store, run.runId, {
+                    type: "run_continued",
+                    workflow_id: workflowId,
+                    input: publicWorkflowInput(input)
+                }, (event) => stream.push(event));
+            }
             resolveStartNodeId(workflow, nodeId);
             const fromNodeId = latestState.current_node_id;
             if (activeRun) {
@@ -787,6 +855,7 @@ export class WorkflowEngine {
                     await activeRun;
                 if (latestState.status !== "waiting_user" && latestState.status !== "paused")
                     throw new Error(`Run ${run.runId} is not waiting for user input`);
+                if (resultSettled) resetResult();
                 if (!latestState.current_node_id)
                     throw new Error(`Run ${run.runId} has no current node`);
                 interrupted = false;
@@ -842,6 +911,25 @@ export class WorkflowEngine {
                     if (latestState.status === "running" || latestState.status === "waiting_user" || latestState.status === "paused") {
                         throw new Error(`Run ${run.runId} is not paused`);
                     }
+                    const continuingTerminal = latestState.status === "completed"
+                        || latestState.status === "cancelled"
+                        || latestState.status === "failed";
+                    if (resultSettled) resetResult();
+                    if (continuingTerminal) {
+                        const continuedState: WorkflowState = {
+                            ...latestState,
+                            status: "pending",
+                            pending_interaction: undefined,
+                            final_summary: undefined
+                        };
+                        publishState(continuedState);
+                        await store.saveState(run.runId, continuedState);
+                        await this.appendEvent(store, run.runId, {
+                            type: "run_continued",
+                            workflow_id: workflowId,
+                            input: publicWorkflowInput(input)
+                        }, (event) => stream.push(event));
+                    }
                     interrupted = false;
                     controlRequest = undefined;
                     if (latestState.resume_checkpoint) {
@@ -875,7 +963,6 @@ export class WorkflowEngine {
                         return;
                     }
                     const initialHandoff = await this.prepareInitialHandoff(input, run.runDir);
-                    await this.appendEvent(store, run.runId, { type: "run_continued", workflow_id: workflowId, input: publicWorkflowInput(input) }, (event) => stream.push(event));
                     const state = await runSegment({
                         startNodeId,
                         initialHandoff,
@@ -888,7 +975,8 @@ export class WorkflowEngine {
             finalize,
             subscribeState,
             waitForBoundary,
-            result
+            get result() { return result; },
+            set result(value: Promise<WorkflowState>) { result = value; }
         };
         return session;
     }
@@ -1567,6 +1655,7 @@ function busDispatchHandoff(
     const payload = publicInput && typeof publicInput === "object" && !Array.isArray(publicInput)
         ? publicInput as Record<string, unknown>
         : { request: publicInput };
+    const previousLayer = compactHandoffLayer(previousHandoff);
     return {
         ...payload,
         bus_dispatch: {
@@ -1574,7 +1663,7 @@ function busDispatchHandoff(
             to_node_id: toNodeId,
             ...(reason ? { reason } : {})
         },
-        previous_handoff: previousHandoff
+        ...(previousLayer !== undefined ? { previous_handoff: previousLayer } : {})
     };
 }
 
@@ -1599,6 +1688,7 @@ function workflowDispatchState(
         handoff,
         resume_checkpoint: undefined,
         pending_interaction: undefined,
+        final_summary: undefined,
         rework_count: options.countsAsRework ? reworkCount + 1 : reworkCount,
         ...(permissionMode ? { run_permission_mode: permissionMode } : {}),
         plan_requested_permission_rules: planRequestedPermissionRules.length ? planRequestedPermissionRules : undefined
@@ -1766,10 +1856,16 @@ async function recoverCheckpointResumeHandoff(
 }
 
 function resumeHandoffWithUserInput(handoff: unknown, userInput: unknown, resumed = false): unknown {
-    if (isCanonicalHandoff(handoff)) {
-        return { ...handoff, ...(resumed ? { resumed: true } : {}), user_input: userInput };
+    const compacted = compactHandoffForModel(handoff);
+    if (isCanonicalHandoff(compacted)) {
+        return { ...compacted, ...(resumed ? { resumed: true } : {}), user_input: userInput };
     }
-    return { previous_handoff: handoff, ...(resumed ? { resumed: true } : {}), user_input: userInput };
+    const previousLayer = compactHandoffLayer(compacted);
+    return {
+        ...(previousLayer !== undefined ? { previous_handoff: previousLayer } : {}),
+        ...(resumed ? { resumed: true } : {}),
+        user_input: userInput
+    };
 }
 
 function isCanonicalHandoff(value: unknown): value is Record<string, unknown> {

@@ -654,7 +654,7 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("automatically starts Plan Runtime when the bus selects planning for an ordinary prompt", async () => {
+  it("does not start Plan Runtime when the bus returns planning for an ordinary prompt", async () => {
     const cwd = await makeProjectTmpCwd("agent-team-tui-bus-plan-handoff-");
     const busRequests: ModelRequest[] = [];
     const planRequests: ModelRequest[] = [];
@@ -688,17 +688,13 @@ describe("TuiApp global Plan Mode", () => {
 
     await sendTuiLine(output, "Design the animated weather dashboard.");
 
-    const planRequest = await waitForRequest(planRequests, "Design the animated weather dashboard.");
+    await waitForFrame(output, /调度模型没有返回可验证的路由决策/);
 
     assert.equal(starts, 0);
     assert.equal(busRequests.length, 1);
-    assert.equal(planRequests.length, 1);
-    assert.ok(planRequest.messages.some((message) => (
-      message.role === "user"
-      && message.content === "Design the animated weather dashboard."
-    )));
-    await waitForFrame(output, /Automatic planning started\./);
-    assert.match(output.lastFrame() ?? "", /(?:Ready|Waiting|Thinking|Working) \| plan \|/);
+    assert.equal(planRequests.length, 0);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Automatic planning started\./);
+    assert.doesNotMatch(output.lastFrame() ?? "", /(?:Ready|Waiting|Thinking|Working) \| plan \|/);
 
     output.unmount();
     output.cleanup();
@@ -1601,6 +1597,7 @@ describe("TuiApp global Plan Mode", () => {
     await waitForFrame(output, /Ready to code\?/);
 
     output.stdin.write("\r");
+    await waitForArrayItem(options, 0);
     await waitForFrame(output, /Plan Review \(approved\)/);
 
     const frame = output.lastFrame() ?? "";

@@ -28,6 +28,7 @@ import type {
   TaskSummary
 } from "./busTypes.js";
 import { TurnEngine } from "./turnEngine.js";
+import { workflowDossierContext } from "../team/handoff.js";
 
 export type SessionExecutionBusOptions = {
   config: AgentTeamConfig;
@@ -166,7 +167,7 @@ export class SessionExecutionBus {
       }
       const currentWorkflow = this.activeWorkflow;
       let transition: PlanWorkflowTransitionResult;
-      if (currentWorkflow && !isTerminalWorkflowState(currentWorkflow.state)) {
+      if (currentWorkflow) {
         const fromNodeId = currentWorkflow.state.current_node_id;
         transition = await this.options.coordinator.resolvePlanApprovalAndDispatch({
           ...input,
@@ -285,6 +286,10 @@ export class SessionExecutionBus {
 
   private async requestDirective(phase: DispatcherPhase, dossier?: WorkflowRunDossier): Promise<DispatcherSelection> {
     const controller = new AbortController();
+    const snapshot = copyState(this.taskState);
+    const { messages: _messages, ...busState } = snapshot;
+    const workflowState = this.activeWorkflow?.state;
+    const latestAttempt = workflowState?.attempts.at(-1);
     this.activeRoutingAbortController = controller;
     try {
       return await requestDispatchDirective({
@@ -299,7 +304,23 @@ export class SessionExecutionBus {
         turnEngine: this.options.turnEngine,
         signal: controller.signal,
         sessionStore: this.options.sessionStore,
-        eventSink: (event) => this.emit(event)
+        eventSink: (event) => this.emit(event),
+        runtimeContext: {
+          bus: busState,
+          ...(workflowState && this.activeWorkflow
+            ? {
+                workflow: {
+                  run_id: this.activeWorkflow.runId,
+                  status: workflowState.status,
+                  current_node_id: workflowState.current_node_id,
+                  rework_count: workflowState.rework_count ?? 0,
+                  pending_interaction: workflowState.pending_interaction,
+                  latest_attempt: latestAttempt,
+                  final_summary: workflowState.final_summary
+                }
+              }
+            : {})
+        }
       });
     } finally {
       if (this.activeRoutingAbortController === controller) this.activeRoutingAbortController = undefined;
@@ -320,6 +341,15 @@ export class SessionExecutionBus {
         "invalid_directive",
         clarification
       );
+    }
+    if (context.phase === "user" && directive.type === "plan") {
+      directive = {
+        type: "dispatch",
+        confidence: directive.confidence,
+        node_id: directive.node_id,
+        instruction: directive.reason,
+        reason: directive.reason
+      };
     }
     if (context.phase === "plan" && directive.type === "dispatch") {
       directive = {
@@ -410,11 +440,11 @@ export class SessionExecutionBus {
       request: directive.instruction,
       user_input: context.originalInput,
       ...(images.length ? { images } : {}),
-      ...(context.dossier ? { prior_dossier: context.dossier } : {})
+      ...(context.dossier ? workflowDossierContext(context.dossier) : {})
     };
     const session = this.activeWorkflow;
     try {
-      if (!session || isTerminalWorkflowState(session.state)) {
+      if (!session) {
         const started = await this.options.coordinator.startInteractive(
           this.options.config,
           this.options.workflowId,
@@ -465,7 +495,8 @@ export class SessionExecutionBus {
         status: "running_workflow",
         current_node_id: directive.node_id,
         selected_node_id: directive.node_id,
-        rework_cycles: session.state.rework_count ?? this.taskState.rework_cycles
+        rework_cycles: session.state.rework_count ?? this.taskState.rework_cycles,
+        summary: undefined
       });
       await this.emit({
         type: "bus_workflow_reassigned",
@@ -542,6 +573,13 @@ export class SessionExecutionBus {
       current_node_id: workflowState.current_node_id,
       rework_cycles: workflowState.rework_count ?? 0
     });
+    if (workflowState.status === "completed") {
+      void this.options.sessionStore?.syncWorkflowRunStatus(
+        this.options.sessionId,
+        session.runId,
+        "completed"
+      );
+    }
     if (workflowState.status !== "awaiting_bus") return;
     void this.emit({
       type: "bus_workflow_awaiting",

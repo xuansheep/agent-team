@@ -188,7 +188,8 @@ describe("runNode context compaction", () => {
     ];
 
     const result = await runNode(runtimeOptions(fixture, provider, dialogue, {
-      modelRegistry: { defaultContextWindow: 5000 }
+      modelRegistry: { defaultContextWindow: 5000 },
+      maxOutputTokens: 10
     }));
 
     assert.equal(result.direction, "forward");
@@ -386,13 +387,110 @@ describe("runNode context compaction", () => {
     ];
 
     await runNode(runtimeOptions(fixture, provider, dialogue, {
-      modelRegistry: { defaultContextWindow: 5000 }
+      modelRegistry: { defaultContextWindow: 5000 },
+      maxOutputTokens: 10
     }));
 
     assert.equal(summaryRequests.length, 2);
     assert.equal(summaryRequests[0]!.messages.some((message) => message.content === "old result"), true);
     assert.equal(summaryRequests[1]!.messages.some((message) => message.content === "old result"), false);
     assert.equal(summaryRequests[1]!.messages.some((message) => message.content === "latest request"), true);
+  });
+
+  it("includes observed sampling overhead in compacted context accounting", async () => {
+    const fixture = await runtimeFixture("agent-team-compact-overhead-");
+    const tools = new ToolRegistry();
+    tools.add({
+      name: "LargeOutput",
+      description: "returns enough output to trigger mid-turn compaction",
+      input_schema: {},
+      isReadOnly: () => true,
+      async execute() {
+        return { output: "x".repeat(30_000) };
+      }
+    });
+    const requests: ModelRequest[] = [];
+    let normalTurns = 0;
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        if (request.tools.length === 0) return { content: compactSummary };
+        normalTurns += 1;
+        if (normalTurns === 1) {
+          return {
+            content: "Reading large output.",
+            tool_calls: [{ id: "large-1", name: "LargeOutput", input: {} }],
+            usage: { inputTokens: 16_000, outputTokens: 10, totalTokens: 16_010 }
+          };
+        }
+        return { content: nodeResult, usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } };
+      }
+    };
+
+    const result = await runNode(runtimeOptions(fixture, provider, [], {
+      modelRegistry: { defaultContextWindow: 25_000, toolOutputTokenLimit: 8_000 },
+      maxOutputTokens: 100,
+      tools,
+      permissions: { allow: ["LargeOutput"], ask: [], deny: [] }
+    }));
+
+    assert.equal(result.direction, "forward");
+    assert.deepEqual(requests.map((request) => request.tools.length === 0 ? "compact" : "sample"), [
+      "sample",
+      "compact",
+      "sample"
+    ]);
+    const compacted = (await fixture.store.loadEvents(fixture.runId))
+      .find((event) => event.type === "node_context_compacted");
+    assert.equal(compacted?.type, "node_context_compacted");
+    if (compacted?.type === "node_context_compacted") {
+      assert.ok(compacted.context_tokens_after >= 15_000);
+      assert.ok(compacted.context_tokens_after < 22_400);
+    }
+  });
+
+  it("stops before repeated compaction when observed overhead leaves no safe headroom", async () => {
+    const fixture = await runtimeFixture("agent-team-compact-overhead-breaker-");
+    const tools = new ToolRegistry();
+    let toolExecutions = 0;
+    tools.add({
+      name: "Once",
+      description: "executes once",
+      input_schema: {},
+      isReadOnly: () => true,
+      async execute() {
+        toolExecutions += 1;
+        return { output: "done" };
+      }
+    });
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        return {
+          content: "Running once.",
+          tool_calls: [{ id: "once-overhead-1", name: "Once", input: {} }],
+          usage: { inputTokens: 23_000, outputTokens: 10, totalTokens: 23_010 }
+        };
+      }
+    };
+
+    await assert.rejects(
+      () => runNode(runtimeOptions(fixture, provider, [], {
+        modelRegistry: { defaultContextWindow: 25_000 },
+        maxOutputTokens: 100,
+        tools,
+        permissions: { allow: ["Once"], ask: [], deny: [] }
+      })),
+      /Context compaction cannot create safe headroom/
+    );
+
+    assert.equal(toolExecutions, 1);
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0]!.tools.length > 0);
+    const failures = (await fixture.store.loadEvents(fixture.runId))
+      .filter((event) => event.type === "node_context_compaction_failed");
+    assert.equal(failures.length, 1);
   });
 
   it("ends the activation after one local compaction failure", async () => {
