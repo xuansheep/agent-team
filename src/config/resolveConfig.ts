@@ -1,4 +1,4 @@
-import { AgentTeamConfig } from "./schema.js";
+import type { AgentTeamConfig, ExecutionKind, WorkflowConfig } from "./schema.js";
 
 export function resolveConfig(config: AgentTeamConfig): AgentTeamConfig {
   if (!config.dispatcher) {
@@ -8,36 +8,44 @@ export function resolveConfig(config: AgentTeamConfig): AgentTeamConfig {
     throw new Error(`Unknown dispatcher provider ${config.dispatcher.provider}`);
   }
 
-  for (const [workflowId, workflow] of Object.entries(config.workflows)) {
-    const nodeIds = new Set(workflow.nodes.map((node) => node.id));
-    if (nodeIds.size !== workflow.nodes.length) {
-      throw new Error(`Duplicate node id in workflow ${workflowId}`);
+  validateCollections(config, "workflow", config.workflows);
+  validateCollections(config, "team", config.teams ?? {});
+  return config;
+}
+
+function validateCollections(
+  config: AgentTeamConfig,
+  kind: ExecutionKind,
+  collections: Record<string, WorkflowConfig>
+): void {
+  for (const [configId, collection] of Object.entries(collections)) {
+    const nodeIds = new Set(collection.nodes.map((node) => node.id));
+    if (nodeIds.size !== collection.nodes.length) {
+      throw new Error(`Duplicate node id in ${kind} ${configId}`);
     }
 
-    for (const node of workflow.nodes) {
+    for (const node of collection.nodes) {
       if (!config.roles[node.role]) {
-        throw new Error(`Unknown role ${node.role} referenced by workflow ${workflowId} node ${node.id}`);
+        throw new Error(`Unknown role ${node.role} referenced by ${kind} ${configId} node ${node.id}`);
       }
       if (!config.providers[node.provider]) {
-        throw new Error(`Unknown provider ${node.provider} referenced by workflow ${workflowId} node ${node.id}`);
+        throw new Error(`Unknown provider ${node.provider} referenced by ${kind} ${configId} node ${node.id}`);
       }
     }
 
-    const dispatcher = { ...config.dispatcher, ...workflow.dispatcher };
+    const dispatcher = { ...config.dispatcher, ...collection.dispatcher };
     if (!config.providers[dispatcher.provider]) {
-      throw new Error(`Unknown dispatcher provider ${dispatcher.provider} referenced by workflow ${workflowId}`);
+      throw new Error(`Unknown dispatcher provider ${dispatcher.provider} referenced by ${kind} ${configId}`);
     }
-    workflow.dispatcher = dispatcher;
+    collection.dispatcher = dispatcher;
 
-    for (const edge of workflow.edges) {
+    for (const edge of collection.edges) {
       if (!nodeIds.has(edge.from)) {
-        throw new Error(`Unknown edge source ${edge.from} in workflow ${workflowId}`);
+        throw new Error(`Unknown edge source ${edge.from} in ${kind} ${configId}`);
       }
       if (!nodeIds.has(edge.to)) {
-        throw new Error(`Unknown edge target ${edge.to} in workflow ${workflowId}`);
+        throw new Error(`Unknown edge target ${edge.to} in ${kind} ${configId}`);
       }
     }
   }
-
-  return config;
 }

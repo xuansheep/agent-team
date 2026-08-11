@@ -1,4 +1,4 @@
-import type { AgentTeamConfig } from "../config/schema.js";
+import type { AgentTeamConfig, ExecutionKind, WorkflowConfig } from "../config/schema.js";
 import type {
   PlanWorkflowTransitionInput,
   PlanWorkflowTransitionResult,
@@ -33,6 +33,7 @@ import { workflowDossierContext } from "../team/handoff.js";
 export type SessionExecutionBusOptions = {
   config: AgentTeamConfig;
   workflowId: string;
+  executionKind?: ExecutionKind;
   coordinator: ExecutionCoordinator;
   providerFactory: (providerId: string) => ModelProvider;
   cwd: string;
@@ -73,13 +74,16 @@ export class SessionExecutionBus {
   private readonly listeners = new Set<(event: BusEvent) => void | Promise<void>>();
 
   constructor(private readonly options: SessionExecutionBusOptions) {
-    const workflow = options.config.workflows[options.workflowId];
-    if (!workflow) throw new Error(`Unknown workflow ${options.workflowId}`);
+    const executionKind = options.executionKind ?? "workflow";
+    const workflow = executionCollection(options.config, options.workflowId, executionKind);
+    if (!workflow) throw new Error(`Unknown ${executionKind} ${options.workflowId}`);
     if (!options.config.dispatcher) throw new Error("Missing required dispatcher configuration");
     const checkpoint = options.checkpoint;
     if (
       checkpoint
-      && (checkpoint.session_id !== options.sessionId || checkpoint.workflow_id !== options.workflowId)
+      && (checkpoint.session_id !== options.sessionId
+        || checkpoint.workflow_id !== options.workflowId
+        || (checkpoint.execution_kind ?? "workflow") !== executionKind)
     ) {
       throw new Error(`Bus checkpoint does not belong to session ${options.sessionId} workflow ${options.workflowId}`);
     }
@@ -99,6 +103,7 @@ export class SessionExecutionBus {
       : {
           session_id: options.sessionId,
           workflow_id: options.workflowId,
+          execution_kind: executionKind,
           status: "idle",
           revision: 0,
           rework_cycles: 0,
@@ -173,6 +178,7 @@ export class SessionExecutionBus {
           ...input,
           config: this.options.config,
           workflowId: this.options.workflowId,
+          ...(this.options.executionKind ? { executionKind: this.options.executionKind } : {}),
           workflow: currentWorkflow,
           startNodeId: selectedNodeId,
           reason: "Approved Plan Mode handoff"
@@ -192,6 +198,7 @@ export class SessionExecutionBus {
           ...input,
           config: this.options.config,
           workflowId: this.options.workflowId,
+          ...(this.options.executionKind ? { executionKind: this.options.executionKind } : {}),
           startNodeId: selectedNodeId
         });
         await this.options.sessionStore?.attachRun(this.options.sessionId, transition.workflow.runId);
@@ -295,6 +302,7 @@ export class SessionExecutionBus {
       return await requestDispatchDirective({
         config: this.options.config,
         workflowId: this.options.workflowId,
+        executionKind: this.options.executionKind,
         sessionId: this.options.sessionId,
         runId: this.activeWorkflow?.runId,
         phase,
@@ -452,7 +460,8 @@ export class SessionExecutionBus {
           {
             permissionMode: this.permissionMode,
             sessionId: this.options.sessionId,
-            startNodeId: directive.node_id
+            startNodeId: directive.node_id,
+            ...(this.options.executionKind ? { executionKind: this.options.executionKind } : {})
           }
         );
         await this.options.sessionStore?.attachRun(this.options.sessionId, started.runId);
@@ -644,7 +653,7 @@ export class SessionExecutionBus {
   }
 
   private hasNode(nodeId: string): boolean {
-    return this.options.config.workflows[this.options.workflowId]!.nodes.some((node) => node.id === nodeId);
+    return executionCollection(this.options.config, this.options.workflowId, this.options.executionKind).nodes.some((node) => node.id === nodeId);
   }
 
   private async appendAssistant(content: string): Promise<void> {
@@ -723,6 +732,16 @@ export class SessionExecutionBus {
     await this.options.eventSink?.(event);
     for (const listener of this.listeners) await listener(event);
   }
+}
+
+function executionCollection(
+  config: AgentTeamConfig,
+  configId: string,
+  executionKind: ExecutionKind = "workflow"
+): WorkflowConfig {
+  const collection = executionKind === "team" ? config.teams?.[configId] : config.workflows[configId];
+  if (!collection) throw new Error(`Unknown ${executionKind} ${configId}`);
+  return collection;
 }
 
 function userMessage(input: unknown): ModelMessage {

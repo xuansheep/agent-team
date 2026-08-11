@@ -2,6 +2,7 @@ import { addModelUsage, emptyModelUsage } from "../model/usage.js";
 import { visibleAssistantTextBeforeNodeResult } from "../team/nodeResult.js";
 import { StoredEvent } from "../harness/events.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
+import type { ExecutionKind } from "../config/schema.js";
 import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT } from "../workflow/state.js";
 import { TuiLogMessage, TuiToolLogMessage } from "./logTypes.js";
 import { TuiConversationItem, TuiModelRetryState, TuiModelStreamState, TuiNodeState, TuiState } from "./state.js";
@@ -39,13 +40,14 @@ function nextSuspendedStack(stack: string[], event: Extract<StoredEvent, { type:
   if (event.reason === "forward" && next.at(-1) === event.to) next.pop();
   return next;
 }
-export function resetTuiRunState(state: TuiState, input: { workflowId: string; runId: string; busNodeId?: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
+export function resetTuiRunState(state: TuiState, input: { workflowId: string; executionKind?: ExecutionKind; runId: string; busNodeId?: string; preserveLogs?: boolean; inputPermissionMode?: PermissionMode }): TuiState {
   const reset: TuiState = {
     ...initialTuiState({ cwd: state.cwd, inputPermissionMode: input.inputPermissionMode ?? state.inputPermissionMode }),
     defaultExecutionMode: state.defaultExecutionMode,
     sessionUsage: state.sessionUsage,
     modelRequestCount: state.modelRequestCount,
     workflowId: input.workflowId,
+    executionKind: input.executionKind ?? state.executionKind ?? "workflow",
     runId: input.runId,
     busNodeId: input.busNodeId,
     mode: "running",

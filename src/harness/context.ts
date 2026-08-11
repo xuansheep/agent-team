@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { buildPlanModeExitAttachment, buildToolPromptsAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { buildRuntimeMessages } from "../context/messages.js";
-import { WorkflowNodeConfig } from "../config/schema.js";
+import type { ExecutionKind, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelContentPart, ModelMessage } from "../providers/types.js";
 import { planModeExitHandoffMarker, planModeExitPlanExistsMarker, stripInternalPlanModeHandoffMarkers } from "../plans/planSession.js";
 import { ArtifactContent, ArtifactStore, ArtifactTextChunk } from "../storage/artifacts.js";
@@ -47,18 +47,21 @@ export async function buildNodeMessages(
     tools?: Tool[];
     permissionMode?: PermissionMode;
     navigation?: NodeNavigation;
+    executionKind?: ExecutionKind;
     runDir?: string;
     supportsVision?: boolean;
     onArtifactRead?: (chunk: ArtifactTextChunk) => void | Promise<void>;
   } = {}
 ): Promise<ModelMessage[]> {
-  const protocolPrompt = `${systemPrompt}\n\n${nodeResultOutputInstructions}\n\n${nodeTaskInstructions}`;
+  const taskInstructions = input.executionKind === "team" ? teamNodeTaskInstructions : nodeTaskInstructions;
+  const protocolPrompt = `${systemPrompt}\n\n${nodeResultOutputInstructions}\n\n${taskInstructions}`;
   const modelHandoff = compactHandoffForModel(handoff);
   const materialized = input.runDir
     ? await materializeReferencedArtifacts(modelHandoff, input.runDir, input.supportsVision ?? false, input.onArtifactRead)
     : { referencedArtifacts: [], imageParts: [] };
   const userContent = JSON.stringify({
     node_id: node.id,
+    execution_kind: input.executionKind ?? "workflow",
     navigation: input.navigation,
     handoff: stripInternalPlanModeHandoffMarkers(modelHandoff),
     referenced_artifacts: materialized.referencedArtifacts
@@ -160,12 +163,25 @@ function artifactIdsFromHandoff(handoff: unknown): string[] {
   return [...new Set(ids)];
 }
 
-const nodeTaskInstructions = [
-  "This is a workflow task node. The workflow bus owns task completion and all final user-facing summaries.",
+const commonNodeTaskInstructions = [
   "Treat the top-level handoff and latest user_input as the authoritative current requirements. They override conflicting previous_handoff content or older referenced artifacts.",
   "Treat referenced_artifacts as evidence for upstream deliverables, ordered with current handoff references first. Use ArtifactRead for truncated text content; image and binary artifacts may be represented by metadata only.",
   "Use ArtifactWrite for user-facing deliverable files that should be returned to the user.",
   "If this task has no user-facing deliverable file, make summary clear and leave document empty; the runtime will create a Markdown explanation artifact."
+];
+
+const teamNodeTaskInstructions = [
+  "This is a dynamically routed team member. The bus exclusively owns every next-node and completion decision.",
+  "Complete only the assigned member task, then submit NodeResult and return control to the bus.",
+  "NodeResult.direction is advisory evidence only in team mode; it must never directly dispatch, retry, or select another member.",
+  "Put concrete rework needs in feedback and handoff. Put missing user decisions in questions or handoff so the bus can clarify.",
+  "The bus receives the full dossier after this member finishes and may dispatch any team member or finalize the task.",
+  ...commonNodeTaskInstructions
+].join("\n");
+
+const nodeTaskInstructions = [
+  "This is a workflow task node. The workflow bus owns task completion and all final user-facing summaries.",
+  ...commonNodeTaskInstructions
 ].join("\n");
 
 function runtimeAttachmentsFromHandoff(handoff: unknown): RuntimeAttachment[] {

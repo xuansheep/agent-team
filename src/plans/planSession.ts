@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import { PermissionMode } from "../permissions/PermissionMode.js";
+import type { ExecutionKind } from "../config/schema.js";
 import { ToolPermissionContext } from "../permissions/context.js";
 import { ModelMessage } from "../providers/types.js";
 import { PlanApprovalRequest, PlanModeEvent } from "../runtime/types.js";
@@ -10,6 +11,8 @@ export type PlanSessionState = {
   mode: "inactive" | "planning" | "waiting_approval";
   sessionId: string;
   planFilePath: string;
+  workflowId?: string;
+  executionKind?: ExecutionKind;
   planFileFinalized?: boolean;
   prePlanMode: PermissionMode;
   originalInput: unknown;

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, ScrollBox, Text, useApp, useHasSelection, useInput, useSelection, useStdin, useStdout } from "./ink.js";
 import type { ScrollBoxHandle } from "./ink.js";
 import { useCopyOnSelect } from "../ink/hooks/use-copy-on-select.js";
-import { AgentTeamConfig } from "../config/schema.js";
+import { AgentTeamConfig, type ExecutionKind, type ExecutionTarget, type WorkflowConfig } from "../config/schema.js";
 import type { RuntimeDiagnostics } from "../diagnostics/runtimeDiagnostics.js";
 import { enterPlanMode, readPlanOrRecoverFromTranscript } from "../plans/planSession.js";
 import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSession.js";
@@ -78,7 +78,9 @@ export function TuiApp({
   initialError,
   config,
   workflows = [],
+  teams = [],
   workflowId,
+  executionKind = "workflow",
   engine,
   providerFactory,
   editPlanFile = editFileInExternalEditor,
@@ -104,7 +106,9 @@ export function TuiApp({
   initialError?: string;
   config?: AgentTeamConfig;
   workflows?: string[];
+  teams?: string[];
   workflowId?: string;
+  executionKind?: ExecutionKind;
   engine?: WorkflowEngine | ExecutionCoordinator;
   providerFactory?: (providerId: string) => ModelProvider;
   editPlanFile?: ExternalEditor;
@@ -140,14 +144,26 @@ export function TuiApp({
   const terminalRows = stdout.rows && stdout.rows > 0 ? stdout.rows : 24;
   const terminalColumns = stdout.columns && stdout.columns > 0 ? stdout.columns : 80;
   const exitTui = onExit ?? exit;
+  const executionChoices = useMemo(
+    () => [
+      ...workflows.map((id) => executionChoiceValue({ kind: "workflow", id })),
+      ...teams.map((id) => executionChoiceValue({ kind: "team", id }))
+    ].sort(compareExecutionChoices),
+    [teams, workflows]
+  );
   const initialWorkflowId = workflowId;
+  const initialExecutionChoice = initialWorkflowId
+    ? executionChoiceValue({ kind: executionKind, id: initialWorkflowId })
+    : undefined;
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(initialWorkflowId);
-  const [previewWorkflowId, setPreviewWorkflowId] = useState(initialWorkflowId ?? workflows[0]);
+  const [selectedExecutionKind, setSelectedExecutionKind] = useState<ExecutionKind>(executionKind);
+  const [previewWorkflowId, setPreviewWorkflowId] = useState(initialExecutionChoice ?? executionChoices[0]);
   const [state, setState] = useState<TuiState>(() => ({
     ...initialTuiState({ cwd, inputPermissionMode: settings?.permissions?.defaultMode ?? "default" }),
-    mode: initialWorkflowId ? "input" as const : workflows.length ? "select_workflow" as const : "input" as const,
+    mode: initialWorkflowId ? "input" as const : executionChoices.length ? "select_workflow" as const : "input" as const,
     runState: "ready",
-    workflowId: initialWorkflowId
+    workflowId: initialWorkflowId,
+    executionKind
   }));
   const [queued, setQueued] = useState<QueuedPrompt[]>([]);
   const [activeInputEpoch, setActiveInputEpoch] = useState(0);
@@ -350,13 +366,15 @@ export function TuiApp({
     }, planSavedMessageDurationMs);
     return () => clearTimeout(timer);
   }, [planSavedMessageDurationMs, state.pendingReview?.attempt, state.pendingReview?.nodeId, state.pendingReview?.savedMessage]);
-  const selectWorkflow = (workflow: string) => {
-    if (!config?.workflows[workflow]) return;
+  const selectWorkflow = (choice: string) => {
+    const target = parseExecutionChoice(choice);
+    if (!config || !executionCollection(config, target)) return;
     busRef.current?.dispose();
     busRef.current = undefined;
-    setPreviewWorkflowId(workflow);
-    setSelectedWorkflowId(workflow);
-    setState((current) => ({ ...current, workflowId: workflow, busNodeId: undefined, mode: "input" }));
+    setPreviewWorkflowId(choice);
+    setSelectedWorkflowId(target.id);
+    setSelectedExecutionKind(target.kind);
+    setState((current) => ({ ...current, workflowId: target.id, executionKind: target.kind, busNodeId: undefined, mode: "input" }));
   };
   const failUi = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -471,16 +489,22 @@ export function TuiApp({
   };
   const getSessionBus = (options: {
     workflowId?: string;
+    executionKind?: ExecutionKind;
     sessionId?: string;
     messages?: ModelMessage[];
     checkpoint?: SessionBusCheckpoint;
   } = {}): SessionExecutionBus => {
     if (!config || !engine) throw new Error("TUI is missing workflow configuration");
     const nextWorkflowId = options.workflowId ?? selectedWorkflowId ?? state.workflowId;
-    if (!nextWorkflowId) throw new Error("No workflow is selected");
+    if (!nextWorkflowId) throw new Error("No workflow or team is selected");
+    const nextExecutionKind = options.executionKind ?? selectedExecutionKind ?? state.executionKind ?? "workflow";
     const sessionId = options.sessionId ?? currentSessionIdRef.current;
     const existing = busRef.current;
-    if (existing?.state.session_id === sessionId && existing.state.workflow_id === nextWorkflowId) {
+    if (
+      existing?.state.session_id === sessionId
+      && existing.state.workflow_id === nextWorkflowId
+      && (existing.state.execution_kind ?? "workflow") === nextExecutionKind
+    ) {
       existing.setPermissionMode(workflowPermissionMode(state.inputPermissionMode));
       return existing;
     }
@@ -496,6 +520,7 @@ export function TuiApp({
     const bus = executionCore.createSessionBus({
       config,
       workflowId: nextWorkflowId,
+      executionKind: nextExecutionKind,
       cwd,
       sessionId,
       sessionStore,
@@ -680,6 +705,7 @@ export function TuiApp({
         : current;
       return resetTuiRunState(withApprovedPlan, {
         workflowId: nextWorkflowId,
+        executionKind: session.state.execution_kind ?? selectedExecutionKind,
         runId: session.runId,
         busNodeId: options.busNodeId,
         preserveLogs: options.preserveLogs === true,
@@ -695,6 +721,7 @@ export function TuiApp({
           mode: workflowResultMode(result.status),
           runState: workflowResultRunState(result.status),
           workflowId: nextWorkflowId,
+          executionKind: session.state.execution_kind ?? selectedExecutionKind,
           runId: session.runId
         }));
       })
@@ -715,9 +742,10 @@ export function TuiApp({
     } = {}
   ): Promise<BusTurnResult> => {
     const workflowId = selectedWorkflowId ?? state.workflowId;
+    const executionKind = selectedExecutionKind ?? state.executionKind ?? "workflow";
     if (!workflowId) {
       setState((current) => ({ ...current, mode: "select_workflow" }));
-      throw new Error("No workflow is selected");
+      throw new Error("No workflow or team is selected");
     }
     const displayText = options.displayText?.trim();
     if (options.logUser !== false && displayText) {
@@ -729,7 +757,7 @@ export function TuiApp({
       }, displayText));
       requestMainScrollToBottom();
     }
-    const bus = getSessionBus({ workflowId, sessionId: currentSessionIdRef.current });
+    const bus = getSessionBus({ workflowId, executionKind, sessionId: currentSessionIdRef.current });
     bus.setPermissionMode(workflowPermissionMode(state.inputPermissionMode));
     const turn = await bus.handleUserMessage(input, { planMode: options.planMode });
     const workflow = turn.workflow;
@@ -747,6 +775,7 @@ export function TuiApp({
           mode: busResultMode(turn.state.status, true),
           runState: busResultRunState(turn.state.status),
           workflowId,
+          executionKind,
           runId: workflow.runId,
           busNodeId: turn.state.selected_node_id ?? current.busNodeId,
           currentNodeId: workflow.state.current_node_id,
@@ -759,6 +788,7 @@ export function TuiApp({
         mode: busResultMode(turn.state.status, false),
         runState: busResultRunState(turn.state.status),
         workflowId,
+        executionKind,
         busNodeId: turn.state.selected_node_id ?? current.busNodeId,
         error: undefined
       }));
@@ -788,15 +818,19 @@ export function TuiApp({
         sessionStore.loadBusTranscript(sessionId),
         sessionStore.loadBusRoutingEvents(sessionId)
       ]);
+      const resumedExecutionKind = session.state.execution_kind ?? "workflow";
       const checkpoint = metadata?.bus?.workflow_id === session.state.workflow_id
+        && (metadata.bus.execution_kind ?? "workflow") === resumedExecutionKind
         ? metadata.bus
         : undefined;
       currentSessionIdRef.current = sessionId;
       setSelectedWorkflowId(session.state.workflow_id);
+      setSelectedExecutionKind(resumedExecutionKind);
       busRef.current?.dispose();
       busRef.current = undefined;
       const bus = getSessionBus({
         workflowId: session.state.workflow_id,
+        executionKind: resumedExecutionKind,
         sessionId,
         messages: busTranscript.map((entry) => entry.message),
         ...(checkpoint ? { checkpoint } : {})
@@ -902,15 +936,20 @@ export function TuiApp({
       },
       reentry
     });
-    planSessionRef.current = entered.state;
+    const planState: PlanSessionState = {
+      ...entered.state,
+      workflowId: selectedWorkflowId ?? state.workflowId,
+      executionKind: selectedExecutionKind ?? state.executionKind ?? "workflow"
+    };
+    planSessionRef.current = planState;
     planMessagesRef.current = [];
-    savePlanSession(entered.state);
+    savePlanSession(planState);
     setState((current) => ({
       ...current,
       mode: "planning",
       runState: "ready",
       inputPermissionMode: "plan",
-      planSession: entered.state,
+      planSession: planState,
       pendingReview: undefined,
       error: undefined,
       conversation: [...current.conversation, { kind: "status", text: "Enabled plan mode" }],
@@ -947,7 +986,7 @@ export function TuiApp({
     setWorkStatusDetail(undefined);
   }, [isWorking, workStartedAtMs]);
   const executePlanMessages = async (currentPlan: PlanSessionState, messages: ModelMessage[], options: { ensureUserLogText?: string } = {}) => {
-    const providerSelection = selectPlanProvider({ config, workflowId: selectedWorkflowId ?? state.workflowId, providerFactory });
+    const providerSelection = selectPlanProvider({ config, workflowId: selectedWorkflowId ?? state.workflowId, executionKind: selectedExecutionKind ?? state.executionKind, providerFactory });
     if (!providerSelection) {
       failUi("Plan Mode is missing provider configuration");
       return;
@@ -1825,6 +1864,7 @@ ${message.detailText}` : ""}` }
     setState((current) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: current.workflowId,
+      executionKind: current.executionKind,
       runId: current.runId,
       busNodeId: current.busNodeId,
       mode: current.mode === "planning" || current.mode === "waiting_plan_approval" ? current.mode : "input",
@@ -1846,13 +1886,17 @@ ${message.detailText}` : ""}` }
     const busTranscript = transcript.filter((entry) => entry.phase === "bus");
     const busMessages = busTranscript.map((entry) => entry.message);
     const planTranscript = transcript.filter((entry) => entry.phase === "plan" || entry.phase === undefined);
-    const busWorkflowId = metadata?.bus?.workflow_id ?? selectedWorkflowId ?? state.workflowId;
-    if (busWorkflowId && config?.workflows[busWorkflowId] && engine) {
+    const busWorkflowId = metadata?.bus?.workflow_id ?? metadata?.plan?.workflowId ?? selectedWorkflowId ?? state.workflowId;
+    const busExecutionKind = metadata?.bus?.execution_kind ?? metadata?.plan?.executionKind ?? selectedExecutionKind ?? state.executionKind ?? "workflow";
+    const busConfig = busWorkflowId && config ? executionCollection(config, { kind: busExecutionKind, id: busWorkflowId }) : undefined;
+    if (busWorkflowId && busConfig && engine) {
       setSelectedWorkflowId(busWorkflowId);
+      setSelectedExecutionKind(busExecutionKind);
       busRef.current?.dispose();
       busRef.current = undefined;
       getSessionBus({
         workflowId: busWorkflowId,
+        executionKind: busExecutionKind,
         sessionId,
         messages: busMessages,
         ...(metadata?.bus ? { checkpoint: metadata.bus } : {})
@@ -1878,6 +1922,7 @@ ${message.detailText}` : ""}` }
         setState((current) => ({
           ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
           workflowId: busWorkflowId,
+          executionKind: busExecutionKind,
           busNodeId: metadata.bus!.selected_node_id ?? metadata.bus!.current_node_id,
           mode: busResultMode(metadata.bus!.status, false),
           runState: busResultRunState(metadata.bus!.status),
@@ -1913,6 +1958,7 @@ ${message.detailText}` : ""}` }
     const base = (current: TuiState) => ({
       ...initialTuiState({ cwd: current.cwd, inputPermissionMode: current.inputPermissionMode }),
       workflowId: busWorkflowId ?? current.workflowId ?? selectedWorkflowId,
+      executionKind: busExecutionKind,
       busNodeId: metadata?.bus?.selected_node_id ?? metadata?.bus?.current_node_id,
       sessionUsage: metadata?.usage ?? emptyModelUsage(),
       modelRequestCount: metadata?.modelRequestCount ?? 0,
@@ -2161,7 +2207,7 @@ ${message.detailText}` : ""}` }
       if (!skillRuntime) throw new Error("Skill runtime is not available");
       const skill = skillRuntime.getSkill(name);
       if (!skill || skill.userInvocable === false) throw new Error(`Unknown user-invocable skill ${name}`);
-      const providerSelection = selectPlanProvider({ config, workflowId: selectedWorkflowId ?? state.workflowId, providerFactory });
+      const providerSelection = selectPlanProvider({ config, workflowId: selectedWorkflowId ?? state.workflowId, executionKind: selectedExecutionKind ?? state.executionKind, providerFactory });
       const tools = createLocalToolRegistry({ mcpRuntime, skillRuntime });
       const activation = await skillRuntime.activateSkill(name, {
         args: args.join(" "),
@@ -2369,9 +2415,17 @@ ${message.detailText}` : ""}` }
     }
     void startRun(event.text, event.images ?? []);
   };
-  const displayedWorkflowId = state.mode === "select_workflow" ? previewWorkflowId : selectedWorkflowId;
-  const workflowNodes = displayedWorkflowId
-    ? config?.workflows[displayedWorkflowId]?.nodes.map((node) => {
+  const displayedExecutionChoice = state.mode === "select_workflow"
+    ? previewWorkflowId
+    : selectedWorkflowId
+      ? executionChoiceValue({ kind: selectedExecutionKind, id: selectedWorkflowId })
+      : undefined;
+  const displayedExecutionTarget = displayedExecutionChoice ? parseExecutionChoice(displayedExecutionChoice) : undefined;
+  const displayedWorkflow = config && displayedExecutionTarget
+    ? executionCollection(config, displayedExecutionTarget)
+    : undefined;
+  const workflowNodes = displayedWorkflow && config
+    ? displayedWorkflow.nodes.map((node) => {
       const provider = config.providers[node.provider];
       const role = config.roles[node.role];
       const registry = modelRegistryFromProviderConfig(provider);
@@ -2420,11 +2474,11 @@ ${message.detailText}` : ""}` }
   }) : undefined;
   const activeChoice = commandMenuChoice ?? buildActiveChoice({
     mode: interactionMode,
-    workflows,
-    workflowConfigs: config?.workflows,
+    workflows: executionChoices,
+    config,
     previewWorkflowId,
     previewWorkflow: (workflow) => {
-      if (config?.workflows[workflow]) setPreviewWorkflowId(workflow);
+      if (config && executionCollection(config, parseExecutionChoice(workflow))) setPreviewWorkflowId(workflow);
     },
     permission: state.permissionRequests[0],
     review: state.pendingReview,
@@ -2790,7 +2844,7 @@ ${message.detailText}` : ""}` }
       <Box flexDirection="column" height={terminalRows}>
         <Header />
         <Text color="red">{initialError}</Text>
-        <Text>Create config/prompt.md, config/roles, and config/workflows</Text>
+        <Text>Create config/prompt.md, config/roles, config/workflows, and config/teams</Text>
       </Box>
     );
   }
@@ -2827,8 +2881,8 @@ ${message.detailText}` : ""}` }
   }, [cwd, gitBranchEnabled, resolveGitBranch]);
   return (
     <Box flexDirection="column" height={terminalRows}>
-      <Header workflowId={state.workflowId} sessionId={currentSessionIdRef.current} />
-      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} busNodeId={state.busNodeId} columns={terminalColumns} currentNodeId={state.currentNodeId} suspendedStack={state.suspendedStack} />
+      <Header workflowId={state.workflowId} executionKind={state.executionKind} sessionId={currentSessionIdRef.current} />
+      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} busNodeId={state.busNodeId} columns={terminalColumns} currentNodeId={state.currentNodeId} suspendedStack={displayedExecutionTarget?.kind === "team" ? [] : state.suspendedStack} showConnectors={displayedExecutionTarget?.kind !== "team"} />
       {halfScreenChoice ? null : (
         <Box flexDirection="row" height={layout.mainHeight} flexShrink={1} minHeight={1} opaque>
           <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
@@ -2860,7 +2914,7 @@ ${message.detailText}` : ""}` }
         mode={promptMode}
         workflowId={state.workflowId}
         queued={queued.map((item) => item.text)}
-        workflows={workflows}
+        workflows={executionChoices.map(executionChoiceLabel)}
         skills={[...(skillRuntime?.listSkills().map((skill) => ({ name: skill.name, description: skill.description, argumentHint: skill.argumentHint })) ?? []), ...(mcpRuntime?.listPromptCommands().map((command) => ({ name: command.name, description: command.description, argumentHint: command.argumentHint })) ?? [])]}
         questions={state.activityNotice ? [] : state.questions}
         isLoading={isLoading}
@@ -3847,10 +3901,41 @@ function workflowResultRunState(status: WorkflowSession["state"]["status"]): Tui
       return "working";
   }
 }
+function executionChoiceValue(target: ExecutionTarget): string {
+  return `${target.kind}:${encodeURIComponent(target.id)}`;
+}
+
+function parseExecutionChoice(value: string): ExecutionTarget {
+  const separator = value.indexOf(":");
+  if (separator > 0) {
+    const kind = value.slice(0, separator);
+    if (kind === "workflow" || kind === "team") {
+      return { kind, id: decodeURIComponent(value.slice(separator + 1)) };
+    }
+  }
+  return { kind: "workflow", id: value };
+}
+
+function executionChoiceLabel(value: string): string {
+  const target = parseExecutionChoice(value);
+  return `${target.id} [${target.kind}]`;
+}
+
+function compareExecutionChoices(left: string, right: string): number {
+  const leftTarget = parseExecutionChoice(left);
+  const rightTarget = parseExecutionChoice(right);
+  return leftTarget.id.localeCompare(rightTarget.id)
+    || (leftTarget.kind === rightTarget.kind ? 0 : leftTarget.kind === "workflow" ? -1 : 1);
+}
+
+function executionCollection(config: AgentTeamConfig, target: ExecutionTarget): WorkflowConfig | undefined {
+  return target.kind === "team" ? config.teams?.[target.id] : config.workflows[target.id];
+}
+
 function buildActiveChoice(input: {
   mode: TuiState["mode"];
   workflows: string[];
-  workflowConfigs?: AgentTeamConfig["workflows"];
+  config?: AgentTeamConfig;
   previewWorkflowId?: string;
   previewWorkflow: (workflow: string) => void;
   permission?: TuiState["permissionRequests"][number];
@@ -3897,11 +3982,14 @@ function buildActiveChoice(input: {
   resolveDefaultExecutionMode: (mode: TuiDefaultExecutionMode) => void;
 }): InteractionChoice | undefined {
   if (input.mode === "select_workflow" && input.workflows.length) {
-    const options: InteractionChoice["options"] = input.workflows.map((workflow) => ({
-      label: workflow,
-      value: workflow,
-      description: input.workflowConfigs?.[workflow]?.description || undefined
-    }));
+    const options: InteractionChoice["options"] = input.workflows.map((workflow) => {
+      const target = parseExecutionChoice(workflow);
+      return {
+        label: executionChoiceLabel(workflow),
+        value: workflow,
+        description: input.config ? executionCollection(input.config, target)?.description || undefined : undefined
+      };
+    });
     let createWorkflowValue = "__create_new_workflow__";
     while (input.workflows.includes(createWorkflowValue)) createWorkflowValue = `_${createWorkflowValue}`;
     options.push({
@@ -3910,11 +3998,19 @@ function buildActiveChoice(input: {
       description: "Coming soon",
       disabled: true
     });
+    let createTeamValue = "__create_new_team__";
+    while (input.workflows.includes(createTeamValue) || createTeamValue === createWorkflowValue) createTeamValue = `_${createTeamValue}`;
+    options.push({
+      label: "Create new team",
+      value: createTeamValue,
+      description: "Coming soon",
+      disabled: true
+    });
     const selectedValue = input.previewWorkflowId && input.workflows.includes(input.previewWorkflowId)
       ? input.previewWorkflowId
       : input.workflows[0];
     return {
-      title: "Select workflow",
+      title: "Select workflow or team",
       placement: "half-screen",
       options,
       selectedValue,
@@ -4462,13 +4558,14 @@ function firstUserText(messages: ModelMessage[]): string {
 function selectPlanProvider(input: {
   config?: AgentTeamConfig;
   workflowId?: string;
+  executionKind?: ExecutionKind;
   providerFactory?: (providerId: string) => ModelProvider;
 }): { provider: ModelProvider; model: string; effort: string; contextWindow?: number } | undefined {
   if (!input.config || !input.providerFactory) return undefined;
   const providerId = input.config.providers.default
     ? "default"
     : input.workflowId
-      ? input.config.workflows[input.workflowId]?.nodes[0]?.provider
+      ? executionCollection(input.config, { kind: input.executionKind ?? "workflow", id: input.workflowId })?.nodes[0]?.provider
       : Object.keys(input.config.providers)[0];
   if (!providerId) return undefined;
   const providerConfig = input.config.providers[providerId];

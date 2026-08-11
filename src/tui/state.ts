@@ -1,3 +1,4 @@
+import type { ExecutionKind } from "../config/schema.js";
 import type { ModelUsageTotals } from "../model/usage.js";
 import type { PlanSessionState } from "../plans/planSession.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
@@ -138,6 +139,7 @@ export type TuiState = {
   sessionUsage: ModelUsageTotals;
   modelRequestCount: number;
   workflowId?: string;
+  executionKind?: ExecutionKind;
   runId?: string;
   busNodeId?: string;
   currentNodeId?: string;

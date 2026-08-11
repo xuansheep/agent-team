@@ -45,7 +45,7 @@ async function fixtureConfigDir(path: string): Promise<string> {
     : "";
   const workflows = Object.fromEntries(Object.entries(parsed.workflows ?? {}).map(([name, workflow]) => [name, {
     nodes: workflow.nodes,
-    ...(workflow.workflow_permissions ? { workflow_permissions: workflow.workflow_permissions } : {})
+    ...(workflow.permissions ? { permissions: workflow.permissions } : {})
   }]));
   return writeProjectConfig(dirname(path), { prompt, roles: parsed.roles, workflows });
 }
@@ -134,7 +134,40 @@ workflows:
     assert.equal(config.workflows.empty.description, "");
   });
 
-  it("loads Responses API provider defaults", async () => {
+  it("loads team configs alongside workflows", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-team-team-config-"));
+    const configDir = await writeProjectConfig(dir, {
+      teams: {
+        delivery: {
+          description: "Dynamic delivery team",
+          permissions: { deny: ["Bash(rm *)"] },
+          nodes: [{ id: "dev", role: "dev", provider: "default" }]
+        }
+      }
+    });
+
+    const config = await loadTestConfig(configDir);
+
+    assert.equal(config.teams!.delivery.description, "Dynamic delivery team");
+    assert.deepEqual(config.teams!.delivery.permissions?.deny, ["Bash(rm *)"]);
+    assert.equal(config.teams!.delivery.nodes[0]?.id, "dev");
+  });
+
+  it("strictly rejects removed workflow_permissions in workflows and teams", async () => {
+    for (const folder of ["workflows", "teams"] as const) {
+      const dir = await mkdtemp(join(tmpdir(), `agent-team-legacy-permissions-${folder}-`));
+      const configDir = await writeProjectConfig(dir);
+      await writeFile(join(configDir, folder, folder === "workflows" ? "delivery.json" : "team.json"), JSON.stringify({
+        name: folder === "workflows" ? "delivery" : "team",
+        nodes: [{ id: "dev", role: "dev", provider: "default" }],
+        workflow_permissions: { deny: ["Bash(rm *)"] }
+      }), "utf8");
+
+      await assert.rejects(() => loadTestConfig(configDir), /Unrecognized key.*workflow_permissions/s);
+    }
+  });
+
+    it("loads Responses API provider defaults", async () => {
     const file = await tempFile("agent-team.yaml", `
 roles:
   product:
@@ -266,7 +299,12 @@ workflows:
   it("loads the bundled four-node resumable delivery workflow", async () => {
     const config = await loadTestConfig(resolve("config"));
     const workflow = config.workflows.delivery;
+    const team = config.teams!.team;
 
+    assert.deepEqual(team.nodes.map((node) => node.id), ["product", "ui", "frontend", "backend", "mobile", "tester", "security", "devops"]);
+    assert.equal(team.nodes.every((node) => node.provider === "default"), true);
+    assert.equal(team.description, undefined);
+    assert.equal(team.permissions, undefined);
     assert.equal(config.roles.user_acceptance, undefined);
     assert.equal(workflow.nodes.some((node) => node.id === "user_acceptance" || node.role === "user_acceptance"), false);
     assert.equal(workflow.description, "default workflow, contains product, ui, developer, tester nodes");

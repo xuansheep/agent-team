@@ -4,6 +4,7 @@ import {
   dispatcherConfigSchema,
   type AgentTeamConfig,
   type DispatcherConfig,
+  type ExecutionKind,
   type WorkflowConfig
 } from "../config/schema.js";
 import type { ModelMessage, ModelProvider, ModelRetryEvent } from "../providers/types.js";
@@ -25,6 +26,7 @@ export type DispatcherClarificationReason = "low_confidence" | "dispatcher_failu
 export type DispatcherRequest = {
   config: AgentTeamConfig;
   workflowId: string;
+  executionKind?: ExecutionKind;
   sessionId: string;
   runId?: string;
   phase: DispatcherPhase;
@@ -125,9 +127,10 @@ const finalizeToolInputSchema = z.object({
 
 export async function requestDispatchDirective(input: DispatcherRequest): Promise<DispatcherSelection> {
   const routingId = randomUUID();
-  const workflow = input.config.workflows[input.workflowId];
+  const executionKind = input.executionKind ?? "workflow";
+  const workflow = executionKind === "team" ? input.config.teams?.[input.workflowId] : input.config.workflows[input.workflowId];
   if (!workflow) {
-    return invalidSelection(`Unknown workflow ${input.workflowId}`, input.phase, routingId);
+    return invalidSelection(`Unknown ${executionKind} ${input.workflowId}`, input.phase, routingId);
   }
   let dispatcher: DispatcherConfig;
   try {
@@ -238,6 +241,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
 }
 
 function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig): ModelMessage[] {
+  const executionKind = input.executionKind ?? "workflow";
   const nodeCatalog = workflow.nodes.map((node, index) => ({
     position: index,
     id: node.id,
@@ -247,18 +251,20 @@ function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig):
   const phaseRules = input.phase === "plan"
     ? "The user is in Plan Mode. Select the best workflow node for eventual execution with SelectWorkflowNode. Never dispatch or finalize before plan approval."
     : input.phase === "lifecycle"
-      ? "The workflow is at a bus boundary. Read the full dossier. Either dispatch one concrete node for rework with DispatchWorkflowNode, or finish with FinalizeTask. Do not answer outside those tools."
+      ? `The ${executionKind} is at a bus boundary. Read the full dossier. Either dispatch one concrete node with DispatchWorkflowNode, ask for clarification, or finish with FinalizeTask. Do not answer outside those directives.`
       : "Route the user message in normal execution mode. Answer directly, ask for clarification, or dispatch one workflow node with DispatchWorkflowNode. Never enter Plan Mode or finalize the task.";
   const busPrompt = [
     "You are the session execution bus. The user communicates only with you.",
-    "You own workflow routing, lifecycle decisions, process-safe node reassignment, and the final task summary.",
+    executionKind === "team"
+      ? "You own all team-member routing. Members are unordered and never select the next member; after every member result you must dynamically dispatch a member, clarify, or finalize."
+      : "You own workflow routing, lifecycle decisions, process-safe node reassignment, and the final task summary.",
     "Never silently fall back to the first node. Every directive must include confidence from 0 to 1.",
     "SelectWorkflowNode is available only when the user explicitly enabled Plan Mode.",
     "Use DispatchWorkflowNode to start or reassign execution at an explicit node.",
     "Use FinalizeTask only at a lifecycle boundary after the dossier supports a complete final answer.",
     "For a direct answer or clarification, return exactly one JSON object matching the DispatchDirective schema.",
     phaseRules,
-    `Workflow: ${input.workflowId}`,
+    `Execution target: ${executionKind} ${input.workflowId}`,
     `Nodes: ${JSON.stringify(nodeCatalog)}`
   ].join("\n");
   const system = [input.config.global_prompt?.trim(), busPrompt].filter(Boolean).join("\n\n");

@@ -1,4 +1,5 @@
 import { ModelMessage } from "../providers/types.js";
+import type { ExecutionKind } from "../config/schema.js";
 import type { PermissionMode } from "../permissions/PermissionMode.js";
 
 export const CONVERSATION_INTERRUPTED_QUESTION_ID = "conversation_interrupted";
@@ -43,6 +44,7 @@ export type WorkflowState = {
   revision?: number;
   status: RunStatus;
   workflow_id: string;
+  execution_kind?: ExecutionKind;
   config_fingerprint?: string;
   run_permission_mode?: Exclude<PermissionMode, "plan">;
   plan_requested_permission_rules?: string[];

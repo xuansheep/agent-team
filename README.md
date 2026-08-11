@@ -1,6 +1,6 @@
 # agent-team
 
-A local TUI harness for configurable agent-team workflow sessions.
+A local TUI harness for configurable workflow and dynamically routed team sessions.
 
 ## Quick Start
 
@@ -8,7 +8,7 @@ A local TUI harness for configurable agent-team workflow sessions.
 2. Build: `npm run build`
 3. Open the TUI: `node dist/cli/main.js`
 4. Edit the generated `~/.einsteins/settings.json` and set `api_key` for the providers you use
-5. Customize user-level roles and workflows under `~/.einsteins/roles` and `~/.einsteins/workflows`
+5. Customize user-level roles, workflows, and teams under `~/.einsteins/roles`, `~/.einsteins/workflows`, and `~/.einsteins/teams`
 
 ## Provider Configuration
 
@@ -50,7 +50,7 @@ Each provider also supports the same retry and timeout controls:
 
 Backoff starts at 500 ms, doubles up to 32 seconds, and adds 0-25% jitter; a valid `Retry-After` response header takes precedence. Streaming never falls back to non-streaming mode, so a retry cannot cause completed tool calls to be replayed through a second response path. Every scheduled retry is persisted in `events.ndjson` and the session `audit.ndjson`. The TUI shows one temporary reconnect status, updates it across consecutive retries, rolls back failed stream fragments, and removes it after success, failure, interruption, or cancellation.
 
-Roles and workflows are user-level configuration under `~/.einsteins/roles` and `~/.einsteins/workflows`. On startup, missing directories are initialized from the application's bundled `config/` templates without merging into or overwriting existing directories. Provider definitions remain in user settings, and API key environment variables are not supported.
+Roles, workflows, and teams are user-level configuration under `~/.einsteins/roles`, `~/.einsteins/workflows`, and `~/.einsteins/teams`. On startup, missing directories are initialized from the application's bundled `config/` templates without merging into or overwriting existing directories. Provider definitions remain in user settings, and API key environment variables are not supported.
 
 An empty `api_key` in the generated template does not block startup. The application reports an error only when a workflow tries to use that provider.
 
@@ -60,7 +60,7 @@ User MCP servers are configured under the top-level `mcpServers` key in `~/.eins
 
 MCP values support `${ENV_VAR}` expansion at runtime. Keep credentials as environment references so `/mcp enable|disable` can update local project overrides without writing resolved secrets back to disk. Legacy `~/.einsteins.json` and project `.mcp.json` files are not read.
 
-## User Roles and Workflows
+## User Roles, Workflows, and Teams
 
 Runtime configuration has this layout:
 
@@ -72,6 +72,8 @@ Runtime configuration has this layout:
     developer.md
   workflows/
     delivery.json
+  teams/
+    team.json
   AGENTS.md
   skills/
     reviewer/
@@ -81,6 +83,7 @@ Runtime configuration has this layout:
   prompt.md
   roles/              # initialization templates
   workflows/          # initialization templates
+  teams/              # initialization templates
 <project>/.einsteins/
   settings.json       # project settings and project MCP
   AGENTS.md
@@ -89,17 +92,17 @@ Runtime configuration has this layout:
       SKILL.md
 ```
 
-The runtime never reads roles or workflows from the current project's `config/` directory. Missing user-level directories are initialized atomically from the bundled templates; an existing `roles` or `workflows` directory is never merged with or overwritten. The bundled `config/prompt.md` contains mandatory system instructions prepended to every role prompt.
+The runtime never reads roles, workflows, or teams from the current project's `config/` directory. Missing user-level directories are initialized atomically from the bundled templates; existing `roles`, `workflows`, or `teams` directories are never merged with or overwritten. The bundled `config/prompt.md` contains mandatory system instructions prepended to every role prompt.
 
 Project-specific instructions may be added in `.einsteins/AGENTS.md`; they supplement but cannot override the bundled prompt or active role prompt. Skill precedence is nearest project `.einsteins/skills`, user `~/.einsteins/skills`, then legacy user `~/.agents/skills`. Project `.agents` directories are not read. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt.
 
-Each workflow JSON file contains `name`, `nodes`, optional `description`, optional `max_rework_cycles` (default `99`), and optional `workflow_permissions`. Empty or omitted descriptions are not shown in the TUI. Workflows follow node order, so workflow files do not accept an `edges` field.
+Each workflow or team JSON file contains `name`, `nodes`, optional `description`, optional `max_rework_cycles` (default `99`), optional `dispatcher`, and optional `permissions`. The removed `workflow_permissions` field is rejected. Empty or omitted descriptions are not shown in the TUI, and neither file type accepts an `edges` field. Workflows follow node order. Teams treat `nodes` as the available member set: after every node success or failure, control returns to the bus, which dynamically selects the next node or finalizes the task.
 
 ## Interactive TUI
 
 Every `agent-team` invocation opens the interactive terminal UI. Former headless subcommands such as `run`, `resume`, `status`, and `inspect` are routed into the TUI instead of executing automation directly.
 
-The TUI reads roles and workflows from `~/.einsteins` and opens with a half-screen workflow picker directly below the preview flow chart. Moving through the list previews each workflow's node flow, and pressing Enter on a workflow opens the reusable conversation session with live node, tool, permission, log, and result status. The final disabled `Create new workflow` item is reserved for future TUI workflow creation. The current directory does not need a `config/` directory.
+The TUI reads roles, workflows, and teams from `~/.einsteins` and opens with a half-screen workflow/team picker directly below the preview chart. Workflow and team entries are shown at the same level with their type, so identical names remain unambiguous. Moving through the list previews the selected nodes; team previews omit node-to-node arrows. The final disabled `Create new workflow` and `Create new team` items reserve future creation flows. The current directory does not need a `config/` directory.
 
 Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Wrapped and explicit input lines remain visible up to a half-screen viewport. Use Shift+Enter or Ctrl+Enter to insert a newline. On Apple Terminal, run `/terminal-setup`, restart Terminal.app, and use Option+Enter.
 
@@ -125,9 +128,9 @@ Pass source test paths after `--` to run a focused subset while keeping the same
 npm test -- tests/config/loadConfig.test.ts tests/settings/settings.test.ts
 ```
 
-## Workflow Ordering
+## Workflow Ordering and Team Routing
 
-Workflow nodes run in the order listed under `nodes`.
+Workflow nodes run in the order listed under `nodes`. Team nodes do not run sequentially: the bus assigns one member at a time and reevaluates the complete run dossier after every node boundary until it chooses to finalize.
 
 Each node receives descriptors for its current, previous, and next workflow positions. A node submits the explicit direction `forward` or `backward`: `forward` advances or resumes the suspended downstream node, while `backward` suspends the current node and resumes the previous node in the same attempt. Every reactivation increments an auditable activation number. Only the first node can move backward to the user; the final node moves forward to the user to complete the run.
 

@@ -74,7 +74,48 @@ describe("SessionExecutionBus", () => {
     assert.equal(events.some((event) => event.type === "bus_workflow_started" && event.node_id === "dev"), true);
   });
 
-  it("exposes only phase-appropriate routing tools", async () => {
+  it("routes team members through the bus with explicit team execution context", async () => {
+    const teamConfig: AgentTeamConfig = {
+      ...config,
+      teams: { delivery: config.workflows.delivery }
+    };
+    const workflow = createWorkflow({ currentNodeId: "dev" });
+    const starts: Array<{ options: { executionKind?: string; startNodeId?: string } }> = [];
+    const coordinator = fakeCoordinator({
+      startInteractive: async (_config, _workflowId, _input, options) => {
+        assert.ok(options);
+        starts.push({ options });
+        return workflow.session;
+      }
+    });
+    const provider = responseProvider({
+      type: "dispatch",
+      confidence: 1,
+      node_id: "dev",
+      instruction: "Implement the requested change.",
+      reason: "Team member selected"
+    });
+    const bus = createBus({
+      config: teamConfig,
+      executionKind: "team",
+      coordinator,
+      providerFactory: provider.factory
+    });
+
+    await bus.handleUserMessage({ request: "build it" });
+
+    assert.equal(bus.state.execution_kind, "team");
+    assert.equal(starts[0]?.options.executionKind, "team");
+    assert.equal(starts[0]?.options.startNodeId, "dev");
+    const systemPrompt = provider.requests[0]?.messages
+      .filter((message) => message.role === "system")
+      .map((message) => String(message.content))
+      .join("\n") ?? "";
+    assert.match(systemPrompt, /Members are unordered/);
+    assert.match(systemPrompt, /Execution target: team delivery/);
+  });
+
+    it("exposes only phase-appropriate routing tools", async () => {
     const requests: ModelRequest[] = [];
     const workflow = createWorkflow({ currentNodeId: "dev" });
     const provider: ModelProvider = {
@@ -808,6 +849,7 @@ function fakeCoordinator(hooks: CoordinatorHooks = {}): ExecutionCoordinator {
 
 type CreateBusOptions = {
   config?: AgentTeamConfig;
+  executionKind?: "workflow" | "team";
   coordinator: ExecutionCoordinator;
   providerFactory: (providerId: string) => ModelProvider;
   events?: BusEvent[];
@@ -822,6 +864,7 @@ function createBus(options: CreateBusOptions): SessionExecutionBus {
   const bus = new SessionExecutionBus({
     config: options.config ?? config,
     workflowId: "delivery",
+    executionKind: options.executionKind,
     coordinator: options.coordinator,
     providerFactory: options.providerFactory,
     cwd: process.cwd(),

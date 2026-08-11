@@ -1,0 +1,45 @@
+{
+  "name": "team",
+  "description": "default team, contains product, ui, developer, tester, security, devops nodes",
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./secrets/**)",
+      "Bash(rm *)"
+    ],
+    "ask": [],
+    "allow": []
+  },
+  "nodes": [
+    {
+      "id": "product",
+      "role": "product",
+      "provider": "default"
+    },
+    {
+      "id": "ui",
+      "role": "ui",
+      "provider": "default"
+    },
+    {
+      "id": "developer",
+      "role": "developer",
+      "provider": "default"
+    },
+    {
+      "id": "tester",
+      "role": "tester",
+      "provider": "default"
+    },
+    {
+      "id": "security",
+      "role": "security",
+      "provider": "default"
+    },
+    {
+      "id": "devops",
+      "role": "devops",
+      "provider": "default"
+    }
+  ]
+}

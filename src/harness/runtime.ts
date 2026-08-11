@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
+import type { ExecutionKind, PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { ModelMessage, ModelProvider, ModelResponse, ModelRetryEvent, ModelToolCall } from "../providers/types.js";
 import { getModelContextLimits, type ModelRegistry } from "../model/modelRegistry.js";
 import {
@@ -53,6 +53,7 @@ export type NodeRuntimeOptions = {
   store: RunStore;
   handoff: unknown;
   navigation?: NodeNavigation;
+  executionKind?: ExecutionKind;
   attempt?: number;
   activation?: number;
   dialogueMessages?: ModelMessage[];
@@ -87,6 +88,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     tools: requestTools,
     permissionMode: runtimePermissions.mode,
     navigation: options.navigation,
+    executionKind: options.executionKind,
     runDir: options.store.runDir(options.runId),
     supportsVision: options.supportsVision,
     onArtifactRead: async (chunk) => { await appendRuntimeEvent(options, {

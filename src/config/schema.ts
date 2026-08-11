@@ -219,7 +219,7 @@ export const workflowSchema = z.object({
   edges: z.array(edgeSchema).default([]),
   max_rework_cycles: z.number().int().positive().default(DEFAULT_MAX_REWORK_CYCLES),
   dispatcher: dispatcherOverrideSchema.optional(),
-  workflow_permissions: permissionSetSchema.optional()
+  permissions: permissionSetSchema.optional()
 });
 
 export const workflowFileSchema = z.object({
@@ -228,13 +228,16 @@ export const workflowFileSchema = z.object({
   nodes: z.array(nodeSchema).min(1),
   max_rework_cycles: z.number().int().positive().default(DEFAULT_MAX_REWORK_CYCLES),
   dispatcher: dispatcherOverrideSchema.optional(),
-  workflow_permissions: permissionSetSchema.optional()
+  permissions: permissionSetSchema.optional()
 }).strict();
+
+export const teamFileSchema = workflowFileSchema;
 
 export const configSchema = z.object({
   global_prompt: z.string().optional(),
   roles: z.record(roleSchema),
-  workflows: z.record(workflowSchema)
+  workflows: z.record(workflowSchema),
+  teams: z.record(workflowSchema)
 }).strict();
 
 type ParsedProjectConfig = z.infer<typeof configSchema>;
@@ -268,10 +271,14 @@ export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type DispatcherOverride = z.infer<typeof dispatcherOverrideSchema>;
 export type WorkflowNodeConfig = ParsedWorkflowNodeConfig;
 export type WorkflowConfig = Omit<ParsedWorkflowConfig, "nodes" | "max_rework_cycles"> & { nodes: WorkflowNodeConfig[]; max_rework_cycles?: number };
-export type AgentTeamConfig = Omit<ParsedProjectConfig, "workflows"> & {
+export type TeamConfig = WorkflowConfig;
+export type ExecutionKind = "workflow" | "team";
+export type ExecutionTarget = { kind: ExecutionKind; id: string };
+export type AgentTeamConfig = Omit<ParsedProjectConfig, "workflows" | "teams"> & {
   providers: Record<string, ProviderConfig>;
   dispatcher: DispatcherConfig;
   workflows: Record<string, WorkflowConfig>;
+  teams?: Record<string, TeamConfig>;
   global_prompt_metadata?: GlobalPromptMetadata;
 };
 export type PermissionSet = z.infer<typeof permissionSetSchema>;

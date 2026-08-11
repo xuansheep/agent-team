@@ -1,8 +1,8 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import yaml from "js-yaml";
-import { configSchema, roleFrontmatterSchema, workflowFileSchema } from "./schema.js";
-import type { AgentTeamConfig } from "./schema.js";
+import { configSchema, roleFrontmatterSchema, teamFileSchema, workflowFileSchema } from "./schema.js";
+import type { AgentTeamConfig, WorkflowConfig } from "./schema.js";
 import { resolveConfig } from "./resolveConfig.js";
 import { AgentTeamSettings, ResolvedAgentTeamSettings } from "../settings/types.js";
 import { resolveSettings } from "../settings/resolveSettings.js";
@@ -20,11 +20,12 @@ export async function loadConfig(configDir: string, options: LoadConfigOptions =
   const cwd = options.cwd ?? resolve(resolvedConfigDir, "..");
   const promptPath = resolve(options.promptPath ?? join(resolvedConfigDir, "prompt.md"));
   await access(promptPath);
-  const [roles, workflows] = await Promise.all([
+  const [roles, workflows, teams] = await Promise.all([
     loadRoles(join(resolvedConfigDir, "roles")),
-    loadWorkflows(join(resolvedConfigDir, "workflows"))
+    loadWorkflows(join(resolvedConfigDir, "workflows")),
+    loadTeams(join(resolvedConfigDir, "teams"))
   ]);
-  const projectConfig = configSchema.parse({ roles, workflows });
+  const projectConfig = configSchema.parse({ roles, workflows, teams });
   const resolvedSettings = resolveSettings({ cwd, userSettings: options.settings });
   if (!resolvedSettings.dispatcher) {
     throw new Error("Missing required dispatcher configuration in ~/.einsteins/settings.json");
@@ -80,30 +81,42 @@ async function loadRoles(rolesDir: string): Promise<AgentTeamConfig["roles"]> {
   return roles;
 }
 
-async function loadWorkflows(workflowsDir: string): Promise<AgentTeamConfig["workflows"]> {
-  const files = await configFiles(workflowsDir, ".json");
-  if (!files.length) throw new Error(`No workflow files found in ${workflowsDir}`);
-  const workflows = Object.create(null) as AgentTeamConfig["workflows"];
+async function loadWorkflows(workflowsDir: string): Promise<Record<string, WorkflowConfig>> {
+  return loadNodeCollections(workflowsDir, "workflow", workflowFileSchema);
+}
+
+async function loadTeams(teamsDir: string): Promise<Record<string, WorkflowConfig>> {
+  return loadNodeCollections(teamsDir, "team", teamFileSchema);
+}
+
+async function loadNodeCollections(
+  directory: string,
+  kind: "workflow" | "team",
+  schema: typeof workflowFileSchema
+): Promise<Record<string, WorkflowConfig>> {
+  const files = await configFiles(directory, ".json");
+  if (!files.length) throw new Error(`No ${kind} files found in ${directory}`);
+  const configs = Object.create(null) as Record<string, WorkflowConfig>;
   for (const file of files) {
-    const path = join(workflowsDir, file);
+    const path = join(directory, file);
     let raw: unknown;
     try {
       raw = JSON.parse(await readFile(path, "utf8"));
     } catch (error) {
-      throw new Error(`Invalid workflow JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Invalid ${kind} JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const workflow = parseFile(workflowFileSchema, raw, path, "workflow");
-    if (workflows[workflow.name]) throw new Error(`Duplicate workflow name ${workflow.name} in ${path}`);
-    workflows[workflow.name] = {
-      ...(workflow.description !== undefined ? { description: workflow.description } : {}),
-      nodes: workflow.nodes,
+    const parsed = parseFile(schema, raw, path, kind);
+    if (configs[parsed.name]) throw new Error(`Duplicate ${kind} name ${parsed.name} in ${path}`);
+    configs[parsed.name] = {
+      ...(parsed.description !== undefined ? { description: parsed.description } : {}),
+      nodes: parsed.nodes,
       edges: [],
-      max_rework_cycles: workflow.max_rework_cycles,
-      ...(workflow.dispatcher ? { dispatcher: workflow.dispatcher } : {}),
-      ...(workflow.workflow_permissions ? { workflow_permissions: workflow.workflow_permissions } : {})
+      max_rework_cycles: parsed.max_rework_cycles,
+      ...(parsed.dispatcher ? { dispatcher: parsed.dispatcher } : {}),
+      ...(parsed.permissions ? { permissions: parsed.permissions } : {})
     };
   }
-  return workflows;
+  return configs;
 }
 
 async function configFiles(dir: string, extension: string): Promise<string[]> {

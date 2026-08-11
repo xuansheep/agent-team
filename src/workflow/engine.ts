@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { AgentTeamConfig, DEFAULT_MAX_REWORK_CYCLES, PermissionSet, permissionSetSchema, WorkflowConfig, WorkflowNodeConfig } from "../config/schema.js";
+import { AgentTeamConfig, DEFAULT_MAX_REWORK_CYCLES, PermissionSet, permissionSetSchema, WorkflowConfig, WorkflowNodeConfig, type ExecutionKind } from "../config/schema.js";
 import { handoffHasImages } from "../harness/context.js";
 import { HarnessEvent, StoredEvent } from "../harness/events.js";
 import { EventStream } from "../harness/eventStream.js";
@@ -67,6 +67,7 @@ type ContinueOptions = {
     runPermissionMode?: WorkflowRunPermissionMode;
     planRequestedPermissionRules?: string[];
     configFingerprint?: string;
+    executionKind?: ExecutionKind;
 };
 export type WorkflowRunPermissionMode = Exclude<PermissionMode, "plan">;
 type WorkflowControlSignal = "interrupt" | "dispatch" | "finalize";
@@ -75,6 +76,7 @@ export type WorkflowRunOptions = {
     clearContext?: boolean;
     sessionId?: string;
     startNodeId?: string;
+    executionKind?: ExecutionKind;
 };
 export class WorkflowEngine {
     private readonly transitionController = new NodeTransitionController();
@@ -95,12 +97,12 @@ export class WorkflowEngine {
     }
     async run(config: AgentTeamConfig, workflowId: string, input: unknown, options: WorkflowRunOptions = {}): Promise<WorkflowState> {
         assertWorkflowRunPermissionMode(options.permissionMode);
-        const workflow = config.workflows[workflowId];
+        const workflow = executionCollection(config, workflowId, options.executionKind);
         if (!workflow)
-            throw new Error(`Unknown workflow ${workflowId}`);
+            throw new Error(`Unknown ${options.executionKind ?? "workflow"} ${workflowId}`);
         const startNodeId = resolveStartNodeId(workflow, options.startNodeId);
         const store = await this.runStore();
-        const run = await store.createRun(workflowId, publicWorkflowInput(input), { sessionId: options.sessionId, configFingerprint: workflowConfigFingerprint(config, workflowId), permissionMode: options.permissionMode });
+        const run = await store.createRun(workflowId, publicWorkflowInput(input), { sessionId: options.sessionId, executionKind: options.executionKind ?? "workflow", configFingerprint: workflowConfigFingerprint(config, workflowId, options.executionKind), permissionMode: options.permissionMode });
         const initialHandoff = await this.prepareInitialHandoff(input, run.runDir, options);
         const planRequestedPermissionRules = planRequestedPermissionRulesFromHandoff(initialHandoff);
         return this.continueFrom({
@@ -113,15 +115,16 @@ export class WorkflowEngine {
             initialHandoff,
             attempts: [],
             runPermissionMode: options.permissionMode,
-            planRequestedPermissionRules
+            planRequestedPermissionRules,
+            executionKind: options.executionKind
         });
     }
     async resume(config: AgentTeamConfig, workflowId: string, runId: string, userInput: unknown): Promise<WorkflowState> {
-        const workflow = config.workflows[workflowId];
-        if (!workflow)
-            throw new Error(`Unknown workflow ${workflowId}`);
         const store = await this.runStore();
         const state = await store.loadState(runId);
+        const workflow = executionCollection(config, workflowId, state.execution_kind);
+        if (!workflow)
+            throw new Error(`Unknown ${state.execution_kind ?? "workflow"} ${workflowId}`);
         const lease = await store.acquireRunLease(runId);
         try {
         const guarded = await this.continueReworkLimitWithInput({ config, workflowId, workflow, store, runId, state, input: userInput });
@@ -192,9 +195,9 @@ export class WorkflowEngine {
         const store = await this.runStore();
         const state = await store.loadState(runId);
         const workflowId = state.workflow_id;
-        const workflow = config.workflows[workflowId];
+        const workflow = executionCollection(config, workflowId, state.execution_kind);
         if (!workflow)
-            throw new Error(`Unknown workflow ${workflowId}`);
+            throw new Error(`Unknown ${state.execution_kind ?? "workflow"} ${workflowId}`);
         const stream = new EventStream<StoredEvent>();
         const replayEvents = await store.loadEvents(runId);
         for (const event of replayEvents) {
@@ -287,6 +290,7 @@ export class WorkflowEngine {
                 resume: segment.resume,
                 runPermissionMode: latestState.run_permission_mode,
                 planRequestedPermissionRules: latestState.plan_requested_permission_rules,
+                executionKind: latestState.execution_kind,
                 eventSink: (event) => stream.push(event),
                 interaction: {
                     requestPermission: (request) => permissions.request(request)
@@ -582,11 +586,11 @@ export class WorkflowEngine {
     }
     async startInteractive(config: AgentTeamConfig, workflowId: string, input: unknown, options: WorkflowRunOptions = {}): Promise<WorkflowSession> {
         assertWorkflowRunPermissionMode(options.permissionMode);
-        const workflow = config.workflows[workflowId];
+        const workflow = executionCollection(config, workflowId, options.executionKind);
         if (!workflow)
-            throw new Error(`Unknown workflow ${workflowId}`);
+            throw new Error(`Unknown ${options.executionKind ?? "workflow"} ${workflowId}`);
         const store = await this.runStore();
-        const run = await store.createRun(workflowId, publicWorkflowInput(input), { sessionId: options.sessionId, configFingerprint: workflowConfigFingerprint(config, workflowId), permissionMode: options.permissionMode });
+        const run = await store.createRun(workflowId, publicWorkflowInput(input), { sessionId: options.sessionId, executionKind: options.executionKind ?? "workflow", configFingerprint: workflowConfigFingerprint(config, workflowId, options.executionKind), permissionMode: options.permissionMode });
         const initialHandoff = await this.prepareInitialHandoff(input, run.runDir, options);
         const planRequestedPermissionRules = planRequestedPermissionRulesFromHandoff(initialHandoff);
         const stream = new EventStream<StoredEvent>();
@@ -607,7 +611,8 @@ export class WorkflowEngine {
             version: 5,
             status: "running",
             workflow_id: workflowId,
-            config_fingerprint: workflowConfigFingerprint(config, workflowId),
+            execution_kind: options.executionKind ?? "workflow",
+            config_fingerprint: workflowConfigFingerprint(config, workflowId, options.executionKind),
             ...(runPermissionMode ? { run_permission_mode: runPermissionMode } : {}),
             ...(planRequestedPermissionRules.length ? { plan_requested_permission_rules: planRequestedPermissionRules } : {}),
             current_node_id: startNodeId,
@@ -696,6 +701,7 @@ export class WorkflowEngine {
                 resume: segment.resume,
                 runPermissionMode: latestState.run_permission_mode,
                 planRequestedPermissionRules: latestState.plan_requested_permission_rules,
+                executionKind: latestState.execution_kind,
                 eventSink: (event) => stream.push(event),
                 interaction: {
                     requestPermission: (request) => permissions.request(request)
@@ -1029,9 +1035,9 @@ export class WorkflowEngine {
     private async continueFrom(options: ContinueOptions): Promise<WorkflowState> {
         const lease = await options.store.acquireRunLease(options.runId);
         try {
-        const configFingerprint = options.configFingerprint ?? workflowConfigFingerprint(options.config, options.workflowId);
+        const configFingerprint = options.configFingerprint ?? workflowConfigFingerprint(options.config, options.workflowId, options.executionKind);
         options.configFingerprint = configFingerprint;
-        const basePermissions = options.workflow.workflow_permissions ?? permissionSetSchema.parse(undefined);
+        const basePermissions = options.workflow.permissions ?? permissionSetSchema.parse(undefined);
         const planRequestedPermissionRules = options.planRequestedPermissionRules?.length
             ? options.planRequestedPermissionRules
             : planRequestedPermissionRulesFromHandoff(options.initialHandoff);
@@ -1058,6 +1064,7 @@ export class WorkflowEngine {
             suspended_stack: [...suspendedStack],
             rework_count: reworkCount,
             rework_limit: reworkLimit,
+            execution_kind: options.executionKind ?? "workflow",
             ...(options.runPermissionMode ? { run_permission_mode: options.runPermissionMode } : {}),
             ...(planRequestedPermissionRules.length ? { plan_requested_permission_rules: planRequestedPermissionRules } : {})
         });
@@ -1136,7 +1143,8 @@ export class WorkflowEngine {
             try {
                 result = await runNode({
                     node,
-                    navigation: this.transitionController.navigation(options.workflow, node.id),
+                    navigation: options.executionKind === "team" ? undefined : this.transitionController.navigation(options.workflow, node.id),
+                    executionKind: options.executionKind,
                     systemPrompt: effectiveSystemPrompt(options.config.global_prompt, role.system_prompt),
                     model: resolveModelForWorkflowNode({ node, role, provider: providerConfig, permissionMode: effectivePermissionMode, planModel: providerConfig.plan_model, registry: modelRegistryFromProviderConfig(providerConfig) }),
                     effort: resolveEffortForWorkflowNode({ node, provider: providerConfig }),
@@ -1233,6 +1241,23 @@ export class WorkflowEngine {
             }
             try {
                 result = await this.ensureNodeDeliverable(options, node.id, attempt, result!, activation);
+                const currentCheckpoint = checkpoint();
+                if (options.executionKind === "team") {
+                    setAttemptOutcome(attempts, attemptIndex, activation, "completed", "forwarded", result);
+                    await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: node.id, attempt, activation, status: "completed", result }, options.eventSink);
+                    const awaitingState: WorkflowState = {
+                        status: "awaiting_bus",
+                        ...stateBase(),
+                        current_node_id: node.id,
+                        attempts,
+                        handoff,
+                        resume_checkpoint: currentCheckpoint
+                    };
+                    options.onState?.(awaitingState);
+                    await options.store.saveState(options.runId, awaitingState);
+                    await this.appendEvent(options.store, options.runId, { type: "run_awaiting_bus", node_id: node.id, reason: "team_boundary" }, options.eventSink);
+                    return awaitingState;
+                }
                 const resolution = this.transitionController.resolve({
                     workflow: options.workflow,
                     nodeId: node.id,
@@ -1241,10 +1266,10 @@ export class WorkflowEngine {
                     reworkCount,
                     reworkLimit
                 });
-                const currentCheckpoint = checkpoint();
+                const workflowCheckpoint = checkpoint();
                 if (resolution.type === "user") {
                     syncOptions();
-                    return this.waitForUserQuestions(options, node.id, attempt, activation, attempts, attemptIndex, handoff, result.questions, result, currentCheckpoint);
+                    return this.waitForUserQuestions(options, node.id, attempt, activation, attempts, attemptIndex, handoff, result.questions, result, workflowCheckpoint);
                 }
                 if (resolution.type === "rework_limit") {
                     const questions = reworkLimitQuestions(reworkLimit);
@@ -1256,7 +1281,7 @@ export class WorkflowEngine {
                         current_node_id: node.id,
                         attempts,
                         handoff,
-                        resume_checkpoint: currentCheckpoint,
+                        resume_checkpoint: workflowCheckpoint,
                         pending_interaction: pendingInteraction
                     };
                     await this.appendEvent(options.store, options.runId, { type: "node_waiting_user", node_id: node.id, attempt, activation, questions }, options.eventSink);
@@ -1273,7 +1298,7 @@ export class WorkflowEngine {
                         current_node_id: node.id,
                         attempts,
                         handoff,
-                        resume_checkpoint: currentCheckpoint
+                        resume_checkpoint: workflowCheckpoint
                     };
                     options.onState?.(awaitingState);
                     await options.store.saveState(options.runId, awaitingState);
@@ -1442,6 +1467,22 @@ export class WorkflowEngine {
         if (attemptIndex >= 0) setAttemptOutcome(attempts, attemptIndex, activation, "failure", "failed", result);
         await this.appendEvent(options.store, options.runId, { type: "node_completed", node_id: nodeId, attempt, activation, status: "failure", result }, options.eventSink);
         const checkpoint = resumeCheckpoint ?? { node_id: nodeId, handoff, attempt, activation, dialogue_cursor: 0, dialogue_messages: [] };
+        if (options.executionKind === "team") {
+            const state: WorkflowState = {
+                status: "awaiting_bus",
+                workflow_id: options.workflowId,
+                ...continuationStateFields(options, checkpoint),
+                current_node_id: nodeId,
+                attempts,
+                handoff,
+                resume_checkpoint: checkpoint,
+                pending_interaction: undefined
+            };
+            options.onState?.(state);
+            await options.store.saveState(options.runId, state);
+            await this.appendEvent(options.store, options.runId, { type: "run_awaiting_bus", node_id: nodeId, reason: "team_boundary" }, options.eventSink);
+            return state;
+        }
         const questions = result.questions;
         const state: WorkflowState = {
             status: "paused",
@@ -2004,16 +2045,36 @@ function controllerReturnMessage(fromNodeId: string, result: NodeResult, handoff
         }, null, 2)
     };
 }
-export function workflowConfigFingerprint(config: AgentTeamConfig, workflowId: string): string {
-    const workflow = config.workflows[workflowId];
-    if (!workflow) throw new Error(`Unknown workflow ${workflowId}`);
-    const roleIds = [...new Set(workflow.nodes.map((node) => node.role))].sort();
-    const material = {
-        workflow,
-        roles: Object.fromEntries(roleIds.map((roleId) => [roleId, config.roles[roleId]])),
-        global_prompt: config.global_prompt ?? ""
-    };
+export function workflowConfigFingerprint(
+    config: AgentTeamConfig,
+    configId: string,
+    executionKind: ExecutionKind = "workflow"
+): string {
+    const collection = executionCollection(config, configId, executionKind);
+    if (!collection) throw new Error(`Unknown ${executionKind} ${configId}`);
+    const roleIds = [...new Set(collection.nodes.map((node) => node.role))].sort();
+    const roles = Object.fromEntries(roleIds.map((roleId) => [roleId, config.roles[roleId]]));
+    const material = executionKind === "workflow"
+        ? {
+            workflow: collection,
+            roles,
+            global_prompt: config.global_prompt ?? ""
+        }
+        : {
+            execution_kind: "team",
+            team: collection,
+            roles,
+            global_prompt: config.global_prompt ?? ""
+        };
     return createHash("sha256").update(stableJson(material)).digest("hex");
+}
+
+function executionCollection(
+    config: AgentTeamConfig,
+    configId: string,
+    executionKind: ExecutionKind = "workflow"
+): WorkflowConfig | undefined {
+    return executionKind === "team" ? config.teams?.[configId] : config.workflows[configId];
 }
 function stableJson(value: unknown): string {
     if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -2040,7 +2101,8 @@ function continuationStateFields(options: ContinueOptions, checkpoint: WorkflowS
     if (checkpoint) nodeCheckpoints[checkpoint.node_id] = checkpoint;
     return {
         version: 5 as const,
-        config_fingerprint: options.configFingerprint ?? workflowConfigFingerprint(options.config, options.workflowId),
+        execution_kind: options.executionKind ?? "workflow",
+        config_fingerprint: options.configFingerprint ?? workflowConfigFingerprint(options.config, options.workflowId, options.executionKind),
         node_checkpoints: nodeCheckpoints,
         suspended_stack: [...options.suspendedStack ?? []],
         rework_count: options.reworkCount ?? 0,

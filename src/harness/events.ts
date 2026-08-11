@@ -36,7 +36,7 @@ export type HarnessEvent =
   | { type: "permission_resolved"; request_id: string; node_id: string; attempt: number; tool_call_id: string; decision: "allow_once" | "deny_once" }
   | { type: "node_interrupted"; node_id: string; attempt: number }
   | { type: "bus_node_dispatched"; from_node_id?: string; to_node_id: string; reason?: string }
-  | { type: "run_awaiting_bus"; node_id: string; reason: "workflow_boundary" | "reassigned" | "finalizing" }
+  | { type: "run_awaiting_bus"; node_id: string; reason: "workflow_boundary" | "team_boundary" | "reassigned" | "finalizing" }
   | { type: "run_interrupted"; reason: "user" }
   | { type: "run_completed"; result: unknown }
   | { type: "run_cancelled"; reason: string }

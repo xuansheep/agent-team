@@ -1,4 +1,4 @@
-import type { AgentTeamConfig } from "../config/schema.js";
+import type { AgentTeamConfig, ExecutionKind } from "../config/schema.js";
 import { PlanModeController, type PlanApprovalResolutionResult } from "../kernel/plan/planModeController.js";
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "../kernel/plan/planToolCallMessages.js";
 import { reduceKernelSession, type KernelSession, type PlanApprovalResolveMetadata } from "../kernel/session.js";
@@ -49,6 +49,7 @@ export type PlanWorkflowTransitionInput = {
   session: KernelSession;
   config: AgentTeamConfig;
   workflowId: string;
+  executionKind?: ExecutionKind;
   permissionMode?: PlanApprovalResolveMetadata["permissionMode"];
   clearContext?: boolean;
   feedback?: unknown;
@@ -201,7 +202,8 @@ export class ExecutionCoordinator {
           permissionMode: execution.permissionMode,
           clearContext: execution.clearContext,
           sessionId: resolved.session.id,
-          startNodeId: input.startNodeId
+          startNodeId: input.startNodeId,
+          ...(input.executionKind ? { executionKind: input.executionKind } : {})
         }
       );
     } catch (error) {

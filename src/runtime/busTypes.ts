@@ -1,3 +1,4 @@
+import type { ExecutionKind } from "../config/schema.js";
 import type { ModelMessage } from "../providers/types.js";
 import type { WorkflowSession } from "../workflow/session.js";
 import type { WorkflowRunDossier } from "../workflow/dossier.js";
@@ -50,6 +51,7 @@ export type BusDirectiveSelectedEvent = Extract<BusEvent, { type: "bus_directive
 export type BusTaskState = {
   session_id: string;
   workflow_id: string;
+  execution_kind?: ExecutionKind;
   status: BusTaskStatus;
   revision: number;
   selected_node_id?: string;

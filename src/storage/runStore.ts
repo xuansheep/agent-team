@@ -11,12 +11,14 @@ import { AuditStore } from "../audit/auditStore.js";
 import type { AuditEvent } from "../audit/auditEvent.js";
 import { isDestructiveShellCommand } from "../security/shellSafety.js";
 import { SessionStore } from "./sessionStore.js";
+import type { ExecutionKind } from "../config/schema.js";
 
 export type RunMetadata = {
   version: 1;
   runId: string;
   sessionId: string;
   workflowId: string;
+  executionKind?: ExecutionKind;
   createdAt: string;
   trigger: "initial" | "follow_up" | "retry" | "manual";
   parentRunId?: string;
@@ -30,6 +32,7 @@ export type RunSummary = {
   sessionId: string;
   runDir: string;
   workflowId: string;
+  executionKind: ExecutionKind;
   status: WorkflowState["status"];
   currentNodeId?: string;
   startedAt?: string;
@@ -43,6 +46,7 @@ export type CreateRunOptions = {
   trigger?: RunMetadata["trigger"];
   parentRunId?: string;
   configFingerprint?: string;
+  executionKind?: ExecutionKind;
   permissionMode?: string;
 };
 
@@ -124,6 +128,7 @@ export class RunStore {
       runId,
       sessionId,
       workflowId,
+      ...(options.executionKind ? { executionKind: options.executionKind } : {}),
       createdAt: new Date().toISOString(),
       trigger: options.trigger ?? "initial",
       ...(options.parentRunId ? { parentRunId: options.parentRunId } : {}),
@@ -443,6 +448,7 @@ export class RunStore {
       sessionId: metadata.sessionId,
       runDir,
       workflowId: metadata.workflowId,
+      executionKind: state.execution_kind ?? metadata.executionKind ?? "workflow",
       status: state.status,
       currentNodeId: state.current_node_id,
       startedAt: started?.ts ?? metadata.createdAt,

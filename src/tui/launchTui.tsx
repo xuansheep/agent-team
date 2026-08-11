@@ -24,6 +24,7 @@ import { currentGitBranch } from "./gitBranch.js";
 export type PreparedTuiRuntime = {
   config: AgentTeamConfig;
   workflows: string[];
+  teams: string[];
   engine: ExecutionCoordinator;
   settings: ResolvedAgentTeamSettings;
   promptHistoryStore: PromptHistoryStore;
@@ -52,6 +53,7 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
     promptPath: join(templateConfigDir, "prompt.md")
   });
   const workflows = Object.keys(config.workflows);
+  const teams = Object.keys(config.teams ?? {});
   const mcpConfigOptions = { cwd: options.cwd, userSettingsPath, projectSettingsPath };
   const skillConfigOptions = { cwd: options.cwd, userSettingsPath };
   const mcpServers = await loadMergedMcpServersWithSourceDetails(mcpConfigOptions);
@@ -66,13 +68,14 @@ export async function prepareTuiRuntime(options: { cwd: string; homeDir?: string
   const workflowEngine = new WorkflowEngine({ providerFactory: (providerId) => createProvider(config, providerId), cwd: options.cwd, projectStorage, mcpRuntime, skillRuntime });
   const engine = new ExecutionCoordinator(workflowEngine, { sessionStore });
   const diagnostics = collectRuntimeDiagnostics({ mcpRuntime, skillRuntime });
-  return { config, workflows, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions, skillConfigOptions };
+  return { config, workflows, teams, engine, settings, promptHistoryStore, sessionStore, mcpRuntime, skillRuntime, diagnostics, mcpConfigOptions, skillConfigOptions };
 }
 
 export async function launchTui(options: { cwd: string }): Promise<void> {
   let initialError: string | undefined;
   let config: AgentTeamConfig | undefined;
   let workflows: string[] = [];
+  let teams: string[] = [];
   let engine: ExecutionCoordinator | undefined;
   let settings: ResolvedAgentTeamSettings | undefined;
   let promptHistoryStore: PromptHistoryStore | undefined;
@@ -87,6 +90,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     const prepared = await prepareTuiRuntime(options);
     config = prepared.config;
     workflows = prepared.workflows;
+    teams = prepared.teams;
     engine = prepared.engine;
     settings = prepared.settings;
     promptHistoryStore = prepared.promptHistoryStore;
@@ -98,7 +102,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
     skillConfigOptions = prepared.skillConfigOptions;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    initialError = message.includes("ENOENT") ? "Missing user roles/workflows or bundled config template" : message;
+    initialError = message.includes("ENOENT") ? "Missing user roles/workflows/teams or bundled config template" : message;
   }
 
   const instance = await render(
@@ -108,6 +112,7 @@ export async function launchTui(options: { cwd: string }): Promise<void> {
         initialError={initialError}
         config={config}
         workflows={workflows}
+        teams={teams}
         engine={engine}
         providerFactory={config ? (providerId) => createProvider(config!, providerId) : undefined}
         settings={settings}

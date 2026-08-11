@@ -3,6 +3,7 @@ import { ArtifactStore, type ArtifactRecord } from "../storage/artifacts.js";
 import type { RunStore } from "../storage/runStore.js";
 import { nodeResultSchema, type NodeResult } from "../team/nodeResult.js";
 import type { WorkflowState } from "./state.js";
+import type { ExecutionKind } from "../config/schema.js";
 
 export type DossierNodeResult = {
   seq: number;
@@ -55,6 +56,7 @@ export type DossierProcessLifecycle = {
 export type WorkflowRunDossier = {
   run_id: string;
   workflow_id: string;
+  execution_kind?: ExecutionKind;
   status: WorkflowState["status"];
   current_node_id?: string;
   created_at?: string;
@@ -95,6 +97,7 @@ export async function buildWorkflowRunDossier(store: RunStore, runId: string): P
   return {
     run_id: runId,
     workflow_id: state.workflow_id,
+    execution_kind: state.execution_kind ?? "workflow",
     status: state.status,
     current_node_id: state.current_node_id,
     created_at: state.created_at,

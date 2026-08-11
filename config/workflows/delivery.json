@@ -1,7 +1,7 @@
 {
   "name": "delivery",
   "description": "default workflow, contains product, ui, developer, tester nodes",
-  "workflow_permissions": {
+  "permissions": {
     "deny": [
       "Read(./.env)",
       "Read(./secrets/**)",
@@ -23,7 +23,7 @@
           "Glob",
           "Grep",
           "ArtifactWrite",
-            "ArtifactRead",
+          "ArtifactRead",
           "AttachImage"
         ]
       }
@@ -39,7 +39,7 @@
           "Glob",
           "Grep",
           "ArtifactWrite",
-            "ArtifactRead",
+          "ArtifactRead",
           "AttachImage"
         ]
       }
@@ -61,7 +61,7 @@
           "ProcessStatus",
           "ProcessStop",
           "ArtifactWrite",
-            "ArtifactRead",
+          "ArtifactRead",
           "AttachImage"
         ]
       }
@@ -80,7 +80,7 @@
           "ProcessStatus",
           "ProcessStop",
           "ArtifactWrite",
-            "ArtifactRead"
+          "ArtifactRead"
         ]
       }
     }

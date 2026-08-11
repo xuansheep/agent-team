@@ -30,7 +30,7 @@ export async function ensureUserRoleWorkflowConfig(options: EnsureUserConfigOpti
   await mkdir(userConfigDir, { recursive: true, mode: 0o700 });
 
   const pending: Array<{ source: string; target: string }> = [];
-  for (const name of ["roles", "workflows"]) {
+  for (const name of ["roles", "workflows", "teams"]) {
     const source = join(templateConfigDir, name);
     const target = join(userConfigDir, name);
     const targetStats = await pathStats(target);

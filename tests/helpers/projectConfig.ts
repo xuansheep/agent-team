@@ -79,7 +79,7 @@ export type TestRole = {
 export type TestWorkflow = {
   description?: string;
   nodes: unknown[];
-  workflow_permissions?: unknown;
+  permissions?: unknown;
 };
 
 export async function writeProjectConfig(
@@ -88,14 +88,17 @@ export async function writeProjectConfig(
     prompt?: string;
     roles?: Record<string, TestRole>;
     workflows?: Record<string, TestWorkflow>;
+    teams?: Record<string, TestWorkflow>;
   } = {}
 ): Promise<string> {
   const configDir = join(cwd, "config");
   const rolesDir = join(configDir, "roles");
   const workflowsDir = join(configDir, "workflows");
+  const teamsDir = join(configDir, "teams");
   await Promise.all([
     mkdir(rolesDir, { recursive: true }),
-    mkdir(workflowsDir, { recursive: true })
+    mkdir(workflowsDir, { recursive: true }),
+    mkdir(teamsDir, { recursive: true })
   ]);
   await writeFile(join(configDir, "prompt.md"), options.prompt ?? "", "utf8");
 
@@ -112,6 +115,16 @@ export async function writeProjectConfig(
   await Promise.all(Object.entries(workflows).map(([name, workflow]) => writeFile(
     join(workflowsDir, `${name}.json`),
     `${JSON.stringify({ name, ...workflow }, null, 2)}\n`,
+    "utf8"
+  )));
+
+  const defaultTeamRole = Object.keys(roles)[0] ?? "dev";
+  const teams = options.teams ?? {
+    team: { nodes: [{ id: defaultTeamRole, role: defaultTeamRole, provider: "default" }] }
+  };
+  await Promise.all(Object.entries(teams).map(([name, team]) => writeFile(
+    join(teamsDir, `${name}.json`),
+    `${JSON.stringify({ name, ...team }, null, 2)}\n`,
     "utf8"
   )));
   return configDir;

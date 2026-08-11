@@ -27,7 +27,8 @@ export function WorkflowFlowChart({
   busNodeId,
   columns,
   currentNodeId,
-  suspendedStack = []
+  suspendedStack = [],
+  showConnectors = true
 }: {
   nodes: TuiNodeState[];
   workflowNodes?: TuiWorkflowNodeState[];
@@ -35,6 +36,7 @@ export function WorkflowFlowChart({
   columns?: number;
   currentNodeId?: string;
   suspendedStack?: string[];
+  showConnectors?: boolean;
 }) {
   const [animationRef, animationTime] = useAnimationFrame(nodes.some((node) => node.status === "running") ? RUNNING_TOP_RIGHT_INTERVAL_MS : null);
   const runningBorder: BorderStyle = { ...NODE_BORDER, topRight: RUNNING_TOP_RIGHT_FRAMES[Math.floor(animationTime / RUNNING_TOP_RIGHT_INTERVAL_MS) % RUNNING_TOP_RIGHT_FRAMES.length] };
@@ -84,7 +86,7 @@ export function WorkflowFlowChart({
   let layoutRow = 0;
   let layoutRowWidth = 0;
   const cellLayouts = displayRows.map((row, index) => {
-    const connectorWidth = index < displayRows.length - 1 ? stringWidth(" -> ") : 0;
+    const connectorWidth = showConnectors && index < displayRows.length - 1 ? stringWidth(" -> ") : 0;
     const cellWidth = row.cardWidth + connectorWidth;
     if (layoutRowWidth > 0 && layoutRowWidth + cellWidth > availableColumns) {
       layoutRow += 1;
@@ -97,7 +99,7 @@ export function WorkflowFlowChart({
   const busLayoutRow = busNodeIndex >= 0 ? cellLayouts[busNodeIndex]?.row ?? -1 : -1;
   const nodeCells = displayRows.map((row, index) => {
     const cellLayout = cellLayouts[index]!;
-    const connectorText = index < displayRows.length - 1 ? " -> " : "";
+    const connectorText = showConnectors && index < displayRows.length - 1 ? " -> " : "";
     const cellWidth = cellLayout.cellWidth;
     const branchColumn = Math.floor(row.cardWidth / 2);
     const busLineVisible = showBus && cellLayout.row <= busLayoutRow;

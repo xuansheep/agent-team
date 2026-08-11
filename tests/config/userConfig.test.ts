@@ -6,16 +6,17 @@ import { join, resolve } from "node:path";
 import { defaultBundledConfigDir, ensureUserRoleWorkflowConfig } from "../../src/config/userConfig.js";
 import { writeProjectConfig } from "../helpers/projectConfig.js";
 
-describe("user role and workflow initialization", () => {
+describe("user role, workflow, and team initialization", () => {
   it("locates bundled templates from the package root", () => {
     assert.equal(defaultBundledConfigDir(), resolve("config"));
   });
 
-  it("initializes roles and workflows when the user config root is absent", async () => {
+  it("initializes roles, workflows, and teams when the user config root is absent", async () => {
     const templateRoot = await mkdtemp(join(tmpdir(), "agent-team-template-"));
     const templateConfigDir = await writeProjectConfig(templateRoot, {
       roles: { dev: { system_prompt: "Template role." } },
-      workflows: { delivery: { nodes: [{ id: "dev", role: "dev", provider: "default" }] } }
+      workflows: { delivery: { nodes: [{ id: "dev", role: "dev", provider: "default" }] } },
+      teams: { support: { nodes: [{ id: "dev", role: "dev", provider: "default" }] } }
     });
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-user-home-"));
     const userConfigDir = join(homeDir, ".einsteins");
@@ -24,10 +25,11 @@ describe("user role and workflow initialization", () => {
 
     assert.match(await readFile(join(userConfigDir, "roles", "dev.md"), "utf8"), /Template role/);
     assert.match(await readFile(join(userConfigDir, "workflows", "delivery.json"), "utf8"), /"name": "delivery"/);
+    assert.match(await readFile(join(userConfigDir, "teams", "support.json"), "utf8"), /"name": "support"/);
     await assert.rejects(() => readFile(join(userConfigDir, "prompt.md"), "utf8"), { code: "ENOENT" });
   });
 
-  it("fills missing role and workflow directories for an existing settings-only user", async () => {
+  it("fills missing role, workflow, and team directories for an existing settings-only user", async () => {
     const templateRoot = await mkdtemp(join(tmpdir(), "agent-team-template-"));
     const templateConfigDir = await writeProjectConfig(templateRoot);
     const homeDir = await mkdtemp(join(tmpdir(), "agent-team-existing-home-"));
@@ -39,6 +41,7 @@ describe("user role and workflow initialization", () => {
 
     assert.deepEqual(await readdir(join(userConfigDir, "roles")), ["dev.md"]);
     assert.deepEqual(await readdir(join(userConfigDir, "workflows")), ["delivery.json"]);
+    assert.deepEqual(await readdir(join(userConfigDir, "teams")), ["team.json"]);
     assert.equal(await readFile(join(userConfigDir, "settings.json"), "utf8"), "{\"providers\":{}}\n");
   });
 
@@ -55,6 +58,7 @@ describe("user role and workflow initialization", () => {
     assert.deepEqual(await readdir(join(userConfigDir, "roles")), ["custom.md"]);
     assert.equal(await readFile(join(userConfigDir, "roles", "custom.md"), "utf8"), "custom role\n");
     assert.deepEqual(await readdir(join(userConfigDir, "workflows")), ["delivery.json"]);
+    assert.deepEqual(await readdir(join(userConfigDir, "teams")), ["team.json"]);
   });
 
   it("does not merge or overwrite existing role and workflow directories", async () => {
@@ -71,6 +75,7 @@ describe("user role and workflow initialization", () => {
 
     assert.deepEqual(await readdir(join(userConfigDir, "roles")), ["custom.md"]);
     assert.deepEqual(await readdir(join(userConfigDir, "workflows")), ["custom.json"]);
+    assert.deepEqual(await readdir(join(userConfigDir, "teams")), ["team.json"]);
   });
 
   it("reports a missing bundled template before copying either directory", async () => {
@@ -80,7 +85,7 @@ describe("user role and workflow initialization", () => {
 
     await assert.rejects(
       () => ensureUserRoleWorkflowConfig({ userConfigDir, templateConfigDir }),
-      new RegExp(`Missing bundled config template directory: .*(roles|workflows)`)
+      new RegExp(`Missing bundled config template directory: .*(roles|workflows|teams)`)
     );
     assert.deepEqual(await readdir(userConfigDir), []);
   });

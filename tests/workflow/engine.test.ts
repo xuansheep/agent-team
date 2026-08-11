@@ -1139,7 +1139,7 @@ describe("WorkflowEngine", () => {
       dispatcher: testDispatcher,
       roles: { developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: {
-        workflow_permissions: { allow: [], ask: [], deny: ["Bash(rm *)"] },
+        permissions: { allow: [], ask: [], deny: ["Bash(rm *)"] },
         nodes: [{ id: "developer", role: "developer", provider: "default", permission_mode: "fullAccess" as const, permissions: { allow: ["Bash"], ask: [], deny: [] } }],
         edges: []
       } }
