@@ -6,6 +6,7 @@ import type { AgentTeamConfig } from "../../src/config/schema.js";
 import type { ModelMessage, ModelProvider, ModelRequest } from "../../src/providers/types.js";
 import { createKernelSession } from "../../src/kernel/session.js";
 import { ExecutionCoordinator } from "../../src/runtime/executionCoordinator.js";
+import { requestDispatchDirective } from "../../src/runtime/busDispatcher.js";
 import { SessionExecutionBus } from "../../src/runtime/sessionExecutionBus.js";
 import type { BusEvent, SessionBusCheckpoint } from "../../src/runtime/busTypes.js";
 import { SessionStore } from "../../src/storage/sessionStore.js";
@@ -41,6 +42,73 @@ const config: AgentTeamConfig = {
 };
 
 describe("SessionExecutionBus", () => {
+  it("loads the optional bus role between global instructions and every phase routing protocol", async () => {
+    const promptConfig: AgentTeamConfig = {
+      ...config,
+      global_prompt: "GLOBAL BUS TEST INSTRUCTIONS",
+      roles: {
+        ...config.roles,
+        bus: {
+          description: "Task orchestration",
+          system_prompt: "BUS ROLE TEST STRATEGY",
+          requires: { tool_calling: false, vision: false }
+        }
+      }
+    };
+    const provider = responseProvider(
+      { type: "answer", confidence: 1, message: "Handled directly." },
+      { type: "plan", confidence: 1, node_id: "product", reason: "Plan first." },
+      {
+        type: "finalize",
+        confidence: 1,
+        summary: {
+          summary: "Complete.",
+          outcomes: [],
+          verification: [],
+          residual_risks: [],
+          artifacts: []
+        }
+      }
+    );
+
+    for (const phase of ["user", "plan", "lifecycle"] as const) {
+      await requestDispatchDirective({
+        config: promptConfig,
+        workflowId: "delivery",
+        sessionId: `session-${phase}`,
+        phase,
+        messages: [{ role: "user", content: "route this" }],
+        providerFactory: provider.factory
+      });
+    }
+
+    assert.equal(provider.requests.length, 3);
+    for (const request of provider.requests) {
+      const systemPrompt = String(request.messages.find((message) => message.role === "system")?.content ?? "");
+      const globalIndex = systemPrompt.indexOf("GLOBAL BUS TEST INSTRUCTIONS");
+      const roleIndex = systemPrompt.indexOf("BUS ROLE TEST STRATEGY");
+      const protocolIndex = systemPrompt.indexOf("Never silently fall back to the first node");
+      assert.ok(globalIndex >= 0);
+      assert.ok(roleIndex > globalIndex);
+      assert.ok(protocolIndex > roleIndex);
+    }
+  });
+
+  it("keeps the built-in routing protocol when the bus role is absent", async () => {
+    const provider = responseProvider({
+      type: "answer",
+      confidence: 1,
+      message: "Handled directly."
+    });
+    const bus = createBus({ coordinator: fakeCoordinator(), providerFactory: provider.factory });
+
+    await bus.handleUserMessage("answer this");
+
+    const systemPrompt = String(provider.requests[0]?.messages.find((message) => message.role === "system")?.content ?? "");
+    assert.match(systemPrompt, /You are the session execution bus/);
+    assert.match(systemPrompt, /Never silently fall back to the first node/);
+  });
+
   it("starts a workflow from the node selected by the bus", async () => {
     const workflow = createWorkflow({ currentNodeId: "dev" });
     const starts: Array<{ input: unknown; options: unknown }> = [];

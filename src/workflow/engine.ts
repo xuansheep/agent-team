@@ -2052,7 +2052,10 @@ export function workflowConfigFingerprint(
 ): string {
     const collection = executionCollection(config, configId, executionKind);
     if (!collection) throw new Error(`Unknown ${executionKind} ${configId}`);
-    const roleIds = [...new Set(collection.nodes.map((node) => node.role))].sort();
+    const roleIds = [...new Set([
+        ...collection.nodes.map((node) => node.role),
+        ...(config.roles.bus ? ["bus"] : [])
+    ])].sort();
     const roles = Object.fromEntries(roleIds.map((roleId) => [roleId, config.roles[roleId]]));
     const material = executionKind === "workflow"
         ? {

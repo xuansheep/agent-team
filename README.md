@@ -69,6 +69,7 @@ Runtime configuration has this layout:
   settings.json       # providers, user MCP, and local project MCP overrides
   history.jsonl       # project-scoped prompt input history
   roles/
+    bus.md             # optional session bus strategy
     developer.md
   workflows/
     delivery.json
@@ -92,7 +93,7 @@ Runtime configuration has this layout:
       SKILL.md
 ```
 
-The runtime never reads roles, workflows, or teams from the current project's `config/` directory. Missing user-level directories are initialized atomically from the bundled templates; existing `roles`, `workflows`, or `teams` directories are never merged with or overwritten. The bundled `config/prompt.md` contains mandatory system instructions prepended to every role prompt.
+The runtime never reads roles, workflows, or teams from the current project's `config/` directory. Missing user-level directories are initialized atomically from the bundled templates; existing `roles`, `workflows`, or `teams` directories are never merged with or overwritten. The bundled `config/prompt.md` contains mandatory system instructions prepended to every role prompt. The optional reserved `bus` role is loaded automatically by the session execution bus and does not need to appear in workflow or team `nodes`; when it is absent, the built-in routing protocol remains unchanged. Because existing role directories are not merged, existing users must add `~/.einsteins/roles/bus.md` themselves to opt into the bundled bus strategy.
 
 Project-specific instructions may be added in `.einsteins/AGENTS.md`; they supplement but cannot override the bundled prompt or active role prompt. Skill precedence is nearest project `.einsteins/skills`, user `~/.einsteins/skills`, then legacy user `~/.agents/skills`. Project `.agents` directories are not read. Each role Markdown file uses `SKILL.md`-style YAML frontmatter with `name` and `description`; its body is the role system prompt.
 

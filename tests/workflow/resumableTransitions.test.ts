@@ -190,6 +190,31 @@ describe("resumable workflow transitions", () => {
     assert.match(JSON.stringify(requests[1]?.messages), /current role prompt/);
     assert.equal(resumed.config_fingerprint, workflowConfigFingerprint(changed, "delivery"));
   });
+
+  it("includes the optional bus role in the workflow configuration fingerprint", () => {
+    const withoutBus = config();
+    const withBus = config();
+    withBus.roles.bus = {
+      description: "Task orchestration",
+      system_prompt: "Plan and assign work.",
+      requires: { tool_calling: false, vision: false }
+    };
+
+    assert.notEqual(
+      workflowConfigFingerprint(withBus, "delivery"),
+      workflowConfigFingerprint(withoutBus, "delivery")
+    );
+
+    const changedBus = config();
+    changedBus.roles.bus = {
+      ...withBus.roles.bus,
+      system_prompt: "Plan, assign, and review work."
+    };
+    assert.notEqual(
+      workflowConfigFingerprint(changedBus, "delivery"),
+      workflowConfigFingerprint(withBus, "delivery")
+    );
+  });
 });
 
 function submittedResponse(id: string, direction: "forward" | "backward", summary: string, instruction: string, defects: string[] = [], document = "") {

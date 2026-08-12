@@ -267,7 +267,11 @@ function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig):
     `Execution target: ${executionKind} ${input.workflowId}`,
     `Nodes: ${JSON.stringify(nodeCatalog)}`
   ].join("\n");
-  const system = [input.config.global_prompt?.trim(), busPrompt].filter(Boolean).join("\n\n");
+  const system = [
+    input.config.global_prompt?.trim(),
+    input.config.roles.bus?.system_prompt.trim(),
+    busPrompt
+  ].filter(Boolean).join("\n\n");
   const runtimeContextMessage: ModelMessage[] = input.runtimeContext
     ? [{
         role: "user",

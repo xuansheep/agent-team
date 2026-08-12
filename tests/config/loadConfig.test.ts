@@ -296,15 +296,19 @@ workflows:
     }
   });
 
-  it("loads the bundled four-node resumable delivery workflow", async () => {
+  it("loads the bundled delivery workflow and team", async () => {
     const config = await loadTestConfig(resolve("config"));
     const workflow = config.workflows.delivery;
     const team = config.teams!.team;
 
-    assert.deepEqual(team.nodes.map((node) => node.id), ["product", "ui", "frontend", "backend", "mobile", "tester", "security", "devops"]);
+    assert.deepEqual(team.nodes.map((node) => node.id), ["product", "ui", "developer", "tester", "security", "devops"]);
     assert.equal(team.nodes.every((node) => node.provider === "default"), true);
-    assert.equal(team.description, undefined);
-    assert.equal(team.permissions, undefined);
+    assert.equal(team.description, "default team, contains product, ui, developer, tester, security, devops nodes");
+    assert.deepEqual(team.permissions, {
+      deny: ["Read(./.env)", "Read(./secrets/**)", "Bash(rm *)"],
+      ask: [],
+      allow: []
+    });
     assert.equal(config.roles.user_acceptance, undefined);
     assert.equal(workflow.nodes.some((node) => node.id === "user_acceptance" || node.role === "user_acceptance"), false);
     assert.equal(workflow.description, "default workflow, contains product, ui, developer, tester nodes");
@@ -540,9 +544,11 @@ workflows:
     await assert.rejects(() => loadTestConfig(configDir), /Unrecognized key.*edges/s);
   });
 
-  it("loads non-negotiable FullAccess boundaries for product and UI roles", async () => {
+  it("loads non-negotiable bundled role prompts", async () => {
     const config = await loadConfig(resolve("config"), { settings: providerSettings() });
 
+    assert.match(config.roles.bus.system_prompt, /smallest useful units/);
+    assert.match(config.roles.bus.system_prompt, /objective, scope, relevant inputs, expected deliverables/);
     assert.match(config.roles.product.system_prompt, /FullAccess mode.*do not override this role boundary/);
     assert.match(config.roles.product.system_prompt, /only permitted mutation.*ArtifactWrite/);
     assert.match(config.roles.product.system_prompt, /Never use Write, Edit, MultiEdit/);
