@@ -80,6 +80,7 @@ export type NodeWaitingUserResult = {
 export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> {
   options.abortSignal?.throwIfAborted();
   const attempt = options.attempt ?? 1;
+  const activation = options.activation ?? 1;
   const artifactDeliverables: NodeResult["deliverables"] = [];
   const runtimePermissions = normalizeRuntimePermissions(options.permissions);
   let requestTools = modelVisibleWorkflowTools(options.tools, runtimePermissions);
@@ -104,13 +105,13 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     }); }
   });
   let activeDialogue = [...options.dialogueMessages ?? []];
-  const durableDialogue = await options.store.loadWorkflowDialogueState(options.runId, options.node.id, attempt);
+  const durableDialogue = await options.store.loadWorkflowDialogueState(options.runId, options.node.id, attempt, undefined, activation);
   const restoredDurableTail = options.dialogueCursor !== undefined && durableDialogue.cursor > options.dialogueCursor;
   if (restoredDurableTail) activeDialogue = durableDialogue.messages;
   const messages: ModelMessage[] = [...baseMessages, ...activeDialogue];
   const baseMessageCount = baseMessages.length;
   const dialogueMessageCount = () => messages.length - baseMessageCount;
-  let dialogueCursor = await options.store.syncWorkflowDialogue(options.runId, options.node.id, attempt, activeDialogue);
+  let dialogueCursor = await options.store.syncWorkflowDialogue(options.runId, options.node.id, attempt, activeDialogue, activation);
   let dialogueWindow = durableDialogue.window;
   const requestHistory = (dialogue = messages.slice(baseMessageCount)): ModelMessage[] => {
     if (dialogueWindow.windowNumber === 0) return [...baseMessages, ...dialogue];
@@ -152,7 +153,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
     await options.onDialogueMessages?.([...activeDialogue]);
   }
   const currentLimits = () => getModelContextLimits(options.model, options.modelRegistry, options.maxOutputTokens);
-  const previousContext = await options.store.latestNodeContext(options.runId, options.node.id, attempt);
+  const previousContext = await options.store.latestNodeContext(options.runId, options.node.id, attempt, activation);
   let contextTokens = previousContext && previousContext.dialogue_message_count <= dialogueMessageCount()
     ? previousContext.context_tokens
     : estimateModelMessagesTokens(messages);
@@ -391,7 +392,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         compactionHash: limits.compactionHash,
         contextWindow: limits.effectiveContextWindow,
         prefixInputTokens
-      });
+      }, activation);
       await replaceDialogue(compactedState.messages, compactedState.cursor);
       dialogueWindow = compactedState.window;
       contextTokens = compactedContextTokens;
@@ -443,7 +444,8 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       options.node.id,
       attempt,
       messages.slice(baseMessageCount),
-      recoveredMessages
+      recoveredMessages,
+      activation
     );
     await replaceDialogue(reconciledState.messages, reconciledState.cursor);
     contextTokens += estimateModelMessagesTokens(recoveredMessages);
@@ -868,9 +870,13 @@ function artifactFromToolResult(result: ToolResult): { artifact_id: string; path
 }
 function modelVisibleWorkflowTools(registry: ToolRegistry, permissions: ToolPermissionContext): Tool[] {
   return [
-    ...registry.list().filter((tool) => !isToolExplicitlyDenied(tool.name, permissions)),
+    ...registry.list().filter((tool) => !isWorkflowOwnedPlanTool(tool.name) && !isToolExplicitlyDenied(tool.name, permissions)),
     submitNodeResultTool
   ];
+}
+
+function isWorkflowOwnedPlanTool(name: string): boolean {
+  return name === "EnterPlanMode" || name === "ExitPlanMode";
 }
 
 function normalizeRuntimePermissions(permissions: ToolPermissionContext | PermissionSet): ToolPermissionContext {

@@ -18,7 +18,7 @@ import { testDispatcher } from "../helpers/projectConfig.js";
 const config: AgentTeamConfig = {
   providers: {
     default: {
-      type: "openai-compatible",
+      type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true },
       base_url: "https://api.example.test/v1",
       api_key: "test-key",
       default_model: "gpt-test",
@@ -238,8 +238,54 @@ describe("SessionExecutionBus", () => {
     await bus.handleUserMessage("implement it");
     await bus.handleUserMessage("plan the follow-up", { planMode: true });
 
-    assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["DispatchWorkflowNode"]);
-    assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["SelectWorkflowNode"]);
+    assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["AnswerDirectly", "RequestClarification", "DispatchWorkflowNode"]);
+    assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["SelectWorkflowNode", "RequestClarification"]);
+    assert.equal(requests[0]?.toolChoice, "required");
+    assert.equal(requests[0]?.parallelToolCalls, false);
+  });
+
+  it("supports a direct answer through the required decision tool", async () => {
+    const requests: ModelRequest[] = [];
+    const toolCallingConfig: AgentTeamConfig = {
+      ...config,
+      providers: {
+        default: {
+          ...config.providers.default,
+          capabilities: {
+            ...config.providers.default.capabilities,
+            tool_calling: true,
+            json_schema_output: false
+          }
+        }
+      }
+    };
+    const bus = createBus({
+      config: toolCallingConfig,
+      coordinator: fakeCoordinator(),
+      providerFactory: () => ({
+        async generate(request) {
+          requests.push(request);
+          return {
+            tool_calls: [{
+              id: "answer-1",
+              name: "AnswerDirectly",
+              input: {
+                message: "Handled directly by the bus.",
+                confidence: 0.99
+              }
+            }]
+          };
+        }
+      })
+    });
+
+    const turn = await bus.handleUserMessage("answer this directly");
+
+    assert.equal(turn.directive.type, "answer");
+    assert.equal(turn.state.status, "idle");
+    assert.equal(turn.state.messages.at(-1)?.content, "Handled directly by the bus.");
+    assert.equal(requests[0]?.toolChoice, "required");
+    assert.equal(requests[0]?.parallelToolCalls, false);
   });
 
   it("includes restored conversation and workflow state in dispatcher context", async () => {
@@ -367,7 +413,10 @@ describe("SessionExecutionBus", () => {
     const persisted = await store.loadBusRoutingEvents("session-thinking");
     assert.equal(persisted.length, 1);
     assert.equal(persisted[0]?.event.routing_id, started.routing_id);
-    assert.equal(persisted[0]?.event.thinking, "Checked node responsibilities.");
+    assert.equal(persisted[0]?.event.type, "bus_directive_selected");
+    if (persisted[0]?.event.type === "bus_directive_selected") {
+      assert.equal(persisted[0].event.thinking, "Checked node responsibilities.");
+    }
   });
 
   it("correlates streamed bus thinking and retry rollback with one routing turn", async () => {
@@ -544,50 +593,122 @@ describe("SessionExecutionBus", () => {
     assert.equal(metadata?.execution?.workflowBinding?.runId, workflow.session.runId);
   });
 
-  it("asks for clarification when dispatcher confidence is below threshold", async () => {
+  it("re-evaluates low-confidence routing without asking the user to choose a node", async () => {
     let starts = 0;
+    const workflow = createWorkflow();
     const coordinator = fakeCoordinator({
       startInteractive: async () => {
         starts += 1;
-        return createWorkflow().session;
+        return workflow.session;
       }
     });
-    const provider = responseProvider({
-      type: "dispatch",
-      confidence: 0.4,
-      node_id: "product",
-      instruction: "Start",
-      reason: "Unsure"
-    });
+    const provider = responseProvider(
+      { type: "dispatch", confidence: 0.4, node_id: "product", instruction: "Start", reason: "Unsure" },
+      { type: "dispatch", confidence: 0.9, node_id: "product", instruction: "Start", reason: "Best available node" }
+    );
     const events: BusEvent[] = [];
     const bus = createBus({ coordinator, providerFactory: provider.factory, events });
 
     const turn = await bus.handleUserMessage("ambiguous request");
 
-    assert.equal(turn.directive.type, "clarify");
-    assert.equal(turn.state.status, "waiting_user");
-    assert.equal(starts, 0);
-    const clarification = events.find((event) => event.type === "bus_clarification_requested") as Extract<BusEvent, { type: "bus_clarification_requested" }> | undefined;
-    assert.equal(clarification?.reason, "low_confidence");
+    assert.equal(turn.directive.type, "dispatch");
+    assert.equal(turn.state.status, "running_workflow");
+    assert.equal(starts, 1);
+    assert.equal(events.some((event) => event.type === "bus_dispatcher_protocol_retry_scheduled" && event.reason === "low_confidence"), true);
+    assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
   });
 
-  it("asks for clarification when dispatcher output is invalid", async () => {
+  it("does not turn repeated low-confidence clarification into a user routing prompt", async () => {
+    const events: BusEvent[] = [];
+    const provider = responseProvider(
+      { type: "clarify", confidence: 0, message: "Choose a node or direct answer." },
+      { type: "clarify", confidence: 0, message: "Choose a node or direct answer." }
+    );
+    const bus = createBus({
+      coordinator: fakeCoordinator(),
+      providerFactory: provider.factory,
+      events
+    });
+
+    const turn = await bus.handleUserMessage("直接答复");
+
+    assert.equal(turn.directive.type, "routing_failed");
+    assert.equal(turn.state.status, "routing_failed");
+    assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
+    assert.equal(provider.requests.length, 2);
+  });
+
+  it("retries a nonexistent node selection and dispatches the next valid decision", async () => {
+    const workflow = createWorkflow({ currentNodeId: "dev" });
+    const provider = responseProvider(
+      { type: "dispatch", confidence: 1, node_id: "missing", instruction: "Start", reason: "Invalid node" },
+      { type: "dispatch", confidence: 1, node_id: "dev", instruction: "Implement", reason: "Known node" }
+    );
+    const events: BusEvent[] = [];
+    const bus = createBus({
+      coordinator: fakeCoordinator({ startInteractive: async () => workflow.session }),
+      providerFactory: provider.factory,
+      events
+    });
+
+    const turn = await bus.handleUserMessage("implement it");
+
+    assert.equal(turn.directive.type, "dispatch");
+    assert.equal(turn.state.current_node_id, "dev");
+    assert.equal(provider.requests.length, 2);
+    assert.equal(events.some((event) => event.type === "bus_dispatcher_protocol_retry_scheduled" && event.reason === "invalid_response"), true);
+    assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
+  });
+
+  it("waits only when the dispatcher explicitly identifies a material ambiguity", async () => {
+    const bus = createBus({
+      coordinator: fakeCoordinator(),
+      providerFactory: responseProvider({
+        type: "clarify",
+        confidence: 0.95,
+        message: "Which production region should receive the deployment?"
+      }).factory
+    });
+
+    const turn = await bus.handleUserMessage("deploy it");
+
+    assert.equal(turn.directive.type, "clarify");
+    assert.equal(turn.state.status, "waiting_user");
+  });
+
+  it("retries invalid dispatcher output and returns a recoverable routing failure", async () => {
+    const root = join(process.cwd(), ".tmp", "session-execution-bus-routing-failure", randomUUID());
+    const store = new SessionStore(root);
     const events: BusEvent[] = [];
     const bus = createBus({
       coordinator: fakeCoordinator(),
-      providerFactory: responseProvider("not-json").factory,
+      providerFactory: responseProvider("not-json", "still-not-json").factory,
+      sessionStore: store,
+      sessionId: "session-routing-failure",
       events
     });
 
     const turn = await bus.handleUserMessage("route this");
 
-    assert.equal(turn.directive.type, "clarify");
-    assert.match(turn.directive.type === "clarify" ? turn.directive.message : "", /没有返回可验证的路由决策/);
-    const clarification = events.find((event) => event.type === "bus_clarification_requested") as Extract<BusEvent, { type: "bus_clarification_requested" }> | undefined;
-    assert.equal(clarification?.reason, "invalid_directive");
+    assert.equal(turn.directive.type, "routing_failed");
+    assert.equal(turn.state.status, "routing_failed");
+    assert.equal(events.some((event) => event.type === "bus_dispatcher_protocol_retry_scheduled"), true);
+    assert.equal(events.some((event) => event.type === "bus_routing_failed" && event.error_kind === "protocol"), true);
+    assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
+    const persisted = await store.loadBusRoutingEvents("session-routing-failure");
+    assert.deepEqual(persisted.map((entry) => entry.event.type), [
+      "bus_dispatcher_protocol_retry_scheduled",
+      "bus_directive_selected",
+      "bus_routing_failed"
+    ]);
+    const failure = persisted.at(-1)?.event;
+    assert.equal(failure?.type, "bus_routing_failed");
+    if (failure?.type === "bus_routing_failed") {
+      assert.equal(failure.response_shape, "text:length=14;json=false");
+    }
   });
 
-  it("asks for clarification when the dispatcher provider fails", async () => {
+  it("returns a recoverable routing failure when the dispatcher provider fails", async () => {
     const events: BusEvent[] = [];
     const bus = createBus({
       coordinator: fakeCoordinator(),
@@ -602,10 +723,11 @@ describe("SessionExecutionBus", () => {
 
     const turn = await bus.handleUserMessage("route this");
 
-    assert.equal(turn.directive.type, "clarify");
-    assert.match(turn.directive.type === "clarify" ? turn.directive.message : "", /暂时无法可靠处理/);
-    const clarification = events.find((event) => event.type === "bus_clarification_requested") as Extract<BusEvent, { type: "bus_clarification_requested" }> | undefined;
-    assert.equal(clarification?.reason, "dispatcher_failure");
+    assert.equal(turn.directive.type, "routing_failed");
+    assert.equal(turn.state.status, "routing_failed");
+    assert.match(turn.directive.type === "routing_failed" ? turn.directive.message : "", /调度服务暂时不可用/);
+    assert.equal(events.some((event) => event.type === "bus_routing_failed" && event.error_kind === "provider"), true);
+    assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
   });
 
   it("aborts an active dispatcher request before interrupting the workflow", async () => {
@@ -780,15 +902,18 @@ describe("SessionExecutionBus", () => {
     });
 
     await bus.handleUserMessage("start");
-    for (let activation = 1; activation <= 4; activation += 1) {
+    for (let activation = 1; activation <= 3; activation += 1) {
       workflow.setState({
         status: "awaiting_bus",
         current_node_id: "product",
         attempts: [{ node_id: "product", attempt: 1, activation, status: "completed" }]
       });
-      await waitFor(() => workflow.dispatches.length === activation);
+      if (activation < 3) await waitFor(() => workflow.dispatches.length === activation);
+      else await waitFor(() => bus.state.status === "stalled");
     }
 
+    assert.equal(workflow.dispatches.length, 2);
+    assert.equal(bus.state.stagnant_cycles, 2);
     const serialized = workflow.dispatches.map((dispatch) => JSON.stringify(dispatch.input));
     assert.equal(serialized.every((input) => !input.includes("prior_dossier")), true);
     assert.equal(new Set(serialized.map((input) => input.length)).size, 1);
@@ -855,6 +980,8 @@ describe("SessionExecutionBus", () => {
   it("finalizes the workflow from its dossier and emits the task summary", async () => {
     const workflow = createWorkflow({ currentNodeId: "dev" });
     const runDossier = dossier(workflow.session.runId, "dev");
+    runDossier.node_results.push(verifiedDossierResult("dev", 1));
+    runDossier.latest_results = [...runDossier.node_results];
     const coordinator = fakeCoordinator({
       startInteractive: async () => workflow.session,
       dossier: async () => runDossier
@@ -1071,6 +1198,14 @@ function dossier(
       "raw_tool_result",
       "workflow_dialogue"
     ]
+  };
+}
+
+function verifiedDossierResult(nodeId: string, seq: number): WorkflowRunDossier["node_results"][number] {
+  return {
+    seq, ts: "2026-08-10T00:00:00.000Z", node_id: nodeId, attempt: 1, activation: 1, status: "completed",
+    result: { direction: "forward", summary: "done", document: "done", deliverables: [], feedback: { defects: [], change_requests: [] }, questions: [], handoff: { instruction: "done", must_follow: [], known_risks: [], open_questions: [] } },
+    evidence: { status: "verified", workspace_before_sha256: "a", workspace_after_sha256: "a", workspace_changed: false, changed_paths: [], successful_tool_calls: 1, failed_tool_calls: 0, artifact_count: 0 }
   };
 }
 

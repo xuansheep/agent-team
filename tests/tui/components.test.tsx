@@ -8611,7 +8611,7 @@ describe("TuiApp", () => {
 
 
 
-        default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
+        default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
 
 
 
@@ -10011,7 +10011,7 @@ function tuiConfig() {
 
 
 
-      default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
+      default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } }
 
 
 

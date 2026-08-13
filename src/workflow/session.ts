@@ -8,6 +8,7 @@ export type WorkflowDispatchOptions = {
   reason?: string;
   countsAsRework?: boolean;
   permissionMode?: Exclude<PermissionMode, "plan">;
+  destructivePolicy?: "ask" | "deny";
 };
 
 export type WorkflowSession = {

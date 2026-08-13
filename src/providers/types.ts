@@ -51,6 +51,8 @@ export type ModelRequest = {
   maxOutputTokens?: number;
   messages: ModelMessage[];
   tools: Tool[];
+  toolChoice?: "auto" | "required";
+  parallelToolCalls?: boolean;
   deferredToolNames?: string[];
   deferredTools?: Tool[];
   response_schema?: unknown;

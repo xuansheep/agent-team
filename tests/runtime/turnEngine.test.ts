@@ -411,7 +411,7 @@ describe("TurnEngine", () => {
     await writeFile(join(cwd, ".einsteins", "AGENTS.md"), "Project AGENTS instructions.\n", "utf8");
     const configFile = await writeProjectConfig(cwd);
     const settings = settingsSchema.parse({ providers: { default: {
-      type: "openai-compatible",
+      type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true },
       base_url: "https://api.example.test/v1",
       api_key: "test-key",
       default_model: "gpt-test"

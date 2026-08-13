@@ -25,7 +25,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 function provider(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    type: "openai-compatible",
+    type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true },
     base_url: "https://api.example.test/v1",
     api_key: "test-key",
     default_model: "gpt-test",
@@ -255,9 +255,18 @@ describe("settings", () => {
     assert.throws(() => settingsSchema.parse({ providers: { default: provider({ stream_idle_timeout_ms: 0 }) } }));
   });
 
-  it("rejects provider environment variable keys", () => {
+  it("rejects removed OpenAI-compatible providers", () => {
     assert.throws(() => settingsSchema.parse({ providers: { default: {
       type: "openai-compatible",
+      base_url: "https://api.example.test/v1",
+      api_key: "test-key",
+      default_model: "gpt-test"
+    } } }), /Invalid discriminator value/);
+  });
+
+  it("rejects provider environment variable keys", () => {
+    assert.throws(() => settingsSchema.parse({ providers: { default: {
+      type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true },
       base_url: "https://api.example.test/v1",
       api_key_env: "OPENAI_API_KEY",
       default_model: "gpt-test"

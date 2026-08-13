@@ -30,10 +30,12 @@ describe("WorkflowFlowChart bus", () => {
     output.cleanup();
   });
 
-  it("does not render a bus row without a valid scheduling decision", () => {
+  it("renders an unconnected bus row before a valid scheduling decision", () => {
     for (const busNodeId of [undefined, "missing"]) {
       const output = render(<WorkflowFlowChart workflowNodes={workflowNodes} nodes={[]} busNodeId={busNodeId} />);
-      assert.equal((output.lastFrame() ?? "").split("\n").some((line) => line.startsWith("bus ")), false);
+      const busLine = (output.lastFrame() ?? "").split("\n").find((line) => line.startsWith("bus"));
+      assert.ok(busLine);
+      assert.doesNotMatch(busLine, /[─┐]/);
       output.unmount();
       output.cleanup();
     }

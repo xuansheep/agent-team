@@ -47,6 +47,7 @@ export type WorkflowState = {
   execution_kind?: ExecutionKind;
   config_fingerprint?: string;
   run_permission_mode?: Exclude<PermissionMode, "plan">;
+  destructive_policy?: "ask" | "deny";
   plan_requested_permission_rules?: string[];
   current_node_id?: string;
   attempts: NodeAttemptState[];

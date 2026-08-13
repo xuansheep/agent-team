@@ -61,6 +61,20 @@ describe("checkToolPermission", () => {
     })).decision, "deny");
   });
 
+  it("keeps destructive operations gated in fullAccess and supports a task hard deny", async () => {
+    const cwd = await workspace();
+    const ask = await checkToolPermission(localBashTool, { command: "rm file.txt" }, {
+      mode: "fullAccess", source: "workflow", allow: [], ask: [], deny: [], cwd, destructivePolicy: "ask"
+    });
+    assert.equal(ask.decision, "ask");
+
+    const deny = await checkToolPermission(localBashTool, { command: "rm file.txt" }, {
+      mode: "fullAccess", source: "workflow", allow: [], ask: [], deny: [], cwd, destructivePolicy: "deny"
+    });
+    assert.equal(deny.decision, "deny");
+    assert.match(deny.reason ?? "", /task policy/);
+  });
+
   it("allows read-only tools and rejects normal write tools in plan mode", async () => {
     const cwd = await workspace();
 

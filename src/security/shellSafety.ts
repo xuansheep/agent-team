@@ -14,6 +14,24 @@ const destructiveShellPatterns = [
   /(^|[;&|\s])tee\s+\S/i
 ];
 
+export function isFileDeletionCommand(input: unknown): boolean {
+  const command = maskQuotedShellText(shellCommandText(input));
+  return isDestructiveGitCommand(command)
+    || /(^|[;&|\s])(rm|del|erase|rmdir)\s+\S/i.test(command)
+    || /\bremove-item\b/i.test(command);
+}
+
+function maskQuotedShellText(command: string): string {
+  let result = "";
+  let quote: "\"" | "'" | undefined;
+  for (const char of command) {
+    if (!quote && (char === "\"" || char === "'")) { quote = char; result += char; continue; }
+    if (quote && char === quote) { result += char; quote = undefined; continue; }
+    result += quote ? " " : char;
+  }
+  return result;
+}
+
 export function isDestructiveShellCommand(input: unknown): boolean {
   const command = shellCommandText(input);
   return isDestructiveGitCommand(command)

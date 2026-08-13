@@ -10,6 +10,7 @@ export type ToolPermissionContext = {
   transientAllow?: string[];
   source?: "workflow" | "session" | "settings";
   planFilePath?: string;
+  destructivePolicy?: "ask" | "deny";
 };
 
 export type ToolPermissionCheckContext = ToolPermissionContext & Pick<ToolContext, "cwd">;

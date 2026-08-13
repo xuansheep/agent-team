@@ -103,7 +103,7 @@ Each workflow or team JSON file contains `name`, `nodes`, optional `description`
 
 Every `agent-team` invocation opens the interactive terminal UI. Former headless subcommands such as `run`, `resume`, `status`, and `inspect` are routed into the TUI instead of executing automation directly.
 
-The TUI reads roles, workflows, and teams from `~/.einsteins` and opens with a half-screen workflow/team picker directly below the preview chart. Workflow and team entries are shown at the same level with their type, so identical names remain unambiguous. Moving through the list previews the selected nodes; team previews omit node-to-node arrows. The final disabled `Create new workflow` and `Create new team` items reserve future creation flows. The current directory does not need a `config/` directory.
+The TUI reads roles, workflows, and teams from `~/.einsteins` and opens with a half-screen workflow/team picker directly below the preview chart. Workflow and team entries are shown at the same level with their type, so identical names remain unambiguous. Moving through the list previews the selected nodes; team previews omit node-to-node arrows. After selecting a workflow or team, the chart always shows an unconnected `bus` row until the first valid routing decision, then connects the row to the selected node. The final disabled `Create new workflow` and `Create new team` items reserve future creation flows. The current directory does not need a `config/` directory.
 
 Submitted prompts are appended to `~/.einsteins/history.jsonl` and recalled across TUI sessions for the same Git project. Up/Down navigate logical lines inside multiline input before entering history navigation. Wrapped and explicit input lines remain visible up to a half-screen viewport. Use Shift+Enter or Ctrl+Enter to insert a newline. On Apple Terminal, run `/terminal-setup`, restart Terminal.app, and use Option+Enter.
 
@@ -131,7 +131,7 @@ npm test -- tests/config/loadConfig.test.ts tests/settings/settings.test.ts
 
 ## Workflow Ordering and Team Routing
 
-Workflow nodes run in the order listed under `nodes`. Team nodes do not run sequentially: the bus assigns one member at a time and reevaluates the complete run dossier after every node boundary until it chooses to finalize.
+Workflow nodes run in the order listed under `nodes`. Team nodes do not run sequentially: the bus assigns one member at a time and reevaluates the complete run dossier after every node boundary until it chooses to finalize. In normal turns the bus must autonomously answer directly or select a node; it asks the user only for a material decision that cannot be inferred. Structured decision protocol errors are retried once and then surfaced as recoverable routing errors instead of user clarification requests. Dispatcher providers must support either tool calling or JSON-schema output.
 
 Each node receives descriptors for its current, previous, and next workflow positions. A node submits the explicit direction `forward` or `backward`: `forward` advances or resumes the suspended downstream node, while `backward` suspends the current node and resumes the previous node in the same attempt. Every reactivation increments an auditable activation number. Only the first node can move backward to the user; the final node moves forward to the user to complete the run.
 
@@ -155,8 +155,8 @@ The harness follows Claude Code-style local tool execution and permissions where
 
 MVP 支持：
 
-- Responses API、OpenAI-compatible 和 Anthropic Provider
-- 三类 Provider 统一支持请求错误、请求超时、流中断、提前 EOF 和流空闲超时重试；默认请求与流各重试 10 次，请求超时 600 秒，流空闲超时 90 秒
+- Responses API 和 Anthropic Provider
+- 两类 Provider 统一支持请求错误、请求超时、流中断、提前 EOF 和流空闲超时重试；默认请求与流各重试 10 次，请求超时 600 秒，流空闲超时 90 秒
 - 重试采用 500ms 指数退避、32 秒上限和 0-25% 抖动，并优先遵循 `Retry-After`；认证、权限、普通 4xx、上下文超限和用户取消不会重试
 - TUI 连续重试只更新一条临时重连状态，失败流残片会回滚，终态后自动移除；完整记录持久化到 `events.ndjson` 与 Session `audit.ndjson`
 - Claude Code 风格 `allow`、`ask`、`deny` 权限规则

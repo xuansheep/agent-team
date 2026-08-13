@@ -64,7 +64,7 @@ describe("model routing", () => {
       toolOutputTokenLimit: undefined,
       compactPrompt: undefined
     });
-    assert.equal(getProviderMaxOutputTokens({ type: "openai-compatible", anthropic: { max_tokens: 20000 } }), 8000);
+    assert.equal(getProviderMaxOutputTokens({ type: "responses-api", anthropic: { max_tokens: 20000 } }), 8000);
     assert.deepEqual(getModelContextLimits("unknown", {}, getProviderMaxOutputTokens({
       type: "anthropic",
       anthropic: { max_tokens: 20000 }

@@ -12,7 +12,7 @@ import { WorkflowEngine } from "../../src/workflow/engine.js";
 import { testBusResponse, testDispatcher, withTestBusRouting } from "../helpers/projectConfig.js";
 
 const config = {
-  providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+  providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
   dispatcher: testDispatcher,
   roles: { product: { description: "", system_prompt: "product", requires: { tool_calling: false, vision: false } } },
   workflows: { delivery: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
@@ -688,10 +688,10 @@ describe("TuiApp global Plan Mode", () => {
 
     await sendTuiLine(output, "Design the animated weather dashboard.");
 
-    await waitForFrame(output, /调度模型没有返回可验证的路由决策/);
+    await waitForFrame(output, /调度模型连续两次未返回合法决策/);
 
     assert.equal(starts, 0);
-    assert.equal(busRequests.length, 1);
+    assert.equal(busRequests.length, 2);
     assert.equal(planRequests.length, 0);
     assert.doesNotMatch(output.lastFrame() ?? "", /Automatic planning started\./);
     assert.doesNotMatch(output.lastFrame() ?? "", /(?:Ready|Waiting|Thinking|Working) \| plan \|/);
@@ -700,68 +700,22 @@ describe("TuiApp global Plan Mode", () => {
     output.cleanup();
   });
 
-  it("prompts before entering Plan Mode from an EnterPlanMode workflow tool call", async () => {
+  it("blocks EnterPlanMode inside workflow nodes because Plan Mode belongs to the bus", async () => {
     const cwd = await makeProjectTmpCwd("agent-team-tui-enter-plan-tool-");
-    const planRequests: ModelRequest[] = [];
     let workflowTurns = 0;
     const workflowProvider: ModelProvider = {
-      async generate(request) {
-        if (request.context?.nodeId === "runtime") return planProvider(planRequests).generate(request);
+      async generate() {
         workflowTurns += 1;
-        if (workflowTurns === 1) {
-          return { content: "I should plan this first.", tool_calls: [{ id: "tool-enter-plan", name: "EnterPlanMode", input: {} }] };
-        }
-        return { content: JSON.stringify({ direction: "forward", summary: "abandoned", document: "", handoff: {}, deliverables: [] }) };
+        return { content: "I should plan this first.", tool_calls: [{ id: "tool-enter-plan", name: "EnterPlanMode", input: {} }] };
       }
     };
     const engine = new WorkflowEngine({ providerFactory: () => workflowProvider, cwd, runRoot: join(cwd, ".session") });
     const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine} providerFactory={() => withTestBusRouting(workflowProvider, "product")} />);
 
     await sendTuiLine(output, "Build auth flow with sign-off.");
-    await waitForFrame(output, /Enter plan mode\?/);
-    assert.match(output.lastFrame() ?? "", /· Explore the codebase thoroughly/);
-    assert.match(output.lastFrame() ?? "", /No code changes will be made until you approve the plan\./);
-    assert.match(output.lastFrame() ?? "", /Yes, enter plan mode/);
-    assert.match(output.lastFrame() ?? "", /No, start implementing now/);
-
-    output.stdin.write("\r");
-    await waitForFrame(output, /Build auth flow with sign-off\./);
-    await waitForRequest(planRequests, "Build auth flow with sign-off.");
-
-    assert.match(output.lastFrame() ?? "", /(?:Ready|Waiting|Thinking|Working) \| plan \|/);
-
-    output.unmount();
-    output.cleanup();
-  });
-
-  it("continues workflow implementation when EnterPlanMode is declined", async () => {
-    const cwd = await makeProjectTmpCwd("agent-team-tui-enter-plan-decline-");
-    const planRequests: ModelRequest[] = [];
-    let workflowTurns = 0;
-    const workflowProvider: ModelProvider = {
-      async generate(request) {
-        if (request.context?.nodeId === "runtime") return planProvider(planRequests).generate(request);
-        workflowTurns += 1;
-        if (workflowTurns === 1) {
-          return { content: "I should plan this first.", tool_calls: [{ id: "tool-enter-plan", name: "EnterPlanMode", input: {} }] };
-        }
-        assert.match(requestText(request), /Permission denied by user for EnterPlanMode/);
-        return { content: JSON.stringify({ direction: "forward", summary: "Implemented directly", document: "", handoff: {}, deliverables: [] }) };
-      }
-    };
-    const engine = new WorkflowEngine({ providerFactory: () => workflowProvider, cwd, runRoot: join(cwd, ".session") });
-    const output = render(<TuiApp cwd={cwd} config={config} workflows={["delivery"]} workflowId="delivery" engine={engine} providerFactory={() => withTestBusRouting(workflowProvider, "product")} />);
-
-    await sendTuiLine(output, "Build auth flow without planning.");
-    await waitForFrame(output, /Enter plan mode\?/);
-    output.stdin.write("\u001b[B");
-    await waitForFrame(output, /> 2\. No, start implementing now/);
-    output.stdin.write("\r");
-    await waitForFrame(output, /Implemented directly/);
-
-    assert.equal(workflowTurns, 2);
-    assert.equal(planRequests.length, 0);
-    assert.match(output.lastFrame() ?? "", /(?:Ready|Thinking|Working) \| default \|/);
+    await waitForFrame(output, /Plan Mode is owned by the session/);
+    assert.equal(workflowTurns, 1);
+    assert.doesNotMatch(output.lastFrame() ?? "", /Enter plan mode\?/);
 
     output.unmount();
     output.cleanup();
@@ -3377,7 +3331,7 @@ function routingFailurePlanProviderFactory(requests: ModelRequest[], failBusCall
           return {
             content: JSON.stringify({
               type: "clarify",
-              confidence: 0.1,
+              confidence: 1,
               message: "Please clarify routing."
             })
           };

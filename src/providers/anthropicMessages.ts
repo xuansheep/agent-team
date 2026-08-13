@@ -292,7 +292,10 @@ function toAnthropicRequestBody(request: ModelRequest, options: AnthropicMessage
       input_schema: tool.input_schema,
       ...(deferredNames.has(tool.name) ? { defer_loading: true } : {})
     }));
-    body.tool_choice = { type: "auto" };
+    body.tool_choice = {
+      type: request.toolChoice === "required" ? "any" : "auto",
+      ...(request.parallelToolCalls === false ? { disable_parallel_tool_use: true } : {})
+    };
   }
   if (request.context) {
     body.metadata = {

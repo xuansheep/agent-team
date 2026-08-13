@@ -6,7 +6,6 @@ import {
   DEFAULT_STREAM_MAX_RETRIES
 } from "../config/schema.js";
 import { ModelProvider } from "./types.js";
-import { OpenAiCompatibleProvider } from "./openaiCompatible.js";
 import { ResponsesApiProvider } from "./responsesApi.js";
 import { AnthropicMessagesProvider } from "./anthropicMessages.js";
 
@@ -17,16 +16,6 @@ export function createProvider(config: AgentTeamConfig, providerId: string): Mod
   if (!apiKey) throw new Error(`Missing API key for provider ${providerId}; configure api_key in ~/.einsteins/settings.json`);
 
   switch (provider.type) {
-    case "openai-compatible":
-      return new OpenAiCompatibleProvider({
-        baseUrl: provider.base_url,
-        apiKey,
-        apiKeyMode: provider.api_key_mode,
-        streaming: provider.capabilities.streaming,
-        jsonSchemaOutput: provider.capabilities.json_schema_output,
-        userAgent: provider.user_agent,
-        retry: providerRetryConfig(provider)
-      });
     case "responses-api":
       return new ResponsesApiProvider({
         baseUrl: provider.base_url,

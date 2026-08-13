@@ -116,7 +116,7 @@ describe("RunStore", () => {
     assert.equal(recovered.current_node_id, "product");
   });
 
-  it("rejects pre-v5 workflow state without mutating it", async () => {
+  it("loads pre-v5 workflow state without mutating the historical file", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-state-v3-"));
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "x" });
@@ -137,7 +137,9 @@ describe("RunStore", () => {
       rework_limit: 10
     })}\n`, "utf8");
 
-    await assert.rejects(() => store.loadState(run.runId), /Unsupported workflow state version 3; start a new run/);
+    const loaded = await store.loadState(run.runId);
+    assert.equal(loaded.version, 5);
+    assert.deepEqual(loaded.resume_checkpoint?.dialogue_messages, messages);
     const persisted = JSON.parse(await readFile(join(run.runDir, "state.json"), "utf8")) as WorkflowState;
     const entries = await readdir(run.runDir);
 
@@ -145,6 +147,20 @@ describe("RunStore", () => {
     assert.deepEqual(persisted.resume_checkpoint?.dialogue_messages, messages);
     assert.equal(entries.includes("run.lease"), false);
     assert.equal(entries.includes(".lease-history"), false);
+  });
+
+  it("isolates workflow dialogue and context by activation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-dialogue-activation-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("delivery", { request: "x" });
+    const first = [{ role: "assistant" as const, content: "old activation" }];
+    const second = [{ role: "assistant" as const, content: "fresh activation" }];
+    await store.syncWorkflowDialogue(run.runId, "dev", 1, first, 1);
+    await store.syncWorkflowDialogue(run.runId, "dev", 1, second, 2);
+    assert.deepEqual(await store.loadWorkflowDialogue(run.runId, "dev", 1, undefined, 1), first);
+    assert.deepEqual(await store.loadWorkflowDialogue(run.runId, "dev", 1, undefined, 2), second);
+    await store.appendEvent(run.runId, { type: "node_context_updated", node_id: "dev", attempt: 1, activation: 1, context_tokens: 100, dialogue_message_count: 1 });
+    assert.equal(await store.latestNodeContext(run.runId, "dev", 1, 2), undefined);
   });
 
   it("replays append-only Codex replacement checkpoints with window lineage", async () => {

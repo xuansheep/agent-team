@@ -13,7 +13,7 @@ describe("skill config", () => {
     const configDir = await writeProjectConfig(dir);
 
     const settings = settingsSchema.parse({ providers: { default: {
-      type: "openai-compatible",
+      type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true },
       base_url: "https://api.example.test/v1",
       api_key: "test-key",
       default_model: "gpt-test"

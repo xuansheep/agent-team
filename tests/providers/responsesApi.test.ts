@@ -52,6 +52,8 @@ describe("ResponsesApiProvider", () => {
         { role: "user", content: "hello" }
       ],
       tools: [tool],
+      toolChoice: "required",
+      parallelToolCalls: false,
       effort: "custom-level",
       response_schema: responseSchema,
       context
@@ -69,8 +71,8 @@ describe("ResponsesApiProvider", () => {
       { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }
     ]);
     assert.deepEqual(server.requestBody.tools, [{ type: "function", name: "Bash", description: "Run a command", parameters: tool.input_schema }]);
-    assert.equal(server.requestBody.tool_choice, "auto");
-    assert.equal(server.requestBody.parallel_tool_calls, true);
+    assert.equal(server.requestBody.tool_choice, "required");
+    assert.equal(server.requestBody.parallel_tool_calls, false);
     assert.deepEqual(server.requestBody.reasoning, { effort: "custom-level" });
     assert.equal(server.requestBody.prompt_cache_key, "a".repeat(64));
     assert.deepEqual(server.requestBody.client_metadata, {

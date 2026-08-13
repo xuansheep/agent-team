@@ -10,7 +10,7 @@ import { settingsSchema } from "../../src/settings/types.js";
 import { writeProjectConfig, type TestRole, type TestWorkflow } from "../helpers/projectConfig.js";
 
 const defaultProvider = {
-  type: "openai-compatible" as const,
+  type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true },
   base_url: "https://api.example.test/v1",
   api_key: "test-key",
   default_model: "gpt-test",
@@ -68,7 +68,7 @@ workflows:
 
     const config = await loadTestConfig(file);
 
-    assert.equal(config.providers.default.type, "openai-compatible");
+    assert.equal(config.providers.default.type, "responses-api");
     assert.equal(config.providers.default.api_key_mode, "bearer");
     assert.equal(config.providers.default.request_max_retries, 10);
     assert.equal(config.providers.default.stream_max_retries, 10);
@@ -456,6 +456,36 @@ workflows:
 `);
 
     await assert.rejects(() => loadTestConfig(file), /Unknown role developer/);
+  });
+
+  it("rejects dispatcher providers without structured decision capabilities", async () => {
+    const file = await tempFile("agent-team.yaml", `
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`);
+
+    await assert.rejects(
+      () => loadTestConfig(file, {
+        settings: providerSettings({
+          ...defaultProvider,
+          capabilities: {
+            tool_calling: false,
+            vision: false,
+            streaming: false,
+            json_schema_output: false
+          }
+        })
+      }),
+      /must support tool calling or JSON schema output/
+    );
   });
 
   it("loads provider model routing metadata", async () => {

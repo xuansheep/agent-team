@@ -2,6 +2,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { decidePermission } from "../harness/permissions.js";
 import { Tool } from "../tools/types.js";
 import { ToolPermissionCheckContext, ToolPermissionDecision } from "./context.js";
+import { isFileDeletionCommand } from "../security/shellSafety.js";
 
 export async function checkToolPermission(
   tool: Tool,
@@ -12,6 +13,9 @@ export async function checkToolPermission(
   const specifier = specifiers[0]!;
   const denyDecision = firstRuleDecision(tool.name, specifiers, context.deny, "deny");
   if (denyDecision) return denyDecision;
+  if (context.source === "workflow" && (tool.name === "EnterPlanMode" || tool.name === "ExitPlanMode")) {
+    return { decision: "deny", reason: "Plan Mode is owned by the session execution bus and is unavailable inside workflow nodes" };
+  }
   if (tool.name === "ExitPlanMode" && context.mode !== "plan") {
     return {
       decision: "deny",
@@ -20,6 +24,11 @@ export async function checkToolPermission(
   }
 
   if (context.mode === "plan") return checkPlanModePermission(tool, input, context);
+  const deletesFiles = (tool.name === "Bash" || tool.name === "PowerShell") && isFileDeletionCommand(input);
+  if (context.destructivePolicy === "deny" && deletesFiles) {
+    return { decision: "deny", reason: `File deletion denied by task policy for ${tool.name}` };
+  }
+  if (deletesFiles) return { decision: "ask", reason: `Safety confirmation required for file deletion with ${tool.name}` };
   if (tool.name === "ToolSearch") return { decision: "allow", reason: "safe deferred tool discovery" };
 
   const askDecision = firstRuleDecision(tool.name, specifiers, context.ask, "ask");

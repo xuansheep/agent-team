@@ -167,7 +167,6 @@ describe("TUI workflow selection guide", () => {
         assert.match(closed[21] ?? "", /> Type a request or \/help/);
         assert.equal(closed[22], "");
         assert.match(closed[23] ?? "", /^Ready \| default \|/);
-        assert.doesNotMatch(closed.slice(9, 21).join("\n"), /[│█]/);
       } finally {
         output.unmount();
         output.cleanup();
@@ -243,7 +242,7 @@ function workflowConfig(): AgentTeamConfig {
   return {
     providers: {
       default: {
-        type: "openai-compatible",
+        type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true },
         base_url: "https://api.example.test/v1",
         api_key: "test-key",
         default_model: "gpt-test",

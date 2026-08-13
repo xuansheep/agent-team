@@ -11,7 +11,7 @@ import { testBusProviderFactory, testDispatcher } from "../helpers/projectConfig
 const config = {
   providers: {
     default: {
-      type: "openai-compatible" as const,
+      type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true },
       base_url: "https://api.example.test/v1",
       api_key: "test-key",
       default_model: "gpt-test",
@@ -60,6 +60,8 @@ describe("TuiApp bus indicator", () => {
       />
     );
 
+    assert.match(output.lastFrame() ?? "", /^bus\s*$/m);
+
     output.stdin.write("answer directly");
     await settle();
     output.stdin.write("\r");
@@ -70,6 +72,49 @@ describe("TuiApp bus indicator", () => {
     assert.equal((frame.match(/Direct bus answer\./g) ?? []).length, 1, frame);
     assert.doesNotMatch(frame, /Bus 选择节点/);
 
+    output.unmount();
+    output.cleanup();
+  });
+
+  it("keeps input recoverable after a routing protocol failure", async () => {
+    const cwd = join(process.cwd(), ".tmp", "tui-bus-routing-recovery", randomUUID());
+    let attempt = 0;
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={{ async startInteractive() { throw new Error("workflow should not start"); } } as never}
+        providerFactory={() => ({
+          async generate() {
+            attempt += 1;
+            if (attempt <= 2) return { content: "invalid decision" };
+            return {
+              content: JSON.stringify({
+                type: "answer",
+                confidence: 1,
+                message: "Recovered bus answer."
+              })
+            };
+          }
+        })}
+        sessionStore={new SessionStore(join(cwd, "sessions"))}
+      />
+    );
+
+    output.stdin.write("first request");
+    await settle();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Routing error:/);
+
+    assert.match(output.lastFrame() ?? "", /调度模型连续两次未返回合法决策/);
+    output.stdin.write("retry request");
+    await settle();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Recovered bus answer\./);
+
+    assert.equal(attempt, 3);
     output.unmount();
     output.cleanup();
   });

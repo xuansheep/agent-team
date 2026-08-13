@@ -11,7 +11,7 @@ import { testBusProviderFactory, testDispatcher } from "../helpers/projectConfig
 const config = {
   providers: {
     default: {
-      type: "openai-compatible" as const,
+      type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true },
       base_url: "https://api.example.test/v1",
       api_key: "test-key",
       default_model: "gpt-test",
@@ -60,7 +60,7 @@ describe("TuiApp session continuation", () => {
     });
 
     await sendTuiLine(output, "ordinary request");
-    await waitFor(() => (output.lastFrame() ?? "").includes("调度模型没有返回可验证的路由决策"));
+    await waitFor(() => (output.lastFrame() ?? "").includes("调度模型连续两次未返回合法决策"));
 
     assert.equal(starts, 0);
     assert.doesNotMatch(output.lastFrame() ?? "", /\| plan \|/);

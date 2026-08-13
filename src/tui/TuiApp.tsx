@@ -478,6 +478,20 @@ export function TuiApp({
         setWorkStatusDetail(`Execution bus retry ${event.retry_attempt}/${event.max_retries}: ${event.error}`);
         setState((current) => reduceBusLogEvent(current, event));
         break;
+      case "bus_dispatcher_protocol_retry_scheduled":
+        setWorkStatusDetail(`Execution bus is correcting an invalid ${event.reason === "low_confidence" ? "low-confidence" : "protocol"} decision`);
+        setState((current) => reduceBusLogEvent(current, event));
+        break;
+      case "bus_routing_failed":
+        setWorkStatusDetail(undefined);
+        setState((current) => ({
+          ...current,
+          mode: busRef.current?.workflow ? "paused" : "input",
+          runState: "ready",
+          error: event.error,
+          logMessages: [...current.logMessages, statusLog(`Routing error: ${event.error}`)]
+        }));
+        break;
       case "bus_failed":
         failUi(event.error);
         break;
@@ -2444,7 +2458,7 @@ ${message.detailText}` : ""}` }
     })
     : undefined;
   const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
-  const busIndicatorVisible = Boolean(state.busNodeId && workflowNodes?.some((node) => node.id === state.busNodeId));
+  const busIndicatorVisible = Boolean(state.workflowId && workflowNodes?.length);
   const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : hasPlanQuestion ? "question" : state.mode;
   const planApprovalActive = interactionMode === "waiting_plan_approval" && Boolean(state.pendingReview);
   const planApprovalOverlayVisible = planApprovalActive && !planApprovalCollapsed;
@@ -2882,7 +2896,7 @@ ${message.detailText}` : ""}` }
   return (
     <Box flexDirection="column" height={terminalRows}>
       <Header workflowId={state.workflowId} executionKind={state.executionKind} sessionId={currentSessionIdRef.current} />
-      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} busNodeId={state.busNodeId} columns={terminalColumns} currentNodeId={state.currentNodeId} suspendedStack={displayedExecutionTarget?.kind === "team" ? [] : state.suspendedStack} showConnectors={displayedExecutionTarget?.kind !== "team"} />
+      <WorkflowFlowChart workflowNodes={workflowNodes} nodes={state.nodes} busNodeId={state.busNodeId} columns={terminalColumns} currentNodeId={state.currentNodeId} suspendedStack={displayedExecutionTarget?.kind === "team" ? [] : state.suspendedStack} showConnectors={displayedExecutionTarget?.kind !== "team"} showBusRow={Boolean(state.workflowId)} />
       {halfScreenChoice ? null : (
         <Box flexDirection="row" height={layout.mainHeight} flexShrink={1} minHeight={1} opaque>
           <ScrollBox ref={mainScrollRef} flexDirection="column" flexGrow={1} height={layout.mainHeight} stickyScroll={!planApprovalOverlayVisible}>
@@ -2959,7 +2973,7 @@ function reduceBusWorkflowEvent(state: TuiState, event: StoredEvent): TuiState {
 }
 
 type BusLogEvent = Extract<BusEvent, {
-  type: "bus_model_thinking_delta" | "bus_directive_selected" | "bus_dispatcher_retry_scheduled";
+  type: "bus_model_thinking_delta" | "bus_directive_selected" | "bus_dispatcher_retry_scheduled" | "bus_dispatcher_protocol_retry_scheduled" | "bus_routing_failed";
 }>;
 
 function reduceBusLogEvent(state: TuiState, event: BusLogEvent): TuiState {
@@ -2992,6 +3006,20 @@ function reduceBusLogEvent(state: TuiState, event: BusLogEvent): TuiState {
           detailVisible: true
         }
       ]
+    };
+  }
+
+  if (event.type === "bus_routing_failed") {
+    return {
+      ...state,
+      logMessages: [...state.logMessages, statusLog(`Routing error: ${event.error}`)]
+    };
+  }
+
+  if (event.type === "bus_dispatcher_protocol_retry_scheduled") {
+    return {
+      ...state,
+      logMessages: [...state.logMessages, statusLog(`Bus protocol retry: ${event.reason} (${event.response_shape})`)]
     };
   }
 
@@ -3844,9 +3872,11 @@ function isConfirmationMode(mode: TuiState["mode"]): boolean {
 function busResultMode(status: BusTurnResult["state"]["status"], hasWorkflow: boolean): TuiState["mode"] {
   switch (status) {
     case "planning": return "planning";
-    case "waiting_user": return hasWorkflow ? "paused" : "input";
+    case "waiting_user":
+    case "stalled": return hasWorkflow ? "paused" : "input";
     case "finalized": return "completed";
     case "failed": return "failed";
+    case "routing_failed": return hasWorkflow ? "paused" : "input";
     case "routing":
     case "running_workflow":
     case "awaiting_bus":
@@ -3864,10 +3894,12 @@ function busResultRunState(status: BusTurnResult["state"]["status"]): TuiRunStat
     case "running_workflow":
       return "working";
     case "waiting_user":
+    case "stalled":
       return "waiting";
     case "idle":
     case "planning":
     case "finalized":
+    case "routing_failed":
     case "failed":
       return "ready";
   }

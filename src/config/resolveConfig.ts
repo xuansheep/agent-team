@@ -4,13 +4,25 @@ export function resolveConfig(config: AgentTeamConfig): AgentTeamConfig {
   if (!config.dispatcher) {
     throw new Error("Missing required dispatcher configuration in ~/.einsteins/settings.json");
   }
-  if (!config.providers[config.dispatcher.provider]) {
+  const defaultDispatcherProvider = config.providers[config.dispatcher.provider];
+  if (!defaultDispatcherProvider) {
     throw new Error(`Unknown dispatcher provider ${config.dispatcher.provider}`);
   }
+  assertStructuredDispatcherProvider(defaultDispatcherProvider, config.dispatcher.provider);
 
   validateCollections(config, "workflow", config.workflows);
   validateCollections(config, "team", config.teams ?? {});
   return config;
+}
+
+function assertStructuredDispatcherProvider(
+  provider: AgentTeamConfig["providers"][string],
+  providerId: string,
+  context = ""
+): void {
+  if (!provider.capabilities.tool_calling && !provider.capabilities.json_schema_output) {
+    throw new Error(`Dispatcher provider ${providerId}${context} must support tool calling or JSON schema output`);
+  }
 }
 
 function validateCollections(
@@ -34,9 +46,11 @@ function validateCollections(
     }
 
     const dispatcher = { ...config.dispatcher, ...collection.dispatcher };
-    if (!config.providers[dispatcher.provider]) {
+    const dispatcherProvider = config.providers[dispatcher.provider];
+    if (!dispatcherProvider) {
       throw new Error(`Unknown dispatcher provider ${dispatcher.provider} referenced by ${kind} ${configId}`);
     }
+    assertStructuredDispatcherProvider(dispatcherProvider, dispatcher.provider, ` referenced by ${kind} ${configId}`);
     collection.dispatcher = dispatcher;
 
     for (const edge of collection.edges) {

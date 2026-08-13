@@ -24,6 +24,7 @@ import type { McpRuntime } from "../mcp/runtime.js";
 import type { SkillRuntime } from "../skills/runtime.js";
 import { createLocalToolRegistry } from "../tools/registry.js";
 import { CONVERSATION_INTERRUPTED_QUESTION_ID, CONVERSATION_INTERRUPTED_TEXT, WorkflowState } from "./state.js";
+import { captureWorkspaceSnapshot, diffWorkspaceSnapshots } from "./workspaceSnapshot.js";
 import { WorkflowSession, type WorkflowDispatchOptions } from "./session.js";
 import { firstNodeId } from "./transitions.js";
 import { NodeTransitionController } from "./nodeTransitionController.js";
@@ -66,6 +67,7 @@ type ContinueOptions = {
     };
     runPermissionMode?: WorkflowRunPermissionMode;
     planRequestedPermissionRules?: string[];
+    destructivePolicy?: "ask" | "deny";
     configFingerprint?: string;
     executionKind?: ExecutionKind;
 };
@@ -73,6 +75,7 @@ export type WorkflowRunPermissionMode = Exclude<PermissionMode, "plan">;
 type WorkflowControlSignal = "interrupt" | "dispatch" | "finalize";
 export type WorkflowRunOptions = {
     permissionMode?: WorkflowRunPermissionMode;
+    destructivePolicy?: "ask" | "deny";
     clearContext?: boolean;
     sessionId?: string;
     startNodeId?: string;
@@ -290,6 +293,7 @@ export class WorkflowEngine {
                 resume: segment.resume,
                 runPermissionMode: latestState.run_permission_mode,
                 planRequestedPermissionRules: latestState.plan_requested_permission_rules,
+                destructivePolicy: latestState.destructive_policy,
                 executionKind: latestState.execution_kind,
                 eventSink: (event) => stream.push(event),
                 interaction: {
@@ -614,6 +618,7 @@ export class WorkflowEngine {
             execution_kind: options.executionKind ?? "workflow",
             config_fingerprint: workflowConfigFingerprint(config, workflowId, options.executionKind),
             ...(runPermissionMode ? { run_permission_mode: runPermissionMode } : {}),
+            destructive_policy: options.destructivePolicy ?? "ask",
             ...(planRequestedPermissionRules.length ? { plan_requested_permission_rules: planRequestedPermissionRules } : {}),
             current_node_id: startNodeId,
             attempts: [],
@@ -701,6 +706,7 @@ export class WorkflowEngine {
                 resume: segment.resume,
                 runPermissionMode: latestState.run_permission_mode,
                 planRequestedPermissionRules: latestState.plan_requested_permission_rules,
+                destructivePolicy: latestState.destructive_policy,
                 executionKind: latestState.execution_kind,
                 eventSink: (event) => stream.push(event),
                 interaction: {
@@ -992,7 +998,7 @@ export class WorkflowEngine {
         resume: NonNullable<ReturnType<typeof resumeFromCheckpoint>>,
         eventSink?: (event: StoredEvent) => void
     ): Promise<void> {
-        resume.dialogueCursor = await store.syncWorkflowDialogue(runId, resume.nodeId, resume.attempt, resume.dialogueMessages);
+        resume.dialogueCursor = await store.syncWorkflowDialogue(runId, resume.nodeId, resume.attempt, resume.dialogueMessages, resume.activation);
         await this.appendEvent(store, runId, {
             type: "user_message",
             text: resume.userText,
@@ -1042,6 +1048,7 @@ export class WorkflowEngine {
             ? options.planRequestedPermissionRules
             : planRequestedPermissionRulesFromHandoff(options.initialHandoff);
         options.planRequestedPermissionRules = planRequestedPermissionRules;
+        options.destructivePolicy = options.destructivePolicy ?? destructivePolicyFromHandoff(options.initialHandoff);
         const attempts = options.attempts.map((attempt) => ({ ...attempt, activation: attempt.activation ?? 1, activations: [...attempt.activations ?? []] }));
         const nodeCheckpoints = { ...options.nodeCheckpoints };
         let suspendedStack = [...options.suspendedStack ?? []];
@@ -1065,6 +1072,7 @@ export class WorkflowEngine {
             rework_count: reworkCount,
             rework_limit: reworkLimit,
             execution_kind: options.executionKind ?? "workflow",
+            destructive_policy: options.destructivePolicy ?? "ask",
             ...(options.runPermissionMode ? { run_permission_mode: options.runPermissionMode } : {}),
             ...(planRequestedPermissionRules.length ? { plan_requested_permission_rules: planRequestedPermissionRules } : {})
         });
@@ -1124,6 +1132,8 @@ export class WorkflowEngine {
             options.onState?.(runningState);
             await options.store.saveState(options.runId, runningState);
             await this.appendEvent(options.store, options.runId, { type: "node_started", node_id: node.id, attempt, activation }, options.eventSink);
+            const workspaceBefore = await captureWorkspaceSnapshot(this.options.cwd);
+            await this.appendEvent(options.store, options.runId, { type: "workspace_snapshot_recorded", node_id: node.id, attempt, activation, phase: "before", sha256: workspaceBefore.sha256, file_count: workspaceBefore.file_count, total_bytes: workspaceBefore.total_bytes, complete: workspaceBefore.complete }, options.eventSink);
             const tools = createLocalToolRegistry({
                 mcpRuntime: this.options.mcpRuntime,
                 skillRuntime: this.options.skillRuntime,
@@ -1153,7 +1163,7 @@ export class WorkflowEngine {
                     supportsVision: providerConfig.capabilities.vision,
                     provider: this.options.providerFactory(node.provider),
                     tools,
-                    permissions: workflowToolPermissions(effectivePermissionMode, basePermissions, node.permissions ?? permissionSetSchema.parse(undefined), planRequestedPermissionRules),
+                    permissions: workflowToolPermissions(effectivePermissionMode, basePermissions, node.permissions ?? permissionSetSchema.parse(undefined), planRequestedPermissionRules, options.destructivePolicy),
                     cwd: this.options.cwd,
                     runId: options.runId,
                     store: options.store,
@@ -1171,7 +1181,7 @@ export class WorkflowEngine {
                     dialogueCursor,
                     onDialogueMessage: async (message) => {
                         dialogueMessages.push(message);
-                        dialogueCursor = await options.store.syncWorkflowDialogue(options.runId, node.id, attempt, dialogueMessages);
+                        dialogueCursor = await options.store.syncWorkflowDialogue(options.runId, node.id, attempt, dialogueMessages, activation);
                         return dialogueCursor;
                     },
                     onDialogueCompacted: async (messages, cursor) => {
@@ -1240,6 +1250,9 @@ export class WorkflowEngine {
                 return this.waitForUserQuestions(options, node.id, attempt, activation, attempts, attemptIndex, handoff, waitingUserResult.questions, waitingUserResult, checkpoint());
             }
             try {
+                const workspaceAfter = await captureWorkspaceSnapshot(this.options.cwd);
+                const workspaceDiff = diffWorkspaceSnapshots(workspaceBefore, workspaceAfter);
+                await this.appendEvent(options.store, options.runId, { type: "workspace_snapshot_recorded", node_id: node.id, attempt, activation, phase: "after", sha256: workspaceAfter.sha256, file_count: workspaceAfter.file_count, total_bytes: workspaceAfter.total_bytes, complete: workspaceAfter.complete, changed: workspaceDiff.changed, changed_paths: workspaceDiff.changed_paths, truncated: workspaceDiff.truncated }, options.eventSink);
                 result = await this.ensureNodeDeliverable(options, node.id, attempt, result!, activation);
                 const currentCheckpoint = checkpoint();
                 if (options.executionKind === "team") {
@@ -1332,7 +1345,7 @@ export class WorkflowEngine {
                     const resumedHandoff = buildResumeHandoff(savedTarget.handoff, targetHandoff);
                     const resumedMessages = [...savedTarget.dialogue_messages ?? [], controllerReturnMessage(node.id, result, targetHandoff)];
                     const resumedAttempt = savedTarget.attempt ?? 1;
-                    const resumedCursor = await options.store.syncWorkflowDialogue(options.runId, target, resumedAttempt, resumedMessages);
+                    const resumedCursor = await options.store.syncWorkflowDialogue(options.runId, target, resumedAttempt, resumedMessages, (savedTarget.activation ?? 0) + 1);
                     pendingResume = {
                         nodeId: target,
                         attempt: resumedAttempt,
@@ -1398,7 +1411,7 @@ export class WorkflowEngine {
             return resolution.state;
         }
         if (resolution.resume) {
-            const cursor = await input.store.syncWorkflowDialogue(input.runId, resolution.resume.nodeId, resolution.resume.attempt, resolution.resume.dialogueMessages);
+            const cursor = await input.store.syncWorkflowDialogue(input.runId, resolution.resume.nodeId, resolution.resume.attempt, resolution.resume.dialogueMessages, resolution.resume.activation);
             resolution.resume.dialogueCursor = cursor;
             if (resolution.state.resume_checkpoint) resolution.state.resume_checkpoint.dialogue_cursor = cursor;
             const targetCheckpoint = resolution.state.node_checkpoints?.[resolution.targetNodeId];
@@ -1696,15 +1709,14 @@ function busDispatchHandoff(
     const payload = publicInput && typeof publicInput === "object" && !Array.isArray(publicInput)
         ? publicInput as Record<string, unknown>
         : { request: publicInput };
-    const previousLayer = compactHandoffLayer(previousHandoff);
+    void previousHandoff;
     return {
         ...payload,
         bus_dispatch: {
             ...(fromNodeId ? { from_node_id: fromNodeId } : {}),
             to_node_id: toNodeId,
             ...(reason ? { reason } : {})
-        },
-        ...(previousLayer !== undefined ? { previous_handoff: previousLayer } : {})
+        }
     };
 }
 
@@ -1721,6 +1733,7 @@ function workflowDispatchState(
         throw new Error(`Workflow rework limit reached: ${reworkLimit}`);
     }
     const permissionMode = options.permissionMode ?? state.run_permission_mode;
+    const destructivePolicy = options.destructivePolicy ?? state.destructive_policy ?? "ask";
     const planRequestedPermissionRules = [...new Set(planRequestedPermissionRulesFromHandoff(handoff))];
     return {
         ...state,
@@ -1732,6 +1745,7 @@ function workflowDispatchState(
         final_summary: undefined,
         rework_count: options.countsAsRework ? reworkCount + 1 : reworkCount,
         ...(permissionMode ? { run_permission_mode: permissionMode } : {}),
+        destructive_policy: destructivePolicy,
         plan_requested_permission_rules: planRequestedPermissionRules.length ? planRequestedPermissionRules : undefined
     };
 }
@@ -1764,9 +1778,9 @@ function effectiveSystemPrompt(globalPrompt: string | undefined, rolePrompt: str
     const global = globalPrompt?.trim();
     return global ? `${global}\n\n${rolePrompt}` : rolePrompt;
 }
-function workflowToolPermissions(mode: WorkflowRunPermissionMode, base: PermissionSet, node: PermissionSet, planRequestedPermissionRules: string[] = []): ToolPermissionContext {
+function workflowToolPermissions(mode: WorkflowRunPermissionMode, base: PermissionSet, node: PermissionSet, planRequestedPermissionRules: string[] = [], destructivePolicy: "ask" | "deny" = "ask"): ToolPermissionContext {
     const merged = mergePermissions(base ?? permissionSetSchema.parse(undefined), node ?? permissionSetSchema.parse(undefined));
-    return { mode, source: "workflow", ...merged, allow: [...merged.allow, ...planRequestedPermissionRules] };
+    return { mode, source: "workflow", destructivePolicy, ...merged, allow: [...merged.allow, ...planRequestedPermissionRules] };
 }
 function assertWorkflowRunPermissionMode(mode: unknown): void {
     if (mode === "plan")
@@ -1775,6 +1789,14 @@ function assertWorkflowRunPermissionMode(mode: unknown): void {
 function publicWorkflowInput(input: unknown): unknown {
     return stripInternalPlanModeHandoffMarkers(input);
 }
+function destructivePolicyFromHandoff(handoff: unknown): "ask" | "deny" {
+    if (!handoff || typeof handoff !== "object") return "ask";
+    const value = handoff as Record<string, unknown>;
+    const dispatch = value.bus_dispatch;
+    if (dispatch && typeof dispatch === "object" && (dispatch as Record<string, unknown>).destructive_policy === "deny") return "deny";
+    return value.destructive_policy === "deny" ? "deny" : "ask";
+}
+
 function planRequestedPermissionRulesFromHandoff(handoff: unknown): string[] {
     const permissions = collectPlanRequestedPermissions(handoff);
     // The runtime treats Bash and PowerShell alike, so emitting only a Bash rule left every
@@ -2109,7 +2131,8 @@ function continuationStateFields(options: ContinueOptions, checkpoint: WorkflowS
         node_checkpoints: nodeCheckpoints,
         suspended_stack: [...options.suspendedStack ?? []],
         rework_count: options.reworkCount ?? 0,
-        rework_limit: options.reworkLimit ?? options.workflow.max_rework_cycles ?? DEFAULT_MAX_REWORK_CYCLES
+        rework_limit: options.reworkLimit ?? options.workflow.max_rework_cycles ?? DEFAULT_MAX_REWORK_CYCLES,
+        destructive_policy: options.destructivePolicy ?? "ask"
     };
 }
 type ReworkLimitResolution =

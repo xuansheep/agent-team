@@ -32,7 +32,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: projectPath, projectStorage });
 
     await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -51,7 +51,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: ".tmp/test-runs" });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } }, b: { description: "", system_prompt: "B", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
@@ -65,7 +65,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: `.tmp/ordered-runs-${Date.now()}` });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
@@ -91,7 +91,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-failure-runs-${Date.now()}` });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
@@ -119,7 +119,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-user-input-runs-${Date.now()}` });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
@@ -142,7 +142,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/ordered-first-failure-runs-${Date.now()}` });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
@@ -167,7 +167,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/explicit-success-runs-${Date.now()}` });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
@@ -196,7 +196,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -252,7 +252,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "A", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -290,7 +290,7 @@ describe("WorkflowEngine", () => {
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         a: { description: "", system_prompt: "A", requires: { tool_calling: false, vision: false } },
@@ -329,7 +329,7 @@ describe("WorkflowEngine", () => {
 
     const result = await engine.run({
       global_prompt: "Global safety rules.",
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { a: { description: "", system_prompt: "Role A", requires: { tool_calling: false, vision: false } }, b: { description: "", system_prompt: "Role B", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "a", role: "a", provider: "default", permission_mode: "default" }, { id: "b", role: "b", provider: "default", permission_mode: "default" }], edges: [{ from: "a", to: "b", condition: "success" }] } }
@@ -355,7 +355,7 @@ describe("WorkflowEngine", () => {
 
     const engine = new WorkflowEngine({ providerFactory: () => new FeedbackProvider(), cwd: process.cwd(), runRoot: ".tmp/test-runs" });
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
@@ -387,7 +387,7 @@ describe("WorkflowEngine", () => {
     const runRoot = ".tmp/resume-runs";
     const engine = new WorkflowEngine({ providerFactory: () => new WaitingProvider(), cwd: process.cwd(), runRoot });
     const config = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
@@ -410,7 +410,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: `.tmp/run-permission-mode-${Date.now()}` });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -430,7 +430,7 @@ describe("WorkflowEngine", () => {
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/clear-context-plan-${Date.now()}` });
     const config = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default" as const, permission_mode: "default" as const }], edges: [] } }
@@ -472,7 +472,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -507,7 +507,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot: `.tmp/run-full-access-${Date.now()}` });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -539,7 +539,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "fullAccess" }], edges: [] } }
@@ -575,7 +575,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -611,7 +611,7 @@ describe("WorkflowEngine", () => {
     const runRoot = ".tmp/final-runs";
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
@@ -651,7 +651,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } },
@@ -684,7 +684,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     const result = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default", permissions: { allow: ["ArtifactWrite"], ask: [], deny: [] } }], edges: [] } }
@@ -706,7 +706,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     const state = await engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { final_delivery: { description: "", system_prompt: "F", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "final_delivery", role: "final_delivery", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -742,7 +742,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
 
     const state = await engine.run({
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" as const }], edges: [] } }
@@ -765,7 +765,7 @@ describe("WorkflowEngine", () => {
     const engine = new WorkflowEngine({ providerFactory: () => new FakeProvider(), cwd: process.cwd(), runRoot: ".tmp/image-runs" });
 
     await assert.rejects(() => engine.run({
-      providers: { default: { type: "openai-compatible", base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "product", role: "product", provider: "default", permission_mode: "default" }], edges: [] } }
@@ -783,7 +783,7 @@ describe("WorkflowEngine", () => {
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
@@ -816,7 +816,7 @@ describe("WorkflowEngine", () => {
     const runRoot = `.tmp/failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
@@ -863,7 +863,7 @@ describe("WorkflowEngine", () => {
     const runRoot = `.tmp/failure-rework-runs-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } }
@@ -930,7 +930,7 @@ describe("WorkflowEngine", () => {
     const config = {
       providers: {
         default: {
-          type: "openai-compatible" as const,
+          type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true },
           base_url: "https://api.example.test/v1",
           api_key: "test-key",
           default_model: "gpt-test",
@@ -1017,7 +1017,7 @@ describe("WorkflowEngine", () => {
     };
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const config = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const }], edges: [] } }
@@ -1095,7 +1095,7 @@ describe("WorkflowEngine", () => {
     const runRoot = join(process.cwd(), ".tmp", "artifact-handoff-runs-" + Date.now().toString());
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const state = await engine.run({
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: {
         developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } },
@@ -1135,7 +1135,7 @@ describe("WorkflowEngine", () => {
     const runRoot = join(process.cwd(), ".tmp", "compound-deny-runs-" + Date.now().toString());
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const state = await engine.run({
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: {
@@ -1173,7 +1173,7 @@ describe("WorkflowEngine", () => {
     const runRoot = join(process.cwd(), ".tmp", "node-deny-runs-" + Date.now().toString());
     const engine = new WorkflowEngine({ providerFactory: () => provider, cwd: process.cwd(), runRoot });
     const state = await engine.run({
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
       dispatcher: testDispatcher,
       roles: { developer: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: {

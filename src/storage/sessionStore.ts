@@ -10,7 +10,7 @@ import { acquireFileLease } from "./fileLease.js";
 import { projectDirectory, projectPath, ProjectStorageContext, sessionDirectory } from "./projectStorage.js";
 import { AuditStore } from "../audit/auditStore.js";
 import type { AuditEvent } from "../audit/auditEvent.js";
-import type { BusDirectiveSelectedEvent, SessionBusCheckpoint } from "../runtime/busTypes.js";
+import type { BusRoutingEvent, SessionBusCheckpoint } from "../runtime/busTypes.js";
 import { kernelSessionCheckpoint, restoreKernelSession as restoreKernelSessionFromCheckpoint, type KernelSession, type KernelSessionCheckpoint } from "../kernel/session.js";
 
 export type TranscriptPhase = "bus" | "plan" | "workflow";
@@ -32,7 +32,7 @@ export type WorkflowTranscriptEntryInput = {
 
 export type BusRoutingEntry = {
   ts: string;
-  event: BusDirectiveSelectedEvent;
+  event: BusRoutingEvent;
 };
 
 export type SessionMetadata = {
@@ -111,7 +111,7 @@ export class SessionStore {
     return (await this.loadTranscript(sessionId)).filter((entry) => entry.phase === "bus");
   }
 
-  async appendBusRoutingEvent(sessionId: string, event: BusDirectiveSelectedEvent): Promise<void> {
+  async appendBusRoutingEvent(sessionId: string, event: BusRoutingEvent): Promise<void> {
     await appendJsonLines(join(this.sessionDir(sessionId), "bus-routing.jsonl"), [{
       ts: new Date().toISOString(),
       event

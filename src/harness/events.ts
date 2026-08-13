@@ -8,6 +8,7 @@ export type HarnessEvent =
   | { type: "user_input_injected"; input_id: string; text: string; node_id: string; attempt: number; activation?: number }
   | { type: "user_input_deferred"; input_id: string; text: string; node_id: string; attempt: number; activation?: number }
   | { type: "node_started"; node_id: string; attempt: number; activation?: number }
+  | { type: "workspace_snapshot_recorded"; node_id: string; attempt: number; activation: number; phase: "before" | "after"; sha256: string; file_count: number; total_bytes: number; complete: boolean; changed?: boolean; changed_paths?: string[]; truncated?: boolean }
   | { type: "node_waiting_user"; node_id: string; attempt?: number; activation?: number; questions: unknown[] }
   | { type: "complete_summary_available"; node_id: string; attempt: number; activation?: number; document: string }
   | { type: "model_thinking_delta"; node_id: string; attempt: number; activation?: number; text: string }

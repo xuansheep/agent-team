@@ -193,11 +193,11 @@ export class RunStore {
     });
   }
 
-  async syncWorkflowDialogue(runId: string, nodeId: string, attempt: number, messages: ModelMessage[]): Promise<number> {
+  async syncWorkflowDialogue(runId: string, nodeId: string, attempt: number, messages: ModelMessage[], activation = 1): Promise<number> {
     return this.enqueueRunWrite(runId, async () => {
       const runDir = await this.resolveRunDir(runId);
-      const path = dialogueJournalPath(runDir, nodeId, attempt);
-      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, path);
+      const path = dialogueJournalPath(runDir, nodeId, attempt, activation);
+      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, activation, path);
       if (messages.length < state.messages.length) {
         throw new Error(`Dialogue for ${nodeId} attempt ${attempt} moved backward from ${state.messages.length} to ${messages.length} active messages`);
       }
@@ -229,12 +229,13 @@ export class RunStore {
     nodeId: string,
     attempt: number,
     messages: ModelMessage[],
-    recoveredMessages: ModelMessage[]
+    recoveredMessages: ModelMessage[],
+    activation = 1
   ): Promise<WorkflowDialogueState> {
     return this.enqueueRunWrite(runId, async () => {
       const runDir = await this.resolveRunDir(runId);
-      const path = dialogueJournalPath(runDir, nodeId, attempt);
-      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, path);
+      const path = dialogueJournalPath(runDir, nodeId, attempt, activation);
+      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, activation, path);
       const record: DialogueJournalRecord = {
         journal_type: "reconcile",
         messages: [...messages]
@@ -258,12 +259,13 @@ export class RunStore {
     runId: string,
     nodeId: string,
     attempt: number,
-    compaction: WorkflowDialogueCompaction
+    compaction: WorkflowDialogueCompaction,
+    activation = 1
   ): Promise<WorkflowDialogueState> {
     return this.enqueueRunWrite(runId, async () => {
       const runDir = await this.resolveRunDir(runId);
-      const path = dialogueJournalPath(runDir, nodeId, attempt);
-      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, path);
+      const path = dialogueJournalPath(runDir, nodeId, attempt, activation);
+      const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, activation, path);
       const currentWindow = state.window;
       const nextWindow: WorkflowDialogueWindow = {
         windowNumber: currentWindow.windowNumber + 1,
@@ -297,24 +299,25 @@ export class RunStore {
     });
   }
 
-  async loadWorkflowDialogueState(runId: string, nodeId: string, attempt: number, cursor?: number): Promise<WorkflowDialogueState> {
+  async loadWorkflowDialogueState(runId: string, nodeId: string, attempt: number, cursor?: number, activation = 1): Promise<WorkflowDialogueState> {
     const runDir = await this.resolveRunDir(runId);
-    const state = await readDialogueJournalState(dialogueJournalPath(runDir, nodeId, attempt), cursor);
-    if (cursor === undefined) this.dialogueStates.set(`${runId}:${nodeId}:${attempt}`, state);
+    const state = await readDialogueJournalState(dialogueJournalPath(runDir, nodeId, attempt, activation), cursor);
+    if (cursor === undefined) this.dialogueStates.set(dialogueStateKey(runId, nodeId, attempt, activation), state);
     return { cursor: state.cursor, messages: [...state.messages], window: { ...state.window } };
   }
 
-  async loadWorkflowDialogue(runId: string, nodeId: string, attempt: number, cursor?: number): Promise<ModelMessage[]> {
-    return (await this.loadWorkflowDialogueState(runId, nodeId, attempt, cursor)).messages;
+  async loadWorkflowDialogue(runId: string, nodeId: string, attempt: number, cursor?: number, activation = 1): Promise<ModelMessage[]> {
+    return (await this.loadWorkflowDialogueState(runId, nodeId, attempt, cursor, activation)).messages;
   }
 
   private async ensureWorkflowDialogueState(
     runId: string,
     nodeId: string,
     attempt: number,
+    activation: number,
     path: string
   ): Promise<WorkflowDialogueState> {
-    const key = `${runId}:${nodeId}:${attempt}`;
+    const key = dialogueStateKey(runId, nodeId, attempt, activation);
     let state = this.dialogueStates.get(key);
     if (!state) {
       state = await readDialogueJournalState(path);
@@ -342,11 +345,11 @@ export class RunStore {
     return events;
   }
 
-  async latestNodeContext(runId: string, nodeId: string, attempt: number): Promise<Extract<StoredEvent, { type: "node_context_updated" }> | undefined> {
+  async latestNodeContext(runId: string, nodeId: string, attempt: number, activation = 1): Promise<Extract<StoredEvent, { type: "node_context_updated" }> | undefined> {
     const events = await this.loadEvents(runId).catch(() => [] as StoredEvent[]);
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];
-      if (event.type === "node_context_updated" && event.node_id === nodeId && event.attempt === attempt) return event;
+      if (event.type === "node_context_updated" && event.node_id === nodeId && event.attempt === attempt && (event.activation ?? 1) === activation) return event;
     }
     return undefined;
   }
@@ -393,12 +396,18 @@ export class RunStore {
     const runDir = await this.resolveRunDir(runId);
     let state = await readJsonWithBackup<WorkflowState>(join(runDir, "state.json"));
     if (!state) throw new Error(`Run ${runId} has no workflow state`);
-    if (state.version !== 5) {
+    const version = state.version;
+    if (version !== 2 && version !== 3 && version !== 4 && version !== 5) {
       throw new Error(`Unsupported workflow state version ${String((state as { version?: unknown }).version ?? "legacy")}; start a new run`);
     }
+    const legacy = version !== 5;
     const hydrateCheckpoint = async (checkpoint: WorkflowState["resume_checkpoint"]) => {
       if (!checkpoint || checkpoint.attempt === undefined) return checkpoint;
-      const dialogue = await this.loadWorkflowDialogueState(runId, checkpoint.node_id, checkpoint.attempt);
+      if (legacy) {
+        const messages = [...checkpoint.dialogue_messages ?? []];
+        return { ...checkpoint, dialogue_cursor: checkpoint.dialogue_cursor ?? messages.length, dialogue_messages: messages };
+      }
+      const dialogue = await this.loadWorkflowDialogueState(runId, checkpoint.node_id, checkpoint.attempt, undefined, checkpoint.activation ?? 1);
       return {
         ...checkpoint,
         dialogue_cursor: dialogue.cursor,
@@ -411,6 +420,7 @@ export class RunStore {
     }
     return {
       ...state,
+      version: 5,
       resume_checkpoint: await hydrateCheckpoint(state.resume_checkpoint),
       node_checkpoints: nodeCheckpoints
     };
@@ -689,8 +699,13 @@ export class RunStore {
   }
 }
 
-function dialogueJournalPath(runDir: string, nodeId: string, attempt: number): string {
-  return join(runDir, "dialogue", `${encodeURIComponent(nodeId)}-attempt-${attempt}.ndjson`);
+function dialogueJournalPath(runDir: string, nodeId: string, attempt: number, activation = 1): string {
+  const activationSuffix = activation > 1 ? `-activation-${activation}` : "";
+  return join(runDir, "dialogue", `${encodeURIComponent(nodeId)}-attempt-${attempt}${activationSuffix}.ndjson`);
+}
+
+function dialogueStateKey(runId: string, nodeId: string, attempt: number, activation: number): string {
+  return `${runId}:${nodeId}:${attempt}:${activation}`;
 }
 
 async function appendDialogueJournalRecords(path: string, records: readonly DialogueJournalRecord[]): Promise<void> {

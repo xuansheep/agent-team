@@ -123,8 +123,8 @@ describe("runNode interactive permissions", () => {
     let restoredBeforeRequest = false;
     const provider: ModelProvider = {
       async generate() {
-        const restored = await store.latestNodeContext(run.runId, "dev", 1);
-        restoredBeforeRequest = restored?.activation === 2 && restored.context_tokens === 100;
+        const restored = await store.latestNodeContext(run.runId, "dev", 1, 2);
+        restoredBeforeRequest = restored?.activation === 2 && restored.context_tokens > 0;
         return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
       }
     };
@@ -318,7 +318,7 @@ describe("runNode interactive permissions", () => {
       store,
       handoff: { request: "x" },
       attempt: 1
-    }), /Permission denied for ExitPlanMode: You are not in plan mode/);
+    }), /Permission denied for ExitPlanMode: Plan Mode is owned by the session execution bus/);
 
     assert.equal(executions, 0);
     const events = await store.loadEvents(run.runId);

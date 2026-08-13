@@ -73,17 +73,6 @@ const providerBaseSchema = {
   api_key_mode: apiKeyModeSchema.default("bearer")
 };
 
-const openAiCompatibleProviderSchema = z.object({
-  type: z.literal("openai-compatible"),
-  ...providerBaseSchema,
-  capabilities: resolvedProviderCapabilitiesSchema({
-    tool_calling: false,
-    vision: false,
-    streaming: false,
-    json_schema_output: true
-  })
-}).strict();
-
 const responsesProviderSchema = z.object({
   type: z.literal("responses-api"),
   ...providerBaseSchema,
@@ -125,15 +114,9 @@ const anthropicProviderSchema = z.object({
 }).strict();
 
 export const providerSchema = z.discriminatedUnion("type", [
-  openAiCompatibleProviderSchema,
   responsesProviderSchema,
   anthropicProviderSchema
 ]);
-
-const openAiCompatibleProviderSettingsSchema = z.object({
-  type: z.literal("openai-compatible"),
-  ...providerSettingsBaseShape
-}).strict();
 
 const responsesProviderSettingsSchema = z.object({
   type: z.literal("responses-api"),
@@ -163,7 +146,6 @@ const anthropicProviderSettingsSchema = z.object({
 }).strict();
 
 export const providerSettingsSchema = z.discriminatedUnion("type", [
-  openAiCompatibleProviderSettingsSchema,
   responsesProviderSettingsSchema,
   anthropicProviderSettingsSchema
 ]);

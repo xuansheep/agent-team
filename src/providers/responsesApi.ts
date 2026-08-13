@@ -177,8 +177,8 @@ function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOpti
       description: tool.description,
       parameters: tool.input_schema
     })),
-    tool_choice: request.tools.length ? "auto" : undefined,
-    parallel_tool_calls: options.parallelToolCalls ?? true
+    tool_choice: request.tools.length ? request.toolChoice ?? "auto" : undefined,
+    parallel_tool_calls: request.parallelToolCalls ?? options.parallelToolCalls ?? true
   };
 
   const instructions = systemInstructions(request.messages);

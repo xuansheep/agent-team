@@ -415,7 +415,7 @@ describe("WorkflowSession", () => {
       }
     };
     const workflowConfig = {
-      providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
+      providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: true, vision: false, streaming: false, json_schema_output: true } } },
     dispatcher: testDispatcher,
     roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: true, vision: false } } },
       workflows: { flow: { nodes: [{ id: "dev", role: "dev", provider: "default", permission_mode: "default" as const, permissions: { allow: ["AskUserQuestion"], ask: [], deny: [] } }], edges: [] } }
@@ -880,7 +880,7 @@ describe("WorkflowSession", () => {
     const workflowConfig = {
       providers: {
         default: {
-          type: "openai-compatible" as const,
+          type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true },
           base_url: "https://api.example.test/v1",
           api_key: "test-key",
           default_model: "gpt-test",
@@ -961,7 +961,7 @@ async function nextEventWithTimeout<T>(iterator: AsyncIterator<T>): Promise<T> {
 
 function twoNodeConfig() {
   return {
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
     dispatcher: testDispatcher,
     roles: {
       product: { description: "", system_prompt: "P", requires: { tool_calling: false, vision: false } },
@@ -974,7 +974,7 @@ function twoNodeConfig() {
 function config() {
   return {
 
-    providers: { default: { type: "openai-compatible" as const, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
+    providers: { default: { type: "responses-api" as const, responses: { prompt_cache: true, parallel_tool_calls: true }, base_url: "https://api.example.test/v1", api_key: "test-key", default_model: "gpt-test", capabilities: { tool_calling: false, vision: false, streaming: false, json_schema_output: true } } },
 
     dispatcher: testDispatcher,
     roles: { dev: { description: "", system_prompt: "D", requires: { tool_calling: false, vision: false } } },

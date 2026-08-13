@@ -29,6 +29,7 @@ import type {
 } from "./busTypes.js";
 import { TurnEngine } from "./turnEngine.js";
 import { workflowDossierContext } from "../team/handoff.js";
+import { createHash } from "node:crypto";
 
 export type SessionExecutionBusOptions = {
   config: AgentTeamConfig;
@@ -107,6 +108,8 @@ export class SessionExecutionBus {
           status: "idle",
           revision: 0,
           rework_cycles: 0,
+          stagnant_cycles: 0,
+          user_input_revision: 0,
           messages: options.messages?.map(copyMessage) ?? []
         };
   }
@@ -140,7 +143,10 @@ export class SessionExecutionBus {
       const message = userMessage(input);
       this.updateState({
         status: "routing",
-        messages: [...this.taskState.messages, message]
+        messages: [...this.taskState.messages, message],
+        user_input_revision: (this.taskState.user_input_revision ?? 0) + 1,
+        stagnant_cycles: 0,
+        last_progress_fingerprint: undefined
       });
       await this.options.sessionStore?.appendBusTranscript(
         this.options.sessionId,
@@ -164,9 +170,9 @@ export class SessionExecutionBus {
       const selectedNodeId = this.taskState.selected_node_id;
       if (!selectedNodeId) {
         return {
-          turn: await this.clarify(
-            "计划已批准，但母线没有可用的节点选择。请补充目标节点后重新批准。",
-            "invalid_directive"
+          turn: await this.failRouting(
+            "计划已批准，但母线没有可用的节点选择。请重新提交计划请求。",
+            "protocol"
           )
         };
       }
@@ -337,18 +343,12 @@ export class SessionExecutionBus {
 
   private async applySelection(selection: DispatcherSelection, context: ApplyContext): Promise<BusTurnResult> {
     let directive = selection.directive;
+    if (directive.type === "routing_failed") {
+      await this.emitDirectiveSelected(selection, directive);
+      return this.failRouting(directive.message, directive.error_kind, directive, selection.routingId, selection.responseShape);
+    }
     if (context.phase === "lifecycle" && (directive.type === "answer" || directive.type === "plan")) {
-      const clarification: DispatchDirective = {
-        type: "clarify",
-        confidence: directive.confidence,
-        message: "工作流已到达母线边界。请明确是结束任务，还是指定需要返工的节点。"
-      };
-      await this.emitDirectiveSelected(selection, clarification);
-      return this.clarify(
-        clarification.message,
-        "invalid_directive",
-        clarification
-      );
+      return this.failInvalidDirective(selection, "生命周期阶段返回了不允许的决策。");
     }
     if (context.phase === "user" && directive.type === "plan") {
       directive = {
@@ -368,46 +368,16 @@ export class SessionExecutionBus {
       };
     }
     if (context.phase === "plan" && directive.type === "finalize") {
-      const clarification: DispatchDirective = {
-        type: "clarify",
-        confidence: directive.confidence,
-        message: "计划尚未批准，不能结束任务。请继续完善计划或批准后执行。"
-      };
-      await this.emitDirectiveSelected(selection, clarification);
-      return this.clarify(
-        clarification.message,
-        "invalid_directive",
-        clarification
-      );
+      return this.failInvalidDirective(selection, "计划阶段不能结束任务。");
     }
     if (context.phase === "user" && directive.type === "finalize") {
-      const clarification: DispatchDirective = {
-        type: "clarify",
-        confidence: directive.confidence,
-        message: "工作流尚未到达可结束的母线边界，不能提前生成最终总结。请继续执行或先中断当前节点。"
-      };
-      await this.emitDirectiveSelected(selection, clarification);
-      return this.clarify(
-        clarification.message,
-        "invalid_directive",
-        clarification
-      );
+      return this.failInvalidDirective(selection, "普通用户阶段不能提前结束工作流。");
     }
     if ((directive.type === "plan" || directive.type === "dispatch") && !this.hasNode(directive.node_id)) {
-      const clarification: DispatchDirective = {
-        type: "clarify",
-        confidence: directive.confidence,
-        message: `调度模型选择了不存在的节点 ${directive.node_id}。请明确一个有效节点。`
-      };
-      await this.emitDirectiveSelected(selection, clarification);
-      return this.clarify(
-        clarification.message,
-        "invalid_directive",
-        clarification
-      );
+      return this.failInvalidDirective(selection, `调度模型选择了不存在的节点 ${directive.node_id}。`);
     }
 
-    this.updateState({ last_directive: directive });
+    this.updateState({ last_directive: directive, last_routing_error: undefined });
     await this.emitDirectiveSelected(selection, directive);
 
     if (directive.type === "answer") {
@@ -418,7 +388,7 @@ export class SessionExecutionBus {
     if (directive.type === "clarify") {
       return this.clarify(
         directive.message,
-        selection.clarificationReason ?? "invalid_directive",
+        selection.clarificationReason ?? "material_ambiguity",
         directive
       );
     }
@@ -437,7 +407,15 @@ export class SessionExecutionBus {
       return { state: this.state, directive, workflow: this.activeWorkflow };
     }
     if (directive.type === "finalize") {
+      const unsupported = context.dossier ? unsupportedFinalizationEvidence(context.dossier) : "缺少运行档案";
+      if (unsupported) return this.failInvalidDirective(selection, `无法完成任务：${unsupported}`);
       return this.finalizeTask(directive);
+    }
+    if (context.phase === "lifecycle" && context.dossier) {
+      const fingerprint = progressFingerprint(context.dossier, directive);
+      const stagnantCycles = this.taskState.last_progress_fingerprint === fingerprint ? (this.taskState.stagnant_cycles ?? 0) + 1 : 0;
+      if (stagnantCycles >= 2) return this.stallWorkflow(fingerprint, stagnantCycles);
+      this.updateState({ last_progress_fingerprint: fingerprint, stagnant_cycles: stagnantCycles });
     }
     return this.dispatchWorkflow(directive, context);
   }
@@ -446,7 +424,7 @@ export class SessionExecutionBus {
     const images = imagePartsFromInput(context.originalInput);
     const workflowInput = {
       request: directive.instruction,
-      user_input: context.originalInput,
+      ...(context.originalInput !== undefined ? { user_input: context.originalInput } : {}),
       ...(images.length ? { images } : {}),
       ...(context.dossier ? workflowDossierContext(context.dossier) : {})
     };
@@ -461,6 +439,7 @@ export class SessionExecutionBus {
             permissionMode: this.permissionMode,
             sessionId: this.options.sessionId,
             startNodeId: directive.node_id,
+            ...(directive.destructive_policy ? { destructivePolicy: directive.destructive_policy } : {}),
             ...(this.options.executionKind ? { executionKind: this.options.executionKind } : {})
           }
         );
@@ -497,7 +476,8 @@ export class SessionExecutionBus {
         await session.dispatchToNode(directive.node_id, workflowInput, {
           reason: directive.reason,
           countsAsRework,
-          ...(this.permissionMode ? { permissionMode: this.permissionMode } : {})
+          ...(this.permissionMode ? { permissionMode: this.permissionMode } : {}),
+          ...(directive.destructive_policy ? { destructivePolicy: directive.destructive_policy } : {})
         });
       }
       this.updateState({
@@ -519,11 +499,12 @@ export class SessionExecutionBus {
       return { state: this.state, directive, workflow: session };
     } catch (error) {
       const reworkLimit = error instanceof Error && error.message.includes("rework limit");
-      return this.clarify(
-        reworkLimit
-          ? "工作流已达到返工上限。请确认是否继续返工，并明确目标节点。"
-          : `节点分发失败：${error instanceof Error ? error.message : String(error)}。请确认目标节点后重试。`,
-        reworkLimit ? "rework_limit" : "invalid_directive"
+      if (reworkLimit) {
+        return this.clarify("工作流已达到返工上限。请确认是否继续返工，并明确目标节点。", "rework_limit");
+      }
+      return this.failRouting(
+        `节点分发失败：${error instanceof Error ? error.message : String(error)}。请重试本次请求。`,
+        "provider"
       );
     }
   }
@@ -531,7 +512,7 @@ export class SessionExecutionBus {
   private async finalizeTask(directive: Extract<DispatchDirective, { type: "finalize" }>): Promise<BusTurnResult> {
     const session = this.activeWorkflow;
     if (!session) {
-      return this.clarify("当前没有可结束的活动工作流。请先执行任务或直接提问。", "invalid_directive");
+      return this.failRouting("当前没有可结束的活动工作流。请重试本次请求。", "protocol");
     }
     const document = renderTaskSummary(directive.summary);
     await session.finalize(document);
@@ -550,6 +531,55 @@ export class SessionExecutionBus {
       summary: directive.summary
     });
     return { state: this.state, directive, workflow: session };
+  }
+
+  private async failInvalidDirective(
+    selection: DispatcherSelection,
+    message: string
+  ): Promise<BusTurnResult> {
+    const directive: DispatchDirective = { type: "routing_failed", confidence: 0, message, error_kind: "protocol" };
+    await this.emitDirectiveSelected(selection, directive);
+    return this.failRouting(message, "protocol", directive, selection.routingId);
+  }
+
+  private async stallWorkflow(fingerprint: string, stagnantCycles: number): Promise<BusTurnResult> {
+    const message = "工作流连续两次没有产生新的工作区版本或运行时证据，已暂停以避免重复消耗。请提供新的约束或明确下一步。";
+    const directive: DispatchDirective = { type: "clarify", confidence: 1, message };
+    this.updateState({ status: "stalled", stagnant_cycles: stagnantCycles, last_progress_fingerprint: fingerprint, last_directive: directive });
+    if (this.activeWorkflow) {
+      await this.emit({ type: "bus_stalled", session_id: this.options.sessionId, workflow_id: this.options.workflowId, run_id: this.activeWorkflow.runId, fingerprint, stagnant_cycles: stagnantCycles, message });
+    }
+    await this.appendAssistant(message);
+    return { state: this.state, directive, workflow: this.activeWorkflow };
+  }
+
+  private async failRouting(
+    message: string,
+    errorKind: "protocol" | "provider" | "configuration",
+    directive: Extract<DispatchDirective, { type: "routing_failed" }> = {
+      type: "routing_failed",
+      confidence: 0,
+      message,
+      error_kind: errorKind
+    },
+    routingId = "runtime",
+    responseShape?: string
+  ): Promise<BusTurnResult> {
+    this.updateState({
+      status: "routing_failed",
+      last_directive: directive,
+      last_routing_error: { error_kind: errorKind, message }
+    });
+    await this.emit({
+      type: "bus_routing_failed",
+      session_id: this.options.sessionId,
+      workflow_id: this.options.workflowId,
+      routing_id: routingId,
+      error_kind: errorKind,
+      error: message,
+      ...(responseShape ? { response_shape: responseShape } : {})
+    });
+    return { state: this.state, directive, workflow: this.activeWorkflow };
   }
 
   private async clarify(
@@ -726,7 +756,11 @@ export class SessionExecutionBus {
   }
 
   private async emit(event: BusEvent): Promise<void> {
-    if (event.type === "bus_directive_selected") {
+    if (
+      event.type === "bus_directive_selected"
+      || event.type === "bus_dispatcher_protocol_retry_scheduled"
+      || event.type === "bus_routing_failed"
+    ) {
       await this.options.sessionStore?.appendBusRoutingEvent(this.options.sessionId, event);
     }
     await this.options.eventSink?.(event);
@@ -833,4 +867,33 @@ function copyState(state: BusTaskState): BusTaskState {
         }
       : undefined
   };
+}
+
+function unsupportedFinalizationEvidence(dossier: WorkflowRunDossier): string | undefined {
+  const latest = dossier.latest_results ?? latestDossierResults(dossier);
+  if (!latest.length) return "没有节点结果";
+  const invalid = latest.find((result) => result.evidence?.status !== "verified");
+  if (invalid) return `节点 ${invalid.node_id} 的最新结果缺少当前激活的有效证据（${invalid.evidence?.status ?? "legacy_unverified"}）`;
+  const activeProcesses = new Set<string>();
+  for (const process of dossier.lifecycle.processes) {
+    if (process.status === "started") activeProcesses.add(process.process_id);
+    else activeProcesses.delete(process.process_id);
+  }
+  if (activeProcesses.size) return "仍有活动后台进程";
+  return undefined;
+}
+
+function latestDossierResults(dossier: WorkflowRunDossier) {
+  const latest = new Map<string, WorkflowRunDossier["node_results"][number]>();
+  for (const result of dossier.node_results) {
+    const previous = latest.get(result.node_id);
+    if (!previous || result.seq > previous.seq) latest.set(result.node_id, result);
+  }
+  return [...latest.values()];
+}
+
+function progressFingerprint(dossier: WorkflowRunDossier, directive: Extract<DispatchDirective, { type: "dispatch" }>): string {
+  const latest = dossier.latest_results ?? latestDossierResults(dossier);
+  const material = latest.map((result) => ({ node: result.node_id, status: result.evidence?.status, workspace: result.evidence?.workspace_after_sha256, tools: result.evidence?.successful_tool_calls, artifacts: result.evidence?.artifact_count }));
+  return createHash("sha256").update(JSON.stringify({ node: directive.node_id, instruction: directive.instruction.trim().replace(/\s+/g, " "), material })).digest("hex");
 }

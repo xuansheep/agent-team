@@ -59,6 +59,8 @@ describe("AnthropicMessagesProvider", () => {
         { role: "user", content: "hello" }
       ],
       tools: [tool],
+      toolChoice: "required",
+      parallelToolCalls: false,
       effort: "custom-level",
       response_schema: responseSchema,
       context
@@ -72,7 +74,7 @@ describe("AnthropicMessagesProvider", () => {
     assert.deepEqual(server.requestBody.system, [{ type: "text", text: "System prompt", cache_control: { type: "ephemeral" } }]);
     assert.deepEqual(server.requestBody.messages, [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }]);
     assert.deepEqual(server.requestBody.tools, [{ name: "Bash", description: "Run a command", input_schema: tool.input_schema }]);
-    assert.deepEqual(server.requestBody.tool_choice, { type: "auto" });
+    assert.deepEqual(server.requestBody.tool_choice, { type: "any", disable_parallel_tool_use: true });
     assert.equal(server.requestBody.max_tokens, 4096);
     assert.deepEqual(server.requestBody.metadata, {
       user_id: JSON.stringify({ session_id: "run-1", thread_id: "run-1:dev", turn_id: "run-1:dev:1" })

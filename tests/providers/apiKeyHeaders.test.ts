@@ -53,12 +53,13 @@ function runtimeConfig(apiKey: string) {
   return {
     ...configSchema.parse({
       roles: { dev: { system_prompt: "Build safely." } },
-      workflows: { delivery: { nodes: [{ id: "dev", role: "dev", provider: "default" }] } }
+      workflows: { delivery: { nodes: [{ id: "dev", role: "dev", provider: "default" }] } },
+      teams: {}
     }),
     dispatcher: testDispatcher,
     providers: {
       default: providerSchema.parse({
-        type: "openai-compatible",
+        type: "responses-api", responses: { prompt_cache: true, parallel_tool_calls: true },
         base_url: "https://api.example.test/v1",
         api_key: apiKey,
         default_model: "gpt-test"
