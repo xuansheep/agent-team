@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   dispatcherConfigSchema,
@@ -7,7 +7,8 @@ import {
   type ExecutionKind,
   type WorkflowConfig
 } from "../config/schema.js";
-import type { ModelMessage, ModelProvider, ModelRetryEvent } from "../providers/types.js";
+import type { ModelMessage, ModelProvider, ModelRequest, ModelRetryEvent } from "../providers/types.js";
+import { modelRequestDiagnostics } from "../model/requestDiagnostics.js";
 import type { SessionStore } from "../storage/sessionStore.js";
 import type { Tool } from "../tools/types.js";
 import { compactWorkflowRunDossier, type WorkflowRunDossier } from "../workflow/dossier.js";
@@ -159,6 +160,14 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
 
   const tools = providerConfig.capabilities.tool_calling ? dispatcherTools(input.phase) : [];
   const engine = input.turnEngine ?? new TurnEngine();
+  const workflowFingerprint = busWorkflowFingerprint(input.config, workflow, executionKind);
+  const promptCacheKey = busPromptCacheKey(
+    input.sessionId,
+    dispatcher.provider,
+    dispatcher.model,
+    workflowFingerprint,
+    input.phase
+  );
   await input.eventSink?.({
     type: "bus_routing_started",
     session_id: input.sessionId,
@@ -174,30 +183,32 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
     try {
       input.signal?.throwIfAborted();
       let streamEvents = Promise.resolve();
+      const request: ModelRequest = {
+        model: dispatcher.model,
+        effort: dispatcher.effort,
+        messages: [...dispatcherMessages(input, workflow), ...(correction ? [correction] : [])],
+        tools,
+        ...(tools.length ? { toolChoice: "required" as const, parallelToolCalls: false } : {}),
+        ...(!tools.length ? { response_schema: dispatcherDirectiveJsonSchema(input.phase) } : {}),
+        context: {
+          runId: input.runId ?? input.sessionId,
+          nodeId: "bus",
+          attempt: attempt + 1,
+          sessionId: input.sessionId,
+          threadId: input.sessionId,
+          turnId: `${routingId}:${attempt + 1}`,
+          promptCacheKey
+        },
+        signal: input.signal,
+        onRetry: async (retry) => {
+          await streamEvents;
+          await emitRetry(input, retry, routingId);
+        }
+      };
+      const requestStartedAt = Date.now();
       const { streamed, response } = await engine.requestModel({
         provider: input.providerFactory(dispatcher.provider),
-        request: {
-          model: dispatcher.model,
-          effort: dispatcher.effort,
-          messages: [...dispatcherMessages(input, workflow), ...(correction ? [correction] : [])],
-          tools,
-          ...(tools.length ? { toolChoice: "required" as const, parallelToolCalls: false } : {}),
-          ...(!tools.length ? { response_schema: dispatcherDirectiveJsonSchema(input.phase) } : {}),
-          context: {
-            runId: input.runId ?? input.sessionId,
-            nodeId: "bus",
-            attempt: attempt + 1,
-            sessionId: input.sessionId,
-            threadId: input.sessionId,
-            turnId: `${input.sessionId}:bus:${Date.now()}:${attempt + 1}`,
-            promptCacheKey: `${input.sessionId}:bus`
-          },
-          signal: input.signal,
-          onRetry: async (retry) => {
-            await streamEvents;
-            await emitRetry(input, retry, routingId);
-          }
-        },
+        request,
         onStreamEvent: (event) => {
           if (event.type !== "thinking_delta" || !event.text) return;
           streamEvents = streamEvents.then(async () => {
@@ -221,6 +232,27 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
           text: response.thinking
         });
       }
+      const responseShape = dispatcherResponseShape(response.tool_calls ?? [], response.content);
+      await input.eventSink?.({
+        type: "bus_model_response_recorded",
+        session_id: input.sessionId,
+        workflow_id: input.workflowId,
+        routing_id: routingId,
+        protocol_attempt: attempt + 1,
+        model: dispatcher.model,
+        usage: response.usage,
+        stop_reason: response.stopReason,
+        streamed,
+        content_chars: response.content?.length ?? 0,
+        thinking_chars: response.thinking?.length ?? 0,
+        tool_call_count: response.tool_calls?.length ?? 0,
+        response_shape: responseShape,
+        diagnostics: modelRequestDiagnostics(request, "bus", {
+          providerId: dispatcher.provider,
+          phase: input.phase,
+          durationMs: Date.now() - requestStartedAt
+        })
+      });
       input.signal?.throwIfAborted();
       await input.sessionStore?.recordModelResponse(input.sessionId, response.usage);
 
@@ -242,7 +274,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
       }
       if (attempt === 0) {
         const retryReason = valid ? "low_confidence" : "invalid_response";
-        const shape = dispatcherResponseShape(response.tool_calls ?? [], response.content);
+        const shape = responseShape;
         await input.eventSink?.({
           type: "bus_dispatcher_protocol_retry_scheduled",
           session_id: input.sessionId,
@@ -275,7 +307,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
         input.phase,
         routingId,
         response.thinking,
-        dispatcherResponseShape(response.tool_calls ?? [], response.content)
+        responseShape
       );
     } catch (error) {
       if (input.signal?.aborted) throw error;
@@ -523,6 +555,43 @@ function failedSelection(
 function directiveTargetsKnownNode(directive: DispatchDirective, workflow: WorkflowConfig): boolean {
   if (directive.type !== "plan" && directive.type !== "dispatch") return true;
   return workflow.nodes.some((node) => node.id === directive.node_id);
+}
+
+function busPromptCacheKey(
+  sessionId: string,
+  provider: string,
+  model: string,
+  workflowFingerprint: string,
+  phase: DispatcherPhase
+): string {
+  return createHash("sha256")
+    .update(stableJson({ sessionId, provider, model, workflowFingerprint, phase }))
+    .digest("hex");
+}
+
+function busWorkflowFingerprint(
+  config: AgentTeamConfig,
+  workflow: WorkflowConfig,
+  executionKind: ExecutionKind
+): string {
+  const roleIds = [...new Set([
+    ...workflow.nodes.map((node) => node.role),
+    ...(config.roles.bus ? ["bus"] : [])
+  ])].sort();
+  const roles = Object.fromEntries(roleIds.map((roleId) => [roleId, config.roles[roleId]]));
+  const material = executionKind === "workflow"
+    ? { workflow, roles, global_prompt: config.global_prompt ?? "" }
+    : { execution_kind: "team", team: workflow, roles, global_prompt: config.global_prompt ?? "" };
+  return createHash("sha256").update(stableJson(material)).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 function dispatcherResponseShape(

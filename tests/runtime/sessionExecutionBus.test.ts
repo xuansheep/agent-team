@@ -411,11 +411,12 @@ describe("SessionExecutionBus", () => {
     assert.equal(selected.directive.type, "dispatch");
 
     const persisted = await store.loadBusRoutingEvents("session-thinking");
-    assert.equal(persisted.length, 1);
+    assert.equal(persisted.length, 2);
     assert.equal(persisted[0]?.event.routing_id, started.routing_id);
-    assert.equal(persisted[0]?.event.type, "bus_directive_selected");
-    if (persisted[0]?.event.type === "bus_directive_selected") {
-      assert.equal(persisted[0].event.thinking, "Checked node responsibilities.");
+    assert.equal(persisted[0]?.event.type, "bus_model_response_recorded");
+    assert.equal(persisted[1]?.event.type, "bus_directive_selected");
+    if (persisted[1]?.event.type === "bus_directive_selected") {
+      assert.equal(persisted[1].event.thinking, "Checked node responsibilities.");
     }
   });
 
@@ -618,6 +619,71 @@ describe("SessionExecutionBus", () => {
     assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
   });
 
+  it("records every protocol response with stable routing context and aggregates usage exactly once", async () => {
+    const root = join(process.cwd(), ".tmp", "session-execution-bus-observability", randomUUID());
+    const store = new SessionStore(root);
+    const events: BusEvent[] = [];
+    const requests: ModelRequest[] = [];
+    const responses = [
+      {
+        content: JSON.stringify({ type: "dispatch", confidence: 0.4, node_id: "product", instruction: "Start", reason: "Unsure" }),
+        usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, totalTokens: 13 },
+        stopReason: "stop" as const
+      },
+      {
+        content: JSON.stringify({ type: "answer", confidence: 1, message: "Handled after correction." }),
+        usage: { inputTokens: 12, cachedInputTokens: 4, outputTokens: 5, totalTokens: 17 },
+        stopReason: "stop" as const
+      }
+    ];
+    const bus = createBus({
+      coordinator: fakeCoordinator(),
+      providerFactory: responseProvider({ type: "answer", confidence: 1, message: "unused" }).factory,
+      sessionStore: store,
+      sessionId: "session-observability",
+      events,
+      turnEngine: {
+        async requestModel(input: { request: ModelRequest }) {
+          requests.push(input.request);
+          const response = responses.shift();
+          if (!response) throw new Error("No response queued");
+          return { streamed: false, response };
+        }
+      } as never
+    });
+
+    await bus.handleUserMessage("route this");
+
+    const recorded = events.filter((event): event is Extract<BusEvent, { type: "bus_model_response_recorded" }> => (
+      event.type === "bus_model_response_recorded"
+    ));
+    assert.equal(recorded.length, 2);
+    assert.deepEqual(recorded.map((event) => event.protocol_attempt), [1, 2]);
+    assert.equal(recorded[0]?.routing_id, recorded[1]?.routing_id);
+    assert.deepEqual(recorded.map((event) => event.usage?.totalTokens), [13, 17]);
+    assert.deepEqual(recorded.map((event) => event.stop_reason), ["stop", "stop"]);
+    assert.equal(recorded.every((event) => !("content" in event) && !("thinking" in event)), true);
+    assert.equal(recorded.every((event) => event.model === testDispatcher.model), true);
+    assert.equal(requests[0]?.context?.turnId, `${recorded[0]?.routing_id}:1`);
+    assert.equal(requests[1]?.context?.turnId, `${recorded[0]?.routing_id}:2`);
+    assert.match(requests[0]?.context?.promptCacheKey ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(requests[0]?.context?.promptCacheKey, requests[1]?.context?.promptCacheKey);
+    assert.equal(requests[1]?.messages[0]?.role, "system");
+    assert.match(String(requests[1]?.messages.at(-1)?.content ?? ""), /Re-evaluate autonomously/);
+
+    const persisted = await store.loadBusRoutingEvents("session-observability");
+    assert.equal(persisted.filter((entry) => entry.event.type === "bus_model_response_recorded").length, 2);
+
+    const metadata = await store.loadMetadata("session-observability");
+    assert.equal(metadata?.modelRequestCount, 2);
+    assert.deepEqual(metadata?.usage, {
+      inputTokens: 22,
+      cachedInputTokens: 6,
+      outputTokens: 8,
+      totalTokens: 30
+    });
+  });
+
   it("does not turn repeated low-confidence clarification into a user routing prompt", async () => {
     const events: BusEvent[] = [];
     const provider = responseProvider(
@@ -697,7 +763,9 @@ describe("SessionExecutionBus", () => {
     assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
     const persisted = await store.loadBusRoutingEvents("session-routing-failure");
     assert.deepEqual(persisted.map((entry) => entry.event.type), [
+      "bus_model_response_recorded",
       "bus_dispatcher_protocol_retry_scheduled",
+      "bus_model_response_recorded",
       "bus_directive_selected",
       "bus_routing_failed"
     ]);

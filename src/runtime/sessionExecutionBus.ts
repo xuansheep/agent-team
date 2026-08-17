@@ -757,7 +757,8 @@ export class SessionExecutionBus {
 
   private async emit(event: BusEvent): Promise<void> {
     if (
-      event.type === "bus_directive_selected"
+      event.type === "bus_model_response_recorded"
+      || event.type === "bus_directive_selected"
       || event.type === "bus_dispatcher_protocol_retry_scheduled"
       || event.type === "bus_routing_failed"
     ) {

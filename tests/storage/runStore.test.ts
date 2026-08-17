@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { RunStore } from "../../src/storage/runStore.js";
+import { RunStore, type ProviderContinuationCheckpoint } from "../../src/storage/runStore.js";
 import type { ModelMessage } from "../../src/providers/types.js";
 import type { WorkflowState } from "../../src/workflow/state.js";
 
@@ -261,6 +261,83 @@ describe("RunStore", () => {
 
     assert.equal(recovered.resume_checkpoint?.dialogue_cursor, 2);
     assert.deepEqual(recovered.resume_checkpoint?.dialogue_messages, durableTail);
+  });
+
+  it("persists provider continuation checkpoints across store instances without exposing response ids in events", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-provider-continuation-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("delivery", { request: "x" });
+    const checkpoint: ProviderContinuationCheckpoint = {
+      version: 1,
+      nodeId: "dev",
+      attempt: 1,
+      activation: 2,
+      providerId: "default",
+      model: "gpt-test",
+      systemHash: "system-hash",
+      toolsHash: "tools-hash",
+      responseSchemaHash: "schema-hash",
+      windowId: "window-1",
+      historyPrefixHash: "history-hash",
+      messageCount: 4,
+      previousResponseId: "resp-secret",
+      updatedAt: new Date().toISOString()
+    };
+
+    assert.equal(await store.loadProviderContinuationCheckpoint(run.runId, "dev", 1, 2), undefined);
+    await store.saveProviderContinuationCheckpoint(run.runId, checkpoint);
+
+    assert.deepEqual(
+      await new RunStore(root).loadProviderContinuationCheckpoint(run.runId, "dev", 1, 2),
+      checkpoint
+    );
+    assert.doesNotMatch(await readFile(join(run.runDir, "events.ndjson"), "utf8"), /resp-secret/);
+
+    await store.clearProviderContinuationCheckpoint(run.runId, "dev", 1, 2);
+    assert.equal(await new RunStore(root).loadProviderContinuationCheckpoint(run.runId, "dev", 1, 2), undefined);
+  });
+
+  it("clears provider continuation when dialogue is compacted or reconciled", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-provider-continuation-reset-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("delivery", { request: "x" });
+    const checkpoint: ProviderContinuationCheckpoint = {
+      version: 1,
+      nodeId: "dev",
+      attempt: 1,
+      activation: 1,
+      providerId: "default",
+      model: "gpt-test",
+      systemHash: "system-hash",
+      toolsHash: "tools-hash",
+      responseSchemaHash: "schema-hash",
+      windowId: "window-1",
+      historyPrefixHash: "history-hash",
+      messageCount: 1,
+      previousResponseId: "resp-1",
+      updatedAt: new Date().toISOString()
+    };
+    await store.syncWorkflowDialogue(run.runId, "dev", 1, [{ role: "user", content: "before" }]);
+    await store.saveProviderContinuationCheckpoint(run.runId, checkpoint);
+
+    await store.compactWorkflowDialogue(run.runId, "dev", 1, {
+      replacementHistory: [{ role: "user", content: "summary", metadata: { compactSummary: true } }],
+      phase: "mid_turn",
+      reason: "threshold",
+      model: "gpt-test",
+      contextWindow: 10_000
+    });
+    assert.equal(await store.loadProviderContinuationCheckpoint(run.runId, "dev", 1), undefined);
+
+    await store.saveProviderContinuationCheckpoint(run.runId, checkpoint);
+    await store.reconcileWorkflowDialogue(
+      run.runId,
+      "dev",
+      1,
+      [{ role: "user", content: "recovered" }],
+      []
+    );
+    assert.equal(await store.loadProviderContinuationCheckpoint(run.runId, "dev", 1), undefined);
   });
 
   it("prevents a second store from acquiring the same active run lease", async () => {

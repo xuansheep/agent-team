@@ -31,7 +31,12 @@ export class ShellExecutionError extends ToolExecutionError {
 
 export async function executeTool(tool: Tool, input: unknown, context: ToolContext): Promise<ToolResult> {
   const validation = await tool.validateInput?.(input, context);
-  if (validation?.result === false) throw new ToolExecutionError(validation.message);
+  if (validation?.result === false) {
+    throw new ToolExecutionError(
+      validation.message,
+      toolPolicyFailureResult("tool.input.validation", validation.message, tool.name)
+    );
+  }
   const result = await tool.execute(input, context);
   if (isFailureResult(result)) {
     throw new ToolExecutionError(result.error ?? `Tool exited with code ${result.exit_code ?? 1}`, result);

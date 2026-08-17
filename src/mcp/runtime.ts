@@ -398,7 +398,7 @@ export function mcpPromptCommandName(server: string, prompt: string): string {
   return `mcp__${sanitizeName(server)}__${sanitizeName(prompt)}`;
 }
 
-const mcpBridgeTools = new Set(["ListMcpPrompts", "GetMcpPrompt", "RunMcpPrompt", "ListMcpResources", "ReadMcpResource"]);
+const mcpBridgeTools = new Set(["McpInvoke", "ListMcpPrompts", "GetMcpPrompt", "RunMcpPrompt", "ListMcpResources", "ReadMcpResource"]);
 
 // These tools hand a remote server's own payload back as ToolResult.data. That payload is
 // untrusted input, so it must never be able to activate a skill, widen permissions, or drive

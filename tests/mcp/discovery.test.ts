@@ -46,8 +46,7 @@ describe("MCP deferred discovery protocol", () => {
     assert.deepEqual(snapshot.deferredToolNames, ["mcp__playwright__navigate"]);
     assert.match(catalog, /<available-deferred-tools>\nmcp__playwright__navigate\n<\/available-deferred-tools>/);
     assert.doesNotMatch(catalog, /Navigate a browser|Search private docs|mcp__docs__search/);
-    assert.match(catalog, /late: pending/);
-    assert.match(catalog, /broken: failed - badserver/);
+    assert.doesNotMatch(catalog, /late: pending|broken: failed|badserver/);
     assert.equal(catalogMessage?.metadata?.runtimeAttachment?.humanTurnCount, 1);
   });
 
@@ -71,6 +70,7 @@ describe("MCP deferred discovery protocol", () => {
     const snapshot = prepareMcpDiscovery({ runtime, registry, messages });
 
     assert.deepEqual(snapshot.discoveredToolNames, ["mcp__playwright__navigate"]);
+    assert.deepEqual(snapshot.deferredToolNames, ["mcp__docs__search", "mcp__playwright__navigate"]);
     assert.equal(registry.has("mcp__playwright__navigate"), true);
 
     const summary = mergePreCompactDiscoveredTools(compactSummaryMessage("continue"), messages);

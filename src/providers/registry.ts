@@ -26,6 +26,7 @@ export function createProvider(config: AgentTeamConfig, providerId: string): Mod
         userAgent: provider.user_agent,
         promptCache: provider.responses.prompt_cache,
         parallelToolCalls: provider.responses.parallel_tool_calls,
+        conversationState: provider.responses.conversation_state,
         reasoning: provider.responses.reasoning,
         retry: providerRetryConfig(provider)
       });

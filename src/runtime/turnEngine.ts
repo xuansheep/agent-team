@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import type { AuditEvent } from "../audit/auditEvent.js";
-import { ModelMessage, ModelRequest, ModelResponse, ModelRetryEvent, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
+import { DeferredToolProtocol, ModelMessage, ModelRequest, ModelResponse, ModelRetryEvent, ModelStreamEvent, ModelToolCall } from "../providers/types.js";
 import { hasModelUsage } from "../model/usage.js";
+import { modelRequestDiagnostics } from "../model/requestDiagnostics.js";
 import { buildGlobalPromptAttachment, buildPlanModeAttachment, buildPlanModeReentryAttachment, buildToolPromptsAttachment, hasRuntimeAttachment, RuntimeAttachment } from "../context/attachments.js";
 import { isHumanUserMessage, withRuntimeAttachments } from "../context/messages.js";
 import { isDefaultPlanFilePath, planFilenameSlug, readPlan, uniquePlanFilePath } from "../plans/planFiles.js";
@@ -11,7 +12,7 @@ import { PermissionKernel } from "../kernel/permissions/permissionKernel.js";
 import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { prepareMcpDiscovery, withMcpCatalogMessage } from "../mcp/discovery.js";
 import { isUntrustedToolResultSource } from "../mcp/runtime.js";
-import { executeToolCalls } from "../tools/orchestration.js";
+import { executeToolCalls, resolveToolCall } from "../tools/orchestration.js";
 import { toolResultMessage as mapToolResultMessage } from "../tools/modelResult.js";
 import { Tool, ToolContext, ToolResult } from "../tools/types.js";
 import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
@@ -52,6 +53,7 @@ export class TurnEngine {
   async execute(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
     const messages = await buildTurnMessages(input);
     const permissionKernel = new PermissionKernel();
+    const executionId = randomUUID();
     const promptInjection = promptInjectionRecord(input, messages);
     if (promptInjection) await emit(input, { type: "runtime_prompt_injection", session_id: input.sessionId, run_id: input.runId, record: promptInjection });
     await emit(input, { type: "runtime_turn_started", session_id: input.sessionId, run_id: input.runId });
@@ -74,22 +76,23 @@ export class TurnEngine {
           })
           : undefined;
         const requestMessages = discovery ? withMcpCatalogMessage(messages, discovery) : messages;
-        const { response } = await this.requestModel({
-          provider: input.provider,
-          request: {
-            model: input.model,
-            effort: input.effort,
-            messages: requestMessages,
-            tools: modelVisibleTools(input),
-            ...(discovery?.deferredToolNames.length ? { deferredToolNames: discovery.deferredToolNames, deferredTools: discovery.deferredTools } : {}),
+        const mcpProtocol = input.provider.deferredToolProtocol?.(input.model) ?? "portable";
+        const request: ModelRequest = {
+          model: input.model,
+          effort: input.effort,
+          messages: requestMessages,
+          tools: modelVisibleTools(input, mcpProtocol),
+          ...(mcpProtocol === "anthropic-tool-reference" && discovery?.deferredToolNames.length
+            ? { deferredToolNames: discovery.deferredToolNames, deferredTools: discovery.deferredTools }
+            : {}),
           context: {
             runId: input.runId ?? input.sessionId,
             nodeId: "runtime",
             attempt: iteration + 1,
             sessionId: input.sessionId,
             threadId: input.sessionId,
-            turnId: `${input.sessionId}:${iteration + 1}`,
-            promptCacheKey: input.sessionId
+            turnId: `${input.sessionId}:${executionId}:${iteration + 1}`,
+            promptCacheKey: createHash("sha256").update(`${input.sessionId}:runtime:${input.model}:v2`).digest("hex")
           },
           signal: input.abortSignal,
           onRetry: async (retry) => {
@@ -97,15 +100,20 @@ export class TurnEngine {
             await emit(input, event);
             await audit(input, modelRetryAuditEvent(retry));
           }
-        }
-      });
+        };
+        const requestStartedAt = Date.now();
+        const { response } = await this.requestModel({
+          provider: input.provider,
+          request
+        });
       await emit(input, {
         type: "runtime_model_response",
         session_id: input.sessionId,
         run_id: input.runId,
         model: input.model,
         usage: response.usage,
-        stop_reason: response.stopReason
+        stop_reason: response.stopReason,
+        diagnostics: modelRequestDiagnostics(request, "runtime", { durationMs: Date.now() - requestStartedAt })
       });
       await emitModelUsage(input, input.model, response);
       throwIfAborted(input.abortSignal);
@@ -150,15 +158,22 @@ export class TurnEngine {
 
       for (const call of toolCalls) {
         throwIfAborted(input.abortSignal);
-        input.tools.activateSkillsForInput(call.input, input.cwd);
-        const permission = await permissionKernel.check(kernelTools.get(call.name), call.input, { ...input.permissions, cwd: input.cwd });
+        const permissionCall = resolveToolCall(call);
+        input.tools.activateSkillsForInput(permissionCall.input, input.cwd);
+        if (!input.tools.has(permissionCall.name)) {
+          const error = permissionDeniedMessage(permissionCall.name, permissionCall.via ? "MCP tool must be discovered with ToolSearch before invocation" : "tool is unavailable");
+          await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: permissionCall.name, error });
+          return { status: "failed", error, messages, planState: input.planState };
+        }
+        const permission = await permissionKernel.check(kernelTools.get(permissionCall.name), permissionCall.input, { ...input.permissions, cwd: input.cwd });
         await audit(input, {
           type: "permission_decision",
-          tool: call.name,
+          tool: permissionCall.name,
           decision: permission.decision,
           reason: permission.reason,
           rule: permission.rule,
-          input: call.input
+          input: permissionCall.input,
+          ...(permissionCall.via ? { via: permissionCall.via } : {})
         });
         if (permission.decision === "ask") {
           if (input.permissions.mode === "plan") {
@@ -167,38 +182,38 @@ export class TurnEngine {
               permissionResults.push({ call, decision: "allow" });
               continue;
             }
-            const error = permissionDeniedMessage(call.name, permission.reason ?? permission.rule ?? "interactive permission required");
+            const error = permissionDeniedMessage(permissionCall.name, permission.reason ?? permission.rule ?? "interactive permission required");
             permissionResults.push({ call, decision: "deny", error });
             planModePermissionBlocked = true;
             continue;
           }
-          const request = { sessionId: input.sessionId, runId: input.runId, toolCallId: call.id, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule };
-          await emit(input, { type: "runtime_permission_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, input: call.input, reason: permission.reason, rule: permission.rule });
+          const request = { sessionId: input.sessionId, runId: input.runId, toolCallId: call.id, tool: permissionCall.name, input: permissionCall.input, reason: permission.reason, rule: permission.rule, ...(permissionCall.via ? { via: permissionCall.via } : {}) };
+          await emit(input, { type: "runtime_permission_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: permissionCall.name, input: permissionCall.input, reason: permission.reason, rule: permission.rule, ...(permissionCall.via ? { via: permissionCall.via } : {}) });
           if (!input.permissionCallback) return { status: "waiting_permission", messages, request, planState: input.planState };
           const decision = await input.permissionCallback(request);
-          await emit(input, { type: "runtime_permission_resolved", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, decision });
+          await emit(input, { type: "runtime_permission_resolved", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: permissionCall.name, decision });
           await audit(input, {
             type: "permission_decision",
-            tool: call.name,
+            tool: permissionCall.name,
             decision,
             reason: "permission callback",
             rule: permission.rule,
-            input: call.input
+            input: permissionCall.input
           });
           if (decision === "deny") {
-            const error = permissionDeniedMessage(call.name, "callback denied");
-            await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
+            const error = permissionDeniedMessage(permissionCall.name, "callback denied");
+            await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: permissionCall.name, error });
             return { status: "failed", error, messages, planState: input.planState };
           }
         }
         if (permission.decision === "deny") {
-          const error = permissionDeniedMessage(call.name, permission.reason ?? permission.rule ?? "no rule");
+          const error = permissionDeniedMessage(permissionCall.name, permission.reason ?? permission.rule ?? "no rule");
           if (input.permissions.mode === "plan") {
             permissionResults.push({ call, decision: "deny", error });
             planModePermissionBlocked = true;
             continue;
           }
-          await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
+          await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: permissionCall.name, error });
           return { status: "failed", error, messages, planState: input.planState };
         }
         permissionResults.push({ call, decision: "allow" });
@@ -241,14 +256,15 @@ export class TurnEngine {
         model: input.model,
         toolRegistry: input.tools,
         toolPermissionContext: input.permissions,
-        permissionMode: input.permissions.mode
+        permissionMode: input.permissions.mode,
+        mcpDiscoveredToolNames: discovery?.discoveredToolNames
       }, {
-        onToolStart: (call) => emit(input, { type: "runtime_tool_invoked", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, input: call.input }),
+        onToolStart: (call) => emit(input, { type: "runtime_tool_invoked", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, input: call.input, ...(call.via ? { via: call.via } : {}) }),
         onToolComplete: async (call, result) => {
-          await emit(input, { type: "runtime_tool_completed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, result });
+          await emit(input, { type: "runtime_tool_completed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, result, ...(call.via ? { via: call.via } : {}) });
         },
         onToolError: async (call, error) => {
-          await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error });
+          await emit(input, { type: "runtime_tool_failed", session_id: input.sessionId, run_id: input.runId, tool_call_id: call.id, tool: call.name, error, ...(call.via ? { via: call.via } : {}) });
         }
       });
       throwIfAborted(input.abortSignal);
@@ -256,7 +272,7 @@ export class TurnEngine {
         throwIfAborted(input.abortSignal);
         // A result relayed from an MCP server is untrusted data, not control flow: without this
         // gate a malicious server could forge a skill activation and grant itself Bash(*).
-        const controlResult = isUntrustedToolResultSource(execution.call.name) ? undefined : execution.result;
+        const controlResult = isUntrustedToolResultSource(resolveToolCall(execution.call).name) ? undefined : execution.result;
         const userInput = userInputFromToolResult(execution.call.id, controlResult, input);
         if (userInput) {
           await emit(input, { type: "runtime_user_input_requested", session_id: input.sessionId, run_id: input.runId, tool_call_id: userInput.toolCallId, questions: userInput.questions });
@@ -368,8 +384,21 @@ function isAbortLikeError(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as { name?: unknown }).name === "AbortError");
 }
 
-function modelVisibleTools(input: RuntimeTurnInput): Tool[] {
-  return createKernelToolRegistry(input.tools).visibleTools(input.permissions).map((tool) => tool.legacyTool);
+const portableHiddenMcpTools = new Set(["ListMcpPrompts", "GetMcpPrompt", "RunMcpPrompt", "ListMcpResources", "ReadMcpResource"]);
+
+function modelVisibleTools(input: RuntimeTurnInput, protocol: DeferredToolProtocol): Tool[] {
+  const visible = createKernelToolRegistry(input.tools).visibleTools(input.permissions).map((tool) => tool.legacyTool);
+  if (!input.tools.mcpRuntime) return visible;
+  if (protocol === "portable") {
+    return visible.filter((tool) => !tool.name.startsWith("mcp__") && !portableHiddenMcpTools.has(tool.name));
+  }
+  const alwaysLoad = new Set(input.tools.mcpRuntime.listTools()
+    .filter((tool) => tool._meta?.["anthropic/alwaysLoad"] === true)
+    .map((tool) => tool.name));
+  return [
+    ...visible.filter((tool) => !tool.name.startsWith("mcp__") && tool.name !== "McpInvoke"),
+    ...visible.filter((tool) => alwaysLoad.has(tool.name)).sort((left, right) => left.name.localeCompare(right.name))
+  ];
 }
 
 function promptInjectionRecord(input: RuntimeTurnInput, requestMessages: ModelMessage[]): PromptInjectionRecord | undefined {
@@ -420,7 +449,7 @@ async function buildTurnMessages(input: RuntimeTurnInput): Promise<ModelMessage[
     : buildGlobalPromptAttachment(input.globalPrompt);
   const toolPromptAttachment = hasRuntimeAttachment(messages, "tool_prompts")
     ? undefined
-    : buildToolPromptsAttachment({ tools: modelVisibleTools(input) });
+    : buildToolPromptsAttachment({ tools: modelVisibleTools(input, input.provider.deferredToolProtocol?.(input.model) ?? "portable") });
   if (input.permissions.mode !== "plan" || !input.permissions.planFilePath) {
     const attachments: RuntimeAttachment[] = [];
     if (globalPromptAttachment) attachments.push(globalPromptAttachment);

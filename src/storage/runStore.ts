@@ -71,6 +71,23 @@ export type WorkflowDialogueCompaction = {
   prefixInputTokens?: number;
 };
 
+export type ProviderContinuationCheckpoint = {
+  version: 1;
+  nodeId: string;
+  attempt: number;
+  activation: number;
+  providerId: string;
+  model: string;
+  systemHash: string;
+  toolsHash: string;
+  responseSchemaHash: string;
+  windowId: string;
+  historyPrefixHash: string;
+  messageCount: number;
+  previousResponseId: string;
+  updatedAt: string;
+};
+
 export type WorkflowDialogueState = {
   cursor: number;
   messages: ModelMessage[];
@@ -236,6 +253,7 @@ export class RunStore {
       const runDir = await this.resolveRunDir(runId);
       const path = dialogueJournalPath(runDir, nodeId, attempt, activation);
       const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, activation, path);
+      await writeJsonAtomic(providerContinuationCheckpointPath(runDir, nodeId, attempt, activation), null, { backupPath: false });
       const record: DialogueJournalRecord = {
         journal_type: "reconcile",
         messages: [...messages]
@@ -266,6 +284,7 @@ export class RunStore {
       const runDir = await this.resolveRunDir(runId);
       const path = dialogueJournalPath(runDir, nodeId, attempt, activation);
       const state = await this.ensureWorkflowDialogueState(runId, nodeId, attempt, activation, path);
+      await writeJsonAtomic(providerContinuationCheckpointPath(runDir, nodeId, attempt, activation), null, { backupPath: false });
       const currentWindow = state.window;
       const nextWindow: WorkflowDialogueWindow = {
         windowNumber: currentWindow.windowNumber + 1,
@@ -308,6 +327,45 @@ export class RunStore {
 
   async loadWorkflowDialogue(runId: string, nodeId: string, attempt: number, cursor?: number, activation = 1): Promise<ModelMessage[]> {
     return (await this.loadWorkflowDialogueState(runId, nodeId, attempt, cursor, activation)).messages;
+  }
+
+  async loadProviderContinuationCheckpoint(
+    runId: string,
+    nodeId: string,
+    attempt: number,
+    activation = 1
+  ): Promise<ProviderContinuationCheckpoint | undefined> {
+    const runDir = await this.resolveRunDir(runId);
+    const checkpoint = await readJsonWithBackup<ProviderContinuationCheckpoint | null>(
+      providerContinuationCheckpointPath(runDir, nodeId, attempt, activation),
+      { backupPath: false }
+    );
+    if (
+      !checkpoint
+      || checkpoint.version !== 1
+      || checkpoint.nodeId !== nodeId
+      || checkpoint.attempt !== attempt
+      || checkpoint.activation !== activation
+    ) return undefined;
+    return checkpoint;
+  }
+
+  async saveProviderContinuationCheckpoint(runId: string, checkpoint: ProviderContinuationCheckpoint): Promise<void> {
+    await this.enqueueRunWrite(runId, async () => {
+      const runDir = await this.resolveRunDir(runId);
+      await writeJsonAtomic(
+        providerContinuationCheckpointPath(runDir, checkpoint.nodeId, checkpoint.attempt, checkpoint.activation),
+        checkpoint,
+        { backupPath: false }
+      );
+    });
+  }
+
+  async clearProviderContinuationCheckpoint(runId: string, nodeId: string, attempt: number, activation = 1): Promise<void> {
+    await this.enqueueRunWrite(runId, async () => {
+      const runDir = await this.resolveRunDir(runId);
+      await writeJsonAtomic(providerContinuationCheckpointPath(runDir, nodeId, attempt, activation), null, { backupPath: false });
+    });
   }
 
   private async ensureWorkflowDialogueState(
@@ -699,6 +757,10 @@ export class RunStore {
   }
 }
 
+function providerContinuationCheckpointPath(runDir: string, nodeId: string, attempt: number, activation: number): string {
+  return join(runDir, "provider-continuation-" + encodeURIComponent(nodeId) + "-attempt-" + attempt + "-activation-" + activation + ".json");
+}
+
 function dialogueJournalPath(runDir: string, nodeId: string, attempt: number, activation = 1): string {
   const activationSuffix = activation > 1 ? `-activation-${activation}` : "";
   return join(runDir, "dialogue", `${encodeURIComponent(nodeId)}-attempt-${attempt}${activationSuffix}.ndjson`);
@@ -827,7 +889,8 @@ function workflowInputText(input: unknown): string {
 function isSessionActivityEvent(event: HarnessEvent): boolean {
   return event.type !== "model_thinking_delta"
     && event.type !== "model_stream_delta"
-    && event.type !== "model_usage_recorded";
+    && event.type !== "model_usage_recorded"
+    && event.type !== "provider_continuation_fallback";
 }
 
 function isTerminalEvent(event: HarnessEvent): boolean {

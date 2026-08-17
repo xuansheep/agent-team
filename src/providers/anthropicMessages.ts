@@ -440,6 +440,7 @@ function anthropicUsage(usage: AnthropicUsage | undefined): ModelUsage | undefin
   return {
     inputTokens,
     ...(usage.cache_read_input_tokens !== undefined ? { cachedInputTokens: usage.cache_read_input_tokens } : {}),
+    ...(usage.cache_creation_input_tokens !== undefined ? { cacheWriteInputTokens: usage.cache_creation_input_tokens } : {}),
     outputTokens,
     totalTokens: inputTokens !== undefined || outputTokens !== undefined ? (inputTokens ?? 0) + (outputTokens ?? 0) : undefined
   };

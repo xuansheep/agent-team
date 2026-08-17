@@ -24,6 +24,8 @@ export type McpToolSearchMatch = {
   description?: string;
   source: "local" | "mcp";
   loaded: boolean;
+  input_schema?: Record<string, unknown>;
+  annotations?: RuntimeMcpTool["annotations"];
 };
 
 export type McpToolSearchData = {
@@ -75,7 +77,7 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
       "MCP tools may be deferred: the model can see their names but not their schemas.",
       "You MUST call ToolSearch before using any name from <available-deferred-tools>.",
       "Prefer exact lookup with select:mcp__server__tool when the required name is known.",
-      "After ToolSearch returns a match, use that exact tool name in the next step.",
+      "After ToolSearch returns a match, invoke it through McpInvoke on portable providers or by exact tool name when native deferred tools are supported.",
       "If an appropriate MCP browser or domain tool is available, do not launch a replacement process unless discovery or the server reports failure.",
       ...(runtime.getServerInstructions?.().map((value) => sanitizedText(value)).filter((value): value is string => Boolean(value)) ?? [])
     ].join("\n\n"),
@@ -106,15 +108,21 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
       const matches: McpToolSearchMatch[] = [];
 
       for (const item of found.matches) {
-        if (item.source === "mcp" && runtime.callTool && context.toolRegistry && !context.toolRegistry.has(item.name)) {
-          const candidate = allCandidates.find((entry) => entry.tool.name === item.name);
-          if (candidate) context.toolRegistry.add(createDeferredMcpTool(candidate.tool, { callTool: runtime.callTool.bind(runtime) }));
+        const candidate = item.source === "mcp"
+          ? allCandidates.find((entry) => entry.tool.name === item.name)?.tool
+          : undefined;
+        if (candidate && runtime.callTool && context.toolRegistry && !context.toolRegistry.has(item.name)) {
+          context.toolRegistry.add(createDeferredMcpTool(candidate, { callTool: runtime.callTool.bind(runtime) }));
         }
         matches.push({
           name: item.name,
           ...(item.description ? { description: sanitizedText(item.description) } : {}),
           source: item.source,
-          loaded: item.source === "local" || Boolean(context.toolRegistry?.has(item.name))
+          loaded: item.source === "local" || Boolean(context.toolRegistry?.has(item.name)),
+          ...(candidate ? {
+            input_schema: candidate.inputSchema ?? { type: "object", additionalProperties: true },
+            ...(candidate.annotations ? { annotations: candidate.annotations } : {})
+          } : {})
         });
       }
 
@@ -142,7 +150,58 @@ export function createMcpToolSearchTool(runtime: McpToolSearchRuntime): Tool {
   };
 }
 
+export function createMcpInvokeTool(runtime: McpToolSearchRuntime): Tool {
+  const resolve = (input: unknown): { tool: RuntimeMcpTool; input: unknown } => {
+    const value = mcpInvokeInput(input);
+    const tool = runtime.listTools().find((candidate) => candidate.name === value.name);
+    if (!tool) throw new Error(`Unknown MCP tool ${value.name}`);
+    return { tool, input: value.input };
+  };
+  return {
+    name: "McpInvoke",
+    description: "Invoke an MCP tool returned by ToolSearch. The target must have been discovered in this conversation or marked always-load by its server.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Exact MCP tool name returned by ToolSearch." },
+        input: { type: "object", description: "Arguments matching the input_schema returned by ToolSearch.", additionalProperties: true }
+      },
+      required: ["name", "input"],
+      additionalProperties: false
+    },
+    isReadOnly: (input) => resolve(input).tool.annotations?.readOnlyHint === true,
+    isDestructive: (input) => resolve(input).tool.annotations?.destructiveHint === true,
+    isConcurrencySafe: () => false,
+    async validateInput(input) {
+      try {
+        resolve(input);
+        return { result: true };
+      } catch (error) {
+        return { result: false, message: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    async execute(input, context) {
+      if (!runtime.callTool) throw new Error("MCP runtime cannot invoke tools");
+      const resolved = resolve(input);
+      const allowed = mcpToolAlwaysLoad(resolved.tool) || context.mcpDiscoveredToolNames?.includes(resolved.tool.name);
+      if (!allowed) throw new Error(`MCP tool ${resolved.tool.name} must be discovered with ToolSearch before invocation`);
+      if (isDenied(resolved.tool.name, context.toolPermissionContext)) throw new Error(`Permission denied for ${resolved.tool.name}`);
+      const data = await runtime.callTool(resolved.tool.server, resolved.tool.originalName, resolved.input);
+      const output = toolResultText(data);
+      return { output, ...(data.isError ? { error: output, is_error: true } : {}), data };
+    },
+    mapToolResultToModelResult(result) {
+      return result.data ?? result.output ?? result.error;
+    }
+  };
+}
+
+export function resolveMcpInvokeCall(input: unknown): { name: string; input: unknown } {
+  return mcpInvokeInput(input);
+}
+
 export function syncMcpRegistry(registry: ToolRegistry, runtime: McpToolSearchRuntime): void {
+  if (!registry.has("McpInvoke")) registry.add(createMcpInvokeTool(runtime));
   const available = new Map(runtime.listTools().map((tool) => [tool.name, tool]));
   for (const name of registry.names()) {
     if (!name.startsWith("mcp__")) continue;
@@ -293,6 +352,14 @@ function escapeRegExp(value: string): string {
 function searchHint(tool: RuntimeMcpTool): string {
   const hint = tool._meta?.["anthropic/searchHint"];
   return typeof hint === "string" ? sanitizedText(hint) ?? "" : "";
+}
+
+function mcpInvokeInput(input: unknown): { name: string; input: unknown } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("McpInvoke input must be an object");
+  const record = input as { name?: unknown; input?: unknown };
+  if (typeof record.name !== "string" || !record.name.startsWith("mcp__")) throw new Error("McpInvoke name must be an exact MCP tool name");
+  if (!record.input || typeof record.input !== "object" || Array.isArray(record.input)) throw new Error("McpInvoke input must contain an input object");
+  return { name: record.name, input: record.input };
 }
 
 function objectInput(input: unknown): { query: string; maxResults: number } {

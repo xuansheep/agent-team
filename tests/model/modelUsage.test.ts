@@ -23,7 +23,18 @@ describe("model usage", () => {
     assert.equal(effectiveModelTokens({ inputTokens: 10, cachedInputTokens: 4, outputTokens: 3 }), 9);
     assert.equal(effectiveModelTokens({ inputTokens: 2, cachedInputTokens: 5, outputTokens: -1 }), 0);
     assert.equal(hasModelUsage(undefined), false);
+    assert.deepEqual(addModelUsage(
+      { inputTokens: 1, cacheWriteInputTokens: 2 },
+      { inputTokens: 3, cacheWriteInputTokens: 4 }
+    ), {
+      inputTokens: 4,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 6,
+      outputTokens: 0,
+      totalTokens: 4
+    });
     assert.equal(hasModelUsage({ cachedInputTokens: 1 }), true);
+    assert.equal(hasModelUsage({ cacheWriteInputTokens: 1 }), true);
   });
 
   it("records usage without changing request count", async () => {

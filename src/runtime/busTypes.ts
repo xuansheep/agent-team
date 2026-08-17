@@ -1,5 +1,7 @@
 import type { ExecutionKind } from "../config/schema.js";
-import type { ModelMessage } from "../providers/types.js";
+import type { ModelUsage } from "../model/usage.js";
+import type { ModelRequestDiagnostics } from "../model/requestDiagnostics.js";
+import type { ModelMessage, ModelStopReason } from "../providers/types.js";
 import type { WorkflowSession } from "../workflow/session.js";
 import type { WorkflowRunDossier } from "../workflow/dossier.js";
 
@@ -38,6 +40,7 @@ export type BusIntent =
 export type BusEvent =
   | { type: "bus_routing_started"; session_id: string; workflow_id: string; routing_id: string; phase: "user" | "plan" | "lifecycle" }
   | { type: "bus_model_thinking_delta"; session_id: string; workflow_id: string; routing_id: string; text: string }
+  | { type: "bus_model_response_recorded"; session_id: string; workflow_id: string; routing_id: string; protocol_attempt: number; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason; streamed: boolean; content_chars: number; thinking_chars: number; tool_call_count: number; response_shape: string; diagnostics?: ModelRequestDiagnostics }
   | { type: "bus_directive_selected"; session_id: string; workflow_id: string; routing_id: string; phase: "user" | "plan" | "lifecycle"; directive: DispatchDirective; thinking?: string }
   | { type: "bus_assistant_message"; session_id: string; workflow_id: string; content: string }
   | { type: "bus_clarification_requested"; session_id: string; workflow_id: string; content: string; reason: "material_ambiguity" | "low_confidence" | "dispatcher_failure" | "invalid_directive" | "rework_limit" }
@@ -54,7 +57,7 @@ export type BusEvent =
 
 export type BusDirectiveSelectedEvent = Extract<BusEvent, { type: "bus_directive_selected" }>;
 export type BusRoutingEvent = Extract<BusEvent, {
-  type: "bus_directive_selected" | "bus_dispatcher_protocol_retry_scheduled" | "bus_routing_failed";
+  type: "bus_model_response_recorded" | "bus_directive_selected" | "bus_dispatcher_protocol_retry_scheduled" | "bus_routing_failed";
 }>;
 
 export type BusTaskState = {

@@ -1,3 +1,4 @@
+import { resolveMcpInvokeCall } from "../mcp/deferredTools.js";
 import { ModelToolCall } from "../providers/types.js";
 import { executeTool, toolFailureResult } from "./errors.js";
 import { ToolRegistry } from "./registry.js";
@@ -10,11 +11,23 @@ export type ToolCallExecution = {
   error?: string;
 };
 
+export type ResolvedToolCall = ModelToolCall & { via?: string };
+
 export type ToolCallExecutionHooks = {
-  onToolStart?: (call: ModelToolCall) => void | Promise<void>;
-  onToolComplete?: (call: ModelToolCall, result: ToolResult) => void | Promise<void>;
-  onToolError?: (call: ModelToolCall, error: string, failure?: ToolResult) => void | Promise<void>;
+  onToolStart?: (call: ResolvedToolCall) => void | Promise<void>;
+  onToolComplete?: (call: ResolvedToolCall, result: ToolResult) => void | Promise<void>;
+  onToolError?: (call: ResolvedToolCall, error: string, failure?: ToolResult) => void | Promise<void>;
 };
+
+export function resolveToolCall(call: ModelToolCall): ResolvedToolCall {
+  if (call.name !== "McpInvoke") return call;
+  try {
+    const resolved = resolveMcpInvokeCall(call.input);
+    return { ...call, name: resolved.name, input: resolved.input, via: call.name };
+  } catch {
+    return call;
+  }
+}
 
 export async function executeToolCalls(
   calls: ModelToolCall[],
@@ -65,16 +78,18 @@ async function executeOne(
   context: ToolContext,
   hooks: ToolCallExecutionHooks
 ): Promise<ToolCallExecution> {
+  const reportedCall = resolveToolCall(call);
   await context.auditSink?.({
     type: "tool_invocation",
     session_id: context.sessionId,
     run_id: context.runId,
     node_id: context.nodeId,
     attempt: context.attempt,
-    tool: call.name,
-    input: call.input
+    tool: reportedCall.name,
+    input: reportedCall.input,
+    ...(reportedCall.via ? { via: reportedCall.via } : {})
   });
-  await hooks.onToolStart?.(call);
+  await hooks.onToolStart?.(reportedCall);
   try {
     if (!registry.has(call.name)) throw new Error(`No such tool available: ${call.name}`);
     const result = await executeTool(registry.get(call.name), call.input, context);
@@ -84,11 +99,12 @@ async function executeOne(
       run_id: context.runId,
       node_id: context.nodeId,
       attempt: context.attempt,
-      tool: call.name,
+      tool: reportedCall.name,
+      ...(reportedCall.via ? { via: reportedCall.via } : {}),
       status: "completed",
       result
     });
-    await hooks.onToolComplete?.(call, result);
+    await hooks.onToolComplete?.(reportedCall, result);
     return { call, result };
   } catch (error) {
     const failure = toolFailureResult(error);
@@ -99,12 +115,13 @@ async function executeOne(
       run_id: context.runId,
       node_id: context.nodeId,
       attempt: context.attempt,
-      tool: call.name,
+      tool: reportedCall.name,
+      ...(reportedCall.via ? { via: reportedCall.via } : {}),
       status: "failed",
       error: message,
       result: failure
     });
-    await hooks.onToolError?.(call, message, failure);
+    await hooks.onToolError?.(reportedCall, message, failure);
     return { call, error: message, failure };
   }
 }

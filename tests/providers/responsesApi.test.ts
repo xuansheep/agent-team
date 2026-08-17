@@ -67,6 +67,7 @@ describe("ResponsesApiProvider", () => {
     assert.equal(server.requestHeaders["x-client-request-id"], "run-1:dev:2");
     assert.equal(server.requestBody.instructions, "System prompt");
     assert.equal(server.requestBody.max_output_tokens, 8000);
+    assert.equal(server.requestBody.store, true);
     assert.deepEqual(server.requestBody.input, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }
     ]);
@@ -85,6 +86,77 @@ describe("ResponsesApiProvider", () => {
     assert.deepEqual(server.requestBody.text, {
       format: { type: "json_schema", name: "node_result", strict: true, schema: responseSchema }
     });
+  });
+
+  it("continues with previous_response_id while sending only incremental input", async () => {
+    const server = await startJsonServer({ id: "resp-next", output_text: "continued" });
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", conversationState: "previous_response_id" });
+    const allMessages = [
+      { role: "system" as const, content: "Full instructions" },
+      { role: "user" as const, content: "original" },
+      { role: "assistant" as const, content: "first answer" },
+      { role: "user" as const, content: "follow-up" }
+    ];
+
+    const result = await provider.generate({
+      model: "gpt-test",
+      messages: allMessages,
+      tools: [tool],
+      continuation: {
+        previousResponseId: "resp-first",
+        inputMessages: [allMessages[3]]
+      }
+    });
+
+    assert.equal(server.requestBody.store, true);
+    assert.equal(server.requestBody.previous_response_id, "resp-first");
+    assert.equal(server.requestBody.instructions, "Full instructions");
+    assert.deepEqual(server.requestBody.tools, [{ type: "function", name: "Bash", description: "Run a command", parameters: tool.input_schema }]);
+    assert.deepEqual(server.requestBody.input, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "follow-up" }] }
+    ]);
+    assert.equal(result.providerResponseId, "resp-next");
+  });
+
+  it("keeps stateless requests compatible by replaying full input", async () => {
+    const server = await startJsonServer({ id: "resp-stateless", output_text: "replayed" });
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key", conversationState: "stateless" });
+    const messages = [
+      { role: "system" as const, content: "System prompt" },
+      { role: "user" as const, content: "original" },
+      { role: "assistant" as const, content: "first answer" },
+      { role: "user" as const, content: "follow-up" }
+    ];
+
+    await provider.generate({
+      model: "gpt-test",
+      messages,
+      tools: [],
+      continuation: {
+        previousResponseId: "resp-first",
+        inputMessages: [messages[3]]
+      }
+    });
+
+    assert.equal(server.requestBody.store, false);
+    assert.equal("previous_response_id" in server.requestBody, false);
+    assert.equal((server.requestBody.input as unknown[]).length, 3);
+  });
+
+  it("downgrades to stateless mode when a compatible provider rejects conversation state fields", async () => {
+    const server = await startConversationStateFallbackServer();
+    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
+
+    const result = await provider.generate({
+      model: "gpt-test",
+      messages: [{ role: "user", content: "hello" }],
+      tools: []
+    });
+
+    assert.equal(result.content, "fallback");
+    assert.equal(server.requestBodies.length, 2);
+    assert.equal(server.requestBodies[0]?.store, true);
+    assert.equal(server.requestBodies[1]?.store, false);
   });
 
   it("keeps long tool prompts out of Responses API tool schemas", async () => {
@@ -119,16 +191,18 @@ describe("ResponsesApiProvider", () => {
 
   it("maps usage and status into normalized response metadata", async () => {
     const server = await startJsonServer({
+      id: "resp-usage",
       output_text: "ok",
       status: "completed",
-      usage: { input_tokens: 3, input_tokens_details: { cached_tokens: 2 }, output_tokens: 4, total_tokens: 7 }
+      usage: { input_tokens: 3, input_tokens_details: { cached_tokens: 2, cache_write_tokens: 1 }, output_tokens: 4, total_tokens: 7 }
     });
     const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
 
     const result = await provider.generate({ model: "gpt-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
-    assert.deepEqual(result.usage, { inputTokens: 3, cachedInputTokens: 2, outputTokens: 4, totalTokens: 7 });
+    assert.deepEqual(result.usage, { inputTokens: 3, cachedInputTokens: 2, cacheWriteInputTokens: 1, outputTokens: 4, totalTokens: 7 });
     assert.equal(result.stopReason, "stop");
+    assert.equal(result.providerResponseId, "resp-usage");
   });
 
   it("keeps long trace ids out of prompt_cache_key", async () => {
@@ -181,6 +255,7 @@ describe("ResponsesApiProvider", () => {
 
   it("streams CRLF-delimited text deltas and completed function calls", async () => {
     const server = await startSseServer([
+      { type: "response.created", response: { id: "resp-stream" } },
       { type: "response.output_text.delta", delta: "{\"direction\":" },
       { type: "response.output_text.delta", delta: "\"forward\"}" },
       { type: "response.output_item.done", item: { type: "function_call", call_id: "call-1", name: "Bash", arguments: "{\"command\":\"npm test\"}" } },
@@ -197,6 +272,7 @@ describe("ResponsesApiProvider", () => {
     assert.deepEqual(deltas, ["{\"direction\":", "\"forward\"}"]);
     assert.equal(result?.content, "{\"direction\":\"forward\"}");
     assert.deepEqual(result?.tool_calls, [{ id: "call-1", name: "Bash", input: { command: "npm test" } }]);
+    assert.equal(result?.providerResponseId, "resp-stream");
     assert.equal(server.requestBody.stream, true);
   });
 
@@ -312,6 +388,27 @@ async function startJsonServer(responseBody: unknown): Promise<{ baseUrl: string
   const address = server.address() as AddressInfo;
   const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   const handle = { baseUrl: `http://127.0.0.1:${address.port}/v1`, get requestPath() { return requestPath; }, get requestBody() { return requestBody; }, get requestHeaders() { return requestHeaders; }, close };
+  servers.push(handle);
+  return handle;
+}
+
+async function startConversationStateFallbackServer(): Promise<{ baseUrl: string; requestBodies: Record<string, unknown>[]; close: () => Promise<void> }> {
+  const requestBodies: Record<string, unknown>[] = [];
+  const server = createServer(async (request, response) => {
+    requestBodies.push(await readJsonBody(request));
+    if (requestBodies.length === 1) {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "Unknown field store; conversation state is not supported" } }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ id: "fallback", output_text: "fallback" }));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const close = () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  const handle = { baseUrl: `http://127.0.0.1:${address.port}/v1`, requestBodies, close };
   servers.push(handle);
   return handle;
 }

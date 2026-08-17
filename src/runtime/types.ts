@@ -1,5 +1,6 @@
 import { ModelMessage, ModelProvider, ModelStopReason } from "../providers/types.js";
 import type { ModelUsage } from "../model/usage.js";
+import type { ModelRequestDiagnostics } from "../model/requestDiagnostics.js";
 import type { AuditSink } from "../audit/auditEvent.js";
 import type { GlobalPromptMetadata, GlobalPromptSourceMetadata } from "../config/schema.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -62,14 +63,14 @@ export type RuntimeEvent =
   | { type: "runtime_assistant_message"; session_id: string; run_id?: string; content: string }
   | { type: "runtime_user_input_injected"; session_id: string; run_id?: string; input_id: string; content: ModelMessage["content"] }
   | { type: "runtime_model_retry_scheduled"; session_id: string; run_id?: string; operation: "sampling" | "compaction"; phase: "request" | "stream"; retry_attempt: number; max_retries: number; retry_in_ms: number; retry_at: string; error_kind: string; status?: number; error: string; detail?: string; discarded_content_chars: number; discarded_thinking_chars: number }
-  | { type: "runtime_model_response"; session_id: string; run_id?: string; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason }
+  | { type: "runtime_model_response"; session_id: string; run_id?: string; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason; diagnostics?: ModelRequestDiagnostics }
   | { type: "runtime_model_usage"; session_id: string; run_id?: string; model: string; usage: ModelUsage; stop_reason?: ModelStopReason }
   | { type: "runtime_user_input_requested"; session_id: string; run_id?: string; tool_call_id: string; questions: unknown[] }
-  | { type: "runtime_permission_requested"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown; reason?: string; rule?: string }
+  | { type: "runtime_permission_requested"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown; reason?: string; rule?: string; via?: string }
   | { type: "runtime_permission_resolved"; session_id: string; run_id?: string; tool_call_id: string; tool: string; decision: RuntimePermissionDecision }
-  | { type: "runtime_tool_invoked"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown }
-  | { type: "runtime_tool_completed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; result: unknown }
-  | { type: "runtime_tool_failed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; error: string }
+  | { type: "runtime_tool_invoked"; session_id: string; run_id?: string; tool_call_id: string; tool: string; input: unknown; via?: string }
+  | { type: "runtime_tool_completed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; result: unknown; via?: string }
+  | { type: "runtime_tool_failed"; session_id: string; run_id?: string; tool_call_id: string; tool: string; error: string; failure_count?: number; retry_blocked?: boolean; via?: string }
   | { type: "runtime_skill_activated"; session_id: string; run_id?: string; name: string; mode: "inline" | "fork"; source: string; version?: string; allowed_tools: string[] }
   | PlanModeEvent;
 

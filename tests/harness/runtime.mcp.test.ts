@@ -52,13 +52,17 @@ describe("runNode MCP deferred discovery", () => {
           };
         }
         if (requests === 2) {
-          assert.equal(request.tools.some((tool) => tool.name === "mcp__playwright__browser_navigate"), true);
+          assert.equal(request.tools.some((tool) => tool.name === "mcp__playwright__browser_navigate"), false);
+          assert.equal(request.tools.some((tool) => tool.name === "McpInvoke"), true);
           return {
             content: "Opening the page through MCP.",
             tool_calls: [{
               id: "navigate-1",
-              name: "mcp__playwright__browser_navigate",
-              input: { url: "https://example.test" }
+              name: "McpInvoke",
+              input: {
+                name: "mcp__playwright__browser_navigate",
+                input: { url: "https://example.test" }
+              }
             }]
           };
         }
@@ -94,6 +98,7 @@ describe("runNode MCP deferred discovery", () => {
     const events = await store.loadEvents(run.runId);
     assert.equal(events.some((event) => event.type === "mcp_catalog_published"), true);
     assert.equal(events.some((event) => event.type === "mcp_tools_discovered"), true);
+    assert.equal(events.some((event) => event.type === "tool_invoked" && event.tool === "mcp__playwright__browser_navigate" && event.via === "McpInvoke"), true);
     await runtime.closeAll();
   });
 });

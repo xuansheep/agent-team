@@ -11,6 +11,7 @@ export type ResponsesApiOptions = {
   userAgent?: string;
   promptCache?: boolean;
   parallelToolCalls?: boolean;
+  conversationState?: "previous_response_id" | "stateless";
   reasoning?: {
     effort?: "minimal" | "low" | "medium" | "high";
     summary?: string;
@@ -29,11 +30,12 @@ type ResponsesOutputItem = {
 };
 
 type ResponsesBody = {
+  id?: string;
   output_text?: string;
   output?: ResponsesOutputItem[];
   status?: string;
   incomplete_details?: { reason?: string };
-  usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number }; output_tokens?: number; total_tokens?: number };
+  usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }; output_tokens?: number; total_tokens?: number };
 };
 
 type ResponsesStreamChunk = {
@@ -46,6 +48,7 @@ type ResponsesStreamChunk = {
 
 export class ResponsesApiProvider implements ModelProvider {
   stream?: (request: ModelRequest, onEvent: (event: ModelStreamEvent) => void) => Promise<ModelResponse>;
+  private conversationStateUnsupported = false;
 
   constructor(private readonly options: ResponsesApiOptions) {
     if (options.streaming) this.stream = this.streamImpl.bind(this);
@@ -59,13 +62,26 @@ export class ResponsesApiProvider implements ModelProvider {
       streaming: false,
       retry: this.options.retry,
       operation: async (attempt) => {
-        const response = await fetchProvider(endpoint, {
+        let response = await fetchProvider(endpoint, {
           method: "POST",
           headers: this.headers(request),
           signal: attempt.signal,
-          body: JSON.stringify(toResponsesRequestBody(request, this.options))
+          body: JSON.stringify(toResponsesRequestBody(request, this.requestOptions()))
         });
-        if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        if (!response.ok) {
+          const body = await response.text();
+          if (!this.shouldDowngradeConversationState(response.status, body)) {
+            throw providerHttpError(response.status, body, response.headers);
+          }
+          this.conversationStateUnsupported = true;
+          response = await fetchProvider(endpoint, {
+            method: "POST",
+            headers: this.headers(request),
+            signal: attempt.signal,
+            body: JSON.stringify(toResponsesRequestBody(request, this.requestOptions()))
+          });
+          if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        }
         return fromResponsesBody(await response.json() as ResponsesBody);
       }
     });
@@ -80,13 +96,26 @@ export class ResponsesApiProvider implements ModelProvider {
       retry: this.options.retry,
       onStreamEvent: onEvent,
       operation: async (attempt) => {
-        const response = await fetchProvider(endpoint, {
+        let response = await fetchProvider(endpoint, {
           method: "POST",
           headers: this.headers(request, { accept: "text/event-stream" }),
           signal: attempt.signal,
-          body: JSON.stringify({ ...toResponsesRequestBody(request, this.options), stream: true })
+          body: JSON.stringify({ ...toResponsesRequestBody(request, this.requestOptions()), stream: true })
         });
-        if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        if (!response.ok) {
+          const body = await response.text();
+          if (!this.shouldDowngradeConversationState(response.status, body)) {
+            throw providerHttpError(response.status, body, response.headers);
+          }
+          this.conversationStateUnsupported = true;
+          response = await fetchProvider(endpoint, {
+            method: "POST",
+            headers: this.headers(request, { accept: "text/event-stream" }),
+            signal: attempt.signal,
+            body: JSON.stringify({ ...toResponsesRequestBody(request, this.requestOptions()), stream: true })
+          });
+          if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
+        }
         if (!response.body) throw new ModelProviderError("Provider stream response had no body", { errorKind: "server", phase: "request", retryable: true });
         attempt.markStreamStarted();
 
@@ -94,6 +123,7 @@ export class ResponsesApiProvider implements ModelProvider {
         const thinking: string[] = [];
         const toolCalls: ModelToolCall[] = [];
         let completedBody: ResponsesBody | undefined;
+        let providerResponseId: string | undefined;
         let completed = false;
 
         const stopped = await consumeSseBlocks(response.body, (data) => {
@@ -101,6 +131,7 @@ export class ResponsesApiProvider implements ModelProvider {
           if (chunk.error || chunk.type === "error" || chunk.type === "response.failed") {
             throw responsesStreamError(chunk);
           }
+          if (chunk.response?.id) providerResponseId = chunk.response.id;
           if (chunk.type === "response.output_text.delta" && chunk.delta) {
             content.push(chunk.delta);
             attempt.emit({ type: "content_delta", text: chunk.delta });
@@ -131,7 +162,8 @@ export class ResponsesApiProvider implements ModelProvider {
           thinking: thinking.length ? thinking.join("") : completedResponse?.thinking,
           tool_calls: mergedToolCalls.length ? mergedToolCalls : undefined,
           usage: completedResponse?.usage,
-          stopReason: completedResponse?.stopReason
+          stopReason: completedResponse?.stopReason,
+          providerResponseId: completedResponse?.providerResponseId ?? providerResponseId
         };
       }
     });
@@ -139,6 +171,21 @@ export class ResponsesApiProvider implements ModelProvider {
 
   private endpoint(): string {
     return `${this.options.baseUrl.replace(/\/$/, "")}/responses`;
+  }
+
+  private requestOptions(): ResponsesApiOptions {
+    return this.conversationStateUnsupported
+      ? { ...this.options, conversationState: "stateless" }
+      : this.options;
+  }
+
+  private shouldDowngradeConversationState(status: number, body: string): boolean {
+    if (this.conversationStateUnsupported || status !== 400) return false;
+    if ((this.options.conversationState ?? "previous_response_id") !== "previous_response_id") return false;
+    const normalized = body.toLowerCase();
+    const mentionsField = normalized.includes("previous_response_id") || normalized.includes("store");
+    const unsupported = /unsupported|unknown|unrecognized|not allowed|not supported|extra fields?/.test(normalized);
+    return mentionsField && unsupported;
   }
 
   private headers(request: ModelRequest, extra: Record<string, string> = {}): Record<string, string> {
@@ -167,10 +214,14 @@ function responsesStreamError(chunk: ResponsesStreamChunk): ModelProviderError {
 }
 
 function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOptions): Record<string, unknown> {
+  const usesPreviousResponseId = (options.conversationState ?? "previous_response_id") === "previous_response_id";
+  const continuation = usesPreviousResponseId ? request.continuation : undefined;
   const body: Record<string, unknown> = {
     model: request.model,
     max_output_tokens: request.maxOutputTokens,
-    input: toResponsesInput(request.messages),
+    store: usesPreviousResponseId,
+    previous_response_id: continuation?.previousResponseId,
+    input: toResponsesInput(continuation?.inputMessages ?? request.messages),
     tools: request.tools.map((tool) => ({
       type: "function",
       name: tool.name,
@@ -285,7 +336,8 @@ function fromResponsesBody(body: ResponsesBody): ModelResponse {
     thinking: thinking.length ? thinking.join("") : undefined,
     tool_calls: toolCalls.length ? toolCalls : undefined,
     usage: responsesUsage(body.usage),
-    stopReason: responsesStopReason(body, toolCalls)
+    stopReason: responsesStopReason(body, toolCalls),
+    providerResponseId: body.id
   };
 }
 
@@ -308,6 +360,7 @@ function responsesUsage(usage: ResponsesBody["usage"]): ModelUsage | undefined {
   return {
     inputTokens: usage.input_tokens,
     ...(usage.input_tokens_details?.cached_tokens !== undefined ? { cachedInputTokens: usage.input_tokens_details.cached_tokens } : {}),
+    ...(usage.input_tokens_details?.cache_write_tokens !== undefined ? { cacheWriteInputTokens: usage.input_tokens_details.cache_write_tokens } : {}),
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens
   };

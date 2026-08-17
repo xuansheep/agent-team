@@ -396,6 +396,13 @@ export function TuiApp({
       case "bus_model_thinking_delta":
         setState((current) => reduceBusLogEvent(current, event));
         break;
+      case "bus_model_response_recorded":
+        setState((current) => ({
+          ...current,
+          sessionUsage: addModelUsage(current.sessionUsage, event.usage),
+          modelRequestCount: current.modelRequestCount + 1
+        }));
+        break;
       case "bus_assistant_message":
         setState((current) => ({
           ...current,
@@ -3145,7 +3152,9 @@ function replayHistoricalSession(
       return reduceBusWorkflowEvent({ ...current, runId, workflowId }, item.event);
     }
     if (item.kind === "bus-routing") {
-      return reduceBusLogEvent(current, item.entry.event);
+      return item.entry.event.type === "bus_model_response_recorded"
+        ? current
+        : reduceBusLogEvent(current, item.entry.event);
     }
     const logs = planLogMessagesFromTranscript([item.entry.message]);
     if (logs.length === 0) return current;
@@ -3507,7 +3516,9 @@ function logMessagesFromTranscriptEntries(
 
   for (const item of timeline) {
     if (item.kind === "bus-routing") {
-      replay = reduceBusLogEvent(replay, item.entry.event);
+      if (item.entry.event.type !== "bus_model_response_recorded") {
+        replay = reduceBusLogEvent(replay, item.entry.event);
+      }
       continue;
     }
     const entry = item.entry;

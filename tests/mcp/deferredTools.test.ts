@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createDeferredMcpTool, createMcpToolSearchTool, syncMcpRegistry } from "../../src/mcp/deferredTools.js";
+import { createDeferredMcpTool, createMcpInvokeTool, createMcpToolSearchTool, syncMcpRegistry } from "../../src/mcp/deferredTools.js";
 import { ToolRegistry } from "../../src/tools/registry.js";
 import type { RuntimeMcpTool } from "../../src/mcp/runtime.js";
 
 const tools: RuntimeMcpTool[] = [
-  { server: "docs", originalName: "search", name: "mcp__docs__search", description: "Search docs", inputSchema: { type: "object" } },
+  { server: "docs", originalName: "search", name: "mcp__docs__search", description: "Search docs", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
   { server: "repo", originalName: "findFile", name: "mcp__repo__findFile", description: "Find files", inputSchema: { type: "object" } }
 ];
 
@@ -17,6 +17,9 @@ describe("deferred MCP tools", () => {
 
     assert.match(result.output ?? "", /mcp__docs__search/);
     assert.doesNotMatch(result.output ?? "", /mcp__repo__findFile/);
+    const match = (result.data as { matches: Array<{ input_schema?: unknown; annotations?: unknown }> }).matches[0];
+    assert.deepEqual(match.input_schema, { type: "object" });
+    assert.deepEqual(match.annotations, { readOnlyHint: true });
   });
 
   it("supports required terms, explicit selection, pending servers, and always-load tools", async () => {
@@ -44,6 +47,24 @@ describe("deferred MCP tools", () => {
     const alwaysRegistry = new ToolRegistry();
     syncMcpRegistry(alwaysRegistry, { listTools: () => [alwaysLoad], callTool: async () => ({}) });
     assert.equal(alwaysRegistry.has(alwaysLoad.name), true);
+  });
+
+  it("allows McpInvoke only for discovered or always-load targets", async () => {
+    const called: unknown[] = [];
+    const invoke = createMcpInvokeTool({
+      listTools: () => tools,
+      callTool: async (server, originalName, input) => {
+        called.push({ server, originalName, input });
+        return { content: [{ type: "text", text: "ok" }] };
+      }
+    });
+    const input = { name: "mcp__docs__search", input: { query: "test" } };
+
+    await assert.rejects(invoke.execute(input, { cwd: process.cwd() }), /must be discovered/);
+    const result = await invoke.execute(input, { cwd: process.cwd(), mcpDiscoveredToolNames: ["mcp__docs__search"] });
+
+    assert.deepEqual(called, [{ server: "docs", originalName: "search", input: { query: "test" } }]);
+    assert.equal(result.output, "ok");
   });
 
   it("invokes a deferred MCP tool through runtime", async () => {

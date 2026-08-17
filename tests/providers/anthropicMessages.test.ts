@@ -184,7 +184,7 @@ describe("AnthropicMessagesProvider", () => {
 
     const result = await provider.generate({ model: "claude-test", messages: [{ role: "user", content: "hello" }], tools: [] });
 
-    assert.deepEqual(result.usage, { inputTokens: 10, cachedInputTokens: 5, outputTokens: 4, totalTokens: 14 });
+    assert.deepEqual(result.usage, { inputTokens: 10, cachedInputTokens: 5, cacheWriteInputTokens: 2, outputTokens: 4, totalTokens: 14 });
     assert.equal(result.stopReason, "length");
   });
 
@@ -320,7 +320,7 @@ describe("AnthropicMessagesProvider", () => {
     assert.deepEqual(deltas, ["{\"direction\":", "\"forward\"}"]);
     assert.equal(result?.content, "{\"direction\":\"forward\"}");
     assert.deepEqual(result?.tool_calls, [{ id: "toolu-1", name: "Bash", input: { command: "npm test" } }]);
-    assert.deepEqual(result?.usage, { inputTokens: 10, cachedInputTokens: 5, outputTokens: 4, totalTokens: 14 });
+    assert.deepEqual(result?.usage, { inputTokens: 10, cachedInputTokens: 5, cacheWriteInputTokens: 2, outputTokens: 4, totalTokens: 14 });
     assert.equal(result?.stopReason, "tool_call");
     assert.equal(server.requestBody.stream, true);
     assert.deepEqual(server.requestBody.messages, [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }]);

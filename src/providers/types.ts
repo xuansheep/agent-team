@@ -56,6 +56,10 @@ export type ModelRequest = {
   deferredToolNames?: string[];
   deferredTools?: Tool[];
   response_schema?: unknown;
+  continuation?: {
+    previousResponseId: string;
+    inputMessages: ModelMessage[];
+  };
   context?: ModelRequestContext;
   signal?: AbortSignal;
   onRetry?: (event: ModelRetryEvent) => void | Promise<void>;
@@ -89,6 +93,7 @@ export type ModelResponse = {
   usage?: ModelUsage;
   stopReason?: ModelStopReason;
   errorKind?: ModelErrorKind;
+  providerResponseId?: string;
 };
 
 export class ModelProviderError extends Error {

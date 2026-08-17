@@ -193,6 +193,33 @@ workflows:
     assert.equal(provider.api_key_mode, "bearer");
     assert.equal(provider.responses.prompt_cache, true);
     assert.equal(provider.responses.parallel_tool_calls, true);
+    assert.equal(provider.responses.conversation_state, "previous_response_id");
+  });
+
+  it("allows stateless Responses API conversations", async () => {
+    const file = await tempFile("agent-team.yaml", `
+roles:
+  product:
+    system_prompt: Product plan.
+workflows:
+  delivery:
+    nodes:
+      - id: product
+        role: product
+        provider: default
+    edges: []
+`);
+
+    const config = await loadTestConfig(file, { settings: providerSettings({
+      type: "responses-api",
+      base_url: "https://api.openai.test/v1",
+      api_key: "test-key",
+      default_model: "gpt-test",
+      responses: { conversation_state: "stateless" }
+    }) });
+
+    assert.equal(config.providers.default.type, "responses-api");
+    assert.equal(config.providers.default.responses.conversation_state, "stateless");
   });
 
   it("loads Anthropic provider defaults", async () => {

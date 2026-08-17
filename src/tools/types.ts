@@ -22,6 +22,7 @@ export type ToolContext = {
   toolRegistry?: ToolRegistry;
   toolPermissionContext?: ToolPermissionContext;
   permissionMode?: PermissionMode;
+  mcpDiscoveredToolNames?: readonly string[];
 };
 
 export type ToolResult = {

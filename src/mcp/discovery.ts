@@ -47,7 +47,7 @@ export function prepareMcpDiscovery(input: {
   }
 
   const deferredMcpTools = [...available.values()]
-    .filter((tool) => !mcpToolAlwaysLoad(tool) && !discoveredToolNames.includes(tool.name))
+    .filter((tool) => !mcpToolAlwaysLoad(tool))
     .sort((left, right) => left.name.localeCompare(right.name));
   const deferredToolNames = deferredMcpTools.map((tool) => tool.name);
   const deferredTools = input.runtime.callTool
@@ -138,13 +138,6 @@ function formatMcpCatalog(snapshot: McpDiscoverySnapshot): string {
   const sections: string[] = [];
   if (snapshot.deferredToolNames.length) {
     sections.push(`<available-deferred-tools>\n${snapshot.deferredToolNames.join("\n")}\n</available-deferred-tools>`);
-  }
-  if (snapshot.pendingServers.length || snapshot.failedServers.length) {
-    const lines = [
-      ...snapshot.pendingServers.map((name) => `${name}: pending`),
-      ...snapshot.failedServers.map((server) => `${server.name}: failed${server.error ? ` - ${server.error}` : ""}`)
-    ];
-    sections.push(`<mcp-server-status>\n${lines.join("\n")}\n</mcp-server-status>`);
   }
   if (!sections.length) return "";
   return [

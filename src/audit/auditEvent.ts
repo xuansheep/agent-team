@@ -7,11 +7,11 @@ export type AuditEvent = {
   node_id?: string;
   attempt?: number;
 } & (
-  | { type: "permission_decision"; tool: string; decision: AuditDecision; reason?: string; rule?: string; input?: unknown }
+  | { type: "permission_decision"; tool: string; decision: AuditDecision; reason?: string; rule?: string; input?: unknown; via?: string }
   | { type: "mcp_catalog_published"; revision: number; protocol: "portable" | "anthropic-tool-reference"; deferred_tools: string[]; discovered_tools: string[]; pending_servers: string[]; failed_servers: string[] }
   | { type: "mcp_tools_discovered"; query: string; tools: string[] }
-  | { type: "tool_invocation"; tool: string; input?: unknown }
-  | { type: "tool_result"; tool: string; status: "completed" | "failed"; result?: unknown; error?: string }
+  | { type: "tool_invocation"; tool: string; input?: unknown; via?: string }
+  | { type: "tool_result"; tool: string; status: "completed" | "failed"; result?: unknown; error?: string; via?: string }
   | { type: "shell_command"; tool: "Bash" | "PowerShell"; command: string; destructive: boolean; executor?: "bash" | "powershell"; executable?: string; fallback?: boolean; exit_code?: number }
   | { type: "managed_process"; action: "started" | "stopped" | "cleanup_failed"; process_id: string; pid: number; executable?: string; reason?: "explicit" | "node_complete" | "node_error" | "interrupted"; exit_code?: number | null; error?: string; output_path?: string }
   | { type: "file_write"; tool: "Write" | "Edit" | "MultiEdit"; path: string }

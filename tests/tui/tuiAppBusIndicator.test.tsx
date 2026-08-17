@@ -76,6 +76,48 @@ describe("TuiApp bus indicator", () => {
     output.cleanup();
   });
 
+  it("adds bus usage to the live status once while persisting the same response once", async () => {
+    const cwd = join(process.cwd(), ".tmp", "tui-bus-live-usage", randomUUID());
+    const store = new SessionStore(join(cwd, "sessions"));
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={{ async startInteractive() { throw new Error("workflow should not start"); } } as never}
+        providerFactory={() => ({
+          async generate() {
+            return {
+              content: JSON.stringify({ type: "answer", confidence: 1, message: "Usage answer." }),
+              usage: { inputTokens: 12, cachedInputTokens: 4, outputTokens: 3, totalTokens: 15 },
+              stopReason: "stop" as const
+            };
+          }
+        })}
+        sessionStore={store}
+      />
+    );
+
+    output.stdin.write("show usage");
+    await settle();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Usage answer\./);
+    await waitForFrame(output, /tokens 12\/3/);
+
+    const metadata = await store.loadMetadata([...await store.listSessions()][0]?.sessionId ?? "");
+    assert.equal(metadata?.modelRequestCount, 1);
+    assert.deepEqual(metadata?.usage, {
+      inputTokens: 12,
+      cachedInputTokens: 4,
+      outputTokens: 3,
+      totalTokens: 15
+    });
+
+    output.unmount();
+    output.cleanup();
+  });
+
   it("keeps input recoverable after a routing protocol failure", async () => {
     const cwd = join(process.cwd(), ".tmp", "tui-bus-routing-recovery", randomUUID());
     let attempt = 0;
