@@ -8,6 +8,7 @@ import { toolPolicyFailureResult } from "../../src/tools/errors.js";
 import { RunStore } from "../../src/storage/runStore.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { ModelMessage, ModelProvider, ModelRequestContext } from "../../src/providers/types.js";
+import { SkillRuntime } from "../../src/skills/runtime.js";
 describe("runNode interactive permissions", () => {
   it("recovers a completed tool result from the event ledger without executing it again", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-recover-tool-"));
@@ -53,6 +54,215 @@ describe("runNode interactive permissions", () => {
 
     assert.equal(result.direction, "forward");
     assert.equal(executions, 0);
+  });
+
+  it("closes every tool result before injecting skill runtime context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-skill-batch-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    let requests = 0;
+    let readExecutions = 0;
+    const skillRuntime = new SkillRuntime([{
+      name: "planner",
+      description: "Planning skill",
+      prompt: "Inspect the repository before making changes.",
+      path: "skills/planner/SKILL.md",
+      root: "skills/planner",
+      source: "project",
+      mode: "inline",
+      metadata: {}
+    }]);
+    const tools = createLocalToolRegistry({ skillRuntime });
+    tools.add({
+      name: "ReadAfterSkill",
+      description: "Read after the skill is activated.",
+      input_schema: {},
+      isReadOnly: () => true,
+      async execute() {
+        readExecutions += 1;
+        return { output: "read" };
+      }
+    });
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests += 1;
+        if (requests === 1) {
+          return {
+            content: "Loading the skill and inspecting the project.",
+            tool_calls: [
+              { id: "use-planner-batch", name: "UseSkill", input: { name: "planner" } },
+              { id: "read-after-skill", name: "ReadAfterSkill", input: {} }
+            ]
+          };
+        }
+        const assistantIndex = request.messages.findIndex((message) =>
+          message.role === "assistant" && message.tool_calls?.some((call) => call.id === "use-planner-batch")
+        );
+        assert.ok(assistantIndex >= 0);
+        const batch = request.messages.slice(assistantIndex, assistantIndex + 4);
+        assert.deepEqual(batch.map((message) => message.role), ["assistant", "tool", "tool", "user"]);
+        assert.deepEqual(batch.slice(1, 3).map((message) => message.tool_call_id), ["use-planner-batch", "read-after-skill"]);
+        assert.equal(batch[3]?.metadata?.userMessageKind, "runtime_context");
+        assert.match(String(batch[3]?.content), /SKILL planner/);
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools,
+      permissions: { allow: ["UseSkill", "ReadAfterSkill"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1
+    });
+
+    assert.equal(result.direction, "forward");
+    assert.equal(requests, 2);
+    assert.equal(readExecutions, 1);
+  });
+
+  it("moves a late tool result before the runtime-context boundary without replaying it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-reconcile-late-tool-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const dialogue: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: "Loading the skill and listing files.",
+        tool_calls: [
+          { id: "use-skill-old", name: "UseSkill", input: { name: "planner" } },
+          { id: "read-old", name: "ReadAfterSkill", input: {} }
+        ]
+      },
+      { role: "tool", tool_call_id: "use-skill-old", content: "Activated skill planner (inline)." },
+      {
+        role: "user",
+        content: `<system-reminder>
+SKILL planner
+
+Inspect the repository.
+</system-reminder>`,
+        metadata: { userMessageKind: "runtime_context" }
+      },
+      { role: "tool", tool_call_id: "read-old", content: JSON.stringify({ output: "package.json" }) }
+    ];
+    const provider: ModelProvider = {
+      async generate(request) {
+        const assistantIndex = request.messages.findIndex((message) =>
+          message.role === "assistant" && message.tool_calls?.some((call) => call.id === "use-skill-old")
+        );
+        assert.ok(assistantIndex >= 0);
+        const batch = request.messages.slice(assistantIndex, assistantIndex + 4);
+        assert.deepEqual(batch.map((message) => message.role), ["assistant", "tool", "tool", "user"]);
+        assert.deepEqual(batch.slice(1, 3).map((message) => message.tool_call_id), ["use-skill-old", "read-old"]);
+        assert.equal(request.messages.filter((message) => message.role === "tool" && message.tool_call_id === "read-old").length, 1);
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1,
+      dialogueMessages: dialogue
+    });
+
+    assert.equal(result.direction, "forward");
+    const persisted = await store.loadWorkflowDialogue(run.runId, "dev", 1);
+    const assistantIndex = persisted.findIndex((message) =>
+      message.role === "assistant" && message.tool_calls?.some((call) => call.id === "use-skill-old")
+    );
+    assert.deepEqual(persisted.slice(assistantIndex, assistantIndex + 4).map((message) => message.role), ["assistant", "tool", "tool", "user"]);
+    assert.equal(persisted.filter((message) => message.role === "tool" && message.tool_call_id === "read-old").length, 1);
+  });
+
+  it("reconstructs a missing skill reminder from the completed tool ledger", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-recover-skill-context-"));
+    const store = new RunStore(root);
+    const run = await store.createRun("flow", { request: "x" });
+    const skillResult = {
+      output: "Activated skill planner (inline).",
+      data: {
+        type: "skill_activation",
+        name: "planner",
+        mode: "inline",
+        source: "project",
+        allowedTools: [],
+        systemMessage: { role: "system", content: `SKILL planner
+
+Recovered skill instructions.` }
+      }
+    };
+    await store.appendEvent(run.runId, {
+      type: "tool_invoked",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      tool_call_id: "use-skill-interrupted",
+      tool: "UseSkill",
+      input: { name: "planner" }
+    });
+    await store.appendEvent(run.runId, {
+      type: "tool_completed",
+      node_id: "dev",
+      attempt: 1,
+      activation: 1,
+      tool_call_id: "use-skill-interrupted",
+      tool: "UseSkill",
+      result: skillResult
+    });
+    const provider: ModelProvider = {
+      async generate(request) {
+        const assistantIndex = request.messages.findIndex((message) =>
+          message.role === "assistant" && message.tool_calls?.some((call) => call.id === "use-skill-interrupted")
+        );
+        assert.ok(assistantIndex >= 0);
+        const batch = request.messages.slice(assistantIndex, assistantIndex + 3);
+        assert.deepEqual(batch.map((message) => message.role), ["assistant", "tool", "user"]);
+        assert.equal(batch[1]?.tool_call_id, "use-skill-interrupted");
+        assert.equal(batch[2]?.metadata?.userMessageKind, "runtime_context");
+        assert.match(String(batch[2]?.content), /Recovered skill instructions/);
+        return { content: JSON.stringify({ direction: "forward", summary: "done", handoff: { instruction: "next" } }) };
+      }
+    };
+
+    const result = await runNode({
+      node: { id: "dev", role: "dev", provider: "default", permission_mode: "default" },
+      systemPrompt: "Dev",
+      model: "gpt-test",
+      provider,
+      tools: new ToolRegistry(),
+      permissions: { allow: [], ask: [], deny: [] },
+      cwd: process.cwd(),
+      runId: run.runId,
+      store,
+      handoff: { request: "x" },
+      attempt: 1,
+      activation: 1,
+      dialogueMessages: [{
+        role: "assistant",
+        content: "Loading the skill.",
+        tool_calls: [{ id: "use-skill-interrupted", name: "UseSkill", input: { name: "planner" } }]
+      }]
+    });
+
+    assert.equal(result.direction, "forward");
   });
 
   it("recalibrates node context from usage and estimates messages between responses", async () => {
@@ -573,12 +783,12 @@ describe("runNode interactive permissions", () => {
     assert.equal(result.summary, "fixed");
   });
 
-  it("passes stable short prompt cache keys in model request context", async () => {
+  it("shares workflow prompt cache keys across runs for the same project and role", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-context-"));
     const store = new RunStore(root);
-    const run = await store.createRun("flow", { request: "x" });
+    const firstRun = await store.createRun("flow", { request: "x" });
+    const secondRun = await store.createRun("flow", { request: "y" });
     const tools = new ToolRegistry();
-    const runId = run.runId;
     const contexts: ModelRequestContext[] = [];
     const provider: ModelProvider = {
       async generate(request) {
@@ -595,17 +805,23 @@ describe("runNode interactive permissions", () => {
       tools,
       permissions: { allow: [], ask: [], deny: [] },
       cwd: process.cwd(),
-      runId,
+      runId: firstRun.runId,
       store,
       handoff: { request: "x" },
       attempt: 1
     };
     await runNode(options);
-    await runNode(options);
-    assert.equal(contexts[0]?.threadId, `${runId}:dev`);
-    assert.equal(contexts[0]?.promptCacheKey.length, 64);
-    assert.match(contexts[0]?.promptCacheKey ?? "", /^[0-9a-f]{64}$/);
+    await runNode({ ...options, runId: secondRun.runId });
+    await runNode({
+      ...options,
+      runId: secondRun.runId,
+      node: { ...options.node, id: "reviewer", role: "reviewer" }
+    });
+    assert.equal(contexts[0]?.threadId, `${firstRun.runId}:dev`);
+    assert.equal(contexts[1]?.threadId, `${secondRun.runId}:dev`);
+    assert.equal(contexts[0]?.promptCacheKey?.length, 64);
     assert.equal(contexts[0]?.promptCacheKey, contexts[1]?.promptCacheKey);
+    assert.notEqual(contexts[0]?.promptCacheKey, contexts[2]?.promptCacheKey);
   });
   it("injects queued guidance before executing tool calls from the sampled response", async () => {
     const root = await mkdtemp(join(tmpdir(), "agent-team-runtime-input-before-tool-"));
@@ -712,7 +928,7 @@ describe("runNode interactive permissions", () => {
     const followUp = requests[1]?.messages.slice(-2);
     assert.deepEqual(followUp, [
       { role: "assistant", content: "我先列出目录确认文件。", tool_calls: [{ id: "tool-1", name: "LS", input: { path: "." } }] },
-      { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
+      { role: "tool", tool_call_id: "tool-1", content: JSON.stringify({ exit_code: 0, output: "package.json" }) }
     ]);
     const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /model_stream_delta/);
@@ -765,7 +981,7 @@ describe("runNode interactive permissions", () => {
     const followUp = requests[2]?.messages.slice(-2);
     assert.deepEqual(followUp, [
       { role: "assistant", content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] },
-      { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
+      { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ exit_code: 0, output: "package.json" }) }
     ]);
     const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");
     assert.match(eventsText, /我先列出目录确认项目结构。/);
@@ -817,7 +1033,7 @@ describe("runNode interactive permissions", () => {
     const followUp = requests[2]?.messages.slice(-2);
     assert.deepEqual(followUp, [
       { role: "assistant", content: "我先列出目录确认项目结构。", tool_calls: [{ id: "tool-2", name: "LS", input: { path: "." } }] },
-      { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ output: "package.json", exit_code: 0 }) }
+      { role: "tool", tool_call_id: "tool-2", content: JSON.stringify({ exit_code: 0, output: "package.json" }) }
     ]);
     assert.doesNotMatch(JSON.stringify(followUp), /deliverables|document|status/);
     const eventsText = await readFile(join(run.runDir, "events.ndjson"), "utf8");

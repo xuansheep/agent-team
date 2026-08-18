@@ -14,11 +14,11 @@ import type { WorkflowState } from "../workflow/state.js";
 import {
   renderTaskSummary,
   requestDispatchDirective,
-  type DispatcherClarificationReason,
   type DispatcherPhase,
   type DispatcherSelection
 } from "./busDispatcher.js";
 import type {
+  BusClarificationReason,
   BusEvent,
   BusIntent,
   BusTaskState,
@@ -99,6 +99,10 @@ export class SessionExecutionBus {
           current_node_id: checkpoint.current_node_id && nodeIds.has(checkpoint.current_node_id)
             ? checkpoint.current_node_id
             : undefined,
+          last_directive: checkpoint.last_directive ? copyDirective(checkpoint.last_directive) : undefined,
+          pending_clarification: checkpoint.pending_clarification
+            ? copyPendingClarification(checkpoint.pending_clarification)
+            : undefined,
           messages: options.messages?.map(copyMessage) ?? []
         }
       : {
@@ -131,6 +135,18 @@ export class SessionExecutionBus {
     this.permissionMode = permissionMode;
   }
 
+  updateClarificationProgress(index: number, answers: Record<string, unknown>): void {
+    const pending = this.taskState.pending_clarification;
+    if (!pending) return;
+    this.updateState({
+      pending_clarification: {
+        ...copyPendingClarification(pending),
+        index: Math.max(0, Math.min(index, pending.questions.length)),
+        answers: { ...answers }
+      }
+    });
+  }
+
   handle(intent: BusIntent): Promise<BusTurnResult> {
     if (intent.type === "user_message") {
       return this.handleUserMessage(intent.input, { planMode: intent.planMode });
@@ -140,9 +156,11 @@ export class SessionExecutionBus {
 
   handleUserMessage(input: unknown, options: { planMode?: boolean } = {}): Promise<BusTurnResult> {
     return this.enqueue(async () => {
+      const pendingClarification = this.taskState.pending_clarification;
       const message = userMessage(input);
       this.updateState({
         status: "routing",
+        pending_clarification: undefined,
         messages: [...this.taskState.messages, message],
         user_input_revision: (this.taskState.user_input_revision ?? 0) + 1,
         stagnant_cycles: 0,
@@ -159,7 +177,9 @@ export class SessionExecutionBus {
       const dossier = boundarySession
         ? await this.loadBoundaryDossier(boundarySession)
         : undefined;
-      const phase: DispatcherPhase = options.planMode ? "plan" : dossier ? "lifecycle" : "user";
+      const phase: DispatcherPhase = options.planMode
+        ? "plan"
+        : pendingClarification?.phase ?? (dossier ? "lifecycle" : "user");
       const selection = await this.requestDirective(phase, dossier);
       return this.applySelection(selection, { phase, originalInput: input, dossier });
     });
@@ -243,13 +263,15 @@ export class SessionExecutionBus {
     this.processedBoundaryKey = undefined;
     this.workflowUnsubscribe = session.subscribeState((state) => this.onWorkflowState(session, state));
     this.updateState({
-      status: busStatusFromWorkflow(session.state),
+      status: this.taskState.pending_clarification ? "waiting_user" : busStatusFromWorkflow(session.state),
       active_run_id: session.runId,
       current_node_id: session.state.current_node_id,
       selected_node_id: selectedNodeId ?? this.taskState.selected_node_id,
       rework_cycles: session.state.rework_count ?? 0
     });
-    if (session.state.status === "awaiting_bus") this.onWorkflowState(session, session.state);
+    if (session.state.status === "awaiting_bus" && !this.taskState.pending_clarification) {
+      this.onWorkflowState(session, session.state);
+    }
     void session.result
       .then(async (state) => {
         this.onWorkflowState(session, state);
@@ -389,7 +411,8 @@ export class SessionExecutionBus {
       return this.clarify(
         directive.message,
         selection.clarificationReason ?? "material_ambiguity",
-        directive
+        directive,
+        context.phase
       );
     }
     if (directive.type === "plan") {
@@ -584,17 +607,35 @@ export class SessionExecutionBus {
 
   private async clarify(
     message: string,
-    reason: DispatcherClarificationReason | "rework_limit",
-    directive: DispatchDirective = { type: "clarify", confidence: 0, message }
+    reason: BusClarificationReason,
+    directive: DispatchDirective = { type: "clarify", confidence: 0, message },
+    phase: DispatcherPhase = this.activeWorkflow?.state.status === "awaiting_bus" ? "lifecycle" : "user"
   ): Promise<BusTurnResult> {
+    const questions = directive.type === "clarify" ? directive.questions : undefined;
+    const pendingClarification = questions?.length
+      ? {
+          phase,
+          message,
+          reason,
+          questions: questions.map(copyQuestion),
+          index: 0,
+          answers: {}
+        }
+      : undefined;
     await this.appendAssistant(message);
-    this.updateState({ status: "waiting_user", last_directive: directive });
+    this.updateState({
+      status: "waiting_user",
+      last_directive: directive,
+      pending_clarification: pendingClarification
+    });
     await this.emit({
       type: "bus_clarification_requested",
       session_id: this.options.sessionId,
       workflow_id: this.options.workflowId,
       content: message,
-      reason
+      phase,
+      reason,
+      ...(questions?.length ? { questions: questions.map(copyQuestion) } : {})
     });
     return { state: this.state, directive, workflow: this.activeWorkflow };
   }
@@ -606,8 +647,9 @@ export class SessionExecutionBus {
 
   private onWorkflowState(session: WorkflowSession, workflowState: WorkflowState): void {
     if (this.activeWorkflow?.runId !== session.runId) return;
+    const pendingClarification = this.taskState.pending_clarification;
     this.updateState({
-      status: busStatusFromWorkflow(workflowState),
+      status: pendingClarification ? "waiting_user" : busStatusFromWorkflow(workflowState),
       active_run_id: session.runId,
       current_node_id: workflowState.current_node_id,
       rework_cycles: workflowState.rework_count ?? 0
@@ -619,7 +661,7 @@ export class SessionExecutionBus {
         "completed"
       );
     }
-    if (workflowState.status !== "awaiting_bus") return;
+    if (pendingClarification || workflowState.status !== "awaiting_bus") return;
     void this.emit({
       type: "bus_workflow_awaiting",
       session_id: this.options.sessionId,
@@ -858,15 +900,51 @@ function copyState(state: BusTaskState): BusTaskState {
   return {
     ...state,
     messages: state.messages.map(copyMessage),
-    summary: state.summary
-      ? {
-          ...state.summary,
-          outcomes: [...state.summary.outcomes],
-          verification: [...state.summary.verification],
-          residual_risks: [...state.summary.residual_risks],
-          artifacts: [...state.summary.artifacts]
-        }
-      : undefined
+    last_directive: state.last_directive ? copyDirective(state.last_directive) : undefined,
+    pending_clarification: state.pending_clarification
+      ? copyPendingClarification(state.pending_clarification)
+      : undefined,
+    summary: state.summary ? copyTaskSummary(state.summary) : undefined
+  };
+}
+
+function copyDirective(directive: DispatchDirective): DispatchDirective {
+  if (directive.type === "clarify") {
+    return {
+      ...directive,
+      questions: directive.questions?.map(copyQuestion)
+    };
+  }
+  if (directive.type === "finalize") {
+    return { ...directive, summary: copyTaskSummary(directive.summary) };
+  }
+  return { ...directive };
+}
+
+function copyPendingClarification(
+  clarification: NonNullable<BusTaskState["pending_clarification"]>
+): NonNullable<BusTaskState["pending_clarification"]> {
+  return {
+    ...clarification,
+    questions: clarification.questions.map(copyQuestion),
+    answers: { ...clarification.answers }
+  };
+}
+
+function copyQuestion<T extends { options: Array<Record<string, unknown>> }>(question: T): T {
+  return {
+    ...question,
+    options: question.options.map((option) => ({ ...option }))
+  };
+}
+
+function copyTaskSummary(summary: TaskSummary): TaskSummary {
+  return {
+    ...summary,
+    outcomes: [...summary.outcomes],
+    verification: [...summary.verification],
+    residual_risks: [...summary.residual_risks],
+    artifacts: [...summary.artifacts]
   };
 }
 

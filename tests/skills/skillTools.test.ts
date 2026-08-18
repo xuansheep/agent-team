@@ -26,6 +26,51 @@ describe("skill tools", () => {
     assert.deepEqual(runtime.getActivatedSkillNames("session-1"), ["reviewer"]);
   });
 
+  it("skips duplicate inline activation in the same scope", async () => {
+    const runtime = new SkillRuntime([skill("reviewer", "Review $ARGUMENTS for production risk.")]);
+    const tool = createUseSkillTool(runtime);
+    const context = { cwd: process.cwd(), sessionId: "session-1" };
+
+    const first = await tool.execute({ name: "reviewer", args: "the patch" }, context);
+    const second = await tool.execute({ name: "reviewer", args: "another patch" }, context);
+
+    assert.match(first.output ?? "", /Activated skill reviewer/);
+    assert.match(second.output ?? "", /already active/);
+    assert.equal(second.data, undefined);
+    assert.deepEqual(runtime.getActivatedSkillNames("session-1"), ["reviewer"]);
+  });
+
+  it("honors restored inline activation scopes", async () => {
+    const runtime = new SkillRuntime([skill("reviewer", "Review carefully.")]);
+    runtime.restoreActivationScope("restored-scope", ["reviewer"]);
+    const tool = createUseSkillTool(runtime);
+
+    const restored = await tool.execute({ name: "reviewer" }, { cwd: process.cwd(), skillActivationScopeId: "restored-scope" });
+    const fresh = await tool.execute({ name: "reviewer" }, { cwd: process.cwd(), skillActivationScopeId: "fresh-scope" });
+
+    assert.match(restored.output ?? "", /already active/);
+    assert.match(fresh.output ?? "", /Activated skill reviewer/);
+  });
+
+  it("keeps fork skill execution repeatable", async () => {
+    const runtime = new SkillRuntime([{ ...skill("reviewer", "Review $ARGUMENTS."), mode: "fork" as const }]);
+    const tool = createUseSkillTool(runtime);
+    let calls = 0;
+    const provider = {
+      async generate() {
+        calls += 1;
+        return { content: `review-${calls}` };
+      }
+    };
+    const context = { cwd: process.cwd(), sessionId: "session-1", provider, model: "test-model" };
+
+    await tool.execute({ name: "reviewer", args: "first" }, context);
+    await tool.execute({ name: "reviewer", args: "second" }, context);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(runtime.getActivatedSkillNames("session-1"), []);
+  });
+
   it("registers skill tools when a skill runtime is supplied", () => {
     const registry = createLocalToolRegistry({ skillRuntime: new SkillRuntime([skill("planner", "Plan.")]) });
 

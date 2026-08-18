@@ -183,7 +183,7 @@ describe("SessionExecutionBus", () => {
     assert.match(systemPrompt, /Execution target: team delivery/);
   });
 
-    it("exposes only phase-appropriate routing tools", async () => {
+  it("exposes one stable routing tool union across phases", async () => {
     const requests: ModelRequest[] = [];
     const workflow = createWorkflow({ currentNodeId: "dev" });
     const provider: ModelProvider = {
@@ -203,13 +203,29 @@ describe("SessionExecutionBus", () => {
             }]
           };
         }
+        if (requests.length === 2) {
+          return {
+            tool_calls: [{
+              id: "select-1",
+              name: "SelectWorkflowNode",
+              input: {
+                node_id: "product",
+                reason: "Plan requirements first",
+                confidence: 1
+              }
+            }]
+          };
+        }
         return {
           tool_calls: [{
-            id: "select-1",
-            name: "SelectWorkflowNode",
+            id: "finalize-1",
+            name: "FinalizeTask",
             input: {
-              node_id: "product",
-              reason: "Plan requirements first",
+              summary: "Complete.",
+              outcomes: [],
+              verification: [],
+              residual_risks: [],
+              artifacts: [],
               confidence: 1
             }
           }]
@@ -237,11 +253,73 @@ describe("SessionExecutionBus", () => {
 
     await bus.handleUserMessage("implement it");
     await bus.handleUserMessage("plan the follow-up", { planMode: true });
+    await requestDispatchDirective({
+      config: toolCallingConfig,
+      workflowId: "delivery",
+      sessionId: "session-tool-union",
+      phase: "lifecycle",
+      messages: [{ role: "user", content: "review completion" }],
+      dossier: dossier("run-tool-union", "dev"),
+      providerFactory: () => provider
+    });
 
-    assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), ["AnswerDirectly", "RequestClarification", "DispatchWorkflowNode"]);
-    assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), ["SelectWorkflowNode", "RequestClarification"]);
+    const expectedTools = ["AnswerDirectly", "RequestClarification", "SelectWorkflowNode", "DispatchWorkflowNode", "FinalizeTask"];
+    assert.deepEqual(requests[0]?.tools.map((tool) => tool.name), expectedTools);
+    assert.deepEqual(requests[1]?.tools.map((tool) => tool.name), expectedTools);
+    assert.deepEqual(requests[2]?.tools.map((tool) => tool.name), expectedTools);
     assert.equal(requests[0]?.toolChoice, "required");
     assert.equal(requests[0]?.parallelToolCalls, false);
+    const clarificationTool = requests[0]?.tools.find((tool) => tool.name === "RequestClarification");
+    assert.deepEqual(
+      (clarificationTool?.input_schema as { required?: string[] } | undefined)?.required,
+      ["message", "questions", "confidence"]
+    );
+    assert.equal(
+      ((clarificationTool?.input_schema as { properties?: { questions?: { minItems?: number; maxItems?: number } } } | undefined)
+        ?.properties?.questions?.minItems),
+      1
+    );
+    assert.equal(
+      ((clarificationTool?.input_schema as { properties?: { questions?: { minItems?: number; maxItems?: number } } } | undefined)
+        ?.properties?.questions?.maxItems),
+      4
+    );
+  });
+
+  it("keeps the bus cache identity and static prefix stable across phases and sessions", async () => {
+    const provider = responseProvider(
+      { type: "answer", confidence: 1, message: "Handled directly." },
+      { type: "plan", confidence: 1, node_id: "product", reason: "Plan first." },
+      {
+        type: "finalize",
+        confidence: 1,
+        summary: { summary: "Complete.", outcomes: [], verification: [], residual_risks: [], artifacts: [] }
+      }
+    );
+
+    for (const phase of ["user", "plan", "lifecycle"] as const) {
+      await requestDispatchDirective({
+        config,
+        workflowId: "delivery",
+        sessionId: `session-stable-bus-cache-${phase}`,
+        phase,
+        messages: [{ role: "user", content: "route this" }],
+        providerFactory: provider.factory
+      });
+    }
+
+    assert.equal(new Set(provider.requests.map((request) => request.context?.promptCacheKey)).size, 1);
+    assert.equal(new Set(provider.requests.map((request) => String(request.messages[0]?.content))).size, 1);
+    assert.deepEqual(provider.requests[0]?.response_schema, provider.requests[1]?.response_schema);
+    assert.deepEqual(provider.requests[1]?.response_schema, provider.requests[2]?.response_schema);
+    const phaseContexts = provider.requests.map((request) => JSON.parse(String(request.messages.at(-1)?.content)) as {
+      type: string;
+      phase: string;
+      allowed_directives: string[];
+    });
+    assert.deepEqual(phaseContexts.map((context) => context.phase), ["user", "plan", "lifecycle"]);
+    assert.equal(phaseContexts.every((context) => context.type === "bus_runtime_context"), true);
+    assert.deepEqual(phaseContexts[1]?.allowed_directives, ["plan", "clarify"]);
   });
 
   it("supports a direct answer through the required decision tool", async () => {
@@ -335,6 +413,72 @@ describe("SessionExecutionBus", () => {
     assert.match(requestText, /session-context/);
     assert.match(requestText, /paused/);
     assert.match(requestText, /Previous routing/);
+  });
+
+  it("restores a pending structured clarification without rerouting an awaiting workflow", () => {
+    const workflow = createWorkflow({ currentNodeId: "dev", sessionId: "session-pending-clarification" });
+    workflow.setState({ status: "awaiting_bus" });
+    const provider = responseProvider({
+      type: "dispatch",
+      confidence: 1,
+      node_id: "dev",
+      instruction: "This response should not be requested.",
+      reason: "Unexpected reroute"
+    });
+    const checkpoint: SessionBusCheckpoint = {
+      session_id: "session-pending-clarification",
+      workflow_id: "delivery",
+      status: "waiting_user",
+      revision: 5,
+      active_run_id: workflow.session.runId,
+      current_node_id: "dev",
+      selected_node_id: "dev",
+      rework_cycles: 0,
+      pending_clarification: {
+        phase: "lifecycle",
+        message: "A follow-up owner is required.",
+        reason: "material_ambiguity",
+        questions: [{
+          question: "Which node should handle the follow-up?",
+          header: "Owner",
+          multiSelect: false,
+          options: [
+            { label: "Development", description: "Send the follow-up to implementation.", value: "Development" },
+            { label: "Product", description: "Send the follow-up to product analysis.", value: "Product" }
+          ],
+          id: "Owner",
+          text: "Which node should handle the follow-up?",
+          required: true,
+          allow_freeform: true
+        }],
+        index: 0,
+        answers: {}
+      }
+    };
+    const bus = createBus({
+      coordinator: fakeCoordinator(),
+      providerFactory: provider.factory,
+      sessionId: "session-pending-clarification",
+      checkpoint
+    });
+
+    bus.adoptWorkflow(workflow.session, "dev");
+
+    assert.equal(bus.state.status, "waiting_user");
+    assert.equal(bus.state.pending_clarification?.phase, "lifecycle");
+    assert.equal(provider.requests.length, 0);
+    bus.updateClarificationProgress(1, {
+      "Which node should handle the follow-up?": {
+        answer: "Development",
+        question_id: "Owner",
+        option_value: "Development"
+      }
+    });
+    assert.equal(bus.state.pending_clarification?.index, 1);
+    assert.equal(
+      (bus.state.pending_clarification?.answers["Which node should handle the follow-up?"] as { answer?: string })?.answer,
+      "Development"
+    );
   });
 
   it("continues a completed workflow in the existing run", async () => {
@@ -669,6 +813,7 @@ describe("SessionExecutionBus", () => {
     assert.match(requests[0]?.context?.promptCacheKey ?? "", /^[a-f0-9]{64}$/);
     assert.equal(requests[0]?.context?.promptCacheKey, requests[1]?.context?.promptCacheKey);
     assert.equal(requests[1]?.messages[0]?.role, "system");
+    assert.deepEqual(requests[1]?.messages.slice(0, -1), requests[0]?.messages);
     assert.match(String(requests[1]?.messages.at(-1)?.content ?? ""), /Re-evaluate autonomously/);
 
     const persisted = await store.loadBusRoutingEvents("session-observability");
@@ -687,8 +832,22 @@ describe("SessionExecutionBus", () => {
   it("does not turn repeated low-confidence clarification into a user routing prompt", async () => {
     const events: BusEvent[] = [];
     const provider = responseProvider(
-      { type: "clarify", confidence: 0, message: "Choose a node or direct answer." },
-      { type: "clarify", confidence: 0, message: "Choose a node or direct answer." }
+      { type: "clarify", confidence: 0, message: "A material outcome decision is required.", questions: [{
+          question: "Which outcome should the follow-up target?",
+          header: "Outcome",
+          options: [
+            { label: "Direct answer", description: "Answer without workflow execution." },
+            { label: "Implementation", description: "Delegate the work to an implementation node." }
+          ]
+        }] },
+      { type: "clarify", confidence: 0, message: "A material outcome decision is required.", questions: [{
+          question: "Which outcome should the follow-up target?",
+          header: "Outcome",
+          options: [
+            { label: "Direct answer", description: "Answer without workflow execution." },
+            { label: "Implementation", description: "Delegate the work to an implementation node." }
+          ]
+        }] }
     );
     const bus = createBus({
       coordinator: fakeCoordinator(),
@@ -732,7 +891,15 @@ describe("SessionExecutionBus", () => {
       providerFactory: responseProvider({
         type: "clarify",
         confidence: 0.95,
-        message: "Which production region should receive the deployment?"
+        message: "A production region is required before deployment.",
+        questions: [{
+          question: "Which production region should receive the deployment?",
+          header: "Region",
+          options: [
+            { label: "US East", description: "Deploy to the existing primary region." },
+            { label: "EU West", description: "Deploy to the European region." }
+          ]
+        }]
       }).factory
     });
 
@@ -740,6 +907,44 @@ describe("SessionExecutionBus", () => {
 
     assert.equal(turn.directive.type, "clarify");
     assert.equal(turn.state.status, "waiting_user");
+    assert.equal(turn.state.pending_clarification?.phase, "user");
+    assert.equal(turn.state.pending_clarification?.index, 0);
+    assert.deepEqual(turn.state.pending_clarification?.questions[0], {
+      question: "Which production region should receive the deployment?",
+      header: "Region",
+      options: [
+        { label: "US East", description: "Deploy to the existing primary region.", value: "US East" },
+        { label: "EU West", description: "Deploy to the European region.", value: "EU West" }
+      ],
+      multiSelect: false,
+      id: "Region",
+      text: "Which production region should receive the deployment?",
+      required: true,
+      allow_freeform: true
+    });
+  });
+
+  it("retries a clarification that omits structured questions", async () => {
+    const events: BusEvent[] = [];
+    const provider = responseProvider(
+      { type: "clarify", confidence: 1, message: "Please choose a route." },
+      { type: "answer", confidence: 1, message: "The route was inferred." }
+    );
+    const bus = createBus({
+      coordinator: fakeCoordinator(),
+      providerFactory: provider.factory,
+      events
+    });
+
+    const turn = await bus.handleUserMessage("route this");
+
+    assert.equal(turn.directive.type, "answer");
+    assert.equal(provider.requests.length, 2);
+    assert.equal(
+      events.some((event) => event.type === "bus_dispatcher_protocol_retry_scheduled" && event.reason === "invalid_response"),
+      true
+    );
+    assert.equal(events.some((event) => event.type === "bus_clarification_requested"), false);
   });
 
   it("retries invalid dispatcher output and returns a recoverable routing failure", async () => {
@@ -945,9 +1150,12 @@ describe("SessionExecutionBus", () => {
     }]);
     assert.equal(bus.state.current_node_id, "dev");
     assert.equal(bus.state.status, "running_workflow");
-    const dispatcherContext = JSON.stringify(provider.requests[1]?.messages);
+    const dispatcherMessages = provider.requests[1]?.messages ?? [];
+    const dispatcherContext = JSON.stringify(dispatcherMessages);
     assert.match(dispatcherContext, /workflow_run_dossier/);
     assert.match(dispatcherContext, /Full inspection document retained for bus routing only/);
+    assert.ok(dispatcherMessages.filter((message) => String(message.content).includes("workflow_run_dossier")).length > 1);
+    assert.match(String(dispatcherMessages.at(-1)?.content ?? ""), /"phase":"lifecycle"/);
   });
 
   it("keeps repeated lifecycle dispatch payloads flat and stable", async () => {
@@ -1024,7 +1232,19 @@ describe("SessionExecutionBus", () => {
     });
     const provider = responseProvider(
       { type: "dispatch", confidence: 1, node_id: "product", instruction: "Inspect", reason: "Start inspection" },
-      { type: "clarify", confidence: 1, message: "Which node should handle the follow-up?" },
+      {
+        type: "clarify",
+        confidence: 1,
+        message: "A follow-up owner is required.",
+        questions: [{
+        question: "Which node should handle the follow-up?",
+        header: "Owner",
+        options: [
+          { label: "Development", description: "Send the follow-up to implementation." },
+          { label: "Product", description: "Send the follow-up to product analysis." }
+        ]
+      }]
+      },
       { type: "dispatch", confidence: 1, node_id: "dev", instruction: "Apply the requested follow-up", reason: "User selected implementation" }
     );
     const bus = createBus({ coordinator, providerFactory: provider.factory });

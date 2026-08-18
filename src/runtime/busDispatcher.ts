@@ -11,6 +11,11 @@ import type { ModelMessage, ModelProvider, ModelRequest, ModelRetryEvent } from 
 import { modelRequestDiagnostics } from "../model/requestDiagnostics.js";
 import type { SessionStore } from "../storage/sessionStore.js";
 import type { Tool } from "../tools/types.js";
+import {
+  normalizeUserQuestions,
+  userQuestionsJsonSchema,
+  userQuestionsSchema
+} from "../tools/userQuestionProtocol.js";
 import { compactWorkflowRunDossier, type WorkflowRunDossier } from "../workflow/dossier.js";
 import type { WorkflowState } from "../workflow/state.js";
 import type {
@@ -64,6 +69,12 @@ export type DispatcherSelection = {
 };
 
 const confidenceSchema = z.number().min(0).max(1);
+const clarificationMessageSchema = z.string()
+  .trim()
+  .min(1)
+  .refine((message) => !/(^|\n)\s*\d+[.)]\s+/.test(message), {
+    message: "Use structured questions/options instead of a Markdown numbered menu"
+  });
 const answerSchema = z.object({
   type: z.literal("answer"),
   confidence: confidenceSchema,
@@ -72,7 +83,8 @@ const answerSchema = z.object({
 const clarifySchema = z.object({
   type: z.literal("clarify"),
   confidence: confidenceSchema,
-  message: z.string().trim().min(1)
+  message: clarificationMessageSchema,
+  questions: userQuestionsSchema
 }).strict();
 const planSchema = z.object({
   type: z.literal("plan"),
@@ -158,15 +170,13 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
     );
   }
 
-  const tools = providerConfig.capabilities.tool_calling ? dispatcherTools(input.phase) : [];
+  const tools = providerConfig.capabilities.tool_calling ? dispatcherTools() : [];
   const engine = input.turnEngine ?? new TurnEngine();
   const workflowFingerprint = busWorkflowFingerprint(input.config, workflow, executionKind);
   const promptCacheKey = busPromptCacheKey(
-    input.sessionId,
     dispatcher.provider,
     dispatcher.model,
-    workflowFingerprint,
-    input.phase
+    workflowFingerprint
   );
   await input.eventSink?.({
     type: "bus_routing_started",
@@ -189,7 +199,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
         messages: [...dispatcherMessages(input, workflow), ...(correction ? [correction] : [])],
         tools,
         ...(tools.length ? { toolChoice: "required" as const, parallelToolCalls: false } : {}),
-        ...(!tools.length ? { response_schema: dispatcherDirectiveJsonSchema(input.phase) } : {}),
+        ...(!tools.length ? { response_schema: dispatcherDirectiveJsonSchema() } : {}),
         context: {
           runId: input.runId ?? input.sessionId,
           nodeId: "bus",
@@ -289,7 +299,7 @@ export async function requestDispatchDirective(input: DispatcherRequest): Promis
           metadata: { userMessageKind: "runtime_context", durableRuntimeContext: true },
           content: valid
             ? "Re-evaluate autonomously. Use exactly one decision tool. Ask the user only if a material decision cannot be inferred from context."
-            : "Your previous response violated the bus decision protocol. Return exactly one phase-appropriate decision using the required tool or schema."
+            : "Your previous response violated the bus decision protocol. Return exactly one phase-appropriate decision using the required tool or schema. RequestClarification requires structured questions and options."
         };
         continue;
       }
@@ -334,11 +344,10 @@ function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig):
     role: node.role,
     role_description: input.config.roles[node.role]?.description ?? ""
   }));
-  const phaseRules = input.phase === "plan"
-    ? "The user is in Plan Mode. Select the best eventual execution node with SelectWorkflowNode, or use RequestClarification only for a material user decision that cannot be inferred."
-    : input.phase === "lifecycle"
-      ? `The ${executionKind} is at a bus boundary. Read the full dossier, then use DispatchWorkflowNode, RequestClarification, or FinalizeTask.`
-      : "Route the user message autonomously with AnswerDirectly, DispatchWorkflowNode, or RequestClarification. Never enter Plan Mode or finalize the task.";
+  const phaseRules = [
+    "The active phase and its allowed directive types are provided in the final runtime context message.",
+    "Treat that runtime phase as an authorization boundary: never select a directive that is not listed there."
+  ].join(" ");
   const busPrompt = [
     "You are the session execution bus. The user communicates only with you.",
     executionKind === "team"
@@ -348,9 +357,10 @@ function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig):
     "Never silently fall back to the first node. Every directive must include confidence from 0 to 1.",
     "Do not ask the user to choose a node or to choose between direct answer and delegation; that routing decision belongs to you.",
     "Use RequestClarification only when a missing user decision materially changes the outcome and cannot be inferred from the conversation or repository evidence.",
-    "SelectWorkflowNode is available only when the user explicitly enabled Plan Mode.",
+    "RequestClarification must provide 1-4 structured questions with 2-4 options each. Keep message to a short context sentence and never embed a Markdown numbered menu in it.",
+    "Use SelectWorkflowNode only when the active runtime phase is plan.",
     "Use DispatchWorkflowNode to start or reassign execution at an explicit node.",
-    "Use FinalizeTask only at a lifecycle boundary when every latest result has fresh verified runtime evidence. Never treat model confidence as execution evidence.",
+    "Use FinalizeTask only when the active runtime phase is lifecycle and every latest result has fresh verified runtime evidence. Never treat model confidence as execution evidence.",
     "When the user forbids deletion or destructive changes, set destructive_policy to deny; otherwise set it to ask.",
     phaseRules,
     `Execution target: ${executionKind} ${input.workflowId}`,
@@ -365,24 +375,78 @@ function dispatcherMessages(input: DispatcherRequest, workflow: WorkflowConfig):
     ? [{
         role: "user",
         metadata: { userMessageKind: "runtime_context", durableRuntimeContext: true },
-        content: JSON.stringify({ type: "session_execution_context", context: input.runtimeContext })
+        content: stableJson({ type: "session_execution_context", context: input.runtimeContext })
       }]
     : [];
-  const dossierMessage: ModelMessage[] = input.dossier
-    ? [{
-        role: "user",
-        metadata: { userMessageKind: "runtime_context", durableRuntimeContext: true },
-        content: JSON.stringify({ type: "workflow_run_dossier", dossier: compactWorkflowRunDossier(input.dossier) })
-      }]
-    : [];
-  return [{ role: "system", content: system }, ...runtimeContextMessage, ...boundedBusMessages(input.messages), ...dossierMessage];
+  const phaseContextMessage: ModelMessage = {
+    role: "user",
+    metadata: { userMessageKind: "runtime_context", durableRuntimeContext: true },
+    content: stableJson({
+      type: "bus_runtime_context",
+      phase: input.phase,
+      allowed_directives: allowedDirectiveTypes(input.phase)
+    })
+  };
+  return [
+    { role: "system", content: system },
+    ...boundedBusMessages(input.messages),
+    ...(input.dossier ? dispatcherDossierMessages(input.dossier) : []),
+    ...runtimeContextMessage,
+    phaseContextMessage
+  ];
 }
 
-function boundedBusMessages(messages: ModelMessage[], limit = 20): ModelMessage[] {
-  if (messages.length <= limit) return messages;
-  const durable = messages.filter((message) => message.metadata?.durableRuntimeContext === true).slice(-4);
-  const recent = messages.slice(-limit);
-  return [...new Set([...durable, ...recent])];
+function allowedDirectiveTypes(phase: DispatcherPhase): Array<DispatchDirective["type"]> {
+  if (phase === "plan") return ["plan", "clarify"];
+  if (phase === "lifecycle") return ["dispatch", "finalize", "clarify"];
+  return ["answer", "clarify", "dispatch"];
+}
+
+function dispatcherDossierMessages(dossier: WorkflowRunDossier): ModelMessage[] {
+  const compact = compactWorkflowRunDossier(dossier);
+  const appendable = compactWorkflowRunDossier({
+    ...dossier,
+    latest_results: dossier.node_results
+  });
+  const { latest_results, ...stateSource } = compact;
+  const { node_results, artifacts, lifecycle } = appendable;
+  const { node_results: _nodeResults, artifacts: _artifacts, lifecycle: _lifecycle, ...state } = stateSource;
+  const message = (content: unknown): ModelMessage => ({
+    role: "user",
+    metadata: { userMessageKind: "runtime_context", durableRuntimeContext: true },
+    content: stableJson(content)
+  });
+  const identity = message({
+    type: "workflow_run_dossier",
+    identity: {
+      run_id: compact.run_id,
+      workflow_id: compact.workflow_id,
+      rework_limit: compact.rework_limit,
+      omitted_payloads: compact.omitted_payloads
+    }
+  });
+  const deltas = [
+    ...node_results.map((result) => message({ type: "workflow_run_dossier_delta", kind: "node_result", value: result })),
+    ...artifacts.map((artifact) => message({ type: "workflow_run_dossier_delta", kind: "artifact", value: artifact })),
+    ...lifecycle.tools.map((tool) => message({ type: "workflow_run_dossier_delta", kind: "tool", value: tool })),
+    ...lifecycle.permissions.map((permission) => message({ type: "workflow_run_dossier_delta", kind: "permission", value: permission })),
+    ...lifecycle.processes.map((process) => message({ type: "workflow_run_dossier_delta", kind: "process", value: process })),
+    ...lifecycle.failures.map((failure) => message({ type: "workflow_run_dossier_delta", kind: "failure", value: failure }))
+  ];
+  const snapshot = message({
+    type: "workflow_run_dossier_snapshot",
+    state,
+    latest_result_seqs: latest_results?.map((result) => result.seq) ?? [],
+    lifecycle: {
+      model_response_count: lifecycle.model_response_count,
+      user_interaction_count: lifecycle.user_interaction_count
+    }
+  });
+  return [identity, ...deltas, snapshot];
+}
+
+function boundedBusMessages(messages: ModelMessage[]): ModelMessage[] {
+  return messages;
 }
 
 function parseDispatcherResponse(toolCalls: Array<{ id: string; name: string; input: unknown }>, content: string | undefined): DispatchDirective | undefined {
@@ -395,7 +459,9 @@ function parseDispatcherResponse(toolCalls: Array<{ id: string; name: string; in
     }
     if (call.name === "RequestClarification") {
       const value = clarifyToolInputSchema.safeParse(call.input);
-      return value.success ? { type: "clarify", ...value.data } : undefined;
+      return value.success
+        ? { type: "clarify", ...value.data, questions: normalizeUserQuestions(value.data.questions) }
+        : undefined;
     }
     if (call.name === "SelectWorkflowNode") {
       const value = selectToolInputSchema.safeParse(call.input);
@@ -415,13 +481,16 @@ function parseDispatcherResponse(toolCalls: Array<{ id: string; name: string; in
   }
   if (!content?.trim()) return undefined;
   try {
-    return contentDirectiveSchema.parse(JSON.parse(content));
+    const directive = contentDirectiveSchema.parse(JSON.parse(content));
+    return directive.type === "clarify"
+      ? { ...directive, questions: normalizeUserQuestions(directive.questions) }
+      : directive;
   } catch {
     return undefined;
   }
 }
 
-function dispatcherTools(phase: DispatcherPhase): Tool[] {
+function dispatcherTools(): Tool[] {
   const answerDirectly = directiveTool(
     "AnswerDirectly",
     "Answer the user directly when delegation adds no value.",
@@ -429,8 +498,8 @@ function dispatcherTools(phase: DispatcherPhase): Tool[] {
   );
   const requestClarification = directiveTool(
     "RequestClarification",
-    "Ask only for a material user decision that cannot be inferred from available context.",
-    messageDirectiveSchema()
+    "Ask only for a material user decision that cannot be inferred from available context. Provide structured questions/options; keep message brief and do not put a numbered menu in it.",
+    clarificationDirectiveSchema()
   );
   const selectNode = directiveTool(
       "SelectWorkflowNode",
@@ -479,9 +548,7 @@ function dispatcherTools(phase: DispatcherPhase): Tool[] {
         required: ["summary", "outcomes", "verification", "residual_risks", "artifacts", "confidence"]
       }
     );
-  if (phase === "plan") return [selectNode, requestClarification];
-  if (phase === "lifecycle") return [dispatchNode, requestClarification, finalizeTask];
-  return [answerDirectly, requestClarification, dispatchNode];
+  return [answerDirectly, requestClarification, selectNode, dispatchNode, finalizeTask];
 }
 
 function directiveAllowedForPhase(directive: DispatchDirective, phase: DispatcherPhase): boolean {
@@ -500,6 +567,22 @@ function messageDirectiveSchema(): Record<string, unknown> {
       confidence: { type: "number", minimum: 0, maximum: 1 }
     },
     required: ["message", "confidence"]
+  };
+}
+
+function clarificationDirectiveSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      message: {
+        type: "string",
+        description: "A short context sentence shown before the fixed-choice questions. Do not include a Markdown numbered menu."
+      },
+      questions: userQuestionsJsonSchema(),
+      confidence: { type: "number", minimum: 0, maximum: 1 }
+    },
+    required: ["message", "questions", "confidence"]
   };
 }
 
@@ -558,14 +641,12 @@ function directiveTargetsKnownNode(directive: DispatchDirective, workflow: Workf
 }
 
 function busPromptCacheKey(
-  sessionId: string,
   provider: string,
   model: string,
-  workflowFingerprint: string,
-  phase: DispatcherPhase
+  workflowFingerprint: string
 ): string {
   return createHash("sha256")
-    .update(stableJson({ sessionId, provider, model, workflowFingerprint, phase }))
+    .update(stableJson({ version: "cache-v3", role: "bus", provider, model, workflowFingerprint }))
     .digest("hex");
 }
 
@@ -618,19 +699,15 @@ async function emitRetry(input: DispatcherRequest, retry: ModelRetryEvent, routi
   });
 }
 
-function dispatcherDirectiveJsonSchema(phase: DispatcherPhase) {
-  const directiveTypes = phase === "plan"
-    ? ["plan", "clarify"]
-    : phase === "lifecycle"
-      ? ["dispatch", "finalize", "clarify"]
-      : ["answer", "clarify", "dispatch"];
+function dispatcherDirectiveJsonSchema() {
   return {
   type: "object",
   additionalProperties: false,
   properties: {
-    type: { type: "string", enum: directiveTypes },
+    type: { type: "string", enum: ["answer", "clarify", "plan", "dispatch", "finalize"] },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     message: { type: "string" },
+    questions: userQuestionsJsonSchema(),
     node_id: { type: "string" },
     reason: { type: "string" },
     instruction: { type: "string" },

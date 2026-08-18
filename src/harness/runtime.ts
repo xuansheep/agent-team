@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import type { ExecutionKind, PermissionSet, WorkflowNodeConfig } from "../config/schema.js";
 import { DeferredToolProtocol, ModelMessage, ModelProvider, ModelProviderError, ModelRequest, ModelResponse, ModelRetryEvent, ModelToolCall } from "../providers/types.js";
 import { getModelContextLimits, type ModelRegistry } from "../model/modelRegistry.js";
@@ -16,13 +17,13 @@ import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skil
 import { hasModelUsage } from "../model/usage.js";
 import { modelRequestDiagnostics, stableDiagnosticHash, type ContinuationOutcome, type ProviderCheckpointRejectionReason } from "../model/requestDiagnostics.js";
 import { contextTokensFromUsage, estimateModelMessageTokens, estimateModelMessagesTokens } from "../model/contextUsage.js";
-import { prepareMcpDiscovery, mergePreCompactDiscoveredTools, withMcpCatalogMessage } from "../mcp/discovery.js";
+import { prepareMcpDiscovery, mergePreCompactDiscoveredTools, mcpCatalogMessage, MCP_CATALOG_ATTACHMENT_TYPE } from "../mcp/discovery.js";
 import { mcpToolAlwaysLoad } from "../mcp/deferredTools.js";
 import { isUntrustedToolResultSource } from "../mcp/runtime.js";
 import { isToolExplicitlyDenied } from "./permissions.js";
 import { executeTool, toolFailureInfo, toolFailureResult, toolPolicyFailureResult } from "../tools/errors.js";
 import { isShellToolName, shellCallMatchesFailureCategory } from "../tools/local/shellPolicy.js";
-import { modelToolResultContent, toolResultMessage } from "../tools/modelResult.js";
+import { modelToolResultContent, persistedToolResultMessage } from "../tools/modelResult.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { resolveToolCall } from "../tools/orchestration.js";
 import { DETERMINISTIC_TOOL_FAILURE_CATEGORIES, RepeatFailureGuard } from "../tools/repeatFailureGuard.js";
@@ -85,10 +86,11 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
   options.abortSignal?.throwIfAborted();
   const attempt = options.attempt ?? 1;
   const activation = options.activation ?? 1;
+  const skillActivationScopeId = `${options.runId}:${options.node.id}:${attempt}:${activation}`;
   const artifactDeliverables: NodeResult["deliverables"] = [];
   const runtimePermissions = normalizeRuntimePermissions(options.permissions);
   let requestTools = modelVisibleWorkflowTools(options.tools, runtimePermissions, options.provider.deferredToolProtocol?.(options.model) ?? "portable");
-  await restoreSkillPermissions(options, runtimePermissions, attempt);
+  await restoreSkillPermissions(options, runtimePermissions, attempt, skillActivationScopeId);
   const baseMessages = await buildNodeMessages(options.node, options.systemPrompt, options.handoff, {
     tools: requestTools,
     permissionMode: runtimePermissions.mode,
@@ -351,7 +353,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
               sessionId: options.runId,
               threadId: `${options.runId}:${options.node.id}`,
               turnId: randomUUID(),
-              promptCacheKey: promptCacheKey(options.runId, options.node.id, compactionModel)
+              promptCacheKey: promptCacheKey(options, compactionModel, requestHistory(dialogueToSummarize), requestTools)
             },
             onRetry: async (retry) => {
               await appendRuntimeEvent(options, modelRetryHarnessEvent(options, attempt, "compaction", retry));
@@ -467,18 +469,19 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       throw error;
     }
   };
-  const recoveredMessages = await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables);
-  if (recoveredMessages.length) {
+  const reconciliationTokenBaseline = estimateModelMessagesTokens(messages);
+  const reconciliation = await reconcileInterruptedToolCalls(options, attempt, messages, artifactDeliverables);
+  if (reconciliation.changed) {
     const reconciledState = await options.store.reconcileWorkflowDialogue(
       options.runId,
       options.node.id,
       attempt,
       messages.slice(baseMessageCount),
-      recoveredMessages,
+      reconciliation.addedMessages,
       activation
     );
     await replaceDialogue(reconciledState.messages, reconciledState.cursor);
-    contextTokens += estimateModelMessagesTokens(recoveredMessages);
+    contextTokens += estimateModelMessagesTokens(messages) - reconciliationTokenBaseline;
     await publishContext();
   }
 
@@ -555,12 +558,18 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         failed_servers: discovery.failedServers.map((server) => server.name)
       });
     }
+    if (discovery) {
+      const catalogMessage = mcpCatalogMessage(requestHistory(), discovery);
+      const latestCatalog = [...messages].reverse().find((message) => message.metadata?.runtimeAttachment?.type === MCP_CATALOG_ATTACHMENT_TYPE);
+      if (catalogMessage && latestCatalog?.content !== catalogMessage.content) await appendDialogueMessage(catalogMessage);
+    }
     const streamBatcher = new RuntimeStreamBatcher(options, attempt);
+    const requestMessages = requestHistory();
     const request: ModelRequest = {
       model: options.model,
       effort: options.effort,
       maxOutputTokens: currentLimits().maxOutputTokens,
-      messages: discovery ? withMcpCatalogMessage(requestHistory(), discovery) : requestHistory(),
+      messages: requestMessages,
       tools: requestTools,
       ...(mcpProtocol === "anthropic-tool-reference" && discovery?.deferredToolNames.length
         ? { deferredToolNames: discovery.deferredToolNames, deferredTools: discovery.deferredTools }
@@ -574,7 +583,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         sessionId: options.runId,
         threadId: `${options.runId}:${options.node.id}`,
         turnId: randomUUID(),
-        promptCacheKey: promptCacheKey(options.runId, options.node.id, options.model)
+        promptCacheKey: promptCacheKey(options, options.model, requestMessages, requestTools)
       },
       onRetry: async (retry: ModelRetryEvent) => {
         await streamBatcher.drain();
@@ -675,7 +684,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
       if (!response.providerResponseId) return;
       const providerHistory = [...request.messages, message];
       await options.store.saveProviderContinuationCheckpoint(options.runId, {
-        version: 1,
+        version: 2,
         nodeId: options.node.id,
         attempt,
         activation,
@@ -774,6 +783,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         await appendDialogueMessage(responseAssistantMessage, responseIncludedInUsage);
       }
       let shellFailureInResponse: { tool: string; toolCallId: string; error: string } | undefined;
+      const deferredSkillMessages: ModelMessage[] = [];
       for (const call of executableToolCalls) {
         options.abortSignal?.throwIfAborted();
         const reportedCall = resolveToolCall(call);
@@ -891,7 +901,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
         await assertToolCallCanExecute(options, attempt, reportedCall, permissionTool);
         await appendRuntimeEvent(options, { type: "tool_invoked", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: reportedCall.name, input: reportedCall.input, ...(reportedCall.via ? { via: reportedCall.via } : {}) });
         try {
-          const toolContext = { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt, activation: options.activation ?? 1, runId: options.runId, provider: options.provider, model: options.model, toolRegistry: options.tools, toolPermissionContext: runtimePermissions, permissionMode: runtimePermissions.mode, planFilePath: runtimePermissions.planFilePath, mcpDiscoveredToolNames: discovery?.discoveredToolNames, abortSignal: options.abortSignal };
+          const toolContext = { cwd: options.cwd, runDir: options.store.runDir(options.runId), nodeId: options.node.id, attempt, activation: options.activation ?? 1, runId: options.runId, skillActivationScopeId, provider: options.provider, model: options.model, toolRegistry: options.tools, toolPermissionContext: runtimePermissions, permissionMode: runtimePermissions.mode, planFilePath: runtimePermissions.planFilePath, mcpDiscoveredToolNames: discovery?.discoveredToolNames, abortSignal: options.abortSignal };
           const result = await executeTool(tool, call.input, toolContext);
           await appendRuntimeEvent(options, { type: "tool_completed", node_id: options.node.id, attempt, activation: options.activation, tool_call_id: call.id, tool: reportedCall.name, result, ...(reportedCall.via ? { via: reportedCall.via } : {}) });
           const artifact = artifactFromToolResult(result);
@@ -923,7 +933,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
               allowed_tools: skillActivation.allowedTools
             });
           }
-          const resultMessage = toolResultMessage(call.id, result, tool, toolContext, {
+          const resultMessage = await persistedToolResultMessage(call.id, result, tool, toolContext, {
             tokenLimit: currentLimits().toolOutputTokenLimit
           });
           await appendDialogueMessage(resultMessage);
@@ -945,7 +955,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
             });
           }
           const skillMessage = skillSystemMessageFromToolResult(controlResult);
-          if (skillMessage) await appendDialogueMessage(skillMessage);
+          if (skillMessage) deferredSkillMessages.push(skillMessage);
           const skillOverrides = skillRuntimeOverridesFromToolResult(controlResult);
           const previousModel = options.model;
           if (skillOverrides?.model) options.model = skillOverrides.model;
@@ -964,6 +974,7 @@ export async function runNode(options: NodeRuntimeOptions): Promise<NodeResult> 
           }
         }
       }
+      for (const skillMessage of deferredSkillMessages) await appendDialogueMessage(skillMessage);
       return undefined;
     }
     if (!response.content?.trim()) {
@@ -1065,7 +1076,7 @@ function normalizeRuntimePermissions(permissions: ToolPermissionContext | Permis
   return { mode: "default", source: "workflow", allow: permissions.allow.slice(), ask: permissions.ask.slice(), deny: permissions.deny.slice(), transientAllow: [] };
 }
 
-async function restoreSkillPermissions(options: NodeRuntimeOptions, permissions: ToolPermissionContext, attempt: number): Promise<void> {
+async function restoreSkillPermissions(options: NodeRuntimeOptions, permissions: ToolPermissionContext, attempt: number, scopeId: string): Promise<void> {
   const activation = options.activation ?? 1;
   const events = await options.store.loadEvents(options.runId);
   const skills = events.filter((event): event is Extract<StoredEvent, { type: "skill_activated" }> =>
@@ -1077,7 +1088,7 @@ async function restoreSkillPermissions(options: NodeRuntimeOptions, permissions:
   for (const skill of skills) {
     if (skill.mode === "inline") applySkillPermissionRules(permissions, skill.allowed_tools);
   }
-  options.tools.skillRuntime?.restoreSession(options.runId, skills.map((skill) => skill.name));
+  options.tools.skillRuntime?.restoreActivationScope(scopeId, skills.filter((skill) => skill.mode === "inline").map((skill) => skill.name));
 }
 
 function applySkillPermissionRules(permissions: ToolPermissionContext, rules: string[]): void {
@@ -1244,8 +1255,24 @@ function modelRetryHarnessEvent(
     discarded_thinking_chars: retry.discardedThinkingChars
   };
 }
-function promptCacheKey(runId: string, nodeId: string, model: string): string {
-  return createHash("sha256").update(`${runId}:${nodeId}:${model}:workflow-v2`).digest("hex");
+function promptCacheKey(
+  options: Pick<NodeRuntimeOptions, "cwd" | "node" | "executionKind">,
+  model: string,
+  messages: readonly ModelMessage[],
+  tools: readonly Tool[]
+): string {
+  const resolvedProject = resolve(options.cwd);
+  const project = process.platform === "win32" ? resolvedProject.toLowerCase() : resolvedProject;
+  return stableHash({
+    version: "cache-v3",
+    project,
+    provider: options.node.provider,
+    model,
+    role: options.node.role,
+    executionKind: options.executionKind ?? "workflow",
+    system: messages.filter((message) => message.role === "system"),
+    tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.input_schema }))
+  });
 }
 function toolSpecifier(tool: string, input: unknown): string {
   const value = input as Record<string, unknown>;
@@ -1256,48 +1283,155 @@ function toolSpecifier(tool: string, input: unknown): string {
   return "";
 }
 
-async function reconcileInterruptedToolCalls(options: NodeRuntimeOptions, attempt: number, messages: ModelMessage[], artifacts: NodeResult["deliverables"]): Promise<ModelMessage[]> {
-  const existingToolResults = new Set(messages.filter((message) => message.role === "tool" && message.tool_call_id).map((message) => message.tool_call_id));
+async function reconcileInterruptedToolCalls(
+  options: NodeRuntimeOptions,
+  attempt: number,
+  messages: ModelMessage[],
+  artifacts: NodeResult["deliverables"]
+): Promise<{ changed: boolean; addedMessages: ModelMessage[] }> {
+  const originalMessages = JSON.stringify(messages);
   const events = await options.store.loadEvents(options.runId);
-  const allRecovered: ModelMessage[] = [];
+  const addedMessages: ModelMessage[] = [];
+  const ledgerByCallId = new Map<string, ReturnType<typeof toolCallLedger>>();
+
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message.role !== "assistant" || !message.tool_calls?.length) continue;
+
+    const expectedIds = new Set(message.tool_calls.map((call) => call.id));
+    const ledgerFor = (callId: string) => {
+      const existing = ledgerByCallId.get(callId);
+      if (existing) return existing;
+      const ledger = toolCallLedger(events, options.node.id, attempt, options.activation ?? 1, callId);
+      ledgerByCallId.set(callId, ledger);
+      return ledger;
+    };
+
+    let boundaryIndex = index + 1;
+    while (boundaryIndex < messages.length && messages[boundaryIndex].role !== "user" && messages[boundaryIndex].role !== "assistant") {
+      boundaryIndex += 1;
+    }
+
+    const resolvedIds = new Set<string>();
+    for (let resultIndex = index + 1; resultIndex < boundaryIndex; resultIndex += 1) {
+      const resultMessage = messages[resultIndex];
+      if (resultMessage.role === "tool" && resultMessage.tool_call_id && expectedIds.has(resultMessage.tool_call_id)) {
+        resolvedIds.add(resultMessage.tool_call_id);
+      }
+    }
+
+    let nextAssistantIndex = boundaryIndex;
+    while (nextAssistantIndex < messages.length && messages[nextAssistantIndex].role !== "assistant") nextAssistantIndex += 1;
+
     const recovered: ModelMessage[] = [];
+    const lateResultIndexes = new Set<number>();
     for (const call of message.tool_calls) {
-      if (existingToolResults.has(call.id)) continue;
-      if (call.name === submitNodeResultTool.name) {
-        recovered.push(submitNodeResultToolMessage(call.id));
-        existingToolResults.add(call.id);
+      if (resolvedIds.has(call.id)) continue;
+
+      const matchingLateIndexes: number[] = [];
+      for (let candidateIndex = boundaryIndex; candidateIndex < nextAssistantIndex; candidateIndex += 1) {
+        const candidate = messages[candidateIndex];
+        if (candidate.role === "tool" && candidate.tool_call_id === call.id) matchingLateIndexes.push(candidateIndex);
+      }
+      if (matchingLateIndexes.length) {
+        recovered.push(messages[matchingLateIndexes[0]]);
+        for (const candidateIndex of matchingLateIndexes) lateResultIndexes.add(candidateIndex);
         continue;
       }
-      const ledger = toolCallLedger(events, options.node.id, attempt, options.activation ?? 1, call.id);
-      if (ledger.completed) {
-        recovered.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: modelToolResultContent(ledger.completed.result, {
-            tokenLimit: getModelContextLimits(options.model, options.modelRegistry, options.maxOutputTokens).toolOutputTokenLimit
-          })
-        });
-        const artifact = artifactFromToolResult(ledger.completed.result as ToolResult);
-        if (artifact && !artifacts.some((item) => item.artifact_id === artifact.artifact_id)) artifacts.push({ artifact_id: artifact.artifact_id, description: artifact.description });
-      } else if (ledger.failed) {
-        recovered.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: ledger.failed.error }) });
-      } else if (ledger.invoked) {
-        recovered.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Tool execution outcome is unknown after interruption. This call will not be executed again automatically." }) });
+
+      let recoveredMessage: ModelMessage;
+      if (call.name === submitNodeResultTool.name) {
+        recoveredMessage = submitNodeResultToolMessage(call.id);
       } else {
-        recovered.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Tool execution did not start before interruption. Resend the call if it is still required." }) });
+        const ledger = ledgerFor(call.id);
+        if (ledger.completed) {
+          recoveredMessage = {
+            role: "tool",
+            tool_call_id: call.id,
+            content: modelToolResultContent(ledger.completed.result, {
+              tokenLimit: getModelContextLimits(options.model, options.modelRegistry, options.maxOutputTokens).toolOutputTokenLimit
+            })
+          };
+          const artifact = artifactFromToolResult(ledger.completed.result as ToolResult);
+          if (artifact && !artifacts.some((item) => item.artifact_id === artifact.artifact_id)) {
+            artifacts.push({ artifact_id: artifact.artifact_id, description: artifact.description });
+          }
+        } else if (ledger.failed) {
+          recoveredMessage = { role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: ledger.failed.error }) };
+        } else if (ledger.invoked) {
+          recoveredMessage = { role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Tool execution outcome is unknown after interruption. This call will not be executed again automatically." }) };
+        } else {
+          recoveredMessage = { role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Tool execution did not start before interruption. Resend the call if it is still required." }) };
+        }
       }
-      existingToolResults.add(call.id);
+      recovered.push(recoveredMessage);
+      addedMessages.push(recoveredMessage);
     }
-    if (recovered.length) {
-      messages.splice(index + 1, 0, ...recovered);
-      allRecovered.push(...recovered);
-      index += recovered.length;
+
+    for (const resultIndex of [...lateResultIndexes].sort((left, right) => right - left)) messages.splice(resultIndex, 1);
+    if (recovered.length) messages.splice(boundaryIndex, 0, ...recovered);
+
+    const expectedSkillMessages = message.tool_calls.flatMap((call) => {
+      if (isUntrustedToolResultSource(resolveToolCall(call).name)) return [];
+      const completed = ledgerFor(call.id).completed;
+      const skillMessage = skillSystemMessageFromToolResult(completed?.result as ToolResult | undefined);
+      return skillMessage ? [skillMessage] : [];
+    });
+    if (!expectedSkillMessages.length) continue;
+
+    nextAssistantIndex = index + 1;
+    while (nextAssistantIndex < messages.length && messages[nextAssistantIndex].role !== "assistant") nextAssistantIndex += 1;
+
+    const claimedSkillIndexes = new Set<number>();
+    const canonicalSkillMessages: ModelMessage[] = [];
+    for (const expectedSkillMessage of expectedSkillMessages) {
+      let existingIndex = -1;
+      for (let candidateIndex = index + 1; candidateIndex < nextAssistantIndex; candidateIndex += 1) {
+        const candidate = messages[candidateIndex];
+        if (
+          !claimedSkillIndexes.has(candidateIndex)
+          && candidate.role === "user"
+          && candidate.metadata?.userMessageKind === "runtime_context"
+          && candidate.content === expectedSkillMessage.content
+        ) {
+          existingIndex = candidateIndex;
+          break;
+        }
+      }
+      if (existingIndex >= 0) {
+        claimedSkillIndexes.add(existingIndex);
+        canonicalSkillMessages.push(messages[existingIndex]);
+      } else {
+        canonicalSkillMessages.push(expectedSkillMessage);
+        addedMessages.push(expectedSkillMessage);
+      }
     }
+
+    const skillMessageIndexes = new Set<number>();
+    for (let candidateIndex = index + 1; candidateIndex < nextAssistantIndex; candidateIndex += 1) {
+      const candidate = messages[candidateIndex];
+      if (
+        candidate.role === "user"
+        && candidate.metadata?.userMessageKind === "runtime_context"
+        && expectedSkillMessages.some((expected) => expected.content === candidate.content)
+      ) {
+        skillMessageIndexes.add(candidateIndex);
+      }
+    }
+    for (const skillIndex of [...skillMessageIndexes].sort((left, right) => right - left)) messages.splice(skillIndex, 1);
+
+    let skillInsertIndex = index + 1;
+    while (
+      skillInsertIndex < messages.length
+      && messages[skillInsertIndex].role !== "user"
+      && messages[skillInsertIndex].role !== "assistant"
+    ) {
+      skillInsertIndex += 1;
+    }
+    messages.splice(skillInsertIndex, 0, ...canonicalSkillMessages);
   }
-  return allRecovered;
+
+  return { changed: originalMessages !== JSON.stringify(messages), addedMessages };
 }
 
 function assertResolvedToolCallHistory(messages: ModelMessage[]): void {
@@ -1383,7 +1517,7 @@ function toolInputFingerprint(tool: string, input: unknown): string {
 
 type ProviderContinuationFingerprint = Pick<
   ProviderContinuationCheckpoint,
-  "providerId" | "model" | "systemHash" | "toolsHash" | "responseSchemaHash" | "windowId"
+  "providerId" | "model" | "systemHash" | "toolsHash" | "responseSchemaHash" | "requestPropertiesHash" | "windowId"
 >;
 
 function providerContinuationFingerprint(
@@ -1401,6 +1535,19 @@ function providerContinuationFingerprint(
       deferredTools: request.deferredTools ?? []
     }),
     responseSchemaHash: stableHash(request.response_schema ?? null),
+    requestPropertiesHash: stableHash({
+      model: request.model,
+      effort: request.effort ?? null,
+      maxOutputTokens: request.maxOutputTokens ?? null,
+      system: request.messages.filter((message) => message.role === "system"),
+      tools: request.tools,
+      deferredToolNames: request.deferredToolNames ?? [],
+      deferredTools: request.deferredTools ?? [],
+      toolChoice: request.toolChoice ?? null,
+      parallelToolCalls: request.parallelToolCalls ?? null,
+      responseSchema: request.response_schema ?? null,
+      promptCacheKey: request.context?.promptCacheKey ?? null
+    }),
     windowId
   };
 }
@@ -1438,6 +1585,7 @@ function providerContinuationRejectionReason(
   if (checkpoint.systemHash !== fingerprint.systemHash) return "system";
   if (checkpoint.toolsHash !== fingerprint.toolsHash) return "tools";
   if (checkpoint.responseSchemaHash !== fingerprint.responseSchemaHash) return "response_schema";
+  if (checkpoint.requestPropertiesHash !== fingerprint.requestPropertiesHash) return "request_properties";
   if (checkpoint.windowId !== fingerprint.windowId) return "window";
   if (typeof checkpoint.previousResponseId !== "string" || !checkpoint.previousResponseId) return "response_id";
   if (

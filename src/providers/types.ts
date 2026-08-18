@@ -132,4 +132,5 @@ export type ModelProvider = {
   generate(request: ModelRequest): Promise<ModelResponse>;
   stream?(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse>;
   deferredToolProtocol?(model: string): DeferredToolProtocol;
+  close?(): void | Promise<void>;
 };

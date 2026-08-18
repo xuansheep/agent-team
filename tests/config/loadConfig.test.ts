@@ -193,10 +193,11 @@ workflows:
     assert.equal(provider.api_key_mode, "bearer");
     assert.equal(provider.responses.prompt_cache, true);
     assert.equal(provider.responses.parallel_tool_calls, true);
-    assert.equal(provider.responses.conversation_state, "previous_response_id");
+    assert.equal(provider.responses.transport, "auto");
+    assert.equal(provider.responses.conversation_state, "auto");
   });
 
-  it("allows stateless Responses API conversations", async () => {
+  it("allows explicit Responses transport and conversation state", async () => {
     const file = await tempFile("agent-team.yaml", `
 roles:
   product:
@@ -215,10 +216,11 @@ workflows:
       base_url: "https://api.openai.test/v1",
       api_key: "test-key",
       default_model: "gpt-test",
-      responses: { conversation_state: "stateless" }
+      responses: { transport: "websocket_v2", conversation_state: "stateless" }
     }) });
 
     assert.equal(config.providers.default.type, "responses-api");
+    assert.equal(config.providers.default.responses.transport, "websocket_v2");
     assert.equal(config.providers.default.responses.conversation_state, "stateless");
   });
 

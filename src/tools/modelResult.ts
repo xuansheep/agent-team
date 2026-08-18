@@ -1,11 +1,18 @@
 import { discoveredToolsMetadata } from "../mcp/discovery.js";
-import type { ModelContentPart, ModelMessage } from "../providers/types.js";
-import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { DEFAULT_TOOL_OUTPUT_LIMIT_BYTES } from "../model/modelRegistry.js";
+import type { ModelContentPart, ModelMessage } from "../providers/types.js";
+import {
+  createToolResultProjection,
+  ToolResultProjectionStore,
+  MAX_PROJECTED_TOOL_RESULT_BYTES,
+  MAX_PROJECTED_TOOL_RESULT_TOKENS
+} from "../storage/toolResultProjection.js";
+import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 export type ModelToolResultLimit = {
   tokenLimit?: number;
   byteLimit?: number;
+  toolCallId?: string;
 };
 
 export function toolResultMessage(
@@ -20,18 +27,47 @@ export function toolResultMessage(
     role: "tool",
     tool_call_id: toolCallId,
     ...(result.is_error === true ? { is_error: true } : {}),
-    content: modelToolResultContent(mapped ?? result, limit),
+    content: modelToolResultContent(mapped ?? result, { ...limit, toolCallId }),
+    ...(discoveredToolsMetadata(result) ? { metadata: discoveredToolsMetadata(result) } : {})
+  };
+}
+
+export async function persistedToolResultMessage(
+  toolCallId: string,
+  result: ToolResult,
+  tool: Tool,
+  context?: ToolContext,
+  limit: ModelToolResultLimit = {}
+): Promise<ModelMessage> {
+  const mapped = tool.mapToolResultToModelResult?.(result, context);
+  const value = mapped ?? result;
+  const content = context?.runDir
+    ? await persistedModelToolResultContent(value, { ...context, runDir: context.runDir }, { ...limit, toolCallId })
+    : modelToolResultContent(value, { ...limit, toolCallId });
+  return {
+    role: "tool",
+    tool_call_id: toolCallId,
+    ...(result.is_error === true ? { is_error: true } : {}),
+    content,
     ...(discoveredToolsMetadata(result) ? { metadata: discoveredToolsMetadata(result) } : {})
   };
 }
 
 export function modelToolResultContent(value: unknown, limit: ModelToolResultLimit = {}): string | ModelContentPart[] {
   const useTokens = limit.tokenLimit !== undefined;
-  const budget = Math.max(1, Math.floor(limit.tokenLimit ?? limit.byteLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT_BYTES));
-  if (typeof value === "string") return truncateModelVisibleText(value, budget, useTokens);
+  const requested = Math.max(1, Math.floor(limit.tokenLimit ?? limit.byteLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT_BYTES));
+  const budget = Math.min(requested, useTokens ? MAX_PROJECTED_TOOL_RESULT_TOKENS : MAX_PROJECTED_TOOL_RESULT_BYTES);
+  const toolCallId = limit.toolCallId ?? "unscoped-tool-result";
+
+  if (typeof value === "string") {
+    return createToolResultProjection(toolCallId, value, {
+      ...(useTokens ? { tokenLimit: budget } : { byteLimit: budget })
+    }).projected_content;
+  }
   if (isModelContentParts(value)) {
     let remaining = budget;
     let omittedTextItems = 0;
+    let textIndex = 0;
     const content: ModelContentPart[] = [];
     for (const part of value) {
       if (part.type !== "text") {
@@ -40,26 +76,81 @@ export function modelToolResultContent(value: unknown, limit: ModelToolResultLim
       }
       if (remaining === 0) {
         omittedTextItems += 1;
+        textIndex += 1;
         continue;
       }
-      const cost = useTokens ? approximateTokens(part.text) : Buffer.byteLength(part.text, "utf8");
-      if (cost <= remaining) {
-        content.push(part);
-        remaining -= cost;
-      } else {
-        content.push({ ...part, text: truncateModelVisibleText(part.text, remaining, useTokens) });
-        remaining = 0;
-      }
+      const projected = createToolResultProjection(`${toolCallId}:text:${textIndex}`, part.text, {
+        ...(useTokens ? { tokenLimit: remaining } : { byteLimit: remaining })
+      }).projected_content;
+      content.push({ ...part, text: projected });
+      remaining = Math.max(0, remaining - (useTokens ? approximateTokens(projected) : Buffer.byteLength(projected, "utf8")));
+      textIndex += 1;
     }
-    if (omittedTextItems > 0) content.push({ type: "text", text: `[omitted ${omittedTextItems} text items ...]` });
+    if (omittedTextItems > 0 && remaining > 0) {
+      const omitted = `[omitted ${omittedTextItems} text items ...]`;
+      content.push({ type: "text", text: truncateModelVisibleText(omitted, remaining, useTokens) });
+    }
     return content;
   }
-  return truncateModelVisibleText(JSON.stringify(value), budget, useTokens);
+  return createToolResultProjection(toolCallId, value, {
+    ...(useTokens ? { tokenLimit: budget } : { byteLimit: budget })
+  }).projected_content;
+}
+
+async function persistedModelToolResultContent(
+  value: unknown,
+  context: ToolContext & { runDir: string },
+  limit: ModelToolResultLimit
+): Promise<string | ModelContentPart[]> {
+  const useTokens = limit.tokenLimit !== undefined;
+  const requested = Math.max(1, Math.floor(limit.tokenLimit ?? limit.byteLimit ?? DEFAULT_TOOL_OUTPUT_LIMIT_BYTES));
+  const budget = Math.min(requested, useTokens ? MAX_PROJECTED_TOOL_RESULT_TOKENS : MAX_PROJECTED_TOOL_RESULT_BYTES);
+  const toolCallId = limit.toolCallId ?? "unscoped-tool-result";
+  const store = new ToolResultProjectionStore(context.runDir);
+  const persist = (id: string, item: unknown, remaining: number) => store.persist(id, item, {
+    ...(useTokens ? { tokenLimit: remaining } : { byteLimit: remaining }),
+    nodeId: context.nodeId,
+    attempt: context.attempt,
+    activation: context.activation
+  });
+
+  if (!isModelContentParts(value)) {
+    return (await persist(toolCallId, value, budget)).projected_content;
+  }
+
+  let remaining = budget;
+  let omittedTextItems = 0;
+  let textIndex = 0;
+  const content: ModelContentPart[] = [];
+  for (const part of value) {
+    if (part.type !== "text") {
+      content.push(part);
+      continue;
+    }
+    if (remaining === 0) {
+      omittedTextItems += 1;
+      textIndex += 1;
+      continue;
+    }
+    const projected = (await persist(`${toolCallId}:text:${textIndex}`, part.text, remaining)).projected_content;
+    content.push({ ...part, text: projected });
+    remaining = Math.max(0, remaining - (useTokens ? approximateTokens(projected) : Buffer.byteLength(projected, "utf8")));
+    textIndex += 1;
+  }
+  if (omittedTextItems > 0 && remaining > 0) {
+    const omitted = `[omitted ${omittedTextItems} text items ...]`;
+    content.push({ type: "text", text: truncateModelVisibleText(omitted, remaining, useTokens) });
+  }
+  return content;
 }
 
 export function truncateModelVisibleText(value: string, budget: number, useTokens = false): string {
+  const cappedBudget = Math.min(
+    Math.max(1, Math.floor(budget)),
+    useTokens ? MAX_PROJECTED_TOOL_RESULT_TOKENS : MAX_PROJECTED_TOOL_RESULT_BYTES
+  );
   const source = Buffer.from(value, "utf8");
-  const maxBytes = useTokens ? budget * 4 : budget;
+  const maxBytes = useTokens ? cappedBudget * 4 : cappedBudget;
   if (source.byteLength <= maxBytes) return value;
   const headBudget = Math.floor(maxBytes / 2);
   const tailBudget = maxBytes - headBudget;

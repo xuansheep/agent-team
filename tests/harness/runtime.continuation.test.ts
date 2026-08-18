@@ -248,6 +248,44 @@ describe("runNode provider continuation", () => {
     assert.equal(recorded?.type === "model_response_recorded" ? recorded.diagnostics?.checkpoint_rejection_reason : undefined, "system");
   });
 
+  it("breaks the chain when continuation request properties change", async () => {
+    const fixture = await runtimeFixture("agent-team-continuation-request-properties-");
+    const tools = userInputTools();
+    const waitingProvider: ModelProvider = {
+      async generate() {
+        return {
+          content: "I need input.",
+          tool_calls: [{ id: "ask-properties", name: "Ask", input: {} }],
+          providerResponseId: "resp-old-properties"
+        };
+      }
+    };
+    await runNode(runtimeOptions(fixture, waitingProvider, tools));
+
+    const recoveredStore = new RunStore(fixture.root);
+    const dialogue = await recoveredStore.loadWorkflowDialogue(fixture.runId, "dev", 1);
+    const requests: ModelRequest[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        requests.push(request);
+        return { content: nodeResult };
+      }
+    };
+    await runNode(runtimeOptions(
+      { ...fixture, store: recoveredStore },
+      provider,
+      tools,
+      { effort: "high", dialogueMessages: dialogue }
+    ));
+
+    assert.equal(requests[0]!.continuation, undefined);
+    const recorded = (await recoveredStore.loadEvents(fixture.runId))
+      .filter((event) => event.type === "model_response_recorded")
+      .at(-1);
+    assert.equal(recorded?.type === "model_response_recorded" ? recorded.diagnostics?.checkpoint_state : undefined, "rejected");
+    assert.equal(recorded?.type === "model_response_recorded" ? recorded.diagnostics?.checkpoint_rejection_reason : undefined, "request_properties");
+  });
+
   it("records when the provider does not return a response id", async () => {
     const fixture = await runtimeFixture("agent-team-continuation-no-response-id-");
     const provider: ModelProvider = {

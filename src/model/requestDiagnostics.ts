@@ -10,6 +10,7 @@ export type ProviderCheckpointRejectionReason =
   | "system"
   | "tools"
   | "response_schema"
+  | "request_properties"
   | "window"
   | "response_id"
   | "message_count"
@@ -21,6 +22,9 @@ export type ModelRequestDiagnostics = {
   provider_id?: string;
   phase?: string;
   prompt_cache_key_hash?: string;
+  request_signature_hash: string;
+  message_history_hash: string;
+  static_prefix_hash: string;
   system_prompt_hash: string;
   tool_schema_hash: string;
   tool_count: number;
@@ -77,6 +81,19 @@ export function modelRequestDiagnostics(
     ...(options.providerId ? { provider_id: options.providerId } : {}),
     ...(options.phase ? { phase: options.phase } : {}),
     ...(promptCacheKey ? { prompt_cache_key_hash: stableDiagnosticHash(promptCacheKey) } : {}),
+    request_signature_hash: stableDiagnosticHash({
+      model: request.model,
+      effort: request.effort ?? null,
+      maxOutputTokens: request.maxOutputTokens ?? null,
+      tools,
+      toolChoice: request.toolChoice ?? null,
+      parallelToolCalls: request.parallelToolCalls ?? null,
+      deferredToolNames: request.deferredToolNames ?? [],
+      responseSchema: request.response_schema ?? null,
+      promptCacheKey: promptCacheKey ?? null
+    }),
+    message_history_hash: stableDiagnosticHash(request.messages),
+    static_prefix_hash: stableDiagnosticHash({ systemMessages, tools }),
     system_prompt_hash: stableDiagnosticHash(systemMessages),
     tool_schema_hash: stableDiagnosticHash(tools),
     tool_count: tools.length,

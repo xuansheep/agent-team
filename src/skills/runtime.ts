@@ -31,6 +31,7 @@ export type SkillActivationOptions = {
   tools?: ToolRegistry;
   cwd?: string;
   sessionId?: string;
+  activationScopeId?: string;
   parentPermissionMode?: "default" | "fullAccess" | "plan";
   signal?: AbortSignal;
   auditSink?: ToolContext["auditSink"];
@@ -38,7 +39,8 @@ export type SkillActivationOptions = {
 
 export type SkillActivationResult =
   | { mode: "inline"; skill: LoadedSkill; messages: ModelMessage[]; renderedPrompt: string }
-  | { mode: "fork"; skill: LoadedSkill; output: string; permissionMode?: SkillActivationOptions["parentPermissionMode"] };
+  | { mode: "fork"; skill: LoadedSkill; output: string; permissionMode?: SkillActivationOptions["parentPermissionMode"] }
+  | { mode: "noop"; skill: LoadedSkill; reason: "already_active" };
 
 export type SkillRuntimeDiagnostic = {
   name: string;
@@ -65,7 +67,7 @@ export class SkillRuntime {
   private conditionalByName = new Map<string, LoadedSkill>();
   private errors: Array<SkillLoadError & { source: Exclude<SkillSource, "mcp"> }> = [];
   private readonly activatedConditionalNames = new Set<string>();
-  private readonly activatedBySession = new Map<string, Set<string>>();
+  private readonly activatedInlineByScope = new Map<string, Set<string>>();
   private disabledSkillNames = new Set<string>();
 
   constructor(skills: LoadedSkill[], private readonly discoverOptions?: SkillRuntimeDiscoverOptions, errors: Array<SkillLoadError & { source: Exclude<SkillSource, "mcp"> }> = []) {
@@ -148,13 +150,13 @@ export class SkillRuntime {
     return activated;
   }
 
-  getActivatedSkillNames(sessionId: string): string[] {
-    return [...(this.activatedBySession.get(sessionId) ?? [])].sort();
+  getActivatedSkillNames(scopeId: string): string[] {
+    return [...(this.activatedInlineByScope.get(scopeId) ?? [])].sort();
   }
 
-  restoreSession(sessionId: string, skillNames: string[]): void {
+  restoreActivationScope(scopeId: string, skillNames: string[]): void {
     const names = new Set(skillNames.filter((name) => this.skillByName.has(name)));
-    this.activatedBySession.set(sessionId, names);
+    this.activatedInlineByScope.set(scopeId, names);
     for (const name of names) if (this.conditionalByName.has(name)) this.activatedConditionalNames.add(name);
   }
 
@@ -165,14 +167,17 @@ export class SkillRuntime {
 
   async activateSkill(name: string, options: SkillActivationOptions = {}): Promise<SkillActivationResult> {
     const skill = this.requireSkill(name);
-    const renderedPrompt = await renderSkillPrompt(skill, options);
-    const sessionId = options.sessionId ?? "global";
-    const activated = this.activatedBySession.get(sessionId) ?? new Set<string>();
-    activated.add(skill.name);
-    this.activatedBySession.set(sessionId, activated);
-
     const mode = resolveMode(skill, options.mode);
+    const scopeId = options.activationScopeId ?? options.sessionId ?? "global";
+    const activated = this.activatedInlineByScope.get(scopeId) ?? new Set<string>();
+    if (mode === "inline" && activated.has(skill.name)) {
+      return { mode: "noop", skill, reason: "already_active" };
+    }
+
+    const renderedPrompt = await renderSkillPrompt(skill, options);
     if (mode === "inline") {
+      activated.add(skill.name);
+      this.activatedInlineByScope.set(scopeId, activated);
       return {
         mode,
         skill,

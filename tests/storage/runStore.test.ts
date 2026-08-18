@@ -268,7 +268,7 @@ describe("RunStore", () => {
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "x" });
     const checkpoint: ProviderContinuationCheckpoint = {
-      version: 1,
+      version: 2,
       nodeId: "dev",
       attempt: 1,
       activation: 2,
@@ -277,6 +277,7 @@ describe("RunStore", () => {
       systemHash: "system-hash",
       toolsHash: "tools-hash",
       responseSchemaHash: "schema-hash",
+      requestPropertiesHash: "request-properties-hash",
       windowId: "window-1",
       historyPrefixHash: "history-hash",
       messageCount: 4,
@@ -302,7 +303,7 @@ describe("RunStore", () => {
     const store = new RunStore(root);
     const run = await store.createRun("delivery", { request: "x" });
     const checkpoint: ProviderContinuationCheckpoint = {
-      version: 1,
+      version: 2,
       nodeId: "dev",
       attempt: 1,
       activation: 1,
@@ -311,6 +312,7 @@ describe("RunStore", () => {
       systemHash: "system-hash",
       toolsHash: "tools-hash",
       responseSchemaHash: "schema-hash",
+      requestPropertiesHash: "request-properties-hash",
       windowId: "window-1",
       historyPrefixHash: "history-hash",
       messageCount: 1,

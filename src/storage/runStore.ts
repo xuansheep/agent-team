@@ -72,7 +72,7 @@ export type WorkflowDialogueCompaction = {
 };
 
 export type ProviderContinuationCheckpoint = {
-  version: 1;
+  version: 2;
   nodeId: string;
   attempt: number;
   activation: number;
@@ -81,6 +81,7 @@ export type ProviderContinuationCheckpoint = {
   systemHash: string;
   toolsHash: string;
   responseSchemaHash: string;
+  requestPropertiesHash: string;
   windowId: string;
   historyPrefixHash: string;
   messageCount: number;
@@ -342,7 +343,7 @@ export class RunStore {
     );
     if (
       !checkpoint
-      || checkpoint.version !== 1
+      || checkpoint.version !== 2
       || checkpoint.nodeId !== nodeId
       || checkpoint.attempt !== attempt
       || checkpoint.activation !== activation

@@ -13,6 +13,7 @@ export type ToolContext = {
   activation?: number;
   sessionId?: string;
   runId?: string;
+  skillActivationScopeId?: string;
   planState?: PlanSessionState;
   planFilePath?: string;
   abortSignal?: AbortSignal;

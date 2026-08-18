@@ -209,6 +209,7 @@ describe("WorkflowEngine", () => {
 
     assert.deepEqual(responseEvent, {
       type: "model_response_recorded",
+      diagnostics: (responseEvent as { diagnostics?: unknown } | undefined)?.diagnostics,
       node_id: "a",
       attempt: 1,
       activation: 1,

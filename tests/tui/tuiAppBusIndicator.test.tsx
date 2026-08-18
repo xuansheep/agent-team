@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
+import type { ModelMessage } from "../../src/providers/types.js";
 import { SessionStore } from "../../src/storage/sessionStore.js";
 import { TuiApp } from "../../src/tui/TuiApp.js";
 import { testBusProviderFactory, testDispatcher } from "../helpers/projectConfig.js";
@@ -291,6 +292,95 @@ describe("TuiApp bus indicator", () => {
     output.unmount();
     output.cleanup();
   });
+  it("collects structured bus clarification questions with the fixed choice UI", async () => {
+    const cwd = join(process.cwd(), ".tmp", "tui-bus-structured-clarification", randomUUID());
+    const requests: Array<{ messages: ModelMessage[] }> = [];
+    let busCall = 0;
+    const output = render(
+      <TuiApp
+        cwd={cwd}
+        config={config}
+        workflows={["delivery"]}
+        workflowId="delivery"
+        engine={{ async startInteractive() { throw new Error("workflow should not start"); } } as never}
+        providerFactory={() => ({
+          async generate(request) {
+            requests.push({ messages: request.messages });
+            busCall += 1;
+            if (busCall === 1) {
+              return {
+                content: JSON.stringify({
+                  type: "clarify",
+                  confidence: 1,
+                  message: "Deployment choices are required.",
+                  questions: [
+                    {
+                      question: "Which production region should receive the deployment?",
+                      header: "Region",
+                      options: [
+                        { label: "US East", description: "Use the existing primary region." },
+                        { label: "EU West", description: "Use the European region." }
+                      ]
+                    },
+                    {
+                      question: "Which release channel should be used?",
+                      header: "Channel",
+                      options: [
+                        { label: "Stable", description: "Release through the stable channel." },
+                        { label: "Preview", description: "Release through the preview channel." }
+                      ]
+                    }
+                  ]
+                })
+              };
+            }
+            return {
+              content: JSON.stringify({
+                type: "answer",
+                confidence: 1,
+                message: "Clarification accepted."
+              })
+            };
+          }
+        })}
+        sessionStore={new SessionStore(join(cwd, "sessions"))}
+      />
+    );
+
+    output.stdin.write("deploy it");
+    await settle();
+    output.stdin.write("\r");
+    await waitForFrame(output, /Question 1\/2: Which production region/);
+
+    output.stdin.write("\r");
+    await waitForFrame(output, /Question 2\/2: Which release channel/);
+
+    output.stdin.write("\r");
+    await waitForFrame(output, /Review your answers/);
+
+    output.stdin.write("\r");
+    await waitForFrame(output, /Clarification accepted\./);
+
+    const responseMessage = requests[1]?.messages.find((message) => (
+      message.role === "user"
+      && typeof message.content === "string"
+      && message.content.includes("bus_clarification_response")
+    ));
+    assert.ok(responseMessage && typeof responseMessage.content === "string");
+    const response = JSON.parse(responseMessage.content) as {
+      type: string;
+      answers: Record<string, string>;
+    };
+    assert.equal(response.type, "bus_clarification_response");
+    assert.deepEqual(response.answers, {
+      "Which production region should receive the deployment?": "US East",
+      "Which release channel should be used?": "Stable"
+    });
+
+    output.unmount();
+    output.cleanup();
+  });
+
 });
 
 async function waitForFrame(output: { lastFrame(): string | undefined }, pattern: RegExp): Promise<void> {

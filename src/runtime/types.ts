@@ -82,6 +82,7 @@ export type RuntimeTurnInput = {
   tools: ToolRegistry;
   permissions: ToolPermissionContext;
   cwd: string;
+  runDir?: string;
   sessionId: string;
   runId?: string;
   globalPrompt?: string;

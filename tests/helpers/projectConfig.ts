@@ -12,11 +12,16 @@ export const testDispatcher = {
 
 export function testBusResponse(request: ModelRequest, nodeId: string): ModelResponse | undefined {
   if (request.context?.nodeId !== "bus") return undefined;
-  const systemPrompt = request.messages
-    .filter((message) => message.role === "system")
-    .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))
-    .join("\n");
-  if (systemPrompt.includes("The workflow is at a bus boundary")) {
+  const phase = [...request.messages].reverse().flatMap((message) => {
+    if (message.metadata?.userMessageKind !== "runtime_context" || typeof message.content !== "string") return [];
+    try {
+      const parsed = JSON.parse(message.content) as { type?: unknown; phase?: unknown };
+      return parsed.type === "bus_runtime_context" && typeof parsed.phase === "string" ? [parsed.phase] : [];
+    } catch {
+      return [];
+    }
+  }).at(0);
+  if (phase === "lifecycle") {
     return {
       content: JSON.stringify({
         type: "finalize",
@@ -31,7 +36,7 @@ export function testBusResponse(request: ModelRequest, nodeId: string): ModelRes
       })
     };
   }
-  if (systemPrompt.includes("The user is in Plan Mode")) {
+  if (phase === "plan") {
     return {
       content: JSON.stringify({
         type: "plan",

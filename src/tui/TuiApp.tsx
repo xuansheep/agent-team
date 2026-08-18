@@ -11,7 +11,7 @@ import type { PlanRequestedPermission, PlanSessionState } from "../plans/planSes
 import { closeDanglingExitPlanModeToolCalls, planApprovalToolResultContent } from "../kernel/plan/planToolCallMessages.js";
 import { ExecutionCoordinator } from "../runtime/executionCoordinator.js";
 import { SessionExecutionBus } from "../runtime/sessionExecutionBus.js";
-import type { BusEvent, BusTurnResult, DispatchDirective, SessionBusCheckpoint } from "../runtime/busTypes.js";
+import type { BusEvent, BusTurnResult, DispatchDirective, PendingBusClarification, SessionBusCheckpoint } from "../runtime/busTypes.js";
 import { isHumanUserMessage } from "../context/messages.js";
 import type { DefaultExecutionMode, KernelSession, PendingInteraction } from "../kernel/session.js";
 import { readPlan } from "../plans/planFiles.js";
@@ -70,6 +70,8 @@ export type CommandMenuState =
 
 type McpActionResult = { title: string; detail: string };
 type PreparedPlanTurn = { plan: PlanSessionState; userMessage: ModelMessage; displayText: string; ensureUserLog: boolean };
+type QuestionProgress = { questions: unknown[]; index: number; answers: Record<string, unknown> };
+type BusQuestionProgress = QuestionProgress & { phase: PendingBusClarification["phase"] };
 type QueuedPromptDelivery = ActiveTurnInputDisposition | "offering" | "deferred";
 type QueuedPrompt = { id: string; text: string; images: PromptInputImageAttachment[]; delivery: QueuedPromptDelivery };
 const SKILL_SETTINGS_RELOAD_ERROR_PREFIX = "Failed to reload skill settings: ";
@@ -198,7 +200,9 @@ export function TuiApp({
   const relistenWorkflowRef = useRef<(session: WorkflowSession, workflowId: string) => void>();
   const planSessionRef = useRef<PlanSessionState>();
   const planMessagesRef = useRef<ModelMessage[]>([]);
-  const planQuestionRef = useRef<{ toolCallId: string; questions: unknown[]; index: number; answers: Record<string, unknown> }>();
+  const planQuestionRef = useRef<QuestionProgress & { toolCallId: string }>();
+  const suspendedPlanQuestionRef = useRef<QuestionProgress & { toolCallId: string }>();
+  const busQuestionRef = useRef<BusQuestionProgress>();
   const planTurnQueueRef = useRef<Promise<void>>(Promise.resolve());
   const planAbortControllerRef = useRef<AbortController>();
   const interruptExitStartedRef = useRef(false);
@@ -337,6 +341,27 @@ export function TuiApp({
     queueMicrotask(() => mainScrollRef.current?.scrollToBottom());
     setTimeout(() => mainScrollRef.current?.scrollToBottom(), 0);
   };
+  const showBusQuestion = (progress: BusQuestionProgress, logTitle = "Execution bus needs user input") => {
+    const next: BusQuestionProgress = {
+      phase: progress.phase,
+      questions: [...progress.questions],
+      index: Math.max(0, Math.min(progress.index, progress.questions.length)),
+      answers: { ...progress.answers }
+    };
+    busQuestionRef.current = next;
+    busRef.current?.updateClarificationProgress(next.index, next.answers);
+    setState((current) => ({
+      ...current,
+      mode: "question",
+      runState: "waiting",
+      questions: next.index >= next.questions.length
+        ? [submitQuestionReview(next.questions, next.answers)]
+        : nextQuestionSlice(next.questions, next.index, next.answers),
+      error: undefined,
+      logMessages: [...current.logMessages, statusLog(logTitle, questionLogDetail(next.questions))]
+    }));
+    requestMainScrollToBottom();
+  };
   useEffect(() => {
     if (!scrollMainAfterRenderRef.current) return;
     scrollMainAfterRenderRef.current = false;
@@ -413,18 +438,27 @@ export function TuiApp({
         break;
       case "bus_clarification_requested":
         setWorkStatusDetail(undefined);
-        setState((current) => ({
-          ...current,
-          mode: current.pendingReview
-            ? "waiting_plan_approval"
-            : isPlanSessionAcceptingInput(planSessionRef.current)
-              ? "planning"
-              : busRef.current?.workflow
-                ? "paused"
-                : "input",
-          runState: "waiting",
-          error: undefined
-        }));
+        if (event.questions?.length) {
+          showBusQuestion({
+            phase: event.phase,
+            questions: event.questions,
+            index: 0,
+            answers: {}
+          });
+        } else {
+          setState((current) => ({
+            ...current,
+            mode: current.pendingReview
+              ? "waiting_plan_approval"
+              : isPlanSessionAcceptingInput(planSessionRef.current)
+                ? "planning"
+                : busRef.current?.workflow
+                  ? "paused"
+                  : "input",
+            runState: "waiting",
+            error: undefined
+          }));
+        }
         break;
       case "bus_plan_node_selected":
         setWorkStatusDetail(`Execution bus selected node ${event.node_id}`);
@@ -609,6 +643,9 @@ export function TuiApp({
     currentSessionIdRef.current = randomUUID();
     sessionAuditGenerationRef.current += 1;
     planSessionRef.current = undefined;
+    planQuestionRef.current = undefined;
+    suspendedPlanQuestionRef.current = undefined;
+    busQuestionRef.current = undefined;
     resetPlanApprovalFeedback();
     resetPlanQuestionImages();
     setQueued([]);
@@ -862,6 +899,9 @@ export function TuiApp({
         historicalBusTranscript: busTranscript,
         historicalBusRouting: busRouting
       });
+      if (checkpoint?.pending_clarification?.questions.length) {
+        showBusQuestion(checkpoint.pending_clarification, "Execution bus clarification restored");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setState((current) => ({ ...current, mode: "input", error: message, resumeRuns: [], pendingResumeRunId: undefined, modeBeforeConfirmation: undefined }));
@@ -1493,6 +1533,146 @@ export function TuiApp({
     enterGlobalPlanMode();
     if (prompt) enqueuePlanTurn(prompt);
   };
+  const continueBusQuestion = async (answer: unknown) => {
+    let pendingQuestion = busQuestionRef.current;
+    if (!pendingQuestion) {
+      setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
+      await routeBusInput(answer, { displayText: answerText(answer) });
+      return;
+    }
+    const answerQuestions = questionsFromAnswer(answer);
+    const visibleQuestions = questionsFromQuestion(state.questions[0]);
+    const fullQuestions = answerQuestions.length > visibleQuestions.length ? answerQuestions : visibleQuestions;
+    if (fullQuestions.length > pendingQuestion.questions.length) {
+      pendingQuestion = { ...pendingQuestion, questions: fullQuestions };
+    }
+    const restoreSuspendedPlanQuestion = () => {
+      const suspended = suspendedPlanQuestionRef.current;
+      if (!suspended || busQuestionRef.current) return;
+      suspendedPlanQuestionRef.current = undefined;
+      planQuestionRef.current = suspended;
+      setState((current) => ({
+        ...current,
+        mode: "question",
+        runState: "ready",
+        questions: suspended.index >= suspended.questions.length
+          ? [submitQuestionReview(suspended.questions, suspended.answers)]
+          : nextQuestionSlice(suspended.questions, suspended.index, suspended.answers),
+        error: undefined
+      }));
+    };
+    const submit = async (answers: Record<string, unknown>, displayText?: string) => {
+      const payload = {
+        type: "bus_clarification_response",
+        ...multiQuestionToolAnswer(answers)
+      };
+      busQuestionRef.current = undefined;
+      setState((current) => ({
+        ...current,
+        mode: "running",
+        runState: "thinking",
+        questions: [],
+        error: undefined
+      }));
+      const turn = await routeBusInput(payload, {
+        displayText,
+        logUser: false
+      });
+      restoreSuspendedPlanQuestion();
+      return turn;
+    };
+    if (isCancelQuestionAnswer(answer)) {
+      const payload = {
+        type: "bus_clarification_response",
+        canceled: true,
+        ...multiQuestionToolAnswer(pendingQuestion.answers)
+      };
+      busQuestionRef.current = undefined;
+      setState((current) => ({
+        ...current,
+        mode: "running",
+        runState: "thinking",
+        questions: [],
+        error: undefined,
+        logMessages: [...current.logMessages, statusLog("Bus clarification canceled")]
+      }));
+      await routeBusInput(payload, { logUser: false });
+      restoreSuspendedPlanQuestion();
+      return;
+    }
+    const navigation = questionNavigationDirection(answer);
+    if (navigation) {
+      const nextIndex = navigation === "next"
+        ? Math.min(pendingQuestion.questions.length, pendingQuestion.index + 1)
+        : Math.max(0, pendingQuestion.index - 1);
+      const next = { ...pendingQuestion, index: nextIndex };
+      busQuestionRef.current = next;
+      busRef.current?.updateClarificationProgress(next.index, next.answers);
+      setState((current) => ({
+        ...current,
+        mode: "question",
+        questions: nextIndex >= next.questions.length
+          ? [submitQuestionReview(next.questions, next.answers)]
+          : nextQuestionSlice(next.questions, nextIndex, next.answers),
+        error: undefined
+      }));
+      return;
+    }
+    if (pendingQuestion.index >= pendingQuestion.questions.length) {
+      if (isSubmitQuestionAnswer(answer)) {
+        await submit(pendingQuestion.answers);
+        return;
+      }
+      const previousIndex = Math.max(0, pendingQuestion.questions.length - 1);
+      const next = { ...pendingQuestion, index: previousIndex };
+      busQuestionRef.current = next;
+      busRef.current?.updateClarificationProgress(next.index, next.answers);
+      setState((current) => ({
+        ...current,
+        mode: "question",
+        questions: nextQuestionSlice(next.questions, previousIndex, next.answers),
+        error: undefined
+      }));
+      return;
+    }
+    const text = answerText(answer);
+    const answers = { ...pendingQuestion.answers, [questionText(pendingQuestion.questions[pendingQuestion.index])]: answer };
+    const nextIndex = pendingQuestion.index + 1;
+    const next = { ...pendingQuestion, index: nextIndex, answers };
+    if (nextIndex < pendingQuestion.questions.length) {
+      busQuestionRef.current = next;
+      busRef.current?.updateClarificationProgress(next.index, next.answers);
+      setState((current) => appendUserLogMessage({
+        ...current,
+        mode: "question",
+        questions: nextQuestionSlice(next.questions, nextIndex, answers),
+        error: undefined
+      }, text));
+      requestMainScrollToBottom();
+      return;
+    }
+    if (pendingQuestion.questions.length > 1) {
+      busQuestionRef.current = next;
+      busRef.current?.updateClarificationProgress(next.index, next.answers);
+      setState((current) => appendUserLogMessage({
+        ...current,
+        mode: "question",
+        questions: [submitQuestionReview(next.questions, answers)],
+        error: undefined
+      }, text));
+      requestMainScrollToBottom();
+      return;
+    }
+    setState((current) => appendUserLogMessage({
+      ...current,
+      mode: "running",
+      runState: "thinking",
+      questions: [],
+      error: undefined
+    }, text));
+    await submit(answers);
+  };
+
   const continuePlanQuestion = async (answer: unknown) => {
     const currentPlan = planSessionRef.current;
     let pendingQuestion = planQuestionRef.current;
@@ -1561,6 +1741,10 @@ export function TuiApp({
         { planMode: true, displayText: interactionText, logUser: false }
       );
       if (routed.directive.type !== "plan") {
+        if (busQuestionRef.current) {
+          suspendedPlanQuestionRef.current = questionProgress;
+          return;
+        }
         restorePendingQuestion();
         return;
       }
@@ -1614,6 +1798,10 @@ export function TuiApp({
       { planMode: true, displayText: text, logUser: false }
     );
     if (routed.directive.type !== "plan") {
+      if (busQuestionRef.current) {
+        suspendedPlanQuestionRef.current = questionProgress;
+        return;
+      }
       restorePendingQuestion();
       return;
     }
@@ -1953,6 +2141,9 @@ ${message.detailText}` : ""}` }
           logMessages: restoredLogs,
           error: undefined
         }));
+        if (metadata.bus.pending_clarification?.questions.length) {
+          showBusQuestion(metadata.bus.pending_clarification, "Execution bus clarification restored");
+        }
         return;
       }
       setState((current) => ({ ...current, mode: "input", error: `Session ${sessionId} has no resumable state` }));
@@ -1988,6 +2179,24 @@ ${message.detailText}` : ""}` }
       error: undefined
     });
     const restoredInteraction = metadata?.execution?.pendingInteraction;
+    const restoredBusClarification = metadata?.bus?.pending_clarification;
+    if (restoredBusClarification?.questions.length) {
+      if (restoredInteraction?.type === "ask_user_question") {
+        suspendedPlanQuestionRef.current = {
+          toolCallId: restoredInteraction.toolCallId,
+          questions: restoredInteraction.questions,
+          index: 0,
+          answers: {}
+        };
+      }
+      setState((current) => ({
+        ...base(current),
+        mode: "planning",
+        logMessages: [statusLog("Plan Mode restored", plan.planFilePath), ...transcriptLogs]
+      }));
+      showBusQuestion(restoredBusClarification, "Execution bus clarification restored");
+      return;
+    }
     if (restoredInteraction?.type === "ask_user_question") {
       resetPlanQuestionImages();
       planQuestionRef.current = {
@@ -2240,6 +2449,10 @@ ${message.detailText}` : ""}` }
         tools,
         parentPermissionMode: state.inputPermissionMode
       });
+      if (activation.mode === "noop") {
+        setState((current) => ({ ...current, logMessages: [...current.logMessages, statusLog(`Skill already active: ${name}`)], error: undefined }));
+        return;
+      }
       const content = activation.mode === "inline" ? activation.renderedPrompt : activation.output;
       setState((current) => ({ ...current, logMessages: [...current.logMessages, statusLog(`Skill activated: ${name}`)], error: undefined }));
       dispatchInjectedPrompt(content);
@@ -2409,16 +2622,25 @@ ${message.detailText}` : ""}` }
       }
       return;
     }
-    if (state.pendingReview) {
+    if (state.pendingReview && !busQuestionRef.current) {
       if (event.text.trim()) {
         const feedback = planApprovalPromptFeedback(event.text);
         void resolveGlobalPlan("stay", "default", feedback);
       }
       return;
     }
-    if (planQuestionRef.current || state.mode === "question") {
-      if (planQuestionRef.current) void continuePlanQuestion(freeformQuestionAnswer(nextQuestionSlice(planQuestionRef.current.questions, planQuestionRef.current.index), event.text)).catch((error) => failUi(error));
-      else void resumeSession(event.text).catch((error) => failUi(error));
+    if (busQuestionRef.current || planQuestionRef.current || state.mode === "question") {
+      if (busQuestionRef.current) {
+        void continueBusQuestion(
+          freeformQuestionAnswer(nextQuestionSlice(busQuestionRef.current.questions, busQuestionRef.current.index), event.text)
+        ).catch((error) => failUi(error));
+      } else if (planQuestionRef.current) {
+        void continuePlanQuestion(
+          freeformQuestionAnswer(nextQuestionSlice(planQuestionRef.current.questions, planQuestionRef.current.index), event.text)
+        ).catch((error) => failUi(error));
+      } else {
+        void resumeSession(event.text).catch((error) => failUi(error));
+      }
       return;
     }
     if (state.mode === "planning" || (state.mode === "input" && state.inputPermissionMode === "plan") || isPlanSessionAcceptingInput(planSessionRef.current)) {
@@ -2464,9 +2686,15 @@ ${message.detailText}` : ""}` }
       };
     })
     : undefined;
-  const hasPlanQuestion = Boolean(planQuestionRef.current) || state.questions.length > 0;
+  const hasPlanQuestion = Boolean(busQuestionRef.current || planQuestionRef.current) || state.questions.length > 0;
   const busIndicatorVisible = Boolean(state.workflowId && workflowNodes?.length);
-  const interactionMode = state.pendingReview && !isConfirmationMode(state.mode) ? "waiting_plan_approval" : hasPlanQuestion ? "question" : state.mode;
+  const interactionMode = busQuestionRef.current
+    ? "question"
+    : state.pendingReview && !isConfirmationMode(state.mode)
+      ? "waiting_plan_approval"
+      : hasPlanQuestion
+        ? "question"
+        : state.mode;
   const planApprovalActive = interactionMode === "waiting_plan_approval" && Boolean(state.pendingReview);
   const planApprovalOverlayVisible = planApprovalActive && !planApprovalCollapsed;
   const planApprovalPlanFilePath = state.pendingReview?.planFilePath
@@ -2543,12 +2771,13 @@ ${message.detailText}` : ""}` }
     addPlanApprovalImage,
     removePlanApprovalImage,
     resolvePlanApprovalImagePaste,
-    planQuestionImages,
-    addPlanQuestionImage,
-    removePlanQuestionImage,
-    resolvePlanQuestionImagePaste,
+    planQuestionImages: planQuestionRef.current ? planQuestionImages : undefined,
+    addPlanQuestionImage: planQuestionRef.current ? addPlanQuestionImage : undefined,
+    removePlanQuestionImage: planQuestionRef.current ? removePlanQuestionImage : undefined,
+    resolvePlanQuestionImagePaste: planQuestionRef.current ? resolvePlanQuestionImagePaste : undefined,
     resolveQuestion: (answer) => {
-      if (planQuestionRef.current) void continuePlanQuestion(answer).catch((error) => failUi(error));
+      if (busQuestionRef.current) void continueBusQuestion(answer).catch((error) => failUi(error));
+      else if (planQuestionRef.current) void continuePlanQuestion(answer).catch((error) => failUi(error));
       else {
         setState((current) => ({ ...current, mode: "running", questions: [], error: undefined }));
         void routeBusInput(answer, { displayText: answerText(answer) }).catch((error) => failUi(error));

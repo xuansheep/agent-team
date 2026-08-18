@@ -1,6 +1,36 @@
-import { buildApiKeyHeaders, consumeSseBlocks, defaultProviderUserAgent, fetchProvider, providerHttpError, providerStreamApiError, providerStreamError, withProviderRetry, ApiKeyMode, ProviderRetryConfig } from "./http.js";
-import { ModelContentPart, ModelMessage, ModelProvider, ModelProviderError, ModelRequest, ModelResponse, ModelStopReason, ModelStreamEvent, ModelToolCall } from "./types.js";
+import {
+  ApiKeyMode,
+  ProviderAttemptContext,
+  ProviderRetryConfig,
+  buildApiKeyHeaders,
+  consumeSseBlocks,
+  defaultProviderUserAgent,
+  fetchProvider,
+  providerHttpError,
+  providerStreamApiError,
+  providerStreamError,
+  withProviderRetry
+} from "./http.js";
+import {
+  ModelContentPart,
+  ModelMessage,
+  ModelProvider,
+  ModelProviderError,
+  ModelRequest,
+  ModelResponse,
+  ModelStopReason,
+  ModelStreamEvent,
+  ModelToolCall
+} from "./types.js";
+import {
+  ResponsesWebSocketChunk,
+  ResponsesWebSocketV2Session,
+  responsesWebSocketEndpoint
+} from "./responsesWebSocketV2.js";
 import type { ModelUsage } from "../model/usage.js";
+
+export type ResponsesTransport = "auto" | "http" | "websocket_v2";
+export type ResponsesConversationState = "auto" | "previous_response_id" | "stateless";
 
 export type ResponsesApiOptions = {
   baseUrl: string;
@@ -11,7 +41,8 @@ export type ResponsesApiOptions = {
   userAgent?: string;
   promptCache?: boolean;
   parallelToolCalls?: boolean;
-  conversationState?: "previous_response_id" | "stateless";
+  transport?: ResponsesTransport;
+  conversationState?: ResponsesConversationState;
   reasoning?: {
     effort?: "minimal" | "low" | "medium" | "high";
     summary?: string;
@@ -35,160 +66,225 @@ type ResponsesBody = {
   output?: ResponsesOutputItem[];
   status?: string;
   incomplete_details?: { reason?: string };
-  usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number }; output_tokens?: number; total_tokens?: number };
+  usage?: {
+    input_tokens?: number;
+    input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+    output_tokens?: number;
+    total_tokens?: number;
+  };
 };
 
-type ResponsesStreamChunk = {
-  type?: string;
+type ResponsesStreamChunk = ResponsesWebSocketChunk & {
   delta?: string;
   item?: ResponsesOutputItem;
   response?: ResponsesBody;
-  error?: { message?: string; type?: string; code?: string; status?: number };
+};
+
+type ResponseAccumulator = {
+  content: string[];
+  thinking: string[];
+  toolCalls: ModelToolCall[];
+  completedBody?: ResponsesBody;
+  providerResponseId?: string;
+  completed: boolean;
 };
 
 export class ResponsesApiProvider implements ModelProvider {
   stream?: (request: ModelRequest, onEvent: (event: ModelStreamEvent) => void) => Promise<ModelResponse>;
-  private conversationStateUnsupported = false;
+  private readonly statelessSessions = new Set<string>();
+  private readonly httpTransportSessions = new Set<string>();
+  private readonly websocketSessions = new Map<string, ResponsesWebSocketV2Session>();
 
   constructor(private readonly options: ResponsesApiOptions) {
     if (options.streaming) this.stream = this.streamImpl.bind(this);
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
-    const endpoint = this.endpoint();
     return withProviderRetry({
       request,
-      endpoint,
+      endpoint: this.endpoint(),
       streaming: false,
       retry: this.options.retry,
-      operation: async (attempt) => {
-        let response = await fetchProvider(endpoint, {
-          method: "POST",
-          headers: this.headers(request),
-          signal: attempt.signal,
-          body: JSON.stringify(toResponsesRequestBody(request, this.requestOptions()))
-        });
-        if (!response.ok) {
-          const body = await response.text();
-          if (!this.shouldDowngradeConversationState(response.status, body)) {
-            throw providerHttpError(response.status, body, response.headers);
-          }
-          this.conversationStateUnsupported = true;
-          response = await fetchProvider(endpoint, {
-            method: "POST",
-            headers: this.headers(request),
-            signal: attempt.signal,
-            body: JSON.stringify(toResponsesRequestBody(request, this.requestOptions()))
-          });
-          if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
-        }
-        return fromResponsesBody(await response.json() as ResponsesBody);
-      }
+      operation: (attempt) => this.execute(request, attempt, false)
     });
   }
 
-  private async streamImpl(request: ModelRequest, onEvent: (event: ModelStreamEvent) => void): Promise<ModelResponse> {
-    const endpoint = this.endpoint();
+  close(): void {
+    for (const session of this.websocketSessions.values()) session.close();
+    this.websocketSessions.clear();
+  }
+
+  private async streamImpl(
+    request: ModelRequest,
+    onEvent: (event: ModelStreamEvent) => void
+  ): Promise<ModelResponse> {
     return withProviderRetry({
       request,
-      endpoint,
+      endpoint: this.endpoint(),
       streaming: true,
       retry: this.options.retry,
       onStreamEvent: onEvent,
-      operation: async (attempt) => {
-        let response = await fetchProvider(endpoint, {
-          method: "POST",
-          headers: this.headers(request, { accept: "text/event-stream" }),
-          signal: attempt.signal,
-          body: JSON.stringify({ ...toResponsesRequestBody(request, this.requestOptions()), stream: true })
-        });
-        if (!response.ok) {
-          const body = await response.text();
-          if (!this.shouldDowngradeConversationState(response.status, body)) {
-            throw providerHttpError(response.status, body, response.headers);
-          }
-          this.conversationStateUnsupported = true;
-          response = await fetchProvider(endpoint, {
-            method: "POST",
-            headers: this.headers(request, { accept: "text/event-stream" }),
-            signal: attempt.signal,
-            body: JSON.stringify({ ...toResponsesRequestBody(request, this.requestOptions()), stream: true })
-          });
-          if (!response.ok) throw providerHttpError(response.status, await response.text(), response.headers);
-        }
-        if (!response.body) throw new ModelProviderError("Provider stream response had no body", { errorKind: "server", phase: "request", retryable: true });
-        attempt.markStreamStarted();
+      operation: (attempt) => this.execute(request, attempt, true)
+    });
+  }
 
-        const content: string[] = [];
-        const thinking: string[] = [];
-        const toolCalls: ModelToolCall[] = [];
-        let completedBody: ResponsesBody | undefined;
-        let providerResponseId: string | undefined;
-        let completed = false;
+  private async execute(
+    request: ModelRequest,
+    attempt: ProviderAttemptContext,
+    streaming: boolean
+  ): Promise<ModelResponse> {
+    if (this.transportFor(request) === "http") {
+      return this.executeHttp(request, attempt, streaming);
+    }
 
-        const stopped = await consumeSseBlocks(response.body, (data) => {
-          const chunk = JSON.parse(data) as ResponsesStreamChunk;
-          if (chunk.error || chunk.type === "error" || chunk.type === "response.failed") {
-            throw responsesStreamError(chunk);
-          }
-          if (chunk.response?.id) providerResponseId = chunk.response.id;
-          if (chunk.type === "response.output_text.delta" && chunk.delta) {
-            content.push(chunk.delta);
-            attempt.emit({ type: "content_delta", text: chunk.delta });
-          }
-          if (chunk.type?.includes("reasoning") && chunk.type.includes("delta") && chunk.delta) {
-            thinking.push(chunk.delta);
-            attempt.emit({ type: "thinking_delta", text: chunk.delta });
-          }
-          if (chunk.type === "response.output_item.done" && chunk.item?.type === "function_call") toolCalls.push(toModelToolCall(chunk.item));
-          if (chunk.type === "response.output_item.done" && chunk.item?.type === "message" && content.length === 0) {
-            const text = textFromOutputItem(chunk.item);
-            if (text) {
-              content.push(text);
-              attempt.emit({ type: "content_delta", text });
-            }
-          }
-          if ((chunk.type === "response.completed" || chunk.type === "response.incomplete") && chunk.response) {
-            completed = true;
-            completedBody = chunk.response;
-          }
-          return false;
-        }, { signal: attempt.signal, idleTimeoutMs: attempt.streamIdleTimeoutMs });
-        if (!stopped && !completed) throw providerStreamError("Provider stream ended before a completion marker");
-        const completedResponse = completedBody ? fromResponsesBody(completedBody) : undefined;
-        const mergedToolCalls = mergeToolCalls(toolCalls, completedResponse?.tool_calls);
-        return {
-          content: content.length ? content.join("") : completedResponse?.content,
-          thinking: thinking.length ? thinking.join("") : completedResponse?.thinking,
-          tool_calls: mergedToolCalls.length ? mergedToolCalls : undefined,
-          usage: completedResponse?.usage,
-          stopReason: completedResponse?.stopReason,
-          providerResponseId: completedResponse?.providerResponseId ?? providerResponseId
-        };
+    let sawResponseEvent = false;
+    try {
+      return await this.executeWebSocket(request, attempt, () => {
+        sawResponseEvent = true;
+      });
+    } catch (error) {
+      if (attempt.signal.aborted) throw error;
+      if ((this.options.transport ?? "http") !== "auto") throw error;
+      this.downgradeTransport(request);
+      if (sawResponseEvent) throw error;
+      return this.executeHttp(request, attempt, streaming);
+    }
+  }
+
+  private async executeHttp(
+    request: ModelRequest,
+    attempt: ProviderAttemptContext,
+    streaming: boolean
+  ): Promise<ModelResponse> {
+    const send = () => fetchProvider(this.endpoint(), {
+      method: "POST",
+      headers: this.headers(request, streaming ? { accept: "text/event-stream" } : {}),
+      signal: attempt.signal,
+      body: JSON.stringify({
+        ...toResponsesRequestBody(request, this.requestOptions(request, "http")),
+        ...(streaming ? { stream: true } : {})
+      })
+    });
+
+    let response = await send();
+    if (!response.ok) {
+      const body = await response.text();
+      if (!this.shouldDowngradeConversationState(request, response.status, body)) {
+        throw providerHttpError(response.status, body, response.headers);
+      }
+      this.statelessSessions.add(this.sessionKey(request));
+      response = await send();
+      if (!response.ok) {
+        throw providerHttpError(response.status, await response.text(), response.headers);
+      }
+    }
+
+    if (!streaming) return fromResponsesBody(await response.json() as ResponsesBody);
+    if (!response.body) {
+      throw new ModelProviderError("Provider stream response had no body", {
+        errorKind: "server",
+        phase: "request",
+        retryable: true
+      });
+    }
+
+    attempt.markStreamStarted();
+    const accumulator = newAccumulator();
+    const stopped = await consumeSseBlocks(response.body, (data) => {
+      consumeResponseChunk(JSON.parse(data) as ResponsesStreamChunk, accumulator, attempt);
+      return false;
+    }, { signal: attempt.signal, idleTimeoutMs: attempt.streamIdleTimeoutMs });
+    if (!stopped && !accumulator.completed) {
+      throw providerStreamError("Provider stream ended before a completion marker");
+    }
+    return accumulatedResponse(accumulator);
+  }
+
+  private async executeWebSocket(
+    request: ModelRequest,
+    attempt: ProviderAttemptContext,
+    onResponseEvent: () => void
+  ): Promise<ModelResponse> {
+    const accumulator = newAccumulator();
+    await this.websocketSession(request).request({
+      body: toResponsesRequestBody(request, this.requestOptions(request, "websocket_v2")),
+      headers: this.headers(request),
+      signal: attempt.signal,
+      idleTimeoutMs: attempt.streamIdleTimeoutMs,
+      onOpen: () => attempt.markStreamStarted(),
+      onChunk: (chunk) => {
+        onResponseEvent();
+        consumeResponseChunk(chunk as ResponsesStreamChunk, accumulator, attempt);
       }
     });
+    if (!accumulator.completed) {
+      throw providerStreamError("Provider WebSocket ended before a completion marker");
+    }
+    return accumulatedResponse(accumulator);
   }
 
   private endpoint(): string {
     return `${this.options.baseUrl.replace(/\/$/, "")}/responses`;
   }
 
-  private requestOptions(): ResponsesApiOptions {
-    return this.conversationStateUnsupported
-      ? { ...this.options, conversationState: "stateless" }
-      : this.options;
+  private transportFor(request: ModelRequest): Exclude<ResponsesTransport, "auto"> {
+    const configured = this.options.transport ?? "http";
+    if (configured === "http" || configured === "websocket_v2") return configured;
+    return this.httpTransportSessions.has(this.sessionKey(request)) ? "http" : "websocket_v2";
   }
 
-  private shouldDowngradeConversationState(status: number, body: string): boolean {
-    if (this.conversationStateUnsupported || status !== 400) return false;
-    if ((this.options.conversationState ?? "previous_response_id") !== "previous_response_id") return false;
+  private requestOptions(
+    request: ModelRequest,
+    transport: Exclude<ResponsesTransport, "auto">
+  ): ResponsesApiOptions & { usePreviousResponseId: boolean } {
+    const configured = this.options.conversationState ?? "auto";
+    const usePreviousResponseId = !this.statelessSessions.has(this.sessionKey(request))
+      && (configured === "previous_response_id"
+        || (configured === "auto" && transport === "websocket_v2"));
+    return { ...this.options, usePreviousResponseId };
+  }
+
+  private shouldDowngradeConversationState(
+    request: ModelRequest,
+    status: number,
+    body: string
+  ): boolean {
+    if (this.statelessSessions.has(this.sessionKey(request)) || status !== 400) return false;
+    if (!this.requestOptions(request, "http").usePreviousResponseId) return false;
     const normalized = body.toLowerCase();
     const mentionsField = normalized.includes("previous_response_id") || normalized.includes("store");
-    const unsupported = /unsupported|unknown|unrecognized|not allowed|not supported|extra fields?/.test(normalized);
+    const unsupported = /unsupported|unknown|unrecognized|not allowed|not supported|only supported on|extra fields?/.test(normalized);
     return mentionsField && unsupported;
   }
 
-  private headers(request: ModelRequest, extra: Record<string, string> = {}): Record<string, string> {
+  private websocketSession(request: ModelRequest): ResponsesWebSocketV2Session {
+    const key = this.sessionKey(request);
+    let session = this.websocketSessions.get(key);
+    if (!session) {
+      session = new ResponsesWebSocketV2Session(responsesWebSocketEndpoint(this.endpoint()));
+      this.websocketSessions.set(key, session);
+    }
+    return session;
+  }
+
+  private downgradeTransport(request: ModelRequest): void {
+    const key = this.sessionKey(request);
+    this.httpTransportSessions.add(key);
+    this.websocketSessions.get(key)?.close();
+    this.websocketSessions.delete(key);
+  }
+
+  private sessionKey(request: ModelRequest): string {
+    return JSON.stringify([
+      request.context?.sessionId ?? "__default_session__",
+      request.context?.threadId ?? "__default_thread__"
+    ]);
+  }
+
+  private headers(
+    request: ModelRequest,
+    extra: Record<string, string> = {}
+  ): Record<string, string> {
     return {
       ...buildApiKeyHeaders(this.options.apiKey, this.options.apiKeyMode ?? "bearer"),
       ...extra,
@@ -203,23 +299,96 @@ export class ResponsesApiProvider implements ModelProvider {
   }
 }
 
+function newAccumulator(): ResponseAccumulator {
+  return {
+    content: [],
+    thinking: [],
+    toolCalls: [],
+    completed: false
+  };
+}
+
+function consumeResponseChunk(
+  chunk: ResponsesStreamChunk,
+  accumulator: ResponseAccumulator,
+  attempt: ProviderAttemptContext
+): void {
+  if (chunk.error || chunk.type === "error" || chunk.type === "response.failed") {
+    throw responsesStreamError(chunk);
+  }
+  if (chunk.response?.id) accumulator.providerResponseId = chunk.response.id;
+  if (chunk.type === "response.output_text.delta" && chunk.delta) {
+    accumulator.content.push(chunk.delta);
+    attempt.emit({ type: "content_delta", text: chunk.delta });
+  }
+  if (chunk.type?.includes("reasoning") && chunk.type.includes("delta") && chunk.delta) {
+    accumulator.thinking.push(chunk.delta);
+    attempt.emit({ type: "thinking_delta", text: chunk.delta });
+  }
+  if (chunk.type === "response.output_item.done" && chunk.item?.type === "function_call") {
+    accumulator.toolCalls.push(toModelToolCall(chunk.item));
+  }
+  if (
+    chunk.type === "response.output_item.done"
+    && chunk.item?.type === "message"
+    && accumulator.content.length === 0
+  ) {
+    const text = textFromOutputItem(chunk.item);
+    if (text) {
+      accumulator.content.push(text);
+      attempt.emit({ type: "content_delta", text });
+    }
+  }
+  if (
+    (chunk.type === "response.completed" || chunk.type === "response.incomplete")
+    && chunk.response
+  ) {
+    accumulator.completed = true;
+    accumulator.completedBody = chunk.response;
+  }
+}
+
+function accumulatedResponse(accumulator: ResponseAccumulator): ModelResponse {
+  const completedResponse = accumulator.completedBody
+    ? fromResponsesBody(accumulator.completedBody)
+    : undefined;
+  const mergedToolCalls = mergeToolCalls(accumulator.toolCalls, completedResponse?.tool_calls);
+  return {
+    content: accumulator.content.length
+      ? accumulator.content.join("")
+      : completedResponse?.content,
+    thinking: accumulator.thinking.length
+      ? accumulator.thinking.join("")
+      : completedResponse?.thinking,
+    tool_calls: mergedToolCalls.length ? mergedToolCalls : undefined,
+    usage: completedResponse?.usage,
+    stopReason: completedResponse?.stopReason,
+    providerResponseId: completedResponse?.providerResponseId ?? accumulator.providerResponseId
+  };
+}
+
 function responsesStreamError(chunk: ResponsesStreamChunk): ModelProviderError {
   const error = chunk.error;
   const detail = JSON.stringify(chunk);
-  return providerStreamApiError(error?.message ?? `Provider returned ${chunk.type ?? "a stream error"}`, {
-    status: error?.status,
-    marker: `${error?.type ?? ""} ${error?.code ?? ""}`,
-    detail
-  });
+  return providerStreamApiError(
+    error?.message ?? `Provider returned ${chunk.type ?? "a stream error"}`,
+    {
+      status: error?.status,
+      marker: `${error?.type ?? ""} ${error?.code ?? ""}`,
+      detail
+    }
+  );
 }
 
-function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOptions): Record<string, unknown> {
-  const usesPreviousResponseId = (options.conversationState ?? "previous_response_id") === "previous_response_id";
-  const continuation = usesPreviousResponseId ? request.continuation : undefined;
+function toResponsesRequestBody(
+  request: ModelRequest,
+  options: ResponsesApiOptions & { usePreviousResponseId: boolean }
+): Record<string, unknown> {
+  const continuation = options.usePreviousResponseId ? request.continuation : undefined;
   const body: Record<string, unknown> = {
     model: request.model,
     max_output_tokens: request.maxOutputTokens,
-    store: usesPreviousResponseId,
+    store: options.usePreviousResponseId,
     previous_response_id: continuation?.previousResponseId,
     input: toResponsesInput(continuation?.inputMessages ?? request.messages),
     tools: request.tools.map((tool) => ({
@@ -234,7 +403,9 @@ function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOpti
 
   const instructions = systemInstructions(request.messages);
   if (instructions) body.instructions = instructions;
-  if (options.promptCache && request.context?.promptCacheKey) body.prompt_cache_key = request.context.promptCacheKey;
+  if (options.promptCache && request.context?.promptCacheKey) {
+    body.prompt_cache_key = request.context.promptCacheKey;
+  }
   if (request.context) {
     body.client_metadata = {
       session_id: request.context.sessionId,
@@ -246,7 +417,10 @@ function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOpti
   }
   const requestedEffort = typeof request.effort === "string" ? request.effort : undefined;
   if (options.reasoning || requestedEffort) {
-    body.reasoning = { ...(options.reasoning ?? {}), ...(requestedEffort ? { effort: requestedEffort } : {}) };
+    body.reasoning = {
+      ...(options.reasoning ?? {}),
+      ...(requestedEffort ? { effort: requestedEffort } : {})
+    };
   }
   if (options.jsonSchemaOutput && request.response_schema) {
     body.text = {
@@ -259,7 +433,9 @@ function toResponsesRequestBody(request: ModelRequest, options: ResponsesApiOpti
     };
   }
 
-  return Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined));
+  return Object.fromEntries(
+    Object.entries(body).filter(([, value]) => value !== undefined)
+  );
 }
 
 function systemInstructions(messages: ModelMessage[]): string | undefined {
@@ -284,9 +460,7 @@ function toResponsesInput(messages: ModelMessage[]): unknown[] {
     }
 
     const content = toResponsesMessageContent(message.role, message.content);
-    if (content.length) {
-      input.push({ type: "message", role: message.role, content });
-    }
+    if (content.length) input.push({ type: "message", role: message.role, content });
     for (const call of message.tool_calls ?? []) {
       input.push({
         type: "function_call",
@@ -299,16 +473,35 @@ function toResponsesInput(messages: ModelMessage[]): unknown[] {
   return input;
 }
 
-function toResponsesMessageContent(role: "user" | "assistant", content: string | ModelContentPart[]): unknown[] {
+function toResponsesMessageContent(
+  role: "user" | "assistant",
+  content: string | ModelContentPart[]
+): unknown[] {
   if (Array.isArray(content)) {
     return content.map((part) => {
-      if (part.type === "text") return { type: role === "assistant" ? "output_text" : "input_text", text: part.text };
-      if (part.type === "tool_reference") return { type: role === "assistant" ? "output_text" : "input_text", text: `Deferred tool loaded: ${part.tool_name}` };
-      return { type: "input_image", image_url: `data:${part.media_type};base64,${part.data}` };
+      if (part.type === "text") {
+        return {
+          type: role === "assistant" ? "output_text" : "input_text",
+          text: part.text
+        };
+      }
+      if (part.type === "tool_reference") {
+        return {
+          type: role === "assistant" ? "output_text" : "input_text",
+          text: `Deferred tool loaded: ${part.tool_name}`
+        };
+      }
+      return {
+        type: "input_image",
+        image_url: `data:${part.media_type};base64,${part.data}`
+      };
     });
   }
   if (!content) return [];
-  return [{ type: role === "assistant" ? "output_text" : "input_text", text: content }];
+  return [{
+    type: role === "assistant" ? "output_text" : "input_text",
+    text: content
+  }];
 }
 
 function fromResponsesBody(body: ResponsesBody): ModelResponse {
@@ -326,7 +519,9 @@ function fromResponsesBody(body: ResponsesBody): ModelResponse {
     }
     if (!body.output_text && item.type === "message") {
       for (const part of item.content ?? []) {
-        if ((part.type === "output_text" || part.type === "text") && part.text) outputText.push(part.text);
+        if ((part.type === "output_text" || part.type === "text") && part.text) {
+          outputText.push(part.text);
+        }
       }
     }
   }
@@ -343,12 +538,17 @@ function fromResponsesBody(body: ResponsesBody): ModelResponse {
 
 function textFromOutputItem(item: ResponsesOutputItem): string | undefined {
   const parts = (item.content ?? []).flatMap((part) =>
-    (part.type === "output_text" || part.type === "text") && part.text ? [part.text] : []
+    (part.type === "output_text" || part.type === "text") && part.text
+      ? [part.text]
+      : []
   );
   return parts.length ? parts.join("") : undefined;
 }
 
-function mergeToolCalls(first: ModelToolCall[], second: ModelToolCall[] | undefined): ModelToolCall[] {
+function mergeToolCalls(
+  first: ModelToolCall[],
+  second: ModelToolCall[] | undefined
+): ModelToolCall[] {
   if (!second?.length) return first;
   const byId = new Map<string, ModelToolCall>();
   for (const call of [...first, ...second]) byId.set(call.id, call);
@@ -359,17 +559,26 @@ function responsesUsage(usage: ResponsesBody["usage"]): ModelUsage | undefined {
   if (!usage) return undefined;
   return {
     inputTokens: usage.input_tokens,
-    ...(usage.input_tokens_details?.cached_tokens !== undefined ? { cachedInputTokens: usage.input_tokens_details.cached_tokens } : {}),
-    ...(usage.input_tokens_details?.cache_write_tokens !== undefined ? { cacheWriteInputTokens: usage.input_tokens_details.cache_write_tokens } : {}),
+    ...(usage.input_tokens_details?.cached_tokens !== undefined
+      ? { cachedInputTokens: usage.input_tokens_details.cached_tokens }
+      : {}),
+    ...(usage.input_tokens_details?.cache_write_tokens !== undefined
+      ? { cacheWriteInputTokens: usage.input_tokens_details.cache_write_tokens }
+      : {}),
     outputTokens: usage.output_tokens,
     totalTokens: usage.total_tokens
   };
 }
 
-function responsesStopReason(body: ResponsesBody, toolCalls: ModelToolCall[]): ModelStopReason | undefined {
+function responsesStopReason(
+  body: ResponsesBody,
+  toolCalls: ModelToolCall[]
+): ModelStopReason | undefined {
   if (toolCalls.length) return "tool_call";
   if (body.status === "completed") return "stop";
-  if (body.status === "incomplete") return body.incomplete_details?.reason === "max_output_tokens" ? "length" : "unknown";
+  if (body.status === "incomplete") {
+    return body.incomplete_details?.reason === "max_output_tokens" ? "length" : "unknown";
+  }
   return undefined;
 }
 

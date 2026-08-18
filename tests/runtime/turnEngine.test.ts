@@ -7,7 +7,7 @@ import { TurnEngine } from "../../src/runtime/turnEngine.js";
 import type { RuntimeEvent } from "../../src/runtime/types.js";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { settingsSchema } from "../../src/settings/types.js";
-import { ModelProvider } from "../../src/providers/types.js";
+import { ModelMessage, ModelProvider } from "../../src/providers/types.js";
 import { getPlanFilePath, readPlan, writePlan } from "../../src/plans/planFiles.js";
 import { createLocalToolRegistry, ToolRegistry } from "../../src/tools/registry.js";
 import { SkillRuntime } from "../../src/skills/runtime.js";
@@ -232,16 +232,88 @@ describe("TurnEngine", () => {
     assert.equal(result.messages.at(-1)?.content, "done");
   });
 
-  it("injects activated skill context into the next model request", async () => {
+  it("closes a multi-tool batch before injecting activated skill context", async () => {
     let calls = 0;
-    let capturedSystem = "";
+    let readExecutions = 0;
+    let capturedMessages: ModelMessage[] = [];
     const provider: ModelProvider = {
       async generate(request) {
         calls += 1;
         if (calls === 1) {
-          return { content: "loading skill", tool_calls: [{ id: "use-planner", name: "UseSkill", input: { name: "planner" } }] };
+          return {
+            content: "loading skill and reading",
+            tool_calls: [
+              { id: "use-planner", name: "UseSkill", input: { name: "planner" } },
+              { id: "read-after-skill", name: "ReadAfterSkill", input: {} }
+            ]
+          };
         }
-        capturedSystem = request.messages.filter((message) => message.role === "system").map((message) => String(message.content)).join("\n\n");
+        capturedMessages = request.messages;
+        return { content: "planned" };
+      }
+    };
+    const skillRuntime = new SkillRuntime([{
+      name: "planner",
+      description: "Planning skill",
+      prompt: "Always produce a concise implementation plan first.",
+      path: "skills/planner/SKILL.md",
+      root: "skills/planner",
+      source: "project",
+      mode: "inline",
+      metadata: {}
+    }]);
+    const tools = createLocalToolRegistry({ skillRuntime });
+    tools.add({
+      name: "ReadAfterSkill",
+      description: "Read after activating the skill.",
+      input_schema: {},
+      isReadOnly: () => true,
+      async execute() {
+        readExecutions += 1;
+        return { output: "read" };
+      }
+    });
+
+    const result = await new TurnEngine().execute({
+      messages: [{ role: "user", content: "use the planner skill" }],
+      model: "test-model",
+      provider,
+      tools,
+      permissions: { mode: "default", allow: ["UseSkill", "ReadAfterSkill"], ask: [], deny: [] },
+      cwd: process.cwd(),
+      sessionId: "session-skill-tool"
+    });
+
+    assert.equal(result.status, "completed");
+    assert.equal(calls, 2);
+    assert.equal(readExecutions, 1);
+    const assistantIndex = capturedMessages.findIndex((message) =>
+      message.role === "assistant" && message.tool_calls?.some((call) => call.id === "use-planner")
+    );
+    assert.ok(assistantIndex >= 0);
+    const batch = capturedMessages.slice(assistantIndex, assistantIndex + 4);
+    assert.deepEqual(batch.map((message) => message.role), ["assistant", "tool", "tool", "user"]);
+    assert.deepEqual(batch[0]?.tool_calls?.map((call) => call.id), ["use-planner", "read-after-skill"]);
+    assert.deepEqual(batch.slice(1, 3).map((message) => message.tool_call_id), ["use-planner", "read-after-skill"]);
+    assert.equal(batch[3]?.metadata?.userMessageKind, "runtime_context");
+    assert.match(String(batch[3]?.content), /SKILL planner/);
+    assert.match(String(batch[3]?.content), /Always produce a concise implementation plan first/);
+  });
+
+  it("does not inject duplicate inline skill context", async () => {
+    let calls = 0;
+    const runtimeContextCounts: number[] = [];
+    const events: RuntimeEvent[] = [];
+    const provider: ModelProvider = {
+      async generate(request) {
+        calls += 1;
+        runtimeContextCounts.push(request.messages.filter((message) =>
+          message.metadata?.userMessageKind === "runtime_context"
+          && String(message.content).includes("SKILL planner")
+        ).length);
+        if (calls <= 2) {
+          return { content: "loading skill", tool_calls: [{ id: `use-planner-${calls}`, name: "UseSkill", input: { name: "planner", args: `attempt-${calls}` } }] };
+        }
         return { content: "planned" };
       }
     };
@@ -257,19 +329,19 @@ describe("TurnEngine", () => {
     }]);
 
     const result = await new TurnEngine().execute({
-      messages: [{ role: "user", content: "use the planner skill" }],
+      messages: [{ role: "user", content: "use the planner skill twice" }],
       model: "test-model",
       provider,
       tools: createLocalToolRegistry({ skillRuntime }),
       permissions: { mode: "default", allow: ["UseSkill"], ask: [], deny: [] },
       cwd: process.cwd(),
-      sessionId: "session-skill-tool"
+      sessionId: "session-skill-idempotency",
+      eventSink: (event) => { events.push(event); }
     });
 
     assert.equal(result.status, "completed");
-    assert.equal(calls, 2);
-    assert.match(capturedSystem, /SKILL planner/);
-    assert.match(capturedSystem, /Always produce a concise implementation plan first/);
+    assert.deepEqual(runtimeContextCounts, [0, 1, 1]);
+    assert.equal(events.filter((event) => event.type === "runtime_skill_activated").length, 1);
   });
 
   it("injects skill routing guidance before a skill is selected", async () => {
@@ -843,12 +915,24 @@ describe("TurnEngine", () => {
       async generate() {
         return {
           content: "Ready for approval.",
-          tool_calls: [{ id: "call-exit-plan", name: "ExitPlanMode", input: {} }]
+          tool_calls: [
+            { id: "call-use-skill", name: "UseSkill", input: { name: "planner" } },
+            { id: "call-exit-plan", name: "ExitPlanMode", input: {} }
+          ]
         };
       }
     };
-    const tools = new ToolRegistry();
-    tools.add(exitPlanModeTool);
+    const skillRuntime = new SkillRuntime([{
+      name: "planner",
+      description: "Planning skill",
+      prompt: "Keep the approved implementation focused.",
+      path: "skills/planner/SKILL.md",
+      root: "skills/planner",
+      source: "project",
+      mode: "inline",
+      metadata: {}
+    }]);
+    const tools = createLocalToolRegistry({ skillRuntime });
 
     const result = await new TurnEngine().execute({
       messages: [{ role: "user", content: "plan before implementation" }],
@@ -869,8 +953,16 @@ describe("TurnEngine", () => {
     });
 
     assert.equal(result.status, "waiting_plan_approval");
-    const toolMessage = result.messages.at(-1);
-    assert.equal(toolMessage?.role, "tool");
+    const assistantMessage = result.messages.find((message) =>
+      message.role === "assistant" && message.tool_calls?.some((call) => call.id === "call-exit-plan")
+    );
+    assert.deepEqual(assistantMessage?.tool_calls?.map((call) => call.id), ["call-use-skill", "call-exit-plan"]);
+    const assistantIndex = result.messages.indexOf(assistantMessage!);
+    const batch = result.messages.slice(assistantIndex, assistantIndex + 4);
+    assert.deepEqual(batch.map((message) => message.role), ["assistant", "tool", "tool", "user"]);
+    assert.deepEqual(batch.slice(1, 3).map((message) => message.tool_call_id), ["call-use-skill", "call-exit-plan"]);
+    assert.match(String(batch[3]?.content), /SKILL planner/);
+    const toolMessage = batch[2];
     assert.match(String(toolMessage?.content), /Plan approval has been requested from the user/);
     assert.match(String(toolMessage?.content), /Wait for the user's approval or feedback/);
     assert.match(String(toolMessage?.content), new RegExp(escapeRegExp(planFilePath)));
@@ -1183,7 +1275,9 @@ describe("TurnEngine", () => {
       eventSink: (event) => { events.push(event); }
     });
 
-    assert.deepEqual(events.find((event) => (event as { type?: string }).type === "runtime_model_response"), {
+    const responseEvent = events.find((event) => (event as { type?: string }).type === "runtime_model_response") as Record<string, unknown>;
+    const { diagnostics, ...responseWithoutDiagnostics } = responseEvent;
+    assert.deepEqual(responseWithoutDiagnostics, {
       type: "runtime_model_response",
       session_id: "session-usage",
       run_id: undefined,
@@ -1191,6 +1285,7 @@ describe("TurnEngine", () => {
       usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
       stop_reason: "stop"
     });
+    assert.equal(typeof (diagnostics as { static_prefix_hash?: unknown })?.static_prefix_hash, "string");
     assert.deepEqual(events.find((event) => (event as { type?: string }).type === "runtime_model_usage"), {
       type: "runtime_model_usage",
       session_id: "session-usage",

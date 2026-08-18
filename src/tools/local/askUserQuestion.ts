@@ -1,21 +1,13 @@
 import { z } from "zod";
+import {
+  normalizeUserQuestions,
+  userQuestionsJsonSchema,
+  userQuestionsSchema
+} from "../userQuestionProtocol.js";
 import { Tool } from "../types.js";
 
-const questionOptionSchema = z.object({
-  label: z.string().min(1),
-  description: z.string().min(1),
-  preview: z.string().optional()
-});
-
-const questionSchema = z.object({
-  question: z.string().min(1),
-  header: z.string().min(1),
-  multiSelect: z.boolean().default(false),
-  options: z.array(questionOptionSchema).min(2).max(4)
-});
-
 const inputSchema = z.strictObject({
-  questions: z.array(questionSchema).min(1).max(4),
+  questions: userQuestionsSchema,
   answers: z.record(z.string(), z.string()).optional(),
   annotations: z.record(z.string(), z.object({
     preview: z.string().optional(),
@@ -24,8 +16,6 @@ const inputSchema = z.strictObject({
   metadata: z.object({
     source: z.string().optional()
   }).optional()
-}).refine((input) => uniqueQuestionsAndOptions(input.questions), {
-  message: "Question texts must be unique, option labels must be unique within each question"
 });
 
 export const ASK_USER_QUESTION_TOOL_PROMPT = `Use this tool when you need to ask the user questions during execution. This allows you to:
@@ -59,54 +49,7 @@ export const askUserQuestionTool: Tool = {
   input_schema: {
     type: "object",
     properties: {
-      questions: {
-        type: "array",
-        minItems: 1,
-        maxItems: 4,
-        items: {
-          type: "object",
-          properties: {
-            question: {
-              type: "string",
-              description: "The complete question to ask the user. Should be clear, specific, and end with a question mark."
-            },
-            header: {
-              type: "string",
-              description: "Very short label displayed as a chip/tag."
-            },
-            multiSelect: {
-              type: "boolean",
-              default: false,
-              description: "Set to true to allow the user to select multiple options instead of just one."
-            },
-            options: {
-              type: "array",
-              minItems: 2,
-              maxItems: 4,
-              description: "The available choices for this question. Do not include an Other option; the UI adds it automatically.",
-              items: {
-                type: "object",
-                properties: {
-                  label: {
-                    type: "string",
-                    description: "The display text for this option that the user will see and select."
-                  },
-                  description: {
-                    type: "string",
-                    description: "Explanation of what this option means or what will happen if chosen."
-                  },
-                  preview: {
-                    type: "string",
-                    description: "Optional preview content rendered when this option is focused."
-                  }
-                },
-                required: ["label", "description"]
-              }
-            }
-          },
-          required: ["question", "header", "options"]
-        }
-      },
+      questions: userQuestionsJsonSchema(),
       answers: {
         type: "object",
         additionalProperties: { type: "string" }
@@ -137,10 +80,9 @@ export const askUserQuestionTool: Tool = {
   mapToolResultToModelResult: askUserQuestionModelResult,
   async execute(input) {
     const parsed = inputSchema.parse(input);
-    const questions = parsed.questions.map((question, index) => normalizeQuestion(question, index));
     return {
       output: "Waiting for user input.",
-      data: { type: "user_input_requested", questions }
+      data: { type: "user_input_requested", questions: normalizeUserQuestions(parsed.questions) }
     };
   }
 };
@@ -178,29 +120,4 @@ function toolResultPayload(result: unknown): Record<string, unknown> | undefined
   return value.data && typeof value.data === "object" && !Array.isArray(value.data)
     ? value.data as Record<string, unknown>
     : undefined;
-}
-
-function normalizeQuestion(question: z.infer<typeof questionSchema>, index: number) {
-  const text = question.question ?? "Please clarify.";
-  return {
-    ...question,
-    id: question.header ?? `question_${index + 1}`,
-    text,
-    question: text,
-    required: true,
-    allow_freeform: true,
-    options: question.options?.map((option) => ({
-      ...option,
-      value: option.label
-    }))
-  };
-}
-
-function uniqueQuestionsAndOptions(questions: z.infer<typeof questionSchema>[]): boolean {
-  const questionTexts = questions.map((question) => question.question);
-  if (questionTexts.length !== new Set(questionTexts).size) return false;
-  return questions.every((question) => {
-    const labels = question.options?.map((option) => option.label) ?? [];
-    return labels.length === new Set(labels).size;
-  });
 }

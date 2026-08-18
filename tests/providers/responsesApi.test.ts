@@ -4,6 +4,8 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ResponsesApiProvider } from "../../src/providers/responsesApi.js";
 import { Tool } from "../../src/tools/types.js";
+// @ts-expect-error ws is available as a transitive test-only dependency of Ink.
+import { WebSocketServer } from "ws";
 
 const servers: Array<{ close: () => Promise<void> }> = [];
 const fastRetry = { calculateDelay: () => 0 };
@@ -67,7 +69,7 @@ describe("ResponsesApiProvider", () => {
     assert.equal(server.requestHeaders["x-client-request-id"], "run-1:dev:2");
     assert.equal(server.requestBody.instructions, "System prompt");
     assert.equal(server.requestBody.max_output_tokens, 8000);
-    assert.equal(server.requestBody.store, true);
+    assert.equal(server.requestBody.store, false);
     assert.deepEqual(server.requestBody.input, [
       { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] }
     ]);
@@ -143,20 +145,100 @@ describe("ResponsesApiProvider", () => {
     assert.equal((server.requestBody.input as unknown[]).length, 3);
   });
 
-  it("downgrades to stateless mode when a compatible provider rejects conversation state fields", async () => {
+  it("sticks to stateless HTTP after the gateway requires Responses WebSocket v2", async () => {
     const server = await startConversationStateFallbackServer();
-    const provider = new ResponsesApiProvider({ baseUrl: server.baseUrl, apiKey: "test-key" });
-
-    const result = await provider.generate({
-      model: "gpt-test",
-      messages: [{ role: "user", content: "hello" }],
-      tools: []
+    const provider = new ResponsesApiProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      conversationState: "previous_response_id"
     });
+    const request = {
+      model: "gpt-test",
+      messages: [{ role: "user" as const, content: "hello" }],
+      tools: [],
+      context
+    };
 
-    assert.equal(result.content, "fallback");
-    assert.equal(server.requestBodies.length, 2);
+    const first = await provider.generate(request);
+    const second = await provider.generate(request);
+
+    assert.equal(first.content, "fallback");
+    assert.equal(second.content, "fallback");
+    assert.equal(server.requestBodies.length, 3);
     assert.equal(server.requestBodies[0]?.store, true);
     assert.equal(server.requestBodies[1]?.store, false);
+    assert.equal(server.requestBodies[2]?.store, false);
+  });
+
+  it("sticks auto transport to stateless HTTP after one WebSocket handshake failure", async () => {
+    const server = await startAutoTransportFallbackServer();
+    const provider = new ResponsesApiProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      transport: "auto",
+      conversationState: "auto"
+    });
+    const request = {
+      model: "gpt-test",
+      messages: [{ role: "user" as const, content: "hello" }],
+      tools: [],
+      context
+    };
+
+    const first = await provider.generate(request);
+    const second = await provider.generate(request);
+
+    assert.equal(first.content, "http");
+    assert.equal(second.content, "http");
+    assert.equal(server.upgrades, 1);
+    assert.equal(server.requestBodies.length, 2);
+    assert.equal(server.requestBodies[0]?.store, false);
+    assert.equal(server.requestBodies[1]?.store, false);
+  });
+
+  it("reuses one Responses WebSocket v2 session and sends response.create deltas", async () => {
+    const server = await startResponsesWebSocketServer();
+    const provider = new ResponsesApiProvider({
+      baseUrl: server.baseUrl,
+      apiKey: "test-key",
+      streaming: true,
+      transport: "websocket_v2",
+      conversationState: "auto"
+    });
+    const firstRequest = {
+      model: "gpt-test",
+      messages: [{ role: "user" as const, content: "hello" }],
+      tools: [],
+      context
+    };
+
+    const first = await provider.stream?.(firstRequest, () => undefined);
+    const second = await provider.stream?.({
+      ...firstRequest,
+      messages: [
+        ...firstRequest.messages,
+        { role: "assistant" as const, content: "first" },
+        { role: "user" as const, content: "follow-up" }
+      ],
+      continuation: {
+        previousResponseId: "resp-1",
+        inputMessages: [{ role: "user" as const, content: "follow-up" }]
+      }
+    }, () => undefined);
+    provider.close();
+
+    assert.equal(first?.content, "first");
+    assert.equal(second?.content, "second");
+    assert.equal(server.connections, 1);
+    assert.equal(server.requestPath, "/v1/responses");
+    assert.equal(server.requestHeaders.authorization, "Bearer test-key");
+    assert.match(String(server.requestHeaders["openai-beta"]), /responses_websockets=/);
+    assert.equal(server.requestBodies[0]?.type, "response.create");
+    assert.equal(server.requestBodies[0]?.store, true);
+    assert.equal(server.requestBodies[1]?.previous_response_id, "resp-1");
+    assert.deepEqual(server.requestBodies[1]?.input, [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "follow-up" }] }
+    ]);
   });
 
   it("keeps long tool prompts out of Responses API tool schemas", async () => {
@@ -372,6 +454,95 @@ describe("ResponsesApiProvider", () => {
   });
 });
 
+async function startAutoTransportFallbackServer(): Promise<{
+  baseUrl: string;
+  upgrades: number;
+  requestBodies: Record<string, unknown>[];
+  close: () => Promise<void>;
+}> {
+  let upgrades = 0;
+  const requestBodies: Record<string, unknown>[] = [];
+  const server = createServer(async (request, response) => {
+    requestBodies.push(await readJsonBody(request));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ output_text: "http" }));
+  });
+  server.on("upgrade", (_request, socket) => {
+    upgrades += 1;
+    socket.destroy();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const close = () => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  const handle = {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    get upgrades() { return upgrades; },
+    requestBodies,
+    close
+  };
+  servers.push(handle);
+  return handle;
+}
+
+async function startResponsesWebSocketServer(): Promise<{
+  baseUrl: string;
+  connections: number;
+  requestPath: string;
+  requestHeaders: IncomingHttpHeaders;
+  requestBodies: Record<string, unknown>[];
+  close: () => Promise<void>;
+}> {
+  let connections = 0;
+  let requestPath = "";
+  let requestHeaders: IncomingHttpHeaders = {};
+  const requestBodies: Record<string, unknown>[] = [];
+  const httpServer = createServer();
+  const websocketServer = new WebSocketServer({ server: httpServer });
+  websocketServer.on("connection", (socket: any, request: IncomingMessage) => {
+    connections += 1;
+    requestPath = request.url ?? "";
+    requestHeaders = request.headers;
+    socket.on("message", (data: unknown) => {
+      const body = JSON.parse(String(data)) as Record<string, unknown>;
+      requestBodies.push(body);
+      const sequence = requestBodies.length;
+      const responseId = `resp-${sequence}`;
+      socket.send(JSON.stringify({ type: "response.created", response: { id: responseId } }));
+      socket.send(JSON.stringify({
+        type: "response.output_text.delta",
+        delta: sequence === 1 ? "first" : "second"
+      }));
+      socket.send(JSON.stringify({
+        type: "response.completed",
+        response: { id: responseId, status: "completed" }
+      }));
+    });
+  });
+
+  await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+  const address = httpServer.address() as AddressInfo;
+  const close = async () => {
+    for (const client of websocketServer.clients as Set<{ terminate(): void }>) client.terminate();
+    await new Promise<void>((resolve) => websocketServer.close(() => resolve()));
+    await new Promise<void>((resolve, reject) => {
+      httpServer.close((error) => error ? reject(error) : resolve());
+    });
+  };
+  const handle = {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    get connections() { return connections; },
+    get requestPath() { return requestPath; },
+    get requestHeaders() { return requestHeaders; },
+    requestBodies,
+    close
+  };
+  servers.push(handle);
+  return handle;
+}
+
 async function startJsonServer(responseBody: unknown): Promise<{ baseUrl: string; requestPath: string; requestBody: Record<string, unknown>; requestHeaders: IncomingHttpHeaders; close: () => Promise<void> }> {
   let requestPath = "";
   let requestBody: Record<string, unknown> = {};
@@ -398,7 +569,7 @@ async function startConversationStateFallbackServer(): Promise<{ baseUrl: string
     requestBodies.push(await readJsonBody(request));
     if (requestBodies.length === 1) {
       response.writeHead(400, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: { message: "Unknown field store; conversation state is not supported" } }));
+      response.end(JSON.stringify({ error: { message: "previous_response_id is only supported on Responses WebSocket v2" } }));
       return;
     }
     response.writeHead(200, { "content-type": "application/json" });

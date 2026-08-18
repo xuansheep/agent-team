@@ -85,7 +85,8 @@ const responsesProviderSchema = z.object({
   responses: z.object({
     prompt_cache: z.boolean().default(true),
     parallel_tool_calls: z.boolean().default(true),
-    conversation_state: z.enum(["previous_response_id", "stateless"]).default("previous_response_id"),
+    transport: z.enum(["auto", "http", "websocket_v2"]).default("auto"),
+    conversation_state: z.enum(["auto", "previous_response_id", "stateless"]).default("auto"),
     reasoning: z.object({
       summary: z.string().optional()
     }).strict().optional()
@@ -125,7 +126,8 @@ const responsesProviderSettingsSchema = z.object({
   responses: z.object({
     prompt_cache: z.boolean().optional(),
     parallel_tool_calls: z.boolean().optional(),
-    conversation_state: z.enum(["previous_response_id", "stateless"]).optional(),
+    transport: z.enum(["auto", "http", "websocket_v2"]).optional(),
+    conversation_state: z.enum(["auto", "previous_response_id", "stateless"]).optional(),
     reasoning: z.object({
       summary: z.string().optional()
     }).strict().optional()
@@ -230,9 +232,10 @@ type ParsedWorkflowConfig = z.infer<typeof workflowSchema>;
 type ParsedWorkflowNodeConfig = z.infer<typeof nodeSchema>;
 type ProviderDefaults = "effort" | "api_key_mode" | "request_max_retries" | "stream_max_retries" | "request_timeout_ms" | "stream_idle_timeout_ms";
 type ConfigurableProvider<Provider> = Provider extends { type: "responses-api"; responses: infer Responses }
-  ? Responses extends { conversation_state: unknown }
+  ? Responses extends { conversation_state: unknown; transport: unknown }
     ? Omit<Provider, "responses"> & {
-      responses: Omit<Responses, "conversation_state"> & Partial<Pick<Responses, "conversation_state">>;
+      responses: Omit<Responses, "conversation_state" | "transport">
+        & Partial<Pick<Responses, "conversation_state" | "transport">>;
     }
     : Provider
   : Provider;

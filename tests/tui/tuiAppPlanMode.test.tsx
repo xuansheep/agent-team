@@ -1886,6 +1886,11 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\r");
     await settleTuiWork();
     await waitForFrame(output, /Please clarify routing/);
+    await waitForFrame(output, /Which routing outcome should be used\?/);
+
+    output.stdin.write("\r");
+    await settleTuiWork();
+    await waitForFrame(output, /Which rollout path\?/);
 
     const frame = output.lastFrame() ?? "";
     assert.equal(requests.length, 1);
@@ -2749,9 +2754,15 @@ describe("TuiApp global Plan Mode", () => {
     output.stdin.write("\r");
     await settleTuiWork();
     await waitForArrayItem(busRequests, 2);
+    await waitForFrame(output, /Which routing outcome should be used\?/);
+
+    output.stdin.write("\r");
+    await settleTuiWork();
+    await waitForArrayItem(busRequests, 3);
+    await waitForFrame(output, /Ready to code\?/);
 
     const frame = output.lastFrame() ?? "";
-    assert.equal(busRequests.length, 3);
+    assert.equal(busRequests.length, 4);
     assert.equal(requests.length, requestCount);
     assert.match(frame, /Ready to code\?/);
     assert.match(frame, /No, keep planning/);
@@ -3332,7 +3343,15 @@ function routingFailurePlanProviderFactory(requests: ModelRequest[], failBusCall
             content: JSON.stringify({
               type: "clarify",
               confidence: 1,
-              message: "Please clarify routing."
+              message: "Please clarify routing.",
+              questions: [{
+                question: "Which routing outcome should be used?",
+                header: "Routing",
+                options: [
+                  { label: "Keep current interaction", description: "Return to the pending Plan Mode interaction." },
+                  { label: "Change routing", description: "Re-evaluate the Plan Mode routing decision." }
+                ]
+              }]
             })
           };
         }

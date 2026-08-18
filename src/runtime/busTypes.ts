@@ -2,6 +2,7 @@ import type { ExecutionKind } from "../config/schema.js";
 import type { ModelUsage } from "../model/usage.js";
 import type { ModelRequestDiagnostics } from "../model/requestDiagnostics.js";
 import type { ModelMessage, ModelStopReason } from "../providers/types.js";
+import type { UserQuestion } from "../tools/userQuestionProtocol.js";
 import type { WorkflowSession } from "../workflow/session.js";
 import type { WorkflowRunDossier } from "../workflow/dossier.js";
 
@@ -17,6 +18,24 @@ export type BusTaskStatus =
   | "finalized"
   | "failed";
 
+export type BusRoutingPhase = "user" | "plan" | "lifecycle";
+
+export type BusClarificationReason =
+  | "material_ambiguity"
+  | "low_confidence"
+  | "dispatcher_failure"
+  | "invalid_directive"
+  | "rework_limit";
+
+export type PendingBusClarification = {
+  phase: BusRoutingPhase;
+  message: string;
+  reason: BusClarificationReason;
+  questions: UserQuestion[];
+  index: number;
+  answers: Record<string, unknown>;
+};
+
 export type TaskSummary = {
   summary: string;
   outcomes: string[];
@@ -27,7 +46,7 @@ export type TaskSummary = {
 
 export type DispatchDirective =
   | { type: "answer"; confidence: number; message: string }
-  | { type: "clarify"; confidence: number; message: string }
+  | { type: "clarify"; confidence: number; message: string; questions?: UserQuestion[] }
   | { type: "plan"; confidence: number; node_id: string; reason: string }
   | { type: "dispatch"; confidence: number; node_id: string; instruction: string; reason: string; destructive_policy?: "ask" | "deny" }
   | { type: "finalize"; confidence: number; summary: TaskSummary }
@@ -38,12 +57,12 @@ export type BusIntent =
   | { type: "workflow_boundary"; dossier: WorkflowRunDossier };
 
 export type BusEvent =
-  | { type: "bus_routing_started"; session_id: string; workflow_id: string; routing_id: string; phase: "user" | "plan" | "lifecycle" }
+  | { type: "bus_routing_started"; session_id: string; workflow_id: string; routing_id: string; phase: BusRoutingPhase }
   | { type: "bus_model_thinking_delta"; session_id: string; workflow_id: string; routing_id: string; text: string }
   | { type: "bus_model_response_recorded"; session_id: string; workflow_id: string; routing_id: string; protocol_attempt: number; model: string; usage?: ModelUsage; stop_reason?: ModelStopReason; streamed: boolean; content_chars: number; thinking_chars: number; tool_call_count: number; response_shape: string; diagnostics?: ModelRequestDiagnostics }
-  | { type: "bus_directive_selected"; session_id: string; workflow_id: string; routing_id: string; phase: "user" | "plan" | "lifecycle"; directive: DispatchDirective; thinking?: string }
+  | { type: "bus_directive_selected"; session_id: string; workflow_id: string; routing_id: string; phase: BusRoutingPhase; directive: DispatchDirective; thinking?: string }
   | { type: "bus_assistant_message"; session_id: string; workflow_id: string; content: string }
-  | { type: "bus_clarification_requested"; session_id: string; workflow_id: string; content: string; reason: "material_ambiguity" | "low_confidence" | "dispatcher_failure" | "invalid_directive" | "rework_limit" }
+  | { type: "bus_clarification_requested"; session_id: string; workflow_id: string; content: string; phase: BusRoutingPhase; reason: BusClarificationReason; questions?: UserQuestion[] }
   | { type: "bus_plan_node_selected"; session_id: string; workflow_id: string; node_id: string; reason: string }
   | { type: "bus_workflow_started"; session_id: string; workflow_id: string; run_id: string; node_id: string }
   | { type: "bus_workflow_reassigned"; session_id: string; workflow_id: string; run_id: string; from_node_id?: string; to_node_id: string; reason: string }
@@ -75,6 +94,7 @@ export type BusTaskState = {
   user_input_revision?: number;
   last_directive?: DispatchDirective;
   last_routing_error?: { error_kind: "protocol" | "provider" | "configuration"; message: string };
+  pending_clarification?: PendingBusClarification;
   summary?: TaskSummary;
   messages: ModelMessage[];
 };

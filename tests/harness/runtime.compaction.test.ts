@@ -420,7 +420,7 @@ describe("runNode context compaction", () => {
           return {
             content: "Reading large output.",
             tool_calls: [{ id: "large-1", name: "LargeOutput", input: {} }],
-            usage: { inputTokens: 16_000, outputTokens: 10, totalTokens: 16_010 }
+            usage: { inputTokens: 22_000, outputTokens: 10, totalTokens: 22_010 }
           };
         }
         return { content: nodeResult, usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 } };

@@ -67,23 +67,28 @@ export function prepareMcpDiscovery(input: {
   };
 }
 
-export function withMcpCatalogMessage(messages: readonly ModelMessage[], snapshot: McpDiscoverySnapshot): ModelMessage[] {
+export function mcpCatalogMessage(messages: readonly ModelMessage[], snapshot: McpDiscoverySnapshot): ModelMessage | undefined {
   const content = formatMcpCatalog(snapshot);
-  if (!content) return [...messages];
-  const catalogMessage: ModelMessage = {
-    role: "system",
-    content,
+  if (!content) return undefined;
+  return {
+    role: "user",
+    content: `<system-reminder>\n${content}\n</system-reminder>`,
     metadata: {
+      userMessageKind: "runtime_context",
       runtimeAttachment: {
         type: MCP_CATALOG_ATTACHMENT_TYPE,
         humanTurnCount: countHumanTurns(messages)
       }
     }
   };
-  const next = [...messages];
-  const firstNonSystem = next.findIndex((message) => message.role !== "system");
-  next.splice(firstNonSystem < 0 ? next.length : firstNonSystem, 0, catalogMessage);
-  return next;
+}
+
+export function withMcpCatalogMessage(messages: readonly ModelMessage[], snapshot: McpDiscoverySnapshot): ModelMessage[] {
+  const catalogMessage = mcpCatalogMessage(messages, snapshot);
+  if (!catalogMessage) return [...messages];
+  const latestCatalog = [...messages].reverse().find((message) => message.metadata?.runtimeAttachment?.type === MCP_CATALOG_ATTACHMENT_TYPE);
+  if (latestCatalog?.content === catalogMessage.content) return [...messages];
+  return [...messages, catalogMessage];
 }
 
 export function extractDiscoveredMcpTools(messages: readonly ModelMessage[]): string[] {

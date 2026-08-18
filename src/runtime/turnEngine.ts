@@ -13,7 +13,7 @@ import { createKernelToolRegistry } from "../kernel/tools/registry.js";
 import { prepareMcpDiscovery, withMcpCatalogMessage } from "../mcp/discovery.js";
 import { isUntrustedToolResultSource } from "../mcp/runtime.js";
 import { executeToolCalls, resolveToolCall } from "../tools/orchestration.js";
-import { toolResultMessage as mapToolResultMessage } from "../tools/modelResult.js";
+import { persistedToolResultMessage, toolResultMessage as mapToolResultMessage } from "../tools/modelResult.js";
 import { Tool, ToolContext, ToolResult } from "../tools/types.js";
 import { skillActivationFromToolResult, skillPermissionRulesFromToolResult, skillRuntimeOverridesFromToolResult, skillSystemMessageFromToolResult } from "../skills/skillTools.js";
 import { PlanApprovalRequest, PromptInjectionRecord, RuntimeEvent, RuntimeTurnInput, RuntimeTurnResult, RuntimeUserInputRequest } from "./types.js";
@@ -75,13 +75,18 @@ export class TurnEngine {
             permissions: input.permissions
           })
           : undefined;
-        const requestMessages = discovery ? withMcpCatalogMessage(messages, discovery) : messages;
+        if (discovery) {
+          const nextMessages = withMcpCatalogMessage(messages, discovery);
+          if (nextMessages.length > messages.length) messages.push(...nextMessages.slice(messages.length));
+        }
+        const requestMessages = [...messages];
         const mcpProtocol = input.provider.deferredToolProtocol?.(input.model) ?? "portable";
+        const requestTools = modelVisibleTools(input, mcpProtocol);
         const request: ModelRequest = {
           model: input.model,
           effort: input.effort,
           messages: requestMessages,
-          tools: modelVisibleTools(input, mcpProtocol),
+          tools: requestTools,
           ...(mcpProtocol === "anthropic-tool-reference" && discovery?.deferredToolNames.length
             ? { deferredToolNames: discovery.deferredToolNames, deferredTools: discovery.deferredTools }
             : {}),
@@ -92,7 +97,7 @@ export class TurnEngine {
             sessionId: input.sessionId,
             threadId: input.sessionId,
             turnId: `${input.sessionId}:${executionId}:${iteration + 1}`,
-            promptCacheKey: createHash("sha256").update(`${input.sessionId}:runtime:${input.model}:v2`).digest("hex")
+            promptCacheKey: runtimePromptCacheKey(input.cwd, input.model, requestMessages, requestTools)
           },
           signal: input.abortSignal,
           onRetry: async (retry) => {
@@ -244,6 +249,7 @@ export class TurnEngine {
         : toolCalls;
       const executions = await executeToolCalls(callsToExecute, input.tools, {
         cwd: input.cwd,
+        runDir: input.runDir,
         sessionId: input.sessionId,
         runId: input.runId,
         planState: input.planState,
@@ -268,6 +274,7 @@ export class TurnEngine {
         }
       });
       throwIfAborted(input.abortSignal);
+      const deferredSkillMessages: ModelMessage[] = [];
       for (const execution of executions) {
         throwIfAborted(input.abortSignal);
         // A result relayed from an MCP server is untrusted data, not control flow: without this
@@ -280,8 +287,9 @@ export class TurnEngine {
           }
           const tool = execution.result && input.tools.has(execution.call.name) ? input.tools.get(execution.call.name) : undefined;
           messages.push(execution.result && tool
-            ? toolMessage(execution.call.id, execution.result, tool, {
+            ? await persistedToolResultMessage(execution.call.id, execution.result, tool, {
               cwd: input.cwd,
+              runDir: input.runDir,
               sessionId: input.sessionId,
               runId: input.runId,
               abortSignal: input.abortSignal,
@@ -293,7 +301,7 @@ export class TurnEngine {
             })
             : failureToolMessage(execution.call.id, execution.failure, execution.error));
           const skillMessage = skillSystemMessageFromToolResult(controlResult);
-          if (skillMessage) messages.push(skillMessage);
+          if (skillMessage) deferredSkillMessages.push(skillMessage);
           const skillActivation = skillActivationFromToolResult(controlResult);
           if (skillActivation) {
             applySkillPermissionRules(input.permissions, skillPermissionRulesFromToolResult(controlResult));
@@ -321,6 +329,7 @@ export class TurnEngine {
           if (skillOverrides?.effort !== undefined) input.effort = skillOverrides.effort;
           const planApproval = planApprovalFromToolResult(controlResult);
         if (planApproval) {
+          messages.push(...deferredSkillMessages);
           await emit(input, planApproval.event);
           return { status: "waiting_plan_approval", messages, plan: { ...planApproval.plan, toolCallId: execution.call.id }, planState: planApproval.state, usage: response.usage };
         }
@@ -330,13 +339,16 @@ export class TurnEngine {
         try {
           const planApproval = await requestPlanApprovalFromRuntime(input, pendingPlanApprovalCall.input);
           messages.push(planApproval.toolMessage(pendingPlanApprovalCall.id));
+          messages.push(...deferredSkillMessages);
           await emit(input, planApproval.event);
           return { status: "waiting_plan_approval", messages, plan: { ...planApproval.plan, toolCallId: pendingPlanApprovalCall.id }, planState: planApproval.state, usage: response.usage };
         } catch (error) {
           messages.push({ role: "tool", tool_call_id: pendingPlanApprovalCall.id, content: planApprovalBlockedMessage(error, input.permissions.planFilePath) });
+          messages.push(...deferredSkillMessages);
           return undefined;
         }
       }
+      messages.push(...deferredSkillMessages);
       return undefined;
         },
         onLimit: (maxIterations) => ({
@@ -556,6 +568,19 @@ function runtimeAttachmentMarker(message: ModelMessage): "plan_mode" | "plan_mod
   if (typeof message.content !== "string") return undefined;
   const match = /(?:^|\n)ATTACHMENT (plan_mode|plan_mode_reminder|plan_mode_reentry|plan_mode_exit)\b/.exec(message.content);
   return match?.[1] as ReturnType<typeof runtimeAttachmentMarker>;
+}
+
+function runtimePromptCacheKey(cwd: string, model: string, messages: readonly ModelMessage[], tools: readonly Tool[]): string {
+  const resolvedProject = resolve(cwd);
+  const project = process.platform === "win32" ? resolvedProject.toLowerCase() : resolvedProject;
+  return createHash("sha256").update(JSON.stringify({
+    version: "cache-v3",
+    project,
+    providerRole: "runtime",
+    model,
+    system: messages.filter((message) => message.role === "system"),
+    tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.input_schema }))
+  })).digest("hex");
 }
 
 function toolMessage(toolCallId: string, result: ToolResult, tool: Tool, context?: ToolContext): ModelMessage {

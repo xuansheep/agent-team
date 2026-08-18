@@ -96,7 +96,8 @@ export function createUseSkillTool(runtime: SkillRuntime): Tool {
         args: optionalValueString(value.args),
         prompt: optionalValueString(value.args),
         cwd: context.cwd,
-        sessionId: context.sessionId ?? "global",
+        sessionId: context.sessionId ?? context.runId ?? "global",
+        activationScopeId: context.skillActivationScopeId ?? context.sessionId ?? context.runId ?? "global",
         provider: context.provider,
         model: context.model,
         tools: context.toolRegistry,
@@ -104,6 +105,9 @@ export function createUseSkillTool(runtime: SkillRuntime): Tool {
         signal: context.abortSignal,
         auditSink: context.auditSink
       });
+      if (activation.mode === "noop") {
+        return { output: `Skill ${activation.skill.name} is already active; duplicate inline activation skipped.` };
+      }
       const systemMessage = activation.mode === "inline"
         ? activation.messages.at(-1)
         : { role: "system" as const, content: `SKILL ${activation.skill.name}\n\n${activation.output}` };
@@ -148,7 +152,12 @@ export function skillSystemMessageFromToolResult(result: ToolResult | undefined)
   const message = data.systemMessage;
   if (!message || typeof message !== "object" || Array.isArray(message)) return undefined;
   const value = message as { role?: unknown; content?: unknown };
-  return value.role === "system" && typeof value.content === "string" ? { role: "system", content: value.content } : undefined;
+  if (value.role !== "system" || typeof value.content !== "string") return undefined;
+  return {
+    role: "user",
+    content: `<system-reminder>\n${value.content}\n</system-reminder>`,
+    metadata: { userMessageKind: "runtime_context" }
+  };
 }
 
 function skillActivationResult(
